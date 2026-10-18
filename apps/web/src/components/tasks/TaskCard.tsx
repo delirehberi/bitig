@@ -11,6 +11,7 @@ import { useFeatureFlags } from "../../hooks/useFeatureFlags";
 interface TaskCardProps {
   readonly task: Task;
   readonly projects: Project[];
+  readonly onView: (task: Task) => void;
   readonly onEdit: (task: Task) => void;
   readonly onDelete: (task: Task) => void;
   readonly onComplete: (task: Task) => void;
@@ -30,6 +31,7 @@ const ICON_SIZE = 14;
 export function TaskCard({
   task,
   projects,
+  onView,
   onEdit,
   onDelete,
   onComplete,
@@ -135,7 +137,16 @@ export function TaskCard({
                 isDone ? "line-through text-ink-3" : ""
               }`}
             >
-              {task.title}
+              <button
+                type="button"
+                onClick={() => {
+                  onView(task);
+                }}
+                title="View task details"
+                className="cursor-pointer text-left font-[inherit] text-[inherit] [text-decoration:inherit] hover:underline focus-visible:outline-focus"
+              >
+                {task.title}
+              </button>
             </h4>
             {task.description && (
               <p className="m-0 mt-1 line-clamp-2 text-xs text-ink-2">{task.description}</p>

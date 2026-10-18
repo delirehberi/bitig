@@ -10,6 +10,7 @@ import type {
 } from "@bitig/core";
 import { TaskBoard } from "./TaskBoard";
 import { TaskList } from "./TaskList";
+import { TaskDetailModal } from "./TaskDetailModal";
 import { TaskModal } from "./TaskModal";
 import { DeleteTaskDialog } from "./DeleteTaskDialog";
 
@@ -54,6 +55,9 @@ export function TasksView({
   });
 
   const [deleteTarget, setDeleteTarget] = useState<Task | null>(null);
+  // Stored by id so the detail modal follows updates and closes when the task is deleted.
+  const [viewTaskId, setViewTaskId] = useState<string | null>(null);
+  const viewTask = tasks.find((t) => t.id === viewTaskId) ?? null;
 
   const filteredTasks = tasks.filter((task) => {
     if (selectedProjectId && task.projectId !== selectedProjectId) {
@@ -210,6 +214,9 @@ export function TasksView({
         <TaskBoard
           tasks={filteredTasks}
           projects={projects}
+          onView={(t) => {
+            setViewTaskId(t.id);
+          }}
           onEdit={(t) => {
             setModalState({ isOpen: true, task: t });
           }}
@@ -227,6 +234,9 @@ export function TasksView({
         <TaskList
           tasks={filteredTasks}
           projects={projects}
+          onView={(t) => {
+            setViewTaskId(t.id);
+          }}
           onEdit={(t) => {
             setModalState({ isOpen: true, task: t });
           }}
@@ -241,6 +251,25 @@ export function TasksView({
           }}
         />
       )}
+
+      <TaskDetailModal
+        task={viewTask}
+        projects={projects}
+        onClose={() => {
+          setViewTaskId(null);
+        }}
+        onEdit={(t) => {
+          setViewTaskId(null);
+          setModalState({ isOpen: true, task: t });
+        }}
+        onDelete={(t) => {
+          setViewTaskId(null);
+          setDeleteTarget(t);
+        }}
+        onComplete={(t) => {
+          void onCompleteTask(t.id);
+        }}
+      />
 
       {/* Keyed so each open remounts the form; its fields are seeded from `task` only on mount. */}
       <TaskModal
