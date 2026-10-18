@@ -1,0 +1,99 @@
+/* Hallmark · macrostructure: Workbench · tone: soft · anchor hue: clay ~45° */
+@import "tailwindcss";
+@import "./styles/tokens.css";
+
+/*
+ * Tailwind utilities are mapped onto Hallmark tokens. Default palettes and
+ * font stacks are cleared so no off-system colour or font can be used.
+ * `reference` keeps Tailwind from emitting these variables itself:
+ * tokens.css is the only place they are defined.
+ */
+@theme inline reference {
+  --color-*: initial;
+  --font-*: initial;
+  --radius-*: initial;
+  --text-*: initial;
+
+  --color-paper: var(--color-paper);
+  --color-paper-2: var(--color-paper-2);
+  --color-paper-3: var(--color-paper-3);
+  --color-ink: var(--color-ink);
+  --color-ink-2: var(--color-ink-2);
+  --color-ink-3: var(--color-ink-3);
+  --color-rule: var(--color-rule);
+  --color-rule-strong: var(--color-rule-strong);
+  --color-accent: var(--color-accent);
+  --color-accent-ink: var(--color-accent-ink);
+  --color-accent-soft: var(--color-accent-soft);
+  --color-ok: var(--color-ok);
+  --color-ok-soft: var(--color-ok-soft);
+  --color-danger: var(--color-danger);
+  --color-danger-soft: var(--color-danger-soft);
+  --color-focus: var(--color-focus);
+
+  --font-display: var(--font-display);
+  --font-body: var(--font-body);
+  --font-mono: var(--font-mono);
+
+  --text-xs: var(--text-xs);
+  --text-sm: var(--text-sm);
+  --text-base: var(--text-base);
+  --text-lg: var(--text-lg);
+  --text-xl: var(--text-xl);
+  --text-2xl: var(--text-2xl);
+  --text-display: var(--text-display);
+
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+  --radius-pill: var(--radius-pill);
+
+  --ease-out: var(--ease-out);
+  --ease-in: var(--ease-in);
+  --ease-in-out: var(--ease-in-out);
+}
+
+@layer base {
+  html,
+  body {
+    overflow-x: clip;
+  }
+
+  body {
+    margin: 0;
+    background: var(--color-paper);
+    color: var(--color-ink);
+    font-family: var(--font-body);
+    font-size: var(--text-base);
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  h1,
+  h2,
+  h3 {
+    font-family: var(--font-display);
+    font-style: normal;
+    color: var(--color-ink);
+    overflow-wrap: anywhere;
+    min-width: 0;
+  }
+
+  code,
+  kbd {
+    font-family: var(--font-mono);
+    font-size: 0.92em;
+  }
+
+  /* Focus ring appears instantly; it is never transitioned. */
+  :focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    background: var(--color-accent-soft);
+    color: var(--color-ink);
+  }
+}

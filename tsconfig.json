@@ -1,0 +1,17 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/core" },
+    { "path": "./packages/storage-markdown" },
+    { "path": "./packages/storage-markdown/tsconfig.node.json" },
+    { "path": "./packages/storage-d1" },
+    { "path": "./packages/storage-nostr" },
+    { "path": "./packages/mcp-tools" },
+    { "path": "./packages/api-client" },
+    { "path": "./apps/cli" },
+    { "path": "./apps/worker" },
+    { "path": "./apps/web" },
+    { "path": "./apps/web/tsconfig.node.json" }
+  ]
+}
+

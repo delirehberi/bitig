@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": ".tsbuild/neutral",
+    "rootDir": "src",
+    "types": []
+  },
+  "include": ["src"],
+  "exclude": ["src/node", "src/**/*.test.ts"],
+  "references": [{ "path": "../core" }]
+}
+

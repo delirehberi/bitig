@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": ".tsbuild",
+    "lib": ["ES2024"],
+    "types": ["./worker-configuration.d.ts", "@cloudflare/vitest-plugin/types"]
+  },
+  "include": ["src", "worker-configuration.d.ts", "vitest.config.ts", "drizzle.config.ts"],
+  "references": [{ "path": "../core" }]
+}

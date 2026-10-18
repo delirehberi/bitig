@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": ".tsbuild",
+    "rootDir": "src",
+    "types": ["node"]
+  },
+  "include": ["src"],
+  "references": [
+    { "path": "../../packages/core" },
+    { "path": "../../packages/storage-markdown/tsconfig.node.json" },
+    { "path": "../../packages/mcp-tools" }
+  ]
+}
+

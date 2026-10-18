@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": ".tsbuild",
+    "rootDir": "src",
+    "lib": ["ES2023", "DOM"],
+    "types": []
+  },
+  "include": ["src"],
+  "references": [{ "path": "../core" }]
+}
+

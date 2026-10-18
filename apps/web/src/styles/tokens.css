@@ -1,0 +1,94 @@
+/* Hallmark · macrostructure: Workbench · tone: soft · anchor hue: clay ~45°
+ * genre: playful · theme: Hum (light paper · rounded-sans · warm accent)
+ * nav: N3 side-rail · footer: Ft2 inline · enrichment: none
+ * audience: developers / MCP users · use: occasional glance, agents do the work
+ *
+ * Portable design tokens. Every colour and font in the app references these
+ * by name; nothing downstream may inline raw values.
+ */
+
+:root {
+  /* Paper — warm cream, tinted toward the anchor hue (never pure white). */
+  --color-paper: oklch(97.6% 0.011 80);
+  --color-paper-2: oklch(95.4% 0.015 78);
+  --color-paper-3: oklch(92.6% 0.02 76);
+
+  /* Ink — warm brown-black (never pure black). */
+  --color-ink: oklch(27% 0.024 52);
+  --color-ink-2: oklch(43% 0.024 55);
+  --color-ink-3: oklch(51% 0.02 60);
+
+  --color-rule: oklch(88.5% 0.02 74);
+  --color-rule-strong: oklch(80% 0.026 70);
+
+  /* Accent — soft clay. One accent only. */
+  --color-accent: oklch(62% 0.12 45);
+  --color-accent-ink: oklch(44% 0.11 45);
+  --color-accent-soft: oklch(93% 0.035 55);
+
+  /* Status — used only for status dots and their labels. */
+  --color-ok: oklch(52% 0.1 155);
+  --color-ok-soft: oklch(94% 0.035 155);
+  --color-danger: oklch(51% 0.15 25);
+  --color-danger-soft: oklch(94% 0.03 25);
+
+  /* Focus ring: ≥ 3:1 against paper. */
+  --color-focus: oklch(48% 0.13 45);
+
+  /* Type — 2 + 1: display, body, mono. */
+  --font-display: "Plus Jakarta Sans Variable", "Plus Jakarta Sans", system-ui, sans-serif;
+  --font-body: "Atkinson Hyperlegible Next Variable", "Atkinson Hyperlegible Next", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, monospace;
+
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.375rem;
+  --text-2xl: 1.75rem;
+  --text-display: clamp(2rem, 1.4rem + 2.4vw, 2.75rem);
+
+  /* Spacing — 4 pt scale. */
+  --space-2xs: 4px;
+  --space-xs: 8px;
+  --space-sm: 12px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 32px;
+  --space-2xl: 48px;
+  --space-3xl: 64px;
+
+  /* Radii — soft. */
+  --radius-sm: 8px;
+  --radius-md: 14px;
+  --radius-lg: 22px;
+  --radius-pill: 999px;
+
+  --rule-hairline: 1px;
+
+  /* Motion — three named easings, two durations. */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in: cubic-bezier(0.7, 0, 0.84, 0);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-short: 120ms;
+  --dur-med: 220ms;
+
+  /* Layering — named scale, no magic z-index. */
+  --z-base: 0;
+  --z-raised: 10;
+  --z-sticky: 20;
+  --z-overlay: 30;
+  --z-modal: 40;
+  --z-toast: 50;
+
+  --rail-width: 248px;
+  --measure: 62ch;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-short: 0ms;
+    --dur-med: 120ms;
+  }
+}
+

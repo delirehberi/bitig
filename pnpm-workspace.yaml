@@ -1,0 +1,9 @@
+packages:
+  - "packages/*"
+  - "apps/*"
+
+# Only these packages may run install scripts (they download native binaries
+# needed by wrangler and the Workers test runtime).
+allowBuilds:
+  esbuild: true
+  workerd: true

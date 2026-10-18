@@ -1,0 +1,28 @@
+{
+  "name": "@bitig/cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "bitig": "./dist/bitig.js"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@bitig/core": "workspace:*",
+    "@bitig/mcp-tools": "workspace:*",
+    "@bitig/storage-markdown": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "commander": "^13.1.0",
+    "yaml": "^2.9.1",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "esbuild": "^0.28.1",
+    "vitest": "^4.1.11"
+  }
+}
+

@@ -1,0 +1,109 @@
+# Bitig Security Architecture & Audit Report
+
+## 1. Threat Model & Overview
+
+Bitig is an edge-ready task and project manager deployed across local filesystems, Cloudflare Workers (edge compute + D1 storage), and decentralized Nostr networks. Security controls are enforced at every domain and protocol boundary.
+
+### Trust Boundaries
+1. **Local CLI / STDIO MCP:** Trusted local user executing on local filesystem. Isolation enforced via POSIX file permissions (`0700` directories) and advisory locking.
+2. **Cloudflare Worker (HTTP REST & Streamable MCP):** Public internet facing. Guarded by TLS, constant-time Basic Auth, constant-time Bearer token auth, sliding-window rate limiting, and CSRF protection.
+3. **Nostr Relays:** Untrusted relay nodes. Cleartext is never sent for private tasks; NIP-44 authenticated encryption with ChaCha20-Poly1305 is used for task payloads.
+
+---
+
+## 2. Authentication & Credential Handling
+
+### 2.1 Constant-Time String Comparison
+All authentication mechanisms (HTTP Basic Auth for REST API, Bearer Token for remote MCP) utilize cryptographic constant-time comparison via Web Crypto `crypto.subtle.timingSafeEqual`:
+
+- Passwords and tokens are hashed with SHA-256 before comparison to prevent string length side-channel leakage.
+- If no credentials are configured in environment secrets (`BASIC_AUTH_PASS`, `MCP_AUTH_TOKEN`), all incoming requests are rejected by default with `401 Unauthorized`.
+- Credentials and secrets are never logged or exposed in client error payloads.
+
+---
+
+## 3. Rate Limiting Architecture
+
+A sliding-window rate limiter is implemented at the Cloudflare Worker edge. Counters live in a SQLite-backed Durable Object (`RateLimiter`, binding `RATE_LIMITER`), one object per policy and client IP (`cf-connecting-ip`). This makes the limits global across Worker isolates and keeps them across object eviction; an alarm deletes an object's storage once its window has passed.
+
+### 3.1 Rate Limit Tiers
+- **Authentication Failure Protection:** Max 10 failed login attempts per 15 minutes per IP. Mitigates brute-force attacks against Basic Auth and MCP tokens.
+  - Basic Auth (`/api/*`) and Bearer (`/mcp`) failures share one budget per IP.
+  - Only attempts that present credentials count (wrong password or token, malformed or wrong-scheme `Authorization` header). Requests without an `Authorization` header, such as the dashboard's pre-login probe, do not.
+  - Once the budget is used up, every request from that IP to `/api/*` and `/mcp` gets `429` before credentials are checked, including requests with valid credentials, until the window passes. Other clients are not affected. A successful login does not reset the counter.
+- **REST API Routes (`/api/*`):** Max 1,000 requests per minute per IP.
+- **MCP Endpoint (`/mcp`):** Max 1,000 requests per minute per IP.
+
+### 3.2 Response Headers
+Standard rate limiting headers are returned on all evaluated requests:
+- `RateLimit-Limit`: Maximum requests permitted in current window.
+- `RateLimit-Remaining`: Remaining request quota.
+- `RateLimit-Reset`: Seconds remaining until quota renewal.
+- On HTTP `429 Too Many Requests`: `Retry-After: <seconds>` is sent.
+
+### 3.3 Limiter Failure Behavior
+If the `RateLimiter` Durable Object cannot be reached, the error is logged and the request is allowed (fail open). Authentication still runs on every request, and an outage of the limiter must not lock the owner out of their data.
+
+---
+
+## 4. Cross-Site Request Forgery (CSRF) & CORS
+
+### 4.1 CORS Enforcement
+- Cross-origin resource sharing (`CORS`) is locked down to explicit origins configured in `ALLOWED_ORIGINS`.
+- Requests from untrusted origins are denied cross-origin access.
+
+### 4.2 CSRF Defense in Depth
+State-mutating HTTP methods (`POST`, `PATCH`, `DELETE`, `PUT`) are subject to multi-layered CSRF verification:
+1. **Origin Verification:** Checked against worker self-origin and `ALLOWED_ORIGINS`.
+2. **Referer Verification:** If Origin is omitted, Referer host is validated. An unparsable Referer is rejected.
+3. **Fetch Metadata:** If both are omitted, a request with `Sec-Fetch-Site: cross-site` is rejected.
+4. **Form-Encoded Blocking:** If both are omitted, requests carrying `application/x-www-form-urlencoded`, `multipart/form-data`, or `text/plain` that could be triggered by unauthorized browser forms are strictly rejected with HTTP `403 Forbidden`.
+
+Any rejection returns HTTP `403 Forbidden`. The server does not check for a custom header: `ApiStorage` sends `X-Bitig-Request: true`, but the middleware does not require it.
+
+### 4.3 Requests Without Origin or Referer
+A mutating request that has neither header, is not marked cross-site, and does not use a form content type (for example `Content-Type: application/json`) passes the CSRF check. This is deliberate: the CLI, MCP clients, scripts and `curl` do not send `Origin`, and they must be able to call the API.
+
+This does not open a CSRF hole:
+- Browsers send `Origin` on cross-origin `POST`, `PATCH`, `PUT` and `DELETE` requests, so a forged request from another site is caught by step 1.
+- A cross-site browser request that could skip the CORS preflight must use a form content type, which step 4 rejects. A JSON request from another origin triggers a preflight, which CORS denies for origins not on the allowlist.
+- Every request still needs valid Basic Auth credentials, and failed logins are rate-limited (section 3).
+
+What remains is a non-browser client that already holds valid credentials. That client is the account owner, not a CSRF attacker, so it is accepted.
+
+---
+
+## 5. Filesystem & Path Traversal Protections
+
+### 5.1 UUIDv7 Path Validation
+In local mode (`storage-markdown`), files are stored as:
+`~/.local/share/bitig/<projectId>/<taskId>.md`
+
+- Both `<projectId>` and `<taskId>` are validated against `IdSchema = z.uuidv7()`.
+- Paths containing `../`, null bytes, slashes, or non-hex characters are rejected before touching filesystem APIs.
+- The `FileSystemPort` implementation (`NodeFileSystem`) enforces that all resolved canonical paths remain within `rootDir`.
+
+### 5.2 Concurrency & Advisory Locking
+- Workspace operations acquire advisory file locks with PID tracking.
+- Stale locks from crashed processes are automatically reclaimed using PID liveness checks.
+
+---
+
+## 6. Nostr Privacy & Cryptographic Analysis
+
+### 6.1 Private Task Payload Encryption (NIP-44)
+- **Encryption Scheme:** NIP-44 self-encryption (ChaCha20-Poly1305 with HKDF key derivation).
+- **Encrypted Fields:** Task title and description are packed into a JSON payload and encrypted before broadcast.
+- **Metadata Visibility:** Relays can observe event kinds (30001), tags (`status`, `priority`, `dueDate`, `order`, `labels`), and timestamps (`created_at_iso`). Users requiring zero metadata exposure should run Local or Cloudflare D1 mode.
+
+---
+
+## 7. HTTP Security Headers
+
+The following edge headers are enforced across all Worker endpoints:
+- `Strict-Transport-Security`: `max-age=63072000; includeSubDomains`
+- `X-Frame-Options`: `DENY`
+- `X-Content-Type-Options`: `nosniff`
+- `Referrer-Policy`: `no-referrer`
+- `Content-Security-Policy`: `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'`
+

@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": ".tsbuild",
+    "lib": ["ES2024"],
+    "types": ["./worker-configuration.d.ts", "@cloudflare/vitest-plugin/types"]
+  },
+  "include": ["src", "test", "package.json", "vitest.config.ts", "worker-configuration.d.ts"],
+  "references": [
+    { "path": "../../packages/core" },
+    { "path": "../../packages/storage-d1" },
+    { "path": "../../packages/api-client" },
+    { "path": "../../packages/mcp-tools" }
+  ]
+}
+

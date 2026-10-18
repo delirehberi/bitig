@@ -1,0 +1,47 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "bitig",
+  // Cloudflare account "delirehberi" (owns the emre.xyz zone).
+  "account_id": "8423a8bddcba5f61bc5f599e64bbdd62",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true
+  },
+  // Cloudflare creates the DNS record and certificate for the custom domain.
+  "routes": [{ "pattern": "bitig.emre.xyz", "custom_domain": true }],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "bitig-db",
+      "database_id": "1fb4eba8-a84d-45f9-a6fd-8bd40f1a46ba",
+      // Local dev (wrangler dev / miniflare) keys its persisted state on this ID;
+      // keeping the old placeholder preserves the existing local database.
+      "preview_database_id": "bitig-db",
+      "migrations_dir": "../../packages/storage-d1/migrations"
+    }
+  ],
+  // The dashboard (apps/web) is served as static assets. API routes run the
+  // Worker first; every other path falls back to the SPA's index.html.
+  // Rate limit counters (one object per policy + client IP), shared by all isolates.
+  "durable_objects": {
+    "bindings": [{ "name": "RATE_LIMITER", "class_name": "RateLimiter" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RateLimiter"] }],
+  "assets": {
+    "directory": "../web/dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "/health", "/mcp", "/mcp/*"]
+  },
+  "vars": {
+    // Comma-separated list of extra origins allowed to call /api/* cross-origin.
+    // Empty means same-origin only (the dashboard is served by this Worker).
+    "ALLOWED_ORIGINS": "",
+    // Storage backend the dashboard uses: "cloudflare" (D1 via this Worker),
+    // "nostr" (browser-only, NIP-07 signer) or "local" (in-memory placeholder).
+    "STORAGE_MODE": "cloudflare"
+  }
+}
+
