@@ -93,26 +93,30 @@ export function findTaskByCode(
 /**
  * Gives projects without a key a derived one and numbers tasks without a number, oldest first
  * after the highest existing number. Returns only the bundles that changed, ready to import.
+ *
+ * A project without a key has never shown a code, so all of its tasks are renumbered oldest
+ * first, including tasks that got a number while the project was still keyless.
  */
 export function assignMissingTicketCodes(backup: BackupBundle): ProjectBundle[] {
   const taken = new Set(backup.bundles.flatMap((b) => (b.project.key === undefined ? [] : [b.project.key])));
   const changed: ProjectBundle[] = [];
   for (const bundle of backup.bundles) {
     let project = bundle.project;
+    const keyless = project.key === undefined;
     if (project.key === undefined) {
       const key = deriveProjectKey(project.name, taken);
       taken.add(key);
       project = { ...project, key };
     }
-    let next = nextTaskNumber(bundle.tasks);
-    const unnumbered = new Set(
-      [...bundle.tasks]
-        .filter((t) => t.number === undefined)
-        .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt) || (a.id < b.id ? -1 : 1))
-        .map((t) => t.id),
-    );
+    let next = keyless ? 1 : nextTaskNumber(bundle.tasks);
+    const toNumber = [...bundle.tasks]
+      .filter((t) => keyless || t.number === undefined)
+      .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt) || (a.id < b.id ? -1 : 1));
     const numbers = new Map<string, number>();
-    for (const id of unnumbered) numbers.set(id, next++);
+    for (const task of toNumber) {
+      const number = next++;
+      if (task.number !== number) numbers.set(task.id, number);
+    }
     if (project === bundle.project && numbers.size === 0) continue;
     changed.push({
       version: BUNDLE_VERSION,
