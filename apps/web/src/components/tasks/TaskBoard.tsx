@@ -4,6 +4,7 @@ import { TaskCard } from "./TaskCard";
 interface TaskBoardProps {
   readonly tasks: Task[];
   readonly projects: Project[];
+  readonly onView: (task: Task) => void;
   readonly onEdit: (task: Task) => void;
   readonly onDelete: (task: Task) => void;
   readonly onComplete: (task: Task) => void;
@@ -23,6 +24,7 @@ const COLUMN_CONFIG: Record<
 export function TaskBoard({
   tasks,
   projects,
+  onView,
   onEdit,
   onDelete,
   onComplete,
@@ -60,6 +62,7 @@ export function TaskBoard({
                     key={task.id}
                     task={task}
                     projects={projects}
+                    onView={onView}
                     onEdit={onEdit}
                     onDelete={onDelete}
                     onComplete={onComplete}

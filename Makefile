@@ -1,6 +1,7 @@
 # Bitig monorepo tasks.
 # Every target loads the Node version from .nvmrc when nvm is available
-# (local machines); in CI, Node is provisioned by the workflow instead.
+# (local machines); in CI (CI is set), Node is provisioned by the workflow instead.
+# nvm must be skipped there: runner images ship nvm without Node 26, so `nvm use` exits 3.
 
 SHELL := /bin/bash
 .SHELLFLAGS := -e -o pipefail -c
@@ -11,7 +12,7 @@ NVM_SCRIPT := $(HOME)/.nvm/nvm.sh
 # D1 database name from apps/worker/wrangler.jsonc (d1_databases[].database_name).
 D1_DATABASE := bitig-db
 
-NODE_ENV_SETUP := if [ -s "$(NVM_SCRIPT)" ]; then source "$(NVM_SCRIPT)" && nvm use --silent; fi;
+NODE_ENV_SETUP := if [ -z "$$CI" ] && [ -s "$(NVM_SCRIPT)" ]; then source "$(NVM_SCRIPT)" && nvm use --silent; fi;
 
 # Local Nostr relay for test-nostr-relay. Override NAK with a full path if nak is not on PATH.
 NAK ?= nak

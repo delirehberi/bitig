@@ -33,6 +33,7 @@ function renderCard(mode: StorageMode) {
       <TaskCard
         task={TASK}
         projects={[PROJECT]}
+        onView={vi.fn()}
         onEdit={vi.fn()}
         onDelete={vi.fn()}
         onComplete={vi.fn()}

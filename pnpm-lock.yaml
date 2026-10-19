@@ -231,6 +231,12 @@ importers:
         specifier: ^0.45.4
         version: 0.45.4(@cloudflare/workers-types@4.20260702.1)
     devDependencies:
+      '@bitig/storage-markdown':
+        specifier: workspace:*
+        version: link:../storage-markdown
+      '@bitig/storage-nostr':
+        specifier: workspace:*
+        version: link:../storage-nostr
       '@cloudflare/vitest-plugin':
         specifier: ^1.3.7
         version: 1.3.7(@cloudflare/workers-types@4.20260702.1)(@types/node@26.6.4)(@vitest/runner@4.1.11)(@vitest/snapshot@4.1.11)(vitest@4.1.11(@types/node@26.6.4)(jsdom@30.1.2(@noble/hashes@2.0.1))(vite@8.3.3(@types/node@26.6.4)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1)))
@@ -240,6 +246,9 @@ importers:
       drizzle-kit:
         specifier: ^0.31.11
         version: 0.31.11
+      nostr-tools:
+        specifier: ^2.10.4
+        version: 2.25.2(typescript@6.0.3)
       typescript:
         specifier: ~6.0.3
         version: 6.0.3

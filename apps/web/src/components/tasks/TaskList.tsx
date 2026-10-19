@@ -4,6 +4,7 @@ import type { Project, Task, TaskPriority, TaskStatus } from "@bitig/core";
 interface TaskListProps {
   readonly tasks: Task[];
   readonly projects: Project[];
+  readonly onView: (task: Task) => void;
   readonly onEdit: (task: Task) => void;
   readonly onDelete: (task: Task) => void;
   readonly onComplete: (task: Task) => void;
@@ -23,6 +24,7 @@ const ICON_SIZE = 14;
 export function TaskList({
   tasks,
   projects,
+  onView,
   onEdit,
   onDelete,
   onComplete,
@@ -85,13 +87,18 @@ export function TaskList({
                 </td>
                 <td className="py-3 px-3 min-w-[200px]">
                   <div className="flex flex-col">
-                    <span
-                      className={`font-semibold text-ink ${
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onView(task);
+                      }}
+                      title="View task details"
+                      className={`cursor-pointer self-start text-left font-semibold text-ink hover:underline focus-visible:outline-focus ${
                         isDone ? "line-through text-ink-3" : ""
                       }`}
                     >
                       {task.title}
-                    </span>
+                    </button>
                     {task.description && (
                       <span className="line-clamp-1 text-2xs text-ink-3">
                         {task.description}
