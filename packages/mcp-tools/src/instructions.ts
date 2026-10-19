@@ -11,5 +11,8 @@ Project Linking Flow for AI Agents:
    - If not, prompt the user or call 'create_project' to create one.
    - Save the returned 'project_id' into a '.bitig' file (format: "project_id: <id>\\n") at the workspace root.
 4. Pass 'projectId' to all task tools ('list_tasks', 'add_task', etc.).
+
+Ticket codes: every task has a code like BIT-12 (project key + number). Use it when talking about a task;
+every tool that takes a task 'id' also accepts its code, and 'projectId' also accepts the project key.
 `;
 

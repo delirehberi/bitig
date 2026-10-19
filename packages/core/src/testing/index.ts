@@ -536,6 +536,108 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
       });
     });
 
+    describe("ticket codes", () => {
+      it("derives a project key from the name and keeps it unique", async () => {
+        const first = await storage.createProject({ name: "Bitig" });
+        const second = await storage.createProject({ name: "bitig app" });
+        expect(first.key).toBe("BIT");
+        expect(second.key).toBe("BIT2");
+        expect(await storage.getProject(second.id)).toEqual(second);
+      });
+
+      it("takes a given key uppercased and rejects one in use", async () => {
+        const project = await storage.createProject({ name: "Project", key: " web " });
+        expect(project.key).toBe("WEB");
+        await expect(storage.createProject({ name: "Other", key: "Web" })).rejects.toBeInstanceOf(
+          ValidationError,
+        );
+        await expect(storage.createProject({ name: "Other", key: "1AB" })).rejects.toBeInstanceOf(
+          ValidationError,
+        );
+        expect(await storage.getProjects()).toEqual([project]);
+      });
+
+      it("changes a key unless another project uses it", async () => {
+        const a = await storage.createProject({ name: "Alpha" });
+        const b = await storage.createProject({ name: "Beta" });
+        const renamed = await storage.updateProject(a.id, { key: "alf" });
+        expect(renamed.key).toBe("ALF");
+        expect(await storage.getProject(a.id)).toEqual(renamed);
+        expect((await storage.updateProject(a.id, { key: "ALF", name: "Alpha 2" })).key).toBe("ALF");
+        await expect(storage.updateProject(b.id, { key: "ALF" })).rejects.toBeInstanceOf(ValidationError);
+        expect(await storage.getProject(b.id)).toEqual(b);
+      });
+
+      it("numbers tasks per project and keeps numbers on update and completion", async () => {
+        const a = await createProject("a");
+        const b = await createProject("b");
+        const a1 = await storage.saveTask({ projectId: a.id, title: "a1" });
+        const a2 = await storage.saveTask({ projectId: a.id, title: "a2" });
+        const b1 = await storage.saveTask({ projectId: b.id, title: "b1" });
+        expect([a1.number, a2.number, b1.number]).toEqual([1, 2, 1]);
+        expect(await storage.getTask(a2.id)).toEqual(a2);
+
+        expect((await storage.updateTask(a1.id, { title: "renamed" })).number).toBe(1);
+        expect((await storage.completeTask(a1.id)).number).toBe(1);
+        await storage.deleteTask(a1.id);
+        expect((await storage.saveTask({ projectId: a.id, title: "a3" })).number).toBe(3);
+      });
+
+      it("gives a moved task the next number in its new project", async () => {
+        const a = await createProject("a");
+        const b = await createProject("b");
+        await storage.saveTask({ projectId: b.id, title: "b1" });
+        const task = await storage.saveTask({ projectId: a.id, title: "a1" });
+        const moved = await storage.updateTask(task.id, { projectId: b.id });
+        expect(moved.number).toBe(2);
+        expect(await storage.getTask(task.id)).toEqual(moved);
+      });
+
+      it("does not let callers set a task number", async () => {
+        const project = await createProject();
+        const task = await storage.saveTask({ projectId: project.id, title: "t" });
+        await expect(
+          storage.saveTask({ projectId: project.id, title: "t", number: 9 } as never),
+        ).rejects.toBeInstanceOf(ValidationError);
+        await expect(storage.updateTask(task.id, { number: 9 } as never)).rejects.toBeInstanceOf(
+          ValidationError,
+        );
+        expect(await storage.getTasks()).toEqual([task]);
+      });
+
+      it("imports projects and tasks without codes as they are", async () => {
+        const bundle = {
+          version: 1 as const,
+          exportedAt: "2026-01-01T00:00:00.000Z",
+          project: {
+            id: "01940000-0000-7000-8000-0000000000a1",
+            name: "Legacy",
+            description: "",
+            kind: "hobby" as const,
+            createdAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+          },
+          tasks: [
+            {
+              id: "01940000-0000-7000-8000-0000000000a2",
+              projectId: "01940000-0000-7000-8000-0000000000a1",
+              title: "Old",
+              description: "",
+              status: "todo" as const,
+              isPublic: false,
+              createdAt: "2026-01-01T00:00:00.000Z",
+              updatedAt: "2026-01-01T00:00:00.000Z",
+            },
+          ],
+        };
+        await storage.importProject(bundle);
+        expect(await storage.getProject(bundle.project.id)).toEqual(bundle.project);
+        expect(await storage.getTasks()).toEqual(bundle.tasks);
+        const next = await storage.saveTask({ projectId: bundle.project.id, title: "New" });
+        expect(next.number).toBe(1);
+      });
+    });
+
     describe("interoperability and bundles", () => {
       it("exports and imports a project bundle with exact fields and tasks", async () => {
         const project = await storage.createProject({

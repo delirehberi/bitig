@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { eq, max, ne } from "drizzle-orm";
 import { drizzle, type DrizzleD1Database } from "drizzle-orm/d1";
 import {
   BUNDLE_VERSION,
@@ -18,6 +18,7 @@ import {
   completeTaskEntity,
   defaultRuntimeDeps,
   parseOrThrow,
+  renumberTask,
   throwIfAborted,
   toTimestamp,
   type BackupBundle,
@@ -61,6 +62,9 @@ function recordToProject(row: ProjectRecord): Project {
   if (row.resources !== null) {
     project.resources = row.resources.map((resource) => ({ ...resource }));
   }
+  if (row.key !== null) {
+    project.key = row.key;
+  }
   return project;
 }
 
@@ -89,6 +93,9 @@ function recordToTask(row: TaskRecord): Task {
   }
   if (row.checklist !== null) {
     task.checklist = row.checklist.map((item) => ({ ...item }));
+  }
+  if (row.number !== null) {
+    task.number = row.number;
   }
   return task;
 }
@@ -134,13 +141,15 @@ export class D1Storage implements StorageProvider {
 
   async createProject(input: CreateProjectInput, opts?: OperationOptions): Promise<Project> {
     throwIfAborted(opts?.signal);
-    const project = buildProject(input, this.#deps);
+    const project = buildProject(input, this.#deps, await this.#projectKeys());
+    throwIfAborted(opts?.signal);
     await this.#db.insert(projects).values({
       id: project.id,
       name: project.name,
       description: project.description,
       kind: project.kind,
       resources: project.resources ?? null,
+      key: project.key ?? null,
       createdAt: Date.parse(project.createdAt),
       updatedAt: Date.parse(project.updatedAt),
     });
@@ -156,7 +165,8 @@ export class D1Storage implements StorageProvider {
     if (!existingRow) throw new NotFoundError("project", validId);
 
     const existing = recordToProject(existingRow);
-    const next = applyProjectPatch(existing, patch, this.#deps.clock());
+    const next = applyProjectPatch(existing, patch, this.#deps.clock(), await this.#projectKeys(validId));
+    throwIfAborted(opts?.signal);
     await this.#db
       .update(projects)
       .set({
@@ -164,6 +174,7 @@ export class D1Storage implements StorageProvider {
         description: next.description,
         kind: next.kind,
         resources: next.resources ?? null,
+        key: next.key ?? null,
         updatedAt: Date.parse(next.updatedAt),
       })
       .where(eq(projects.id, validId));
@@ -211,7 +222,8 @@ export class D1Storage implements StorageProvider {
 
   async saveTask(input: CreateTaskInput, opts?: OperationOptions): Promise<Task> {
     throwIfAborted(opts?.signal);
-    const task = buildTask(input, this.#deps);
+    const projectId = parseOrThrow(IdSchema, input.projectId, "saveTask");
+    const task = buildTask(input, this.#deps, await this.#nextTaskNumber(projectId));
 
     const projectRow = await this.#db.select().from(projects).where(eq(projects.id, task.projectId)).get();
     throwIfAborted(opts?.signal);
@@ -229,6 +241,7 @@ export class D1Storage implements StorageProvider {
       labels: task.labels ? [...task.labels] : null,
       order: task.order ?? null,
       checklist: task.checklist ?? null,
+      number: task.number ?? null,
       createdAt: Date.parse(task.createdAt),
       updatedAt: Date.parse(task.updatedAt),
     });
@@ -244,12 +257,14 @@ export class D1Storage implements StorageProvider {
     if (!existingRow) throw new NotFoundError("task", validId);
 
     const existing = recordToTask(existingRow);
-    const next = applyTaskPatch(existing, patch, this.#deps.clock());
+    let next = applyTaskPatch(existing, patch, this.#deps.clock());
 
     if (next.projectId !== existing.projectId) {
       const targetProject = await this.#db.select().from(projects).where(eq(projects.id, next.projectId)).get();
       throwIfAborted(opts?.signal);
       if (!targetProject) throw new NotFoundError("project", next.projectId);
+      next = renumberTask(next, await this.#nextTaskNumber(next.projectId));
+      throwIfAborted(opts?.signal);
     }
 
     await this.#db
@@ -265,6 +280,7 @@ export class D1Storage implements StorageProvider {
         labels: next.labels ? [...next.labels] : null,
         order: next.order ?? null,
         checklist: next.checklist ?? null,
+        number: next.number ?? null,
         updatedAt: Date.parse(next.updatedAt),
       })
       .where(eq(tasks.id, validId));
@@ -335,6 +351,7 @@ export class D1Storage implements StorageProvider {
       description: validated.project.description,
       kind: validated.project.kind,
       resources: validated.project.resources ?? null,
+      key: validated.project.key ?? null,
       createdAt: Date.parse(validated.project.createdAt),
       updatedAt: Date.parse(validated.project.updatedAt),
     };
@@ -362,6 +379,7 @@ export class D1Storage implements StorageProvider {
         labels: task.labels ? [...task.labels] : null,
         order: task.order ?? null,
         checklist: task.checklist ?? null,
+        number: task.number ?? null,
         createdAt: Date.parse(task.createdAt),
         updatedAt: Date.parse(task.updatedAt),
       };
@@ -399,5 +417,24 @@ export class D1Storage implements StorageProvider {
       throwIfAborted(opts?.signal);
       await this.importProject(bundle, opts);
     }
+  }
+
+  /** Keys of every project except `exceptId`. */
+  async #projectKeys(exceptId?: string): Promise<string[]> {
+    const rows = await this.#db
+      .select({ key: projects.key })
+      .from(projects)
+      .where(exceptId === undefined ? undefined : ne(projects.id, exceptId))
+      .all();
+    return rows.flatMap((row) => (row.key === null ? [] : [row.key]));
+  }
+
+  async #nextTaskNumber(projectId: string): Promise<number> {
+    const row = await this.#db
+      .select({ highest: max(tasks.number) })
+      .from(tasks)
+      .where(eq(tasks.projectId, projectId))
+      .get();
+    return (row?.highest ?? 0) + 1;
   }
 }

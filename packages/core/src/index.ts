@@ -44,7 +44,23 @@ export {
   compareProjects,
   compareTasks,
   completeTaskEntity,
+  renumberTask,
 } from "./domain/entities";
+export {
+  assertProjectKeyAvailable,
+  assignMissingTicketCodes,
+  backfillTicketCodes,
+  deriveProjectKey,
+  findTaskByCode,
+  formatTaskCode,
+  nextTaskNumber,
+  parseTaskCode,
+  resolveProjectRef,
+  resolveTaskRef,
+  taskCode,
+  withTaskCodes,
+} from "./domain/ticket-codes";
+export type { ParsedTaskCode, TaskWithCode, TicketCodeBackfillResult } from "./domain/ticket-codes";
 export {
   addChecklistItem,
   checklistProgress,

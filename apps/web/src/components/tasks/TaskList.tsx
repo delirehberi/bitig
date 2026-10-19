@@ -1,6 +1,7 @@
 import { CheckCircle2, Circle, Edit2, Trash2 } from "lucide-react";
 import type { Project, Task, TaskPriority, TaskStatus } from "@bitig/core";
 import { ChecklistProgressBadge } from "./Checklist";
+import { TaskCode } from "./TaskCode";
 
 interface TaskListProps {
   readonly tasks: Task[];
@@ -89,6 +90,7 @@ export function TaskList({
                 <td className="py-3 px-3 min-w-[200px]">
                   <div className="flex flex-col">
                     <span className="flex items-center gap-2">
+                      <TaskCode task={task} project={project} />
                       <button
                         type="button"
                         onClick={() => {

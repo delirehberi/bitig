@@ -20,7 +20,9 @@ import {
   compareTasks,
   completeTaskEntity,
   defaultRuntimeDeps,
+  nextTaskNumber,
   parseOrThrow,
+  renumberTask,
   throwIfAborted,
   toTimestamp,
   type BackupBundle,
@@ -63,6 +65,10 @@ function copyTask(task: Task): Task {
   return cloneTask(task);
 }
 
+function projectKeys(projects: readonly Project[]): string[] {
+  return projects.flatMap((p) => (p.key === undefined ? [] : [p.key]));
+}
+
 export class MarkdownStorage implements StorageProvider {
   readonly #fs: FileSystemPort;
   readonly #lock: LockPort;
@@ -78,21 +84,7 @@ export class MarkdownStorage implements StorageProvider {
     throwIfAborted(opts?.signal);
     return this.#lock.withLock(async () => {
       throwIfAborted(opts?.signal);
-      const rootEntries = await this.#fs.listDir(ROOT_PATH, { signal: opts?.signal });
-      if (rootEntries === null) return [];
-
-      const projects: Project[] = [];
-      for (const entry of rootEntries) {
-        throwIfAborted(opts?.signal);
-        if (entry.kind === "directory" && isEntityId(entry.name)) {
-          const filePath = projectFilePath(entry.name);
-          const text = await this.#fs.readText(filePath, { signal: opts?.signal });
-          if (text !== null) {
-            projects.push(decodeProject(entry.name, text, filePath));
-          }
-        }
-      }
-
+      const projects = await this.#readProjects(opts?.signal);
       projects.sort(compareProjects);
       return projects.map(copyProject);
     }, { signal: opts?.signal });
@@ -114,7 +106,8 @@ export class MarkdownStorage implements StorageProvider {
     throwIfAborted(opts?.signal);
     return this.#lock.withLock(async () => {
       throwIfAborted(opts?.signal);
-      const project = buildProject(input, this.#deps);
+      const projects = await this.#readProjects(opts?.signal);
+      const project = buildProject(input, this.#deps, projectKeys(projects));
       const dir = projectDirPath(project.id);
       await this.#fs.makeDir(dir, { signal: opts?.signal });
       const filePath = projectFilePath(project.id);
@@ -133,7 +126,8 @@ export class MarkdownStorage implements StorageProvider {
       if (text === null) throw new NotFoundError("project", validId);
 
       const existing = decodeProject(validId, text, filePath);
-      const next = applyProjectPatch(existing, patch, this.#deps.clock());
+      const others = (await this.#readProjects(opts?.signal)).filter((p) => p.id !== validId);
+      const next = applyProjectPatch(existing, patch, this.#deps.clock(), projectKeys(others));
       await this.#fs.writeTextAtomic(filePath, encodeProject(next), { signal: opts?.signal });
       return copyProject(next);
     }, { signal: opts?.signal });
@@ -161,24 +155,7 @@ export class MarkdownStorage implements StorageProvider {
       const tasks: Task[] = [];
 
       if (parsedFilter?.projectId !== undefined) {
-        const pId = parsedFilter.projectId;
-        const projectDir = projectDirPath(pId);
-        const entries = await this.#fs.listDir(projectDir, { signal: opts?.signal });
-        if (entries === null) return [];
-
-        for (const entry of entries) {
-          throwIfAborted(opts?.signal);
-          if (entry.kind === "file") {
-            const taskId = taskIdFromFileName(entry.name);
-            if (taskId !== null) {
-              const filePath = taskFilePath(pId, taskId);
-              const text = await this.#fs.readText(filePath, { signal: opts?.signal });
-              if (text !== null) {
-                tasks.push(decodeTask(pId, taskId, text, filePath));
-              }
-            }
-          }
-        }
+        tasks.push(...(await this.#readProjectTasks(parsedFilter.projectId, opts?.signal)));
       } else {
         const rootEntries = await this.#fs.listDir(ROOT_PATH, { signal: opts?.signal });
         if (rootEntries === null) return [];
@@ -239,7 +216,9 @@ export class MarkdownStorage implements StorageProvider {
     throwIfAborted(opts?.signal);
     return this.#lock.withLock(async () => {
       throwIfAborted(opts?.signal);
-      const task = buildTask(input, this.#deps);
+      const projectId = parseOrThrow(IdSchema, input.projectId, "saveTask");
+      const siblings = await this.#readProjectTasks(projectId, opts?.signal);
+      const task = buildTask(input, this.#deps, nextTaskNumber(siblings));
       const pFilePath = projectFilePath(task.projectId);
       const pExists = await this.#fs.fileExists(pFilePath, { signal: opts?.signal });
       if (!pExists) throw new NotFoundError("project", task.projectId);
@@ -263,12 +242,14 @@ export class MarkdownStorage implements StorageProvider {
       if (text === null) throw new NotFoundError("task", validId);
 
       const existing = decodeTask(found.projectId, validId, text, found.filePath);
-      const next = applyTaskPatch(existing, patch, this.#deps.clock());
+      let next = applyTaskPatch(existing, patch, this.#deps.clock());
 
       if (next.projectId !== existing.projectId) {
         const targetProjFile = projectFilePath(next.projectId);
         const targetProjExists = await this.#fs.fileExists(targetProjFile, { signal: opts?.signal });
         if (!targetProjExists) throw new NotFoundError("project", next.projectId);
+        const targetTasks = await this.#readProjectTasks(next.projectId, opts?.signal);
+        next = renumberTask(next, nextTaskNumber(targetTasks));
 
         const nextFilePath = taskFilePath(next.projectId, next.id);
         await this.#fs.writeTextAtomic(nextFilePath, encodeTask(next), { signal: opts?.signal });
@@ -380,6 +361,47 @@ export class MarkdownStorage implements StorageProvider {
       throwIfAborted(opts?.signal);
       await this.importProject(bundle, opts);
     }
+  }
+
+  /** Every project, unsorted; call under the lock. */
+  async #readProjects(signal?: OperationOptions["signal"]): Promise<Project[]> {
+    const rootEntries = await this.#fs.listDir(ROOT_PATH, { signal });
+    if (rootEntries === null) return [];
+
+    const projects: Project[] = [];
+    for (const entry of rootEntries) {
+      throwIfAborted(signal);
+      if (entry.kind === "directory" && isEntityId(entry.name)) {
+        const filePath = projectFilePath(entry.name);
+        const text = await this.#fs.readText(filePath, { signal });
+        if (text !== null) {
+          projects.push(decodeProject(entry.name, text, filePath));
+        }
+      }
+    }
+    return projects;
+  }
+
+  /** One project's tasks, unsorted; call under the lock. */
+  async #readProjectTasks(projectId: string, signal?: OperationOptions["signal"]): Promise<Task[]> {
+    const entries = await this.#fs.listDir(projectDirPath(projectId), { signal });
+    if (entries === null) return [];
+
+    const tasks: Task[] = [];
+    for (const entry of entries) {
+      throwIfAborted(signal);
+      if (entry.kind === "file") {
+        const taskId = taskIdFromFileName(entry.name);
+        if (taskId !== null) {
+          const filePath = taskFilePath(projectId, taskId);
+          const text = await this.#fs.readText(filePath, { signal });
+          if (text !== null) {
+            tasks.push(decodeTask(projectId, taskId, text, filePath));
+          }
+        }
+      }
+    }
+    return tasks;
   }
 
   async #locateTask(taskId: string, signal?: OperationOptions["signal"]): Promise<{ projectId: string; filePath: string } | null> {

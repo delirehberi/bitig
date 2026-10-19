@@ -16,6 +16,7 @@ const DB_SETUP_STATEMENTS = [
     \`description\` text DEFAULT '' NOT NULL,
     \`kind\` text DEFAULT 'hobby' NOT NULL,
     \`resources\` text,
+    \`key\` text,
     \`created_at\` integer NOT NULL,
     \`updated_at\` integer NOT NULL
   )`,
@@ -31,6 +32,7 @@ const DB_SETUP_STATEMENTS = [
     \`labels\` text,
     \`order\` real,
     \`checklist\` text,
+    \`number\` integer,
     \`created_at\` integer NOT NULL,
     \`updated_at\` integer NOT NULL,
     FOREIGN KEY (\`project_id\`) REFERENCES \`projects\`(\`id\`) ON UPDATE no action ON DELETE cascade
@@ -38,6 +40,7 @@ const DB_SETUP_STATEMENTS = [
   "CREATE INDEX `tasks_project_id_idx` ON `tasks` (`project_id`)",
   "CREATE INDEX `tasks_status_idx` ON `tasks` (`status`)",
   "CREATE INDEX `tasks_order_idx` ON `tasks` (`order`)",
+  "CREATE INDEX `tasks_project_number_idx` ON `tasks` (`project_id`,`number`)",
 ];
 
 class WebStreamableTransport implements Transport {
@@ -167,6 +170,7 @@ describe("Remote MCP Protocol & Tool Execution", () => {
 
     expect(toolNames).toEqual([
       "add_task",
+      "backfill_ticket_codes",
       "complete_task",
       "create_project",
       "delete_project",

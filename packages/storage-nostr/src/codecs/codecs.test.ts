@@ -50,6 +50,38 @@ describe("Nostr codecs", () => {
     expect(decodeProjectEvent(template)).toEqual(project);
   });
 
+  it("stores the project key and task number as tags", async () => {
+    const pubkey = await signer.getPublicKey();
+    const now = toTimestamp(new Date());
+    const project = {
+      id: defaultIdGenerator(),
+      name: "Keyed",
+      description: "",
+      kind: "hobby" as const,
+      createdAt: now,
+      updatedAt: now,
+      key: "KEY",
+    };
+    const projectTemplate = encodeProjectEvent(project);
+    expect(projectTemplate.tags).toContainEqual(["key", "KEY"]);
+    expect(decodeProjectEvent(projectTemplate)).toEqual(project);
+
+    const task = {
+      id: defaultIdGenerator(),
+      projectId: project.id,
+      title: "Numbered",
+      description: "",
+      status: "todo" as const,
+      isPublic: false,
+      createdAt: now,
+      updatedAt: now,
+      number: 12,
+    };
+    const taskTemplate = await encodeTaskEvent(task, pubkey, signer);
+    expect(taskTemplate.tags).toContainEqual(["number", "12"]);
+    expect(await decodeTaskEvent(taskTemplate, pubkey, signer)).toEqual(task);
+  });
+
   it("encodes and decodes a public Task in cleartext JSON", async () => {
     const pubkey = await signer.getPublicKey();
     const now = toTimestamp(new Date());

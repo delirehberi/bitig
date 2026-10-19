@@ -10,6 +10,7 @@ import {
   NOSTR_TAG_DUE,
   NOSTR_TAG_IS_PUBLIC,
   NOSTR_TAG_LABEL,
+  NOSTR_TAG_NUMBER,
   NOSTR_TAG_ORDER,
   NOSTR_TAG_PRIORITY,
   NOSTR_TAG_PROJECT,
@@ -68,6 +69,9 @@ export async function encodeTaskEvent(
   if (task.order !== undefined) {
     tags.push([NOSTR_TAG_ORDER, String(task.order)]);
   }
+  if (task.number !== undefined) {
+    tags.push([NOSTR_TAG_NUMBER, String(task.number)]);
+  }
   if (task.labels !== undefined) {
     for (const label of task.labels) {
       tags.push([NOSTR_TAG_LABEL, label]);
@@ -123,6 +127,7 @@ export async function decodeTaskEvent(
   let priorityTag: string | undefined;
   let dueTag: string | undefined;
   let orderTag: string | undefined;
+  let numberTag: string | undefined;
   let createdAtIso: string | undefined;
   let updatedAtIso: string | undefined;
   const labels: string[] = [];
@@ -146,6 +151,8 @@ export async function decodeTaskEvent(
       dueTag = val;
     } else if (key === NOSTR_TAG_ORDER) {
       orderTag = val;
+    } else if (key === NOSTR_TAG_NUMBER) {
+      numberTag = val;
     } else if (key === NOSTR_TAG_LABEL) {
       labels.push(val);
     } else if (key === NOSTR_TAG_CREATED_AT_ISO) {
@@ -204,6 +211,9 @@ export async function decodeTaskEvent(
   }
   if (orderTag !== undefined && !Number.isNaN(Number(orderTag))) {
     rawTask.order = Number(orderTag);
+  }
+  if (numberTag !== undefined) {
+    rawTask.number = Number(numberTag);
   }
   if (labels.length > 0) {
     rawTask.labels = labels;

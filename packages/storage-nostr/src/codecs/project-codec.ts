@@ -6,6 +6,7 @@ import {
   NOSTR_TAG_D,
   NOSTR_TAG_KIND,
   NOSTR_TAG_NAME,
+  NOSTR_TAG_PROJECT_KEY,
   NOSTR_TAG_RESOURCE,
 } from "../kinds";
 
@@ -41,6 +42,9 @@ export function encodeProjectEvent(project: Project): {
     [NOSTR_TAG_UPDATED_AT_ISO, project.updatedAt],
     [NOSTR_TAG_ALT, `Bitig Project: ${project.name}`],
   ];
+  if (project.key !== undefined) {
+    tags.push([NOSTR_TAG_PROJECT_KEY, project.key]);
+  }
   for (const resource of project.resources ?? []) {
     tags.push([NOSTR_TAG_RESOURCE, resource.url, resource.type, resource.label]);
   }
@@ -67,6 +71,7 @@ export function decodeProjectEvent(event: NostrEventLike): Project {
   let kindTag: string | undefined;
   let createdAtIso: string | undefined;
   let updatedAtIso: string | undefined;
+  let keyTag: string | undefined;
   const resources: { url: string; type: string | undefined; label: string | undefined }[] = [];
 
   for (const tag of event.tags) {
@@ -84,6 +89,8 @@ export function decodeProjectEvent(event: NostrEventLike): Project {
       createdAtIso = val;
     } else if (key === NOSTR_TAG_UPDATED_AT_ISO) {
       updatedAtIso = val;
+    } else if (key === NOSTR_TAG_PROJECT_KEY) {
+      keyTag = val;
     } else if (key === NOSTR_TAG_RESOURCE) {
       resources.push({ url: val, type: tag[2], label: tag[3] });
     }
@@ -102,6 +109,7 @@ export function decodeProjectEvent(event: NostrEventLike): Project {
     createdAt: createdAtIso ?? fallbackIso,
     updatedAt: updatedAtIso ?? fallbackIso,
     ...(resources.length > 0 ? { resources } : {}),
+    ...(keyTag !== undefined ? { key: keyTag } : {}),
   };
 
   return ProjectSchema.parse(rawProject);

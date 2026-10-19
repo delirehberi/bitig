@@ -30,6 +30,10 @@ export const NOSTR_TAG_DUE = "due" as const;
 export const NOSTR_TAG_ORDER = "order" as const;
 export const NOSTR_TAG_LABEL = "t" as const;
 export const NOSTR_TAG_ALT = "alt" as const;
+/** Project key for ticket codes: `["key", "BIT"]`. */
+export const NOSTR_TAG_PROJECT_KEY = "key" as const;
+/** Task number within its project: `["number", "12"]`. */
+export const NOSTR_TAG_NUMBER = "number" as const;
 /** Project resource link: `["resource", url, type, label]`, one tag per link, in order. */
 export const NOSTR_TAG_RESOURCE = "resource" as const;
 

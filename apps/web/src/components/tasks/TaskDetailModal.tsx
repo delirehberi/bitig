@@ -14,6 +14,7 @@ import type { ChecklistItem, Project, Task, TaskPriority, TaskStatus } from "@bi
 import { useFeatureFlags } from "../../hooks/useFeatureFlags";
 import { useFocusTrap } from "../../hooks/useFocusTrap";
 import { ChecklistProgressBadge, ChecklistView } from "./Checklist";
+import { TaskCode } from "./TaskCode";
 
 interface TaskDetailModalProps {
   readonly task: Task | null;
@@ -144,6 +145,7 @@ export function TaskDetailModal({
 
         <div className="mb-4 pr-6">
           <div className="mb-2 flex flex-wrap items-center gap-1.5">
+            <TaskCode task={task} project={project} />
             {project && (
               <span className="rounded-md bg-paper-2 px-2 py-0.5 text-2xs font-semibold text-ink-2">
                 {project.name}

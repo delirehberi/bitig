@@ -18,6 +18,16 @@ export const DEFAULT_DESCRIPTION = "";
 export const DEFAULT_IS_PUBLIC = false;
 
 export const PROJECT_NAME_MAX = 200;
+
+/**
+ * Ticket codes: a project key (`BIT`) and a per-project task number make a code like `BIT-12`.
+ * Keys are uppercase, start with a letter and are unique across projects.
+ */
+export const PROJECT_KEY_PATTERN = /^[A-Z][A-Z0-9]{1,9}$/;
+/** Letters taken from the project name when no key is given. */
+export const DERIVED_PROJECT_KEY_LENGTH = 3;
+/** Used when the name has too few letters or digits to derive a key from. */
+export const FALLBACK_PROJECT_KEY = "PRJ";
 export const TASK_TITLE_MAX = 500;
 export const DESCRIPTION_MAX = 50_000;
 export const LABEL_MAX = 64;

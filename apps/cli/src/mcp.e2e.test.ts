@@ -22,6 +22,7 @@ interface TaskResult {
   status: string;
   priority?: string;
   labels?: string[];
+  code?: string;
 }
 
 /** Extracts the JSON payload every Bitig tool returns as its first text block. */
@@ -77,7 +78,7 @@ describe("Bitig CLI STDIO MCP Server E2E", () => {
 
   it("completes full MCP project and task lifecycle over STDIO", async () => {
     const { tools } = await client.listTools();
-    expect(tools.length).toBe(10);
+    expect(tools.length).toBe(11);
 
     // 1. Create project
     const proj = await callToolJson<ProjectResult & { bitig_file_content: string }>("create_project", {
@@ -104,6 +105,7 @@ describe("Bitig CLI STDIO MCP Server E2E", () => {
     const { tools } = await client.listTools();
     expect(tools.map((tool) => tool.name).sort()).toEqual([
       "add_task",
+      "backfill_ticket_codes",
       "complete_task",
       "create_project",
       "delete_project",
@@ -168,8 +170,11 @@ describe("Bitig CLI STDIO MCP Server E2E", () => {
       ],
     });
 
-    const completed = await callToolJson<TaskResult>("complete_task", { id: task.id });
-    expect(completed.status).toBe("done");
+    // Ticket codes stand in for IDs
+    expect(task.code).toBe("ALL-1");
+    const completed = await callToolJson<TaskResult>("complete_task", { id: "all-1" });
+    expect(completed).toMatchObject({ id: task.id, status: "done", code: "ALL-1" });
+    expect(await callToolJson("backfill_ticket_codes")).toEqual({ keyedProjects: 0, numberedTasks: 0 });
 
     // Deletion: task, then project with its remaining tasks
     expect(await callToolJson("delete_task", { id: task.id })).toEqual({ success: true, deletedTaskId: task.id });

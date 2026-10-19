@@ -36,6 +36,11 @@ export function ProjectCard({ project, tasks, onEdit, onDelete, onSelect }: Proj
             >
               {project.kind.replace("_", " ")}
             </span>
+            {project.key && (
+              <span className="font-mono text-xs font-semibold text-ink-3" title="Key for ticket codes">
+                {project.key}
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-1">
             <button
