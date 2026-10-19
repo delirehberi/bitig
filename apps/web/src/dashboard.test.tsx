@@ -127,7 +127,7 @@ function stubApi(responses: {
 
 describe("Dashboard Phase 4 Integration", () => {
   beforeEach(() => {
-    window.history.replaceState(null, "", "/");
+    window.history.replaceState(null, "", "/app");
     vi.restoreAllMocks();
   });
 
@@ -205,7 +205,7 @@ describe("Dashboard Phase 4 Integration", () => {
 
     expect(await screen.findByText(TEST_USER)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Sign out" })).toBeInTheDocument();
-    expect(window.location.pathname).toBe("/");
+    expect(window.location.pathname).toBe("/app");
   });
 
   it("moves a signed-in visitor off /login", async () => {
@@ -225,7 +225,7 @@ describe("Dashboard Phase 4 Integration", () => {
     expect(
       await screen.findByRole("heading", { level: 1, name: "Your agents keep the record." }),
     ).toBeInTheDocument();
-    expect(window.location.pathname).toBe("/");
+    expect(window.location.pathname).toBe("/app");
   });
 
   it("sends the visitor to sign in when the API rejects the session", async () => {
@@ -500,7 +500,7 @@ describe("Dashboard routing", () => {
   const TASK_B = { ...TASK_A, id: "01940000-0000-7000-8000-0000000000b1", projectId: PROJECT_B.id, title: "Beta task" };
 
   beforeEach(() => {
-    window.history.replaceState(null, "", "/");
+    window.history.replaceState(null, "", "/app");
     vi.restoreAllMocks();
   });
 
@@ -579,6 +579,6 @@ describe("Dashboard routing", () => {
     expect(
       await screen.findByRole("heading", { level: 1, name: "Your agents keep the record." }),
     ).toBeInTheDocument();
-    expect(window.location.pathname).toBe("/");
+    expect(window.location.pathname).toBe("/app");
   });
 });
