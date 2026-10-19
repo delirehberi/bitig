@@ -1,6 +1,8 @@
 import { promises as fs } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { MarkdownStorage } from "@bitig/storage-markdown";
+import { NodeFileSystem } from "@bitig/storage-markdown/node";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runCli } from "./main";
 
@@ -58,15 +60,37 @@ describe("CLI main commands", () => {
     if (taskFile === undefined) throw new Error("Expected task file");
     const taskId = taskFile.replace(".md", "");
 
-    // 7. Complete task
+    // 7. Build and edit a checklist
+    for (const args of [
+      ["tasks", "item", "add", taskId, "Write"],
+      ["tasks", "item", "add", taskId, "Review"],
+      ["tasks", "item", "add", taskId, "Ship"],
+      ["tasks", "item", "check", taskId, "1"],
+      ["tasks", "item", "rename", taskId, "2", "Review twice"],
+      ["tasks", "item", "move", taskId, "3", "1"],
+      ["tasks", "item", "remove", taskId, "3"],
+    ]) {
+      expect(await exec(args)).toBe(0);
+    }
+    const taskText = await fs.readFile(path.join(dataDir, projectId, taskFile), "utf8");
+    expect(taskText).toContain("checklist:");
+    const reader = new MarkdownStorage({ fs: new NodeFileSystem({ rootDir: dataDir }) });
+    expect((await reader.getTask(taskId))?.checklist).toEqual([
+      { text: "Ship", done: false },
+      { text: "Write", done: true },
+    ]);
+    // A position past the end fails without changing anything
+    expect(await exec(["tasks", "item", "check", taskId, "9"])).not.toBe(0);
+
+    // 8. Complete task
     code = await exec(["tasks", "done", taskId]);
     expect(code).toBe(0);
 
-    // 8. Delete task
+    // 9. Delete task
     code = await exec(["tasks", "delete", taskId]);
     expect(code).toBe(0);
 
-    // 9. Delete project
+    // 10. Delete project
     code = await exec(["projects", "delete", projectId]);
     expect(code).toBe(0);
   });

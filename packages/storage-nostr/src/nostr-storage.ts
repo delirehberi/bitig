@@ -9,6 +9,7 @@ import {
   applyTaskPatch,
   buildProject,
   buildTask,
+  cloneTask,
   compareProjects,
   compareTasks,
   completeTaskEntity,
@@ -54,7 +55,7 @@ function copyProject(project: Project): Project {
 }
 
 function copyTask(task: Task): Task {
-  return task.labels === undefined ? { ...task } : { ...task, labels: [...task.labels] };
+  return cloneTask(task);
 }
 
 export class NostrStorage implements StorageProvider {

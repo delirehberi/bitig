@@ -2,6 +2,7 @@ import { useState, type SyntheticEvent } from "react";
 import {
   TASK_PRIORITIES,
   TASK_STATUSES,
+  type ChecklistItem,
   type CreateTaskInput,
   type Project,
   type Task,
@@ -10,6 +11,7 @@ import {
 } from "@bitig/core";
 import { CheckSquare, X } from "lucide-react";
 import { useFeatureFlags } from "../../hooks/useFeatureFlags";
+import { ChecklistEditor } from "./Checklist";
 
 interface TaskModalProps {
   readonly isOpen: boolean;
@@ -57,6 +59,7 @@ export function TaskModal({
   const [dueDate, setDueDate] = useState(task?.dueDate ?? "");
   const [labelsInput, setLabelsInput] = useState(task?.labels ? task.labels.join(", ") : "");
   const [isPublic, setIsPublic] = useState(task?.isPublic ?? false);
+  const [checklist, setChecklist] = useState<ChecklistItem[]>(() => task?.checklist?.map((item) => ({ ...item })) ?? []);
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -83,6 +86,11 @@ export function TaskModal({
       .map((l) => l.trim())
       .filter(Boolean);
 
+    // Items whose text was cleared while editing are dropped rather than rejected.
+    const items = checklist
+      .map((item) => ({ ...item, text: item.text.trim() }))
+      .filter((item) => item.text !== "");
+
     const payload: CreateTaskInput = {
       projectId,
       title: title.trim(),
@@ -92,6 +100,8 @@ export function TaskModal({
       ...(priority ? { priority } : {}),
       ...(dueDate ? { dueDate } : {}),
       ...(labels.length > 0 ? { labels } : {}),
+      // When editing, an empty list is sent so removing every item clears the checklist.
+      ...(items.length > 0 || isEditing ? { checklist: items } : {}),
     };
 
     try {
@@ -292,11 +302,16 @@ export function TaskModal({
               onChange={(e) => {
                 setDescription(e.target.value);
               }}
-              placeholder="Detailed description, notes or checklist"
+              placeholder="Detailed description and notes"
               className="mt-1 w-full rounded-md border border-rule bg-paper-2 px-3 py-2 text-sm text-ink placeholder:text-ink-3 focus-visible:outline-focus"
               disabled={isSubmitting}
             />
           </div>
+
+          <fieldset className="m-0 border-0 p-0">
+            <legend className="mb-1 block text-xs font-semibold text-ink-2">Subtasks</legend>
+            <ChecklistEditor items={checklist} onChange={setChecklist} disabled={isSubmitting} />
+          </fieldset>
 
           <div className="mt-2 flex items-center justify-end gap-2">
             <button

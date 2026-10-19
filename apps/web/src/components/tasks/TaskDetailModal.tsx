@@ -10,8 +10,9 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
-import type { Project, Task, TaskPriority, TaskStatus } from "@bitig/core";
+import type { ChecklistItem, Project, Task, TaskPriority, TaskStatus } from "@bitig/core";
 import { useFeatureFlags } from "../../hooks/useFeatureFlags";
+import { ChecklistProgressBadge, ChecklistView } from "./Checklist";
 
 interface TaskDetailModalProps {
   readonly task: Task | null;
@@ -20,6 +21,8 @@ interface TaskDetailModalProps {
   readonly onEdit: (task: Task) => void;
   readonly onDelete: (task: Task) => void;
   readonly onComplete: (task: Task) => void;
+  /** Saves a checked or unchecked subtask; omit to show the checklist read-only. */
+  readonly onChecklistChange?: ((task: Task, checklist: ChecklistItem[]) => void) | undefined;
 }
 
 const ICON_SIZE = 16;
@@ -71,6 +74,7 @@ export function TaskDetailModal({
   onEdit,
   onDelete,
   onComplete,
+  onChecklistChange,
 }: TaskDetailModalProps) {
   const { taskVisibility } = useFeatureFlags();
   const isOpen = task !== null;
@@ -147,6 +151,27 @@ export function TaskDetailModal({
         <p className="m-0 mb-5 whitespace-pre-wrap text-sm text-ink-2">
           {task.description || <span className="text-ink-3">No description</span>}
         </p>
+
+        {task.checklist && (
+          <section aria-labelledby="task-detail-checklist" className="mb-5">
+            <h3
+              id="task-detail-checklist"
+              className="m-0 mb-2 flex items-center gap-2 text-2xs font-semibold uppercase tracking-wider text-ink-3"
+            >
+              Subtasks <ChecklistProgressBadge checklist={task.checklist} />
+            </h3>
+            <ChecklistView
+              checklist={task.checklist}
+              onToggle={
+                onChecklistChange
+                  ? (next) => {
+                      onChecklistChange(task, next);
+                    }
+                  : undefined
+              }
+            />
+          </section>
+        )}
 
         <dl className="m-0 mb-5 grid grid-cols-1 gap-4 sm:grid-cols-2">
           <Field label="Due date" icon={Calendar}>

@@ -68,6 +68,7 @@ describe("Nostr codecs", () => {
       status: "in_progress" as const,
       isPublic: false,
       priority: "urgent" as const,
+      checklist: [{ text: "Hidden subtask", done: false }],
       createdAt: now,
       updatedAt: now,
     };
@@ -75,9 +76,11 @@ describe("Nostr codecs", () => {
     const template = await encodeTaskEvent(task, pubkey, signer);
     expect(template.kind).toBe(NOSTR_KIND_TASK);
 
-    // Content must NOT contain the title or description in cleartext
+    // Content must NOT contain the title, description or checklist in cleartext
     expect(template.content).not.toContain("Secret Task");
     expect(template.content).not.toContain("Sensitive notes");
+    expect(template.content).not.toContain("Hidden subtask");
+    expect(JSON.stringify(template.tags)).not.toContain("Hidden subtask");
 
     // Decodes cleanly with signer
     const decoded = await decodeTaskEvent(template, pubkey, signer);

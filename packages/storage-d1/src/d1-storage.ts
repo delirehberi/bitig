@@ -11,6 +11,7 @@ import {
   applyTaskPatch,
   buildProject,
   buildTask,
+  cloneTask,
   compareProjects,
   compareTasks,
   completeTaskEntity,
@@ -44,7 +45,7 @@ function copyProject(project: Project): Project {
 }
 
 function copyTask(task: Task): Task {
-  return task.labels === undefined ? { ...task } : { ...task, labels: [...task.labels] };
+  return cloneTask(task);
 }
 
 function recordToProject(row: ProjectRecord): Project {
@@ -80,6 +81,9 @@ function recordToTask(row: TaskRecord): Task {
   }
   if (row.order !== null) {
     task.order = row.order;
+  }
+  if (row.checklist !== null) {
+    task.checklist = row.checklist.map((item) => ({ ...item }));
   }
   return task;
 }
@@ -217,6 +221,7 @@ export class D1Storage implements StorageProvider {
       priority: task.priority ?? null,
       labels: task.labels ? [...task.labels] : null,
       order: task.order ?? null,
+      checklist: task.checklist ?? null,
       createdAt: Date.parse(task.createdAt),
       updatedAt: Date.parse(task.updatedAt),
     });
@@ -252,6 +257,7 @@ export class D1Storage implements StorageProvider {
         priority: next.priority ?? null,
         labels: next.labels ? [...next.labels] : null,
         order: next.order ?? null,
+        checklist: next.checklist ?? null,
         updatedAt: Date.parse(next.updatedAt),
       })
       .where(eq(tasks.id, validId));
@@ -347,6 +353,7 @@ export class D1Storage implements StorageProvider {
         priority: task.priority ?? null,
         labels: task.labels ? [...task.labels] : null,
         order: task.order ?? null,
+        checklist: task.checklist ?? null,
         createdAt: Date.parse(task.createdAt),
         updatedAt: Date.parse(task.updatedAt),
       };

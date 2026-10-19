@@ -1,5 +1,6 @@
 import type { z } from "zod";
 import type {
+  ChecklistItemSchema,
   CreateProjectInputSchema,
   CreateTaskInputSchema,
   ProjectKindSchema,
@@ -19,6 +20,7 @@ export type Task = z.output<typeof TaskSchema>;
 export type TaskStatus = z.output<typeof TaskStatusSchema>;
 export type TaskPriority = z.output<typeof TaskPrioritySchema>;
 export type ProjectKind = z.output<typeof ProjectKindSchema>;
+export type ChecklistItem = z.output<typeof ChecklistItemSchema>;
 
 export type ProjectBundle = z.output<typeof ProjectBundleSchema>;
 export type BackupBundle = z.output<typeof BackupBundleSchema>;

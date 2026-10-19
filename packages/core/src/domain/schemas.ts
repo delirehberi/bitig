@@ -1,5 +1,7 @@
 import { z } from "zod";
 import {
+  CHECKLIST_ITEM_TEXT_MAX,
+  CHECKLIST_MAX_ITEMS,
   DEFAULT_DESCRIPTION,
   DEFAULT_IS_PUBLIC,
   DEFAULT_PROJECT_KIND,
@@ -46,6 +48,14 @@ export const LabelsSchema = z
 
 export const TaskOrderSchema = z.number();
 
+/** One subtask. Its position in the checklist is its order. */
+export const ChecklistItemSchema = z.strictObject({
+  text: z.string().trim().min(1).max(CHECKLIST_ITEM_TEXT_MAX),
+  done: z.boolean(),
+});
+
+export const ChecklistSchema = z.array(ChecklistItemSchema).max(CHECKLIST_MAX_ITEMS);
+
 // ---------------------------------------------------------------------------
 // Entities
 // ---------------------------------------------------------------------------
@@ -73,6 +83,8 @@ export const TaskSchema = z.strictObject({
   priority: TaskPrioritySchema.exactOptional(),
   labels: LabelsSchema.exactOptional(),
   order: TaskOrderSchema.exactOptional(),
+  /** Never empty: an empty checklist is stored as no checklist. */
+  checklist: ChecklistSchema.min(1).exactOptional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -111,6 +123,7 @@ export const CreateTaskInputSchema = z.strictObject({
   priority: TaskPrioritySchema.optional(),
   labels: LabelsSchema.optional(),
   order: TaskOrderSchema.optional(),
+  checklist: ChecklistSchema.optional(),
 });
 
 /** `undefined` (or a missing key) leaves a field unchanged; `null` clears an
@@ -126,6 +139,8 @@ export const UpdateTaskInputSchema = z
     priority: TaskPrioritySchema.nullable().optional(),
     labels: LabelsSchema.nullable().optional(),
     order: TaskOrderSchema.nullable().optional(),
+    /** Replaces the whole checklist; `null` or `[]` removes it. */
+    checklist: ChecklistSchema.nullable().optional(),
   })
   .refine(hasAnyDefinedField, { message: EMPTY_PATCH_MESSAGE });
 

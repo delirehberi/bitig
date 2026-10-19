@@ -14,6 +14,7 @@ import {
   UpdateTaskInputSchema,
 } from "./schemas";
 import type {
+  ChecklistItem,
   CreateProjectInput,
   CreateTaskInput,
   Project,
@@ -24,13 +25,14 @@ import type {
 } from "./types";
 import { toTimestamp, type RuntimeDeps } from "../runtime/ids";
 
-type TaskRequiredFields = Omit<Task, "dueDate" | "priority" | "labels" | "order">;
+type TaskRequiredFields = Omit<Task, "dueDate" | "priority" | "labels" | "order" | "checklist">;
 
 interface TaskOptionalValues {
   readonly dueDate: string | undefined;
   readonly priority: TaskPriority | undefined;
   readonly labels: readonly string[] | undefined;
   readonly order: number | undefined;
+  readonly checklist: readonly ChecklistItem[] | undefined;
 }
 
 /** Builds a task that omits unset optional fields (exactOptionalPropertyTypes). */
@@ -40,6 +42,10 @@ function assembleTask(base: TaskRequiredFields, optional: TaskOptionalValues): T
   if (optional.priority !== undefined) task.priority = optional.priority;
   if (optional.labels !== undefined) task.labels = [...optional.labels];
   if (optional.order !== undefined) task.order = optional.order;
+  // An empty checklist is the same as none, so every adapter stores it the same way.
+  if (optional.checklist !== undefined && optional.checklist.length > 0) {
+    task.checklist = optional.checklist.map((item) => ({ ...item }));
+  }
   return task;
 }
 
@@ -114,6 +120,7 @@ export function buildTask(input: CreateTaskInput, deps: RuntimeDeps): Task {
       priority: parsed.priority,
       labels: parsed.labels,
       order: parsed.order,
+      checklist: parsed.checklist,
     },
   );
   return parseOrThrow(TaskSchema, task, "saveTask result");
@@ -137,6 +144,7 @@ export function applyTaskPatch(task: Task, patch: UpdateTaskInput, now: Date): T
       priority: resolveClearable(task.priority, parsed.priority),
       labels: resolveClearable(task.labels, parsed.labels),
       order: resolveClearable(task.order, parsed.order),
+      checklist: resolveClearable(task.checklist, parsed.checklist),
     },
   );
   return parseOrThrow(TaskSchema, next, "updateTask result");
@@ -149,6 +157,14 @@ export function applyTaskPatch(task: Task, patch: UpdateTaskInput, now: Date): T
 export function completeTaskEntity(task: Task, now: Date): Task {
   if (task.status === COMPLETED_TASK_STATUS) return task;
   return { ...task, status: COMPLETED_TASK_STATUS, updatedAt: nextUpdatedAt(task.updatedAt, now) };
+}
+
+/** A deep copy: callers that mutate it never touch stored state. */
+export function cloneTask(task: Task): Task {
+  const copy = { ...task };
+  if (task.labels !== undefined) copy.labels = [...task.labels];
+  if (task.checklist !== undefined) copy.checklist = task.checklist.map((item) => ({ ...item }));
+  return copy;
 }
 
 /**

@@ -118,6 +118,7 @@ const STATEMENTS = [
     \`priority\` text,
     \`labels\` text,
     \`order\` real,
+    \`checklist\` text,
     \`created_at\` integer NOT NULL,
     \`updated_at\` integer NOT NULL,
     FOREIGN KEY (\`project_id\`) REFERENCES \`projects\`(\`id\`) ON UPDATE no action ON DELETE cascade
@@ -167,6 +168,10 @@ describe("Cross-Mode Round-Trip Interoperability", () => {
       labels: ["security", "urgent"],
       order: 10,
       isPublic: true,
+      checklist: [
+        { text: "Reproduce", done: true },
+        { text: "Patch", done: false },
+      ],
     });
 
     const task2 = await markdownStorage.saveTask({
@@ -178,6 +183,7 @@ describe("Cross-Mode Round-Trip Interoperability", () => {
       labels: ["confidential"],
       order: 20,
       isPublic: false,
+      checklist: [{ text: "Encrypted subtask", done: false }],
     });
 
     const task3 = await markdownStorage.saveTask({

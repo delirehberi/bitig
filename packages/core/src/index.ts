@@ -39,10 +39,20 @@ export {
   applyTaskPatch,
   buildProject,
   buildTask,
+  cloneTask,
   compareProjects,
   compareTasks,
   completeTaskEntity,
 } from "./domain/entities";
+export {
+  addChecklistItem,
+  checklistProgress,
+  moveChecklistItem,
+  removeChecklistItem,
+  renameChecklistItem,
+  setChecklistItemDone,
+} from "./domain/checklist";
+export type { ChecklistProgress } from "./domain/checklist";
 export {
   defaultIdGenerator,
   defaultRuntimeDeps,

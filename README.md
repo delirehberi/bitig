@@ -137,6 +137,11 @@ bitig tasks get 019253ec-5a1e-7230-a89e-0123456789ab
 # Update task status, priority, or labels
 bitig tasks update 019253ec-5a1e-7230-a89e-0123456789ab --status in_progress --labels "mcp,cli"
 
+# Subtasks (checklist); positions are 1-based, progress shows as (2/5) in lists
+bitig tasks item add 019253ec-5a1e-7230-a89e-0123456789ab "Write release notes"
+bitig tasks item check 019253ec-5a1e-7230-a89e-0123456789ab 1
+bitig tasks item move 019253ec-5a1e-7230-a89e-0123456789ab 3 1
+
 # Mark task as completed
 bitig tasks complete 019253ec-5a1e-7230-a89e-0123456789ab
 

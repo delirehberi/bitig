@@ -2,6 +2,7 @@
  * Registration of Bitig MCP tools onto an McpServer instance.
  */
 import {
+  ChecklistSchema,
   CreateProjectInputSchema,
   CreateTaskInputSchema,
   DueDateSchema,
@@ -19,6 +20,9 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { formatErrorResult, formatSuccessResult } from "./errors";
 import { serializeProjectLink } from "./project-link";
+
+const CHECKLIST_DESCRIPTION =
+  "Subtasks in order, each { text, done }. To check, rename, reorder, add or remove an item, send the full edited list.";
 
 export function registerBitigTools(server: McpServer, storage: StorageProvider): void {
   // 1. list_projects
@@ -168,6 +172,7 @@ export function registerBitigTools(server: McpServer, storage: StorageProvider):
         priority: TaskPrioritySchema.optional(),
         labels: z.array(z.string()).optional(),
         order: TaskOrderSchema.optional(),
+        checklist: ChecklistSchema.optional().describe(CHECKLIST_DESCRIPTION),
       },
     },
     async (args, extra) => {
@@ -197,6 +202,9 @@ export function registerBitigTools(server: McpServer, storage: StorageProvider):
         priority: TaskPrioritySchema.nullable().optional(),
         labels: z.array(z.string()).nullable().optional(),
         order: TaskOrderSchema.nullable().optional(),
+        checklist: ChecklistSchema.nullable()
+          .optional()
+          .describe(`${CHECKLIST_DESCRIPTION} Replaces the whole list; null or [] removes it.`),
       },
     },
     async (args, extra) => {
