@@ -1,5 +1,5 @@
 import type { Project, Task } from "@bitig/core";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { FeatureFlagsProvider } from "../../domain/feature-context";
@@ -61,9 +61,7 @@ describe("task checklist", () => {
     expect(screen.getByTitle("1 of 2 subtasks done")).toHaveTextContent("1/2");
   });
 
-  it("toggles an item from the detail view", async () => {
-    const user = userEvent.setup();
-    const onChecklistChange = vi.fn();
+  function renderDetail(onChecklistChange: (task: Task, checklist: unknown) => Promise<unknown>) {
     render(
       <FeatureFlagsProvider mode="local">
         <TaskDetailModal
@@ -77,12 +75,30 @@ describe("task checklist", () => {
         />
       </FeatureFlagsProvider>,
     );
+  }
+
+  it("toggles an item from the detail view and shows it before the save finishes", async () => {
+    const user = userEvent.setup();
+    const onChecklistChange = vi.fn(() => new Promise<never>(() => undefined));
+    renderDetail(onChecklistChange);
 
     await user.click(screen.getByLabelText("Tag"));
     expect(onChecklistChange).toHaveBeenCalledWith(TASK, [
       { text: "Write notes", done: true },
       { text: "Tag", done: true },
     ]);
+    expect(screen.getByLabelText("Tag")).toBeChecked();
+    expect(screen.getByTitle("2 of 2 subtasks done")).toBeInTheDocument();
+  });
+
+  it("reverts a toggle whose save fails", async () => {
+    const user = userEvent.setup();
+    renderDetail(vi.fn(() => Promise.reject(new Error("offline"))));
+
+    await user.click(screen.getByLabelText("Tag"));
+    await waitFor(() => {
+      expect(screen.getByLabelText("Tag")).not.toBeChecked();
+    });
   });
 
   it("adds, checks, renames, reorders and removes items in the form", async () => {
