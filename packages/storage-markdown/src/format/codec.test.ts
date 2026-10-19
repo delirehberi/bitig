@@ -34,6 +34,7 @@ const fullTask: Task = {
   priority: "high",
   labels: ["ui", "bug"],
   order: 1.5,
+  number: 7,
 };
 
 function decodeError(fn: () => unknown): StorageError {
@@ -62,6 +63,12 @@ describe("project codec", () => {
 
   it("round-trips, taking the id from the caller", () => {
     expect(decodeProject(PROJECT_ID, encodeProject(project), LOCATION)).toEqual(project);
+  });
+
+  it("writes the key after the name, quoted so YAML 1.1 never reads NO as false", () => {
+    const keyed = { ...project, key: "NO" };
+    expect(encodeProject(keyed)).toMatch(/^name: Website\nkey: "NO"\n/);
+    expect(decodeProject(PROJECT_ID, encodeProject(keyed), LOCATION)).toEqual(keyed);
   });
 
   it("drops unknown keys", () => {
@@ -106,6 +113,10 @@ describe("task codec", () => {
         "",
       ].join("\n"),
     );
+  });
+
+  it("writes the number first", () => {
+    expect(encodeTask(fullTask)).toMatch(/^---\nnumber: 7\ntitle: Fix header\n/);
   });
 
   it("quotes the due date", () => {

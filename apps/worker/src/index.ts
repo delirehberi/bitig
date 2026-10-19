@@ -118,7 +118,11 @@ export function createApp(options?: CreateAppOptions): Hono<AppEnv> {
       return c.json({ error: "not_found", message: err.message }, HTTP_NOT_FOUND);
     }
     if (err instanceof ValidationError) {
-      return c.json({ error: "validation_error", message: err.message }, HTTP_BAD_REQUEST);
+      // `details` matches the route validators' shape, so API clients can rebuild the error.
+      return c.json(
+        { error: "validation_error", message: err.message, details: err.issues },
+        HTTP_BAD_REQUEST,
+      );
     }
     if (err instanceof HTTPException) {
       return err.getResponse();

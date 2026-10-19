@@ -6,8 +6,9 @@ Bitig (Old Turkic for *record* or *document*) is a flexible, edge-ready task and
 
 - **Local Markdown Storage:** Plaintext `.md` files and YAML metadata on disk. Path-as-identity (`<projectId>/<taskId>.md`), no database required.
 - **Unix & XDG Base Directory Standard:** Clean separation of user data, configuration, and runtime locks following Unix best practices.
-- **Model Context Protocol (MCP):** First-class STDIO MCP server (`bitig mcp`) exposing 10 annotated tools for AI agents.
+- **Model Context Protocol (MCP):** First-class STDIO MCP server (`bitig mcp`) exposing 11 annotated tools for AI agents.
 - **Workspace Linking:** Automatic project binding via `.bitig` in workspace root directories.
+- **Ticket Codes:** Every task gets a short code like `BIT-12` (project key + number) that works wherever a task ID does.
 - **Strict & Type-Safe:** 100% strict TypeScript, comprehensive contract test suites, zero `any`.
 
 ---
@@ -154,6 +155,21 @@ bitig tasks complete 019253ec-5a1e-7230-a89e-0123456789ab
 bitig tasks delete 019253ec-5a1e-7230-a89e-0123456789ab
 ```
 
+### Ticket Codes
+
+Each project has a key (`BIT`, derived from the first letters of its name unless you pass `--key`), and each task gets the next number in its project. Together they form the task's code, `BIT-12`, which the CLI and MCP tools accept anywhere a task ID goes; a project key works wherever a project ID goes.
+
+```bash
+bitig projects create "Bitig" --key BIT
+bitig tasks add "Write release notes" --project BIT   # Created task BIT-1
+bitig tasks done bit-1
+
+# Projects and tasks created before ticket codes: give them a key and number (oldest first). Safe to rerun.
+bitig tasks backfill-codes
+```
+
+Numbers are never reused while their task exists. Deleting the newest task frees its number for the next one. Moving a task to another project gives it the next number there. Changing a project's key renames every code in it.
+
 ### Export, Import, Backup & Restore
 
 Bitig enables complete data portability across all storage backends (Markdown, D1, Nostr):
@@ -211,15 +227,16 @@ Or run against an explicit data directory:
 ### MCP Tools Provided
 
 1. `list_projects` - List all projects.
-2. `get_project` - Retrieve a single project by ID.
-3. `create_project` - Create a new project.
-4. `update_project` - Update an existing project.
-5. `delete_project` - Delete a project and its tasks.
-6. `list_tasks` - List tasks with optional project, status, and priority filters.
-7. `get_task` - Retrieve a single task by ID.
-8. `create_task` - Create a new task in a project.
-9. `update_task` - Update fields or description of a task.
-10. `delete_task` - Delete a task by ID.
+2. `create_project` - Create a project (optionally with a `key` for ticket codes).
+3. `update_project` - Update a project's name, description, kind, links or key.
+4. `delete_project` - Delete a project and its tasks.
+5. `list_tasks` - List tasks with their codes, optionally for one project (ID or key).
+6. `get_task` - Retrieve a task by ID or code (`BIT-12`).
+7. `add_task` - Add a task to a project (ID or key).
+8. `update_task` - Update a task's fields, or move it to another project.
+9. `complete_task` - Mark a task done.
+10. `delete_task` - Delete a task.
+11. `backfill_ticket_codes` - Key older projects and number their tasks.
 
 ### Workspace Auto-Linking for Agents
 

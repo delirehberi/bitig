@@ -1,5 +1,11 @@
 import { useState, type SyntheticEvent } from "react";
-import { PROJECT_KINDS, type CreateProjectInput, type Project, type ProjectKind } from "@bitig/core";
+import {
+  PROJECT_KINDS,
+  deriveProjectKey,
+  type CreateProjectInput,
+  type Project,
+  type ProjectKind,
+} from "@bitig/core";
 import { FolderKanban, X } from "lucide-react";
 import { toResources, type ResourceDraft } from "./resource-drafts";
 import { ResourcesEditor } from "./Resources";
@@ -25,6 +31,8 @@ export function ProjectModal({ isOpen, onClose, onSubmit, project }: ProjectModa
   const [name, setName] = useState(project?.name ?? "");
   const [description, setDescription] = useState(project?.description ?? "");
   const [kind, setKind] = useState<ProjectKind>(project?.kind ?? "hobby");
+  // Empty means "derive from the name" for a new project and "keep" for one without a key yet.
+  const [key, setKey] = useState(project?.key ?? "");
   const [resources, setResources] = useState<ResourceDraft[]>(
     () => project?.resources?.map((resource) => ({ ...resource })) ?? [],
   );
@@ -56,6 +64,7 @@ export function ProjectModal({ isOpen, onClose, onSubmit, project }: ProjectModa
         name: name.trim(),
         description: description.trim(),
         kind,
+        ...(key.trim() !== "" && key.trim().toUpperCase() !== project?.key ? { key: key.trim() } : {}),
         // When editing, an empty list is sent so removing every link clears them.
         ...(links.resources.length > 0 || isEditing ? { resources: links.resources } : {}),
       });
@@ -122,6 +131,32 @@ export function ProjectModal({ isOpen, onClose, onSubmit, project }: ProjectModa
               className="mt-1 w-full rounded-md border border-rule bg-paper-2 px-3 py-2 text-sm text-ink placeholder:text-ink-3 focus-visible:outline-focus"
               disabled={isSubmitting}
             />
+          </div>
+
+          <div>
+            <label htmlFor="project-key" className="block text-xs font-semibold text-ink-2">
+              Key
+            </label>
+            <input
+              id="project-key"
+              type="text"
+              value={key}
+              onChange={(e) => {
+                setKey(e.target.value.toUpperCase());
+              }}
+              placeholder={name.trim() === "" ? "e.g. BIT" : deriveProjectKey(name, [])}
+              maxLength={10}
+              aria-describedby="project-key-hint"
+              className="mt-1 w-full rounded-md border border-rule bg-paper-2 px-3 py-2 font-mono text-sm uppercase text-ink placeholder:text-ink-3 focus-visible:outline-focus"
+              disabled={isSubmitting}
+            />
+            <p id="project-key-hint" className="m-0 mt-1 text-xs text-ink-3">
+              {!isEditing
+                ? "Tasks are named KEY-1, KEY-2… Leave empty to use the first letters of the name."
+                : project?.key
+                  ? `Tasks are named ${project.key}-1, ${project.key}-2… Changing the key renames them all.`
+                  : "No key yet. The ticket-code backfill gives this project a key and numbers its tasks."}
+            </p>
           </div>
 
           <div>

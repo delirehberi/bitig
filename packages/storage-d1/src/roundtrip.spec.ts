@@ -105,6 +105,7 @@ const STATEMENTS = [
     \`description\` text DEFAULT '' NOT NULL,
     \`kind\` text DEFAULT 'hobby' NOT NULL,
     \`resources\` text,
+    \`key\` text,
     \`created_at\` integer NOT NULL,
     \`updated_at\` integer NOT NULL
   )`,
@@ -120,6 +121,7 @@ const STATEMENTS = [
     \`labels\` text,
     \`order\` real,
     \`checklist\` text,
+    \`number\` integer,
     \`created_at\` integer NOT NULL,
     \`updated_at\` integer NOT NULL,
     FOREIGN KEY (\`project_id\`) REFERENCES \`projects\`(\`id\`) ON UPDATE no action ON DELETE cascade
@@ -127,6 +129,7 @@ const STATEMENTS = [
   "CREATE INDEX `tasks_project_id_idx` ON `tasks` (`project_id`)",
   "CREATE INDEX `tasks_status_idx` ON `tasks` (`status`)",
   "CREATE INDEX `tasks_order_idx` ON `tasks` (`order`)",
+  "CREATE INDEX `tasks_project_number_idx` ON `tasks` (`project_id`,`number`)",
 ];
 
 async function resetDb(): Promise<void> {

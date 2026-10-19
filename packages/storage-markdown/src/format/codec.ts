@@ -33,8 +33,9 @@ type ProjectFileData = z.output<typeof ProjectFileSchema>;
 type TaskFileData = z.output<typeof TaskFileSchema>;
 
 /** Field order in written files; stable order keeps diffs minimal. */
-const PROJECT_KEY_ORDER = ["name", "description", "kind", "resources", "createdAt", "updatedAt"] as const satisfies readonly (keyof ProjectFileData)[];
+const PROJECT_KEY_ORDER = ["name", "key", "description", "kind", "resources", "createdAt", "updatedAt"] as const satisfies readonly (keyof ProjectFileData)[];
 const TASK_KEY_ORDER = [
+  "number",
   "title",
   "status",
   "isPublic",
@@ -47,8 +48,8 @@ const TASK_KEY_ORDER = [
   "updatedAt",
 ] as const satisfies readonly (keyof TaskFileData)[];
 
-/** Date-like strings are quoted so YAML 1.1 readers never coerce them to dates. */
-const QUOTED_KEYS: ReadonlySet<string> = new Set(["createdAt", "updatedAt", "dueDate"]);
+/** Date-like strings and project keys (`NO`, `ON`) are quoted so YAML 1.1 readers never coerce them. */
+const QUOTED_KEYS: ReadonlySet<string> = new Set(["createdAt", "updatedAt", "dueDate", "key"]);
 
 /** Upper bound on a single file in UTF-16 code units, well above the largest valid entity. */
 export const MAX_FILE_CHARS = 1024 * 1024;

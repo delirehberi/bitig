@@ -36,6 +36,7 @@ A project groups related tasks.
 | `d` | **Yes** | Project ID (UUIDv7) | `["d", "01944547-0e62-7901-b755-e7a93540a08f"]` |
 | `name` | **Yes** | Project name (1–200 characters) | `["name", "Bitig Core"]` |
 | `kind` | **Yes** | Project category: `paid`, `hobby`, `open_source`, `personal`, or `internal` (default: `hobby`) | `["kind", "open_source"]` |
+| `key` | No | Project key for ticket codes: 2–10 uppercase letters or digits, starting with a letter, unique among the author's projects. Set on every project Bitig creates; older projects get one from the ticket-code backfill. | `["key", "BIT"]` |
 | `alt` | No | NIP-31 human-readable description for clients without kind `30331` support | `["alt", "Bitig Project: Bitig Core"]` |
 | `resource` | No | A link to an outside resource: URL (http or https), type (`repository`, `issue_tracker`, `design`, `documentation` or `other`) and label. One tag per link, up to 50, in display order. Project events are not encrypted, so these links are public. | `["resource", "https://github.com/acme/bitig", "repository", "GitHub"]` |
 
@@ -65,6 +66,7 @@ An actionable item belonging to a project.
 | `due` | No | Calendar due date (`YYYY-MM-DD`, no timezone) | `["due", "2026-12-31"]` |
 | `order` | No | Fractional index or sort order (floating point number as string) | `["order", "1.5"]` |
 | `t` | No | Zero or more label tags (e.g. hashtags) | `["t", "frontend"], ["t", "bug"]` |
+| `number` | No | Positive integer, unique within the project; with the project `key` it forms the ticket code (`BIT-12`). New tasks take one past the highest number the client knows of in that project, so two clients creating tasks offline can pick the same number. | `["number", "12"]` |
 | `alt` | No | NIP-31 fallback description | `["alt", "Bitig Task"]` |
 
 ### Content & Encryption (NIP-44)

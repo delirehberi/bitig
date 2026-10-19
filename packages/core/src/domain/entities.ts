@@ -25,8 +25,9 @@ import type {
   UpdateTaskInput,
 } from "./types";
 import { toTimestamp, type RuntimeDeps } from "../runtime/ids";
+import { assertProjectKeyAvailable, deriveProjectKey } from "./ticket-codes";
 
-type TaskRequiredFields = Omit<Task, "dueDate" | "priority" | "labels" | "order" | "checklist">;
+type TaskRequiredFields = Omit<Task, "dueDate" | "priority" | "labels" | "order" | "checklist" | "number">;
 
 interface TaskOptionalValues {
   readonly dueDate: string | undefined;
@@ -34,6 +35,7 @@ interface TaskOptionalValues {
   readonly labels: readonly string[] | undefined;
   readonly order: number | undefined;
   readonly checklist: readonly ChecklistItem[] | undefined;
+  readonly number: number | undefined;
 }
 
 /** Builds a task that omits unset optional fields (exactOptionalPropertyTypes). */
@@ -47,6 +49,7 @@ function assembleTask(base: TaskRequiredFields, optional: TaskOptionalValues): T
   if (optional.checklist !== undefined && optional.checklist.length > 0) {
     task.checklist = optional.checklist.map((item) => ({ ...item }));
   }
+  if (optional.number !== undefined) task.number = optional.number;
   return task;
 }
 
@@ -78,8 +81,14 @@ function withResources(
   return result;
 }
 
-export function buildProject(input: CreateProjectInput, deps: RuntimeDeps): Project {
+/**
+ * `takenKeys` are the keys of every existing project: a given key must not be among them, and a
+ * derived one is made unique against them.
+ */
+export function buildProject(input: CreateProjectInput, deps: RuntimeDeps, takenKeys: Iterable<string>): Project {
   const parsed = parseOrThrow(CreateProjectInputSchema, input, "createProject");
+  const taken = [...takenKeys];
+  if (parsed.key !== undefined) assertProjectKeyAvailable(parsed.key, taken, "createProject");
   const now = toTimestamp(deps.clock());
   return parseOrThrow(
     ProjectSchema,
@@ -91,6 +100,7 @@ export function buildProject(input: CreateProjectInput, deps: RuntimeDeps): Proj
         kind: parsed.kind,
         createdAt: now,
         updatedAt: now,
+        key: parsed.key ?? deriveProjectKey(parsed.name, taken),
       },
       parsed.resources,
     ),
@@ -98,12 +108,17 @@ export function buildProject(input: CreateProjectInput, deps: RuntimeDeps): Proj
   );
 }
 
+/** `otherKeys` are the keys of every other project; a new key must not be among them. */
 export function applyProjectPatch(
   project: Project,
   patch: UpdateProjectInput,
   now: Date,
+  otherKeys: Iterable<string>,
 ): Project {
   const parsed = parseOrThrow(UpdateProjectInputSchema, patch, "updateProject");
+  if (parsed.key !== undefined && parsed.key !== project.key) {
+    assertProjectKeyAvailable(parsed.key, otherKeys, "updateProject");
+  }
   const { resources, ...rest } = project;
   return parseOrThrow(
     ProjectSchema,
@@ -114,6 +129,7 @@ export function applyProjectPatch(
         description: parsed.description ?? project.description,
         kind: parsed.kind ?? project.kind,
         updatedAt: nextUpdatedAt(project.updatedAt, now),
+        ...(parsed.key !== undefined ? { key: parsed.key } : {}),
       },
       resolveClearable(resources, parsed.resources),
     ),
@@ -121,7 +137,8 @@ export function applyProjectPatch(
   );
 }
 
-export function buildTask(input: CreateTaskInput, deps: RuntimeDeps): Task {
+/** `number` comes from `nextTaskNumber` over the target project's tasks. */
+export function buildTask(input: CreateTaskInput, deps: RuntimeDeps, number: number): Task {
   const parsed = parseOrThrow(CreateTaskInputSchema, input, "saveTask");
   const now = toTimestamp(deps.clock());
   const task = assembleTask(
@@ -141,11 +158,16 @@ export function buildTask(input: CreateTaskInput, deps: RuntimeDeps): Task {
       labels: parsed.labels,
       order: parsed.order,
       checklist: parsed.checklist,
+      number,
     },
   );
   return parseOrThrow(TaskSchema, task, "saveTask result");
 }
 
+/**
+ * Applies a patch. A task moved to another project keeps its old number here; adapters then give
+ * it `nextTaskNumber` of the target project with `renumberTask`.
+ */
 export function applyTaskPatch(task: Task, patch: UpdateTaskInput, now: Date): Task {
   const parsed = parseOrThrow(UpdateTaskInputSchema, patch, "updateTask");
   const next = assembleTask(
@@ -165,9 +187,15 @@ export function applyTaskPatch(task: Task, patch: UpdateTaskInput, now: Date): T
       labels: resolveClearable(task.labels, parsed.labels),
       order: resolveClearable(task.order, parsed.order),
       checklist: resolveClearable(task.checklist, parsed.checklist),
+      number: task.number,
     },
   );
   return parseOrThrow(TaskSchema, next, "updateTask result");
+}
+
+/** The task with a new number, e.g. after moving it to another project. */
+export function renumberTask(task: Task, number: number): Task {
+  return { ...cloneTask(task), number };
 }
 
 /**

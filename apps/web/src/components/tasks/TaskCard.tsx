@@ -8,6 +8,7 @@ import {
 } from "@bitig/core";
 import { useFeatureFlags } from "../../hooks/useFeatureFlags";
 import { ChecklistProgressBadge } from "./Checklist";
+import { TaskCode } from "./TaskCode";
 
 interface TaskCardProps {
   readonly task: Task;
@@ -51,6 +52,7 @@ export function TaskCard({
       <div>
         <div className="flex items-start justify-between gap-2">
           <div className="flex flex-wrap items-center gap-1.5">
+            <TaskCode task={task} project={project} />
             {project && (
               <span className="rounded-md bg-paper-2 px-2 py-0.5 text-2xs font-semibold text-ink-2">
                 {project.name}

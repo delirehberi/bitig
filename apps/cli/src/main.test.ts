@@ -30,6 +30,32 @@ describe("CLI main commands", () => {
     expect(code).toBe(0);
   });
 
+  it("addresses projects by key and tasks by ticket code", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      expect(await exec(["projects", "create", "Bitig", "--key", "bt"])).toBe(0);
+      expect(await exec(["tasks", "add", "First", "-p", "BT"])).toBe(0);
+      expect(await exec(["tasks", "add", "Second", "-p", "bt"])).toBe(0);
+      expect(await exec(["tasks", "update", "bt-1", "-t", "Uno"])).toBe(0);
+      expect(await exec(["tasks", "done", "BT-2"])).toBe(0);
+      expect(await exec(["tasks", "item", "add", "BT-2", "Check"])).toBe(0);
+
+      log.mockClear();
+      expect(await exec(["tasks", "list", "-p", "BT", "--json"])).toBe(0);
+      const listed = JSON.parse(String(log.mock.calls[0]?.[0])) as { code: string; title: string; status: string }[];
+      expect(listed.map((t) => [t.code, t.title, t.status])).toEqual([
+        ["BT-1", "Uno", "todo"],
+        ["BT-2", "Second", "done"],
+      ]);
+
+      expect(await exec(["tasks", "delete", "BT-1"])).toBe(0);
+      expect(await exec(["tasks", "show", "BT-1"])).not.toBe(0);
+      expect(await exec(["tasks", "backfill-codes"])).toBe(0);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
   it("runs project creation, listing and task lifecycle", async () => {
     // 1. Create project
     let code = await exec(["projects", "create", "Work Project", "-k", "paid"]);

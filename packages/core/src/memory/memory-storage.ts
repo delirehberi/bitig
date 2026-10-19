@@ -8,7 +8,9 @@ import {
   compareProjects,
   compareTasks,
   completeTaskEntity,
+  renumberTask,
 } from "../domain/entities";
+import { nextTaskNumber } from "../domain/ticket-codes";
 import { NotFoundError, parseOrThrow } from "../domain/errors";
 import {
   BUNDLE_VERSION,
@@ -78,7 +80,7 @@ export class InMemoryStorage implements StorageProvider {
 
   createProject(input: CreateProjectInput, opts?: OperationOptions): Promise<Project> {
     return run(opts?.signal, () => {
-      const project = buildProject(input, this.#deps);
+      const project = buildProject(input, this.#deps, this.#keys());
       this.#projects.set(project.id, project);
       return copyProject(project);
     });
@@ -87,7 +89,7 @@ export class InMemoryStorage implements StorageProvider {
   updateProject(id: string, patch: UpdateProjectInput, opts?: OperationOptions): Promise<Project> {
     return run(opts?.signal, () => {
       const existing = this.#requireProject(parseId(id, "updateProject"));
-      const next = applyProjectPatch(existing, patch, this.#deps.clock());
+      const next = applyProjectPatch(existing, patch, this.#deps.clock(), this.#keys(existing.id));
       this.#projects.set(next.id, next);
       return copyProject(next);
     });
@@ -122,7 +124,8 @@ export class InMemoryStorage implements StorageProvider {
 
   saveTask(input: CreateTaskInput, opts?: OperationOptions): Promise<Task> {
     return run(opts?.signal, () => {
-      const task = buildTask(input, this.#deps);
+      const projectId = parseOrThrow(IdSchema, input.projectId, "saveTask");
+      const task = buildTask(input, this.#deps, nextTaskNumber(this.#tasksOf(projectId)));
       this.#requireProject(task.projectId);
       this.#tasks.set(task.id, task);
       return copyTask(task);
@@ -132,8 +135,11 @@ export class InMemoryStorage implements StorageProvider {
   updateTask(id: string, patch: UpdateTaskInput, opts?: OperationOptions): Promise<Task> {
     return run(opts?.signal, () => {
       const existing = this.#requireTask(parseId(id, "updateTask"));
-      const next = applyTaskPatch(existing, patch, this.#deps.clock());
-      if (next.projectId !== existing.projectId) this.#requireProject(next.projectId);
+      let next = applyTaskPatch(existing, patch, this.#deps.clock());
+      if (next.projectId !== existing.projectId) {
+        this.#requireProject(next.projectId);
+        next = renumberTask(next, nextTaskNumber(this.#tasksOf(next.projectId)));
+      }
       this.#tasks.set(next.id, next);
       return copyTask(next);
     });
@@ -204,6 +210,15 @@ export class InMemoryStorage implements StorageProvider {
     for (const bundle of validated.bundles) {
       await this.importProject(bundle, opts);
     }
+  }
+
+  /** Keys of every project except `exceptId`. */
+  #keys(exceptId?: string): string[] {
+    return [...this.#projects.values()].flatMap((p) => (p.key === undefined || p.id === exceptId ? [] : [p.key]));
+  }
+
+  #tasksOf(projectId: string): Task[] {
+    return [...this.#tasks.values()].filter((t) => t.projectId === projectId);
   }
 
   #requireProject(id: string): Project {

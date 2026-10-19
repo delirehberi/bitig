@@ -15,7 +15,9 @@ import {
   compareTasks,
   completeTaskEntity,
   defaultRuntimeDeps,
+  nextTaskNumber,
   parseOrThrow,
+  renumberTask,
   throwIfAborted,
   toTimestamp,
   type BackupBundle,
@@ -140,7 +142,7 @@ export class NostrStorage implements StorageProvider {
     await this.syncFromRelays(opts);
     throwIfAborted(opts?.signal);
 
-    const project = buildProject(input, this.deps);
+    const project = buildProject(input, this.deps, this.projectKeys());
     const template = encodeProjectEvent(project);
 
     throwIfAborted(opts?.signal);
@@ -168,7 +170,7 @@ export class NostrStorage implements StorageProvider {
       throw new NotFoundError("project", id);
     }
 
-    const updated = applyProjectPatch(existing, patch, this.deps.clock());
+    const updated = applyProjectPatch(existing, patch, this.deps.clock(), this.projectKeys(id));
     const template = encodeProjectEvent(updated);
 
     throwIfAborted(opts?.signal);
@@ -258,7 +260,8 @@ export class NostrStorage implements StorageProvider {
     await this.syncFromRelays(opts);
     throwIfAborted(opts?.signal);
 
-    const task = buildTask(input, this.deps);
+    const projectId = parseOrThrow(IdSchema, input.projectId, "saveTask");
+    const task = buildTask(input, this.deps, nextTaskNumber(this.tasksOf(projectId)));
     if (!this.projects.has(task.projectId)) {
       throw new NotFoundError("project", task.projectId);
     }
@@ -293,7 +296,10 @@ export class NostrStorage implements StorageProvider {
       throw new NotFoundError("project", patch.projectId);
     }
 
-    const updated = applyTaskPatch(existing, patch, this.deps.clock());
+    let updated = applyTaskPatch(existing, patch, this.deps.clock());
+    if (updated.projectId !== existing.projectId) {
+      updated = renumberTask(updated, nextTaskNumber(this.tasksOf(updated.projectId)));
+    }
     const pubkey = await this.signer.getPublicKey();
     throwIfAborted(opts?.signal);
 
@@ -448,5 +454,15 @@ export class NostrStorage implements StorageProvider {
       await this.importProject(bundle, opts);
     }
   }
-}
 
+  /** Keys of every cached project except `exceptId`. */
+  private projectKeys(exceptId?: string): string[] {
+    return Array.from(this.projects.values()).flatMap((p) =>
+      p.key === undefined || p.id === exceptId ? [] : [p.key],
+    );
+  }
+
+  private tasksOf(projectId: string): Task[] {
+    return Array.from(this.tasks.values()).filter((t) => t.projectId === projectId);
+  }
+}

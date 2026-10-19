@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { AlertTriangle, X } from "lucide-react";
 import type { Task } from "@bitig/core";
+import { useFocusTrap } from "../../hooks/useFocusTrap";
 
 interface DeleteTaskDialogProps {
   readonly isOpen: boolean;
@@ -14,6 +15,8 @@ const ICON_SIZE = 16;
 export function DeleteTaskDialog({ isOpen, task, onClose, onConfirm }: DeleteTaskDialogProps) {
   const [isDeleting, setIsDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(panelRef, isOpen && task !== null);
 
   if (!isOpen || !task) return null;
 
@@ -38,7 +41,11 @@ export function DeleteTaskDialog({ isOpen, task, onClose, onConfirm }: DeleteTas
       aria-labelledby="delete-task-title"
       className="fixed inset-0 z-modal flex items-center justify-center bg-ink/40 p-4 backdrop-blur-xs"
     >
-      <div className="relative w-full max-w-sm rounded-lg border border-rule bg-paper p-6 shadow-lg">
+      <div
+        ref={panelRef}
+        tabIndex={-1}
+        className="relative w-full max-w-sm rounded-lg border border-rule bg-paper p-6 shadow-lg outline-none"
+      >
         <button
           type="button"
           onClick={onClose}

@@ -8,6 +8,7 @@ import {
   DueDateSchema,
   IdSchema,
   NotFoundError,
+  ProjectKeySchema,
   ProjectKindSchema,
   ProjectNameSchema,
   ProjectResourcesSchema,
@@ -15,7 +16,13 @@ import {
   TaskPrioritySchema,
   TaskStatusSchema,
   TaskTitleSchema,
+  backfillTicketCodes,
+  resolveProjectRef,
+  resolveTaskRef,
+  withTaskCodes,
+  type OperationOptions,
   type StorageProvider,
+  type Task,
 } from "@bitig/core";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
@@ -28,7 +35,18 @@ const RESOURCES_DESCRIPTION =
 const CHECKLIST_DESCRIPTION =
   "Subtasks in order, each { text, done }. To check, rename, reorder, add or remove an item, send the full edited list.";
 
+const TASK_REF = z.string().min(1).describe("Task ID or ticket code, e.g. BIT-12");
+const PROJECT_REF = z.string().min(1).describe("Project ID or project key, e.g. BIT");
+const KEY_DESCRIPTION =
+  "Project key for ticket codes (BIT in BIT-12): 2-10 letters or digits starting with a letter, unique across projects.";
+
 export function registerBitigTools(server: McpServer, storage: StorageProvider): void {
+  /** The task with its ticket code (`code`), which callers can pass wherever a task ID is accepted. */
+  async function withCode(task: Task, opts: OperationOptions) {
+    const project = await storage.getProject(task.projectId, opts);
+    return withTaskCodes([task], project === null ? [] : [project])[0] ?? task;
+  }
+
   // 1. list_projects
   server.registerTool(
     "list_projects",
@@ -58,6 +76,7 @@ export function registerBitigTools(server: McpServer, storage: StorageProvider):
         description: z.string().optional(),
         kind: ProjectKindSchema.optional(),
         resources: ProjectResourcesSchema.optional().describe(RESOURCES_DESCRIPTION),
+        key: ProjectKeySchema.optional().describe(`${KEY_DESCRIPTION} Derived from the name when omitted.`),
       },
     },
     async (args, extra) => {
@@ -80,7 +99,7 @@ export function registerBitigTools(server: McpServer, storage: StorageProvider):
   server.registerTool(
     "update_project",
     {
-      description: "Update project metadata (name, description, kind, resources)",
+      description: "Update project metadata (name, description, kind, resources, key)",
       inputSchema: {
         id: IdSchema,
         name: ProjectNameSchema.optional(),
@@ -89,6 +108,9 @@ export function registerBitigTools(server: McpServer, storage: StorageProvider):
         resources: ProjectResourcesSchema.nullable()
           .optional()
           .describe(`${RESOURCES_DESCRIPTION} Replaces the whole list; null or [] removes it.`),
+        key: ProjectKeySchema.optional().describe(
+          `${KEY_DESCRIPTION} Changing it changes every task's code in the project.`,
+        ),
       },
     },
     async (args, extra) => {
@@ -126,18 +148,19 @@ export function registerBitigTools(server: McpServer, storage: StorageProvider):
   server.registerTool(
     "list_tasks",
     {
-      description: "List tasks, optionally filtered by project ID",
+      description: "List tasks with their ticket codes, optionally filtered by project ID or key",
       annotations: { readOnlyHint: true },
       inputSchema: {
-        projectId: IdSchema.optional(),
+        projectId: PROJECT_REF.optional(),
       },
     },
     async (args, extra) => {
       try {
-        const tasks = await storage.getTasks(args.projectId !== undefined ? { projectId: args.projectId } : undefined, {
-          signal: extra.signal,
-        });
-        return formatSuccessResult(tasks);
+        const opts = { signal: extra.signal };
+        const projectId =
+          args.projectId === undefined ? undefined : await resolveProjectRef(storage, args.projectId, opts);
+        const tasks = await storage.getTasks(projectId === undefined ? undefined : { projectId }, opts);
+        return formatSuccessResult(withTaskCodes(tasks, await storage.getProjects(opts)));
       } catch (err) {
         return formatErrorResult(err);
       }
@@ -148,17 +171,19 @@ export function registerBitigTools(server: McpServer, storage: StorageProvider):
   server.registerTool(
     "get_task",
     {
-      description: "Get a task by its unique ID",
+      description: "Get a task by its ID or ticket code (e.g. BIT-12)",
       annotations: { readOnlyHint: true },
       inputSchema: {
-        id: IdSchema,
+        id: TASK_REF,
       },
     },
     async (args, extra) => {
       try {
-        const task = await storage.getTask(args.id, { signal: extra.signal });
+        const opts = { signal: extra.signal };
+        const id = await resolveTaskRef(storage, args.id, opts);
+        const task = await storage.getTask(id, opts);
         if (task === null) throw new NotFoundError("task", args.id);
-        return formatSuccessResult(task);
+        return formatSuccessResult(await withCode(task, opts));
       } catch (err) {
         return formatErrorResult(err);
       }
@@ -169,9 +194,9 @@ export function registerBitigTools(server: McpServer, storage: StorageProvider):
   server.registerTool(
     "add_task",
     {
-      description: "Add a new task to a project",
+      description: "Add a new task to a project. The result's code (e.g. BIT-12) names the task from then on.",
       inputSchema: {
-        projectId: IdSchema,
+        projectId: PROJECT_REF,
         title: TaskTitleSchema,
         description: z.string().optional(),
         status: TaskStatusSchema.optional(),
@@ -185,9 +210,11 @@ export function registerBitigTools(server: McpServer, storage: StorageProvider):
     },
     async (args, extra) => {
       try {
-        const parsed = CreateTaskInputSchema.parse(args);
-        const task = await storage.saveTask(parsed, { signal: extra.signal });
-        return formatSuccessResult(task);
+        const opts = { signal: extra.signal };
+        const projectId = await resolveProjectRef(storage, args.projectId, opts);
+        const parsed = CreateTaskInputSchema.parse({ ...args, projectId });
+        const task = await storage.saveTask(parsed, opts);
+        return formatSuccessResult(await withCode(task, opts));
       } catch (err) {
         return formatErrorResult(err);
       }
@@ -198,10 +225,11 @@ export function registerBitigTools(server: McpServer, storage: StorageProvider):
   server.registerTool(
     "update_task",
     {
-      description: "Update task fields (set null to clear optional fields)",
+      description:
+        "Update task fields (set null to clear optional fields). Moving a task to another project gives it a new code there.",
       inputSchema: {
-        id: IdSchema,
-        projectId: IdSchema.optional(),
+        id: TASK_REF,
+        projectId: PROJECT_REF.optional(),
         title: TaskTitleSchema.optional(),
         description: z.string().optional(),
         status: TaskStatusSchema.optional(),
@@ -217,9 +245,13 @@ export function registerBitigTools(server: McpServer, storage: StorageProvider):
     },
     async (args, extra) => {
       try {
-        const { id, ...patch } = args;
-        const task = await storage.updateTask(id, patch, { signal: extra.signal });
-        return formatSuccessResult(task);
+        const opts = { signal: extra.signal };
+        const { id: ref, projectId: projectRef, ...rest } = args;
+        const id = await resolveTaskRef(storage, ref, opts);
+        const patch =
+          projectRef === undefined ? rest : { ...rest, projectId: await resolveProjectRef(storage, projectRef, opts) };
+        const task = await storage.updateTask(id, patch, opts);
+        return formatSuccessResult(await withCode(task, opts));
       } catch (err) {
         return formatErrorResult(err);
       }
@@ -233,13 +265,14 @@ export function registerBitigTools(server: McpServer, storage: StorageProvider):
       description: "Mark a task as completed/done (idempotent)",
       annotations: { idempotentHint: true },
       inputSchema: {
-        id: IdSchema,
+        id: TASK_REF,
       },
     },
     async (args, extra) => {
       try {
-        const task = await storage.completeTask(args.id, { signal: extra.signal });
-        return formatSuccessResult(task);
+        const opts = { signal: extra.signal };
+        const task = await storage.completeTask(await resolveTaskRef(storage, args.id, opts), opts);
+        return formatSuccessResult(await withCode(task, opts));
       } catch (err) {
         return formatErrorResult(err);
       }
@@ -250,16 +283,37 @@ export function registerBitigTools(server: McpServer, storage: StorageProvider):
   server.registerTool(
     "delete_task",
     {
-      description: "Permanently delete a task by ID",
+      description: "Permanently delete a task by ID or ticket code",
       annotations: { destructiveHint: true },
       inputSchema: {
-        id: IdSchema,
+        id: TASK_REF,
       },
     },
     async (args, extra) => {
       try {
-        await storage.deleteTask(args.id, { signal: extra.signal });
-        return formatSuccessResult({ success: true, deletedTaskId: args.id });
+        const opts = { signal: extra.signal };
+        const id = await resolveTaskRef(storage, args.id, opts);
+        await storage.deleteTask(id, opts);
+        return formatSuccessResult({ success: true, deletedTaskId: id });
+      } catch (err) {
+        return formatErrorResult(err);
+      }
+    },
+  );
+
+  // 11. backfill_ticket_codes
+  server.registerTool(
+    "backfill_ticket_codes",
+    {
+      description:
+        "Give projects created before ticket codes a key and number their tasks, oldest first. Safe to run again; existing codes never change.",
+      annotations: { idempotentHint: true },
+      inputSchema: {},
+    },
+    async (_args, extra) => {
+      try {
+        const result = await backfillTicketCodes(storage, { signal: extra.signal });
+        return formatSuccessResult({ keyedProjects: result.projects, numberedTasks: result.tasks });
       } catch (err) {
         return formatErrorResult(err);
       }

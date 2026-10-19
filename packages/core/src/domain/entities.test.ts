@@ -14,8 +14,8 @@ import { createTestRuntime } from "../testing/fixtures";
 
 function setup(): { project: Project; task: Task; runtime: ReturnType<typeof createTestRuntime> } {
   const runtime = createTestRuntime();
-  const project = buildProject({ name: "Bitig" }, runtime);
-  const task = buildTask({ projectId: project.id, title: "Write tests" }, runtime);
+  const project = buildProject({ name: "Bitig" }, runtime, []);
+  const task = buildTask({ projectId: project.id, title: "Write tests" }, runtime, 1);
   return { project, task, runtime };
 }
 
@@ -29,36 +29,52 @@ describe("buildProject", () => {
       kind: "hobby",
       createdAt: "2026-01-01T00:00:00.000Z",
       updatedAt: "2026-01-01T00:00:00.000Z",
+      key: "BIT",
     });
   });
 
   it("rejects invalid input", () => {
-    expect(() => buildProject({ name: "" }, createTestRuntime())).toThrow(ValidationError);
+    expect(() => buildProject({ name: "" }, createTestRuntime(), [])).toThrow(ValidationError);
+  });
+
+  it("derives a unique key or takes a free given one", () => {
+    const runtime = createTestRuntime();
+    expect(buildProject({ name: "Bitig" }, runtime, ["BIT"]).key).toBe("BIT2");
+    expect(buildProject({ name: "Bitig", key: "bt" }, runtime, ["BIT"]).key).toBe("BT");
+    expect(() => buildProject({ name: "Other", key: "bit" }, runtime, ["BIT"])).toThrow(ValidationError);
   });
 
   it("rejects a broken id generator", () => {
     const runtime = { ...createTestRuntime(), generateId: () => "bad" };
-    expect(() => buildProject({ name: "x" }, runtime)).toThrow(ValidationError);
+    expect(() => buildProject({ name: "x" }, runtime, [])).toThrow(ValidationError);
   });
 });
 
 describe("applyProjectPatch", () => {
   it("changes only patched fields and bumps updatedAt", () => {
     const { project, runtime } = setup();
-    const next = applyProjectPatch(project, { kind: "paid" }, runtime.clock());
+    const next = applyProjectPatch(project, { kind: "paid" }, runtime.clock(), []);
     expect(next).toEqual({ ...project, kind: "paid", updatedAt: next.updatedAt });
     expect(next.updatedAt > project.updatedAt).toBe(true);
   });
 
   it("never moves updatedAt backwards", () => {
     const { project } = setup();
-    const next = applyProjectPatch(project, { name: "New" }, new Date(0));
+    const next = applyProjectPatch(project, { name: "New" }, new Date(0), []);
     expect(next.updatedAt).toBe(project.updatedAt);
+  });
+
+  it("changes the key unless another project has it", () => {
+    const { project, runtime } = setup();
+    expect(applyProjectPatch(project, { key: " bt " }, runtime.clock(), ["OTH"]).key).toBe("BT");
+    expect(applyProjectPatch(project, { key: "BIT" }, runtime.clock(), []).key).toBe("BIT");
+    expect(() => applyProjectPatch(project, { key: "oth" }, runtime.clock(), ["OTH"])).toThrow(ValidationError);
+    expect(() => applyProjectPatch(project, { key: "1AB" }, runtime.clock(), [])).toThrow(ValidationError);
   });
 
   it("rejects an empty patch", () => {
     const { project, runtime } = setup();
-    expect(() => applyProjectPatch(project, {}, runtime.clock())).toThrow(ValidationError);
+    expect(() => applyProjectPatch(project, {}, runtime.clock(), [])).toThrow(ValidationError);
   });
 });
 
@@ -74,17 +90,19 @@ describe("buildTask", () => {
       isPublic: false,
       createdAt: "2026-01-01T00:00:01.000Z",
       updatedAt: "2026-01-01T00:00:01.000Z",
+      number: 1,
     });
     expect(Object.keys(task)).not.toContain("dueDate");
   });
 
   it("keeps optional fields and copies labels", () => {
     const runtime = createTestRuntime();
-    const project = buildProject({ name: "p" }, runtime);
+    const project = buildProject({ name: "p" }, runtime, []);
     const labels = ["a", "b"];
     const task = buildTask(
       { projectId: project.id, title: "t", dueDate: "2026-12-31", priority: "urgent", labels, order: 2 },
       runtime,
+      1,
     );
     expect(task).toMatchObject({ dueDate: "2026-12-31", priority: "urgent", labels, order: 2 });
     expect(task.labels).not.toBe(labels);
@@ -185,8 +203,8 @@ describe("compareTasks", () => {
 describe("compareProjects", () => {
   it("orders by createdAt then id", () => {
     const runtime = createTestRuntime();
-    const a = buildProject({ name: "a" }, runtime);
-    const b = buildProject({ name: "b" }, runtime);
+    const a = buildProject({ name: "a" }, runtime, []);
+    const b = buildProject({ name: "b" }, runtime, []);
     const sameTime = { ...a, id: "01940000-0000-7000-8000-0000000000ff" };
     expect([b, sameTime, a].sort(compareProjects)).toEqual([a, sameTime, b]);
     expect(compareProjects(a, { ...a })).toBe(0);

@@ -10,6 +10,7 @@ import {
   LABELS_MAX_COUNT,
   LABEL_MAX,
   PROJECT_KINDS,
+  PROJECT_KEY_PATTERN,
   PROJECT_NAME_MAX,
   RESOURCES_MAX_COUNT,
   RESOURCE_LABEL_MAX,
@@ -39,6 +40,16 @@ export const TaskPrioritySchema = z.enum(TASK_PRIORITIES);
 export const ProjectKindSchema = z.enum(PROJECT_KINDS);
 
 export const ProjectNameSchema = z.string().trim().min(1).max(PROJECT_NAME_MAX);
+
+/** Project key for ticket codes, e.g. `BIT`. Input is trimmed and uppercased. */
+export const ProjectKeySchema = z
+  .string()
+  .trim()
+  .toUpperCase()
+  .regex(PROJECT_KEY_PATTERN, "Project key must be 2-10 letters or digits and start with a letter");
+
+/** A task's number within its project; with the project key it forms the ticket code. */
+export const TaskNumberSchema = z.int().positive();
 export const TaskTitleSchema = z.string().trim().min(1).max(TASK_TITLE_MAX);
 export const DescriptionSchema = z.string().trim().max(DESCRIPTION_MAX);
 export const LabelSchema = z.string().trim().min(1).max(LABEL_MAX);
@@ -87,6 +98,8 @@ export const ProjectSchema = z.strictObject({
   updatedAt: TimestampSchema,
   /** Never empty: an empty list is stored as no resources. */
   resources: ProjectResourcesSchema.min(1).exactOptional(),
+  /** Set on every new project; projects created before ticket codes may lack one until backfilled. */
+  key: ProjectKeySchema.exactOptional(),
 });
 
 export const TaskSchema = z.strictObject({
@@ -105,6 +118,8 @@ export const TaskSchema = z.strictObject({
   order: TaskOrderSchema.exactOptional(),
   /** Never empty: an empty checklist is stored as no checklist. */
   checklist: ChecklistSchema.min(1).exactOptional(),
+  /** Assigned by storage, never by callers; tasks created before ticket codes may lack one until backfilled. */
+  number: TaskNumberSchema.exactOptional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -123,6 +138,8 @@ export const CreateProjectInputSchema = z.strictObject({
   description: DescriptionSchema.default(DEFAULT_DESCRIPTION),
   kind: ProjectKindSchema.default(DEFAULT_PROJECT_KIND),
   resources: ProjectResourcesSchema.optional(),
+  /** Derived from the name when omitted. */
+  key: ProjectKeySchema.optional(),
 });
 
 /** `undefined` leaves a field unchanged; only `resources` can be cleared, with `null` or `[]`. */
@@ -133,6 +150,8 @@ export const UpdateProjectInputSchema = z
     kind: ProjectKindSchema.optional(),
     /** Replaces the whole list. */
     resources: ProjectResourcesSchema.nullable().optional(),
+    /** Changes the codes of every task in the project; numbers stay. */
+    key: ProjectKeySchema.optional(),
   })
   .refine(hasAnyDefinedField, { message: EMPTY_PATCH_MESSAGE });
 
@@ -186,7 +205,14 @@ export const ProjectBundleSchema = z
   })
   .refine((bundle) => bundle.tasks.every((task) => task.projectId === bundle.project.id), {
     message: "All tasks in bundle must belong to the bundled project",
-  });
+  })
+  .refine(
+    (bundle) => {
+      const numbers = bundle.tasks.flatMap((task) => (task.number === undefined ? [] : [task.number]));
+      return new Set(numbers).size === numbers.length;
+    },
+    { message: "Task numbers must be unique within a project" },
+  );
 
 export const BackupBundleSchema = z.strictObject({
   version: z.literal(BUNDLE_VERSION),

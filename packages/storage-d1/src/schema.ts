@@ -17,6 +17,7 @@ export const projects = sqliteTable("projects", {
   description: text("description").notNull().default(DEFAULT_DESCRIPTION),
   kind: text("kind").$type<ProjectKind>().notNull().default(DEFAULT_PROJECT_KIND),
   resources: text("resources", { mode: "json" }).$type<ProjectResource[]>(),
+  key: text("key"),
   createdAt: integer("created_at").notNull(),
   updatedAt: integer("updated_at").notNull(),
 });
@@ -39,6 +40,7 @@ export const tasks = sqliteTable(
     labels: text("labels", { mode: "json" }).$type<string[]>(),
     order: real("order"),
     checklist: text("checklist", { mode: "json" }).$type<ChecklistItem[]>(),
+    number: integer("number"),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
   },
@@ -46,6 +48,7 @@ export const tasks = sqliteTable(
     index("tasks_project_id_idx").on(table.projectId),
     index("tasks_status_idx").on(table.status),
     index("tasks_order_idx").on(table.order),
+    index("tasks_project_number_idx").on(table.projectId, table.number),
   ],
 );
 
