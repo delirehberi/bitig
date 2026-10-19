@@ -2,13 +2,18 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
-import { clearStoredAuth, setStoredAuth } from "./auth/auth-storage";
+
+const TEST_USER = "admin";
+const TEST_PASSWORD = "secret123";
 
 function stubApi(responses: {
   health?: { status: string; version: string; storageMode: string };
   projects?: unknown[];
   tasks?: unknown[];
+  /** Whether the browser starts with a valid session cookie; defaults to signed in. */
+  signedIn?: boolean;
 }) {
+  let signedIn = responses.signedIn ?? true;
   const healthData = responses.health ?? { status: "ok", version: "0.4.1", storageMode: "cloudflare" };
   const projectsData = responses.projects ?? [];
   const tasksData = responses.tasks ?? [];
@@ -20,6 +25,30 @@ function stubApi(responses: {
 
       if (url.includes("/health")) {
         return Promise.resolve(Response.json(healthData, { status: 200 }));
+      }
+
+      if (url.includes("/api/auth/session")) {
+        return Promise.resolve(
+          signedIn
+            ? Response.json({ user: TEST_USER })
+            : Response.json({ error: "unauthorized" }, { status: 401 }),
+        );
+      }
+      if (url.includes("/api/auth/login")) {
+        const body = JSON.parse(init?.body as string) as { username: string; password: string };
+        signedIn = body.username === TEST_USER && body.password === TEST_PASSWORD;
+        return Promise.resolve(
+          signedIn
+            ? Response.json({ user: TEST_USER })
+            : Response.json({ error: "unauthorized" }, { status: 401 }),
+        );
+      }
+      if (url.includes("/api/auth/logout")) {
+        signedIn = false;
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (url.includes("/api/") && !signedIn) {
+        return Promise.resolve(Response.json({ error: "unauthorized" }, { status: 401 }));
       }
 
       if (url.includes("/api/projects")) {
@@ -98,7 +127,7 @@ function stubApi(responses: {
 
 describe("Dashboard Phase 4 Integration", () => {
   beforeEach(() => {
-    clearStoredAuth();
+    window.history.replaceState(null, "", "/");
     vi.restoreAllMocks();
   });
 
@@ -115,65 +144,108 @@ describe("Dashboard Phase 4 Integration", () => {
     ).toBeInTheDocument();
 
     // Click Projects tab in primary nav
-    await user.click(within(nav).getByRole("button", { name: "Projects" }));
+    await user.click(within(nav).getByRole("link", { name: "Projects" }));
     expect(await screen.findByRole("heading", { level: 1, name: "Projects" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /new project/i })).toBeInTheDocument();
 
     // Click Tasks tab in primary nav
-    await user.click(within(nav).getByRole("button", { name: "Tasks" }));
+    await user.click(within(nav).getByRole("link", { name: "Tasks" }));
     expect(await screen.findByRole("heading", { level: 1, name: "Tasks" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /new task/i })).toBeInTheDocument();
 
     // Click back to Overview
-    await user.click(within(nav).getByRole("button", { name: "Overview" }));
+    await user.click(within(nav).getByRole("link", { name: "Overview" }));
     expect(
       screen.getByRole("heading", { level: 1, name: "Your agents keep the record." }),
     ).toBeInTheDocument();
   });
 
-  it("handles user authentication flow", async () => {
+  it("sends signed-out visitors to /login and back to where they were", async () => {
+    window.history.replaceState(null, "", "/projects");
+    stubApi({ signedIn: false });
+    const user = userEvent.setup();
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Sign In" })).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/login");
+    expect(new URLSearchParams(window.location.search).get("next")).toBe("/projects");
+    expect(screen.queryByRole("navigation", { name: "Primary" })).not.toBeInTheDocument();
+
+    await user.type(screen.getByLabelText(/username/i), TEST_USER);
+    await user.type(screen.getByLabelText(/password/i), TEST_PASSWORD);
+    await user.click(screen.getByRole("button", { name: /^sign in$/i }));
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Projects" })).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/projects");
+    expect(screen.getByText(TEST_USER)).toBeInTheDocument();
+
+    // Signing out returns to the sign-in page
+    await user.click(screen.getByRole("button", { name: "Sign out" }));
+    expect(await screen.findByRole("heading", { level: 1, name: "Sign In" })).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/login");
+  });
+
+  it("shows an error for wrong credentials", async () => {
+    window.history.replaceState(null, "", "/login");
+    stubApi({ signedIn: false });
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.type(await screen.findByLabelText(/username/i), TEST_USER);
+    await user.type(screen.getByLabelText(/password/i), "wrong");
+    await user.click(screen.getByRole("button", { name: /^sign in$/i }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Invalid username or password");
+    expect(window.location.pathname).toBe("/login");
+  });
+
+  it("restores an existing session without asking to sign in", async () => {
+    stubApi({});
+    render(<App />);
+
+    expect(await screen.findByText(TEST_USER)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sign out" })).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/");
+  });
+
+  it("moves a signed-in visitor off /login", async () => {
+    window.history.replaceState(null, "", "/login?next=%2Ftasks");
+    stubApi({});
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Tasks" })).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/tasks");
+  });
+
+  it("ignores a next parameter that points to another site", async () => {
+    window.history.replaceState(null, "", "/login?next=%2F%2Fevil.test");
+    stubApi({});
+    render(<App />);
+
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "Your agents keep the record." }),
+    ).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/");
+  });
+
+  it("sends the visitor to sign in when the API rejects the session", async () => {
     stubApi({});
     const user = userEvent.setup();
     render(<App />);
 
-    // Header has Sign In button
-    const signInButton = await screen.findByRole("button", { name: /sign in/i });
-    expect(signInButton).toBeInTheDocument();
-
-    // Open login modal
-    await user.click(signInButton);
+    const nav = await screen.findByRole("navigation", { name: "Primary" });
+    // The cookie expires server-side while the page is open
+    vi.mocked(fetch).mockImplementation(() =>
+      Promise.resolve(Response.json({ error: "unauthorized" }, { status: 401 })),
+    );
+    await user.click(within(nav).getByRole("link", { name: "Projects" }));
+    await user.click(await screen.findByRole("button", { name: /new project/i }));
     const dialog = await screen.findByRole("dialog");
-    expect(within(dialog).getByRole("heading", { name: "Sign In" })).toBeInTheDocument();
+    await user.type(within(dialog).getByLabelText(/project name/i), "Late project");
+    await user.click(within(dialog).getByRole("button", { name: "Create Project" }));
 
-    // Fill in username and password inside dialog
-    const usernameInput = within(dialog).getByLabelText(/username/i);
-    const passwordInput = within(dialog).getByLabelText(/password/i);
-    await user.type(usernameInput, "admin");
-    await user.type(passwordInput, "secret123");
-
-    // Submit login button inside dialog
-    const submitBtn = within(dialog).getByRole("button", { name: /^sign in$/i });
-    await user.click(submitBtn);
-
-    // Modal closes and username appears in header
-    await waitFor(() => {
-      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    });
-    expect(screen.getByText("admin")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Sign out" })).toBeInTheDocument();
-
-    // Click sign out
-    await user.click(screen.getByRole("button", { name: "Sign out" }));
-    expect(screen.getByRole("button", { name: /sign in/i })).toBeInTheDocument();
-  });
-
-  it("shows already authenticated user from session storage", async () => {
-    setStoredAuth("admin", "secret123");
-    stubApi({});
-    render(<App />);
-
-    expect(await screen.findByText("admin")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Sign out" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 1, name: "Sign In" })).toBeInTheDocument();
+    expect(new URLSearchParams(window.location.search).get("next")).toBe("/projects");
   });
 
   it("supports creating a project", async () => {
@@ -184,7 +256,7 @@ describe("Dashboard Phase 4 Integration", () => {
     const nav = await screen.findByRole("navigation", { name: "Primary" });
 
     // Navigate to Projects
-    await user.click(within(nav).getByRole("button", { name: "Projects" }));
+    await user.click(within(nav).getByRole("link", { name: "Projects" }));
     expect(await screen.findByRole("heading", { level: 1, name: "Projects" })).toBeInTheDocument();
 
     // Click New Project
@@ -224,7 +296,7 @@ describe("Dashboard Phase 4 Integration", () => {
     const nav = await screen.findByRole("navigation", { name: "Primary" });
 
     // Go to Tasks
-    await user.click(within(nav).getByRole("button", { name: "Tasks" }));
+    await user.click(within(nav).getByRole("link", { name: "Tasks" }));
     expect(await screen.findByRole("heading", { level: 1, name: "Tasks" })).toBeInTheDocument();
 
     // Click New Task
@@ -265,7 +337,7 @@ describe("Dashboard Phase 4 Integration", () => {
     render(<App />);
 
     const nav = await screen.findByRole("navigation", { name: "Primary" });
-    await user.click(within(nav).getByRole("button", { name: "Projects" }));
+    await user.click(within(nav).getByRole("link", { name: "Projects" }));
 
     // Open the edit dialog prefilled with the project
     await user.click(await screen.findByRole("button", { name: "Edit Bitig App" }));
@@ -317,7 +389,7 @@ describe("Dashboard Phase 4 Integration", () => {
     render(<App />);
 
     const nav = await screen.findByRole("navigation", { name: "Primary" });
-    await user.click(within(nav).getByRole("button", { name: "Tasks" }));
+    await user.click(within(nav).getByRole("link", { name: "Tasks" }));
 
     // Open the edit dialog prefilled with the task
     await user.click(await screen.findByRole("button", { name: "Edit Write documentation" }));
@@ -384,7 +456,7 @@ describe("Dashboard Phase 4 Integration", () => {
     render(<App />);
 
     const nav = await screen.findByRole("navigation", { name: "Primary" });
-    await user.click(within(nav).getByRole("button", { name: "Tasks" }));
+    await user.click(within(nav).getByRole("link", { name: "Tasks" }));
 
     // Board view has Kanban columns
     expect(await screen.findByText("To Do")).toBeInTheDocument();
@@ -402,5 +474,111 @@ describe("Dashboard Phase 4 Integration", () => {
     expect(screen.getByText("Status")).toBeInTheDocument();
     expect(screen.getByText("Priority")).toBeInTheDocument();
     expect(screen.getByText("Write documentation")).toBeInTheDocument();
+  });
+});
+
+describe("Dashboard routing", () => {
+  const PROJECT_A = {
+    id: "01940000-0000-7000-8000-00000000000a",
+    name: "Alpha",
+    description: "",
+    kind: "hobby",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  const PROJECT_B = { ...PROJECT_A, id: "01940000-0000-7000-8000-00000000000b", name: "Beta" };
+  const TASK_A = {
+    id: "01940000-0000-7000-8000-0000000000a1",
+    projectId: PROJECT_A.id,
+    title: "Alpha task",
+    description: "",
+    status: "todo",
+    isPublic: false,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  const TASK_B = { ...TASK_A, id: "01940000-0000-7000-8000-0000000000b1", projectId: PROJECT_B.id, title: "Beta task" };
+
+  beforeEach(() => {
+    window.history.replaceState(null, "", "/");
+    vi.restoreAllMocks();
+  });
+
+  it("keeps the page after a reload", async () => {
+    window.history.replaceState(null, "", "/projects");
+    stubApi({});
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Projects" })).toBeInTheDocument();
+    const nav = screen.getByRole("navigation", { name: "Primary" });
+    expect(within(nav).getByRole("link", { name: "Projects" })).toHaveAttribute("aria-current", "page");
+  });
+
+  it("puts the nav section in the URL", async () => {
+    stubApi({});
+    const user = userEvent.setup();
+    render(<App />);
+
+    const nav = await screen.findByRole("navigation", { name: "Primary" });
+    expect(within(nav).getByRole("link", { name: "Tasks" })).toHaveAttribute("href", "/tasks");
+
+    await user.click(within(nav).getByRole("link", { name: "Tasks" }));
+    expect(window.location.pathname).toBe("/tasks");
+  });
+
+  it("restores the project filter from the URL and keeps it in sync", async () => {
+    window.history.replaceState(null, "", `/tasks?project=${PROJECT_A.id}`);
+    stubApi({ projects: [PROJECT_A, PROJECT_B], tasks: [TASK_A, TASK_B] });
+    const user = userEvent.setup();
+    render(<App />);
+
+    expect(await screen.findByText("Alpha task")).toBeInTheDocument();
+    expect(screen.queryByText("Beta task")).not.toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText(/project:/i), PROJECT_B.id);
+    expect(await screen.findByText("Beta task")).toBeInTheDocument();
+    expect(new URLSearchParams(window.location.search).get("project")).toBe(PROJECT_B.id);
+  });
+
+  it("opens a project's tasks from the Projects page", async () => {
+    window.history.replaceState(null, "", "/projects");
+    stubApi({ projects: [PROJECT_A, PROJECT_B], tasks: [TASK_A, TASK_B] });
+    const user = userEvent.setup();
+    render(<App />);
+
+    const [, betaViewTasks] = await screen.findAllByRole("button", { name: /view tasks/i });
+    if (!betaViewTasks) throw new Error("expected a View tasks button for Beta");
+    await user.click(betaViewTasks);
+
+    expect(await screen.findByText("Beta task")).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/tasks");
+    expect(new URLSearchParams(window.location.search).get("project")).toBe(PROJECT_B.id);
+  });
+
+  it("follows the browser back button", async () => {
+    stubApi({});
+    const user = userEvent.setup();
+    render(<App />);
+
+    const nav = await screen.findByRole("navigation", { name: "Primary" });
+    await user.click(within(nav).getByRole("link", { name: "Projects" }));
+    expect(await screen.findByRole("heading", { level: 1, name: "Projects" })).toBeInTheDocument();
+
+    window.history.back();
+
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "Your agents keep the record." }),
+    ).toBeInTheDocument();
+  });
+
+  it("redirects unknown paths to the overview", async () => {
+    window.history.replaceState(null, "", "/no-such-page");
+    stubApi({});
+    render(<App />);
+
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "Your agents keep the record." }),
+    ).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/");
   });
 });

@@ -57,6 +57,24 @@ describe("ApiStorage", () => {
     await expect(storage.getProjects()).rejects.toBeInstanceOf(AuthError);
   });
 
+  it("calls onUnauthorized on 401 only", async () => {
+    const statuses = [200, 401];
+    const mockFetch = vi.fn(() =>
+      Promise.resolve(new Response(JSON.stringify([]), { status: statuses.shift() ?? 200 })),
+    );
+    const onUnauthorized = vi.fn();
+
+    const storage = new ApiStorage({
+      fetch: mockFetch as unknown as typeof fetch,
+      onUnauthorized,
+    });
+
+    await storage.getProjects();
+    expect(onUnauthorized).not.toHaveBeenCalled();
+    await expect(storage.getProjects()).rejects.toBeInstanceOf(AuthError);
+    expect(onUnauthorized).toHaveBeenCalledTimes(1);
+  });
+
   it("returns null on 404 for getProject and getTask", async () => {
     const mockFetch = vi.fn(() =>
       Promise.resolve(new Response(JSON.stringify({ error: "not_found" }), { status: 404 })),

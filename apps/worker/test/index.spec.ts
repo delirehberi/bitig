@@ -50,7 +50,7 @@ describe("unknown API routes", () => {
     const res = await request("/api/missing");
 
     expect(res.status).toBe(401);
-    expect(res.headers.get("www-authenticate")).toBe('Basic realm="bitig"');
+    expect(res.headers.get("www-authenticate")).toBeNull();
     expect(await res.json()).toEqual({ error: "unauthorized" });
   });
 

@@ -1,9 +1,10 @@
 import type { MiddlewareHandler } from "hono";
 import type { AppEnv } from "./index";
+import type { AppConfig } from "./config";
 import { recordAuthFailure } from "./rate-limit";
+import { readSession } from "./session";
 
 const BASIC_PREFIX = "Basic ";
-const REALM_HEADER_VALUE = 'Basic realm="bitig"';
 const HTTP_UNAUTHORIZED = 401;
 
 async function timingSafeEqualString(a: string, b: string): Promise<boolean> {
@@ -15,63 +16,59 @@ async function timingSafeEqualString(a: string, b: string): Promise<boolean> {
   return crypto.subtle.timingSafeEqual(aHash, bHash);
 }
 
+/** Checks a user name and password against BASIC_AUTH_USER / BASIC_AUTH_PASS in constant time. */
+export async function verifyCredentials(config: AppConfig, user: string, pass: string): Promise<boolean> {
+  // If no password is configured, nothing can match.
+  if (!config.BASIC_AUTH_PASS) return false;
+  const [userMatch, passMatch] = await Promise.all([
+    timingSafeEqualString(user, config.BASIC_AUTH_USER),
+    timingSafeEqualString(pass, config.BASIC_AUTH_PASS),
+  ]);
+  return userMatch && passMatch;
+}
+
+function parseBasicHeader(header: string): { user: string; pass: string } | null {
+  if (!header.startsWith(BASIC_PREFIX)) return null;
+  let credentials: string;
+  try {
+    credentials = atob(header.slice(BASIC_PREFIX.length).trim());
+  } catch {
+    return null;
+  }
+  const colonIndex = credentials.indexOf(":");
+  if (colonIndex === -1) return null;
+  return { user: credentials.slice(0, colonIndex), pass: credentials.slice(colonIndex + 1) };
+}
+
 /*
+ * Guards /api/*. The dashboard authenticates with the session cookie set by
+ * POST /api/auth/login; scripts and API clients may still send an
+ * `Authorization: Basic` header. A 401 deliberately carries no
+ * `WWW-Authenticate: Basic` challenge, so browsers never show their native
+ * login prompt; the dashboard sends people to /login instead.
+ *
  * Failed attempts are counted toward AUTH_FAIL_POLICY only when the client
- * presented credentials. A request with no Authorization header is the normal
- * unauthenticated probe (e.g. the dashboard before login), and a server with no
- * secret configured is a misconfiguration, not an attack.
+ * presented credentials: wrong Basic credentials or a cookie this server never
+ * signed. A request with nothing is the normal unauthenticated probe, and an
+ * expired session is not an attack.
  */
-export function basicAuth(): MiddlewareHandler<AppEnv> {
+export function apiAuth(): MiddlewareHandler<AppEnv> {
   return async (c, next) => {
     const config = c.get("config");
+    const unauthorized = () => c.json({ error: "unauthorized" }, HTTP_UNAUTHORIZED);
 
-    // If no password is configured, reject all requests for safety.
-    if (!config.BASIC_AUTH_PASS) {
-      return c.json({ error: "unauthorized" }, HTTP_UNAUTHORIZED, {
-        "WWW-Authenticate": REALM_HEADER_VALUE,
-      });
-    }
+    const session = await readSession(c);
+    if (session.kind === "valid") return next();
+    if (session.kind === "forged") await recordAuthFailure(c);
 
     const authHeader = c.req.header("Authorization");
-    if (!authHeader?.startsWith(BASIC_PREFIX)) {
-      if (authHeader !== undefined) await recordAuthFailure(c);
-      return c.json({ error: "unauthorized" }, HTTP_UNAUTHORIZED, {
-        "WWW-Authenticate": REALM_HEADER_VALUE,
-      });
-    }
+    if (authHeader === undefined) return unauthorized();
 
-    const base64Credentials = authHeader.slice(BASIC_PREFIX.length).trim();
-    let credentials: string;
-    try {
-      credentials = atob(base64Credentials);
-    } catch {
-      await recordAuthFailure(c);
-      return c.json({ error: "unauthorized" }, HTTP_UNAUTHORIZED, {
-        "WWW-Authenticate": REALM_HEADER_VALUE,
-      });
-    }
-
-    const colonIndex = credentials.indexOf(":");
-    if (colonIndex === -1) {
-      await recordAuthFailure(c);
-      return c.json({ error: "unauthorized" }, HTTP_UNAUTHORIZED, {
-        "WWW-Authenticate": REALM_HEADER_VALUE,
-      });
-    }
-
-    const user = credentials.slice(0, colonIndex);
-    const pass = credentials.slice(colonIndex + 1);
-
-    const [userMatch, passMatch] = await Promise.all([
-      timingSafeEqualString(user, config.BASIC_AUTH_USER),
-      timingSafeEqualString(pass, config.BASIC_AUTH_PASS),
-    ]);
-
-    if (!userMatch || !passMatch) {
-      await recordAuthFailure(c);
-      return c.json({ error: "unauthorized" }, HTTP_UNAUTHORIZED, {
-        "WWW-Authenticate": REALM_HEADER_VALUE,
-      });
+    const parsed = parseBasicHeader(authHeader);
+    if (!parsed || !(await verifyCredentials(config, parsed.user, parsed.pass))) {
+      // A server with no password configured is a misconfiguration, not an attack.
+      if (config.BASIC_AUTH_PASS) await recordAuthFailure(c);
+      return unauthorized();
     }
 
     return next();

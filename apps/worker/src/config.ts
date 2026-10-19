@@ -2,6 +2,7 @@ import { STORAGE_MODES } from "@bitig/core";
 import { z } from "zod";
 
 const ORIGIN_SEPARATOR = ",";
+const MIN_SESSION_SECRET_LENGTH = 32;
 
 const configSchema = z.object({
   ALLOWED_ORIGINS: z
@@ -17,6 +18,13 @@ const configSchema = z.object({
   BASIC_AUTH_USER: z.string().default("admin"),
   BASIC_AUTH_PASS: z.string().default(""),
   MCP_AUTH_TOKEN: z.string().default(""),
+  // HMAC key for dashboard session cookies. Empty disables /api/auth/login.
+  SESSION_SECRET: z
+    .string()
+    .default("")
+    .refine((secret) => secret.length === 0 || secret.length >= MIN_SESSION_SECRET_LENGTH, {
+      message: `must be at least ${String(MIN_SESSION_SECRET_LENGTH)} characters`,
+    }),
   // Chosen per deployment; the dashboard reads it from /health instead of offering a switch.
   STORAGE_MODE: z.enum(STORAGE_MODES).default("cloudflare"),
 });

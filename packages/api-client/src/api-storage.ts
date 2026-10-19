@@ -41,6 +41,8 @@ export interface ApiStorageOptions {
   readonly baseUrl?: string;
   readonly auth?: AuthConfig;
   readonly fetch?: typeof fetch;
+  /** Called whenever the API answers 401, e.g. so a dashboard can send the user to sign in. */
+  readonly onUnauthorized?: () => void;
 }
 
 const HTTP_OK = 200;
@@ -58,11 +60,13 @@ export class ApiStorage implements StorageProvider {
   private readonly baseUrl: string;
   private readonly authConfig?: AuthConfig | undefined;
   private readonly customFetch?: typeof fetch | undefined;
+  private readonly onUnauthorized?: (() => void) | undefined;
 
   constructor(options: ApiStorageOptions = {}) {
     this.baseUrl = (options.baseUrl ?? "").replace(/\/+$/, "");
     this.authConfig = options.auth;
     this.customFetch = options.fetch;
+    this.onUnauthorized = options.onUnauthorized;
   }
 
   private async getAuthHeader(): Promise<string | undefined> {
@@ -113,6 +117,7 @@ export class ApiStorage implements StorageProvider {
 
     try {
       const response = await fetchFn(url, requestInit);
+      if (response.status === HTTP_UNAUTHORIZED) this.onUnauthorized?.();
       return response;
     } catch (error) {
       throwIfAborted(opts?.signal);

@@ -1,6 +1,6 @@
 /**
  * Full dashboard lifecycle in a real browser against `make dev` (Vite + wrangler dev + local D1):
- * sign in, create a project, create a task, edit it, complete it. Credentials come from the
+ * sign in on /login, create a project, create a task, edit it, complete it. Credentials come from the
  * environment (`make e2e` loads them from apps/worker/.dev.vars). The local database persists
  * between runs, so names are unique per run and the project is deleted afterwards.
  */
@@ -44,19 +44,21 @@ test("signs in and runs a project and task lifecycle against the Worker", async 
   const editedTitle = `E2E Task ${runId} (edited)`;
 
   try {
-    await page.goto("/");
+    // Signed-out visitors land on /login and return to the page they asked for
+    await page.goto("/projects");
+    await expect(page).toHaveURL(/\/login\?next=%2Fprojects$/);
+    await page.getByLabel(/username/i).fill(USERNAME);
+    await page.getByLabel(/password/i).fill(PASSWORD);
+    await page.getByRole("button", { name: /^sign in$/i }).click();
+    await expect(page.getByRole("button", { name: "Sign out" })).toBeVisible();
+    await expect(page).toHaveURL(/\/projects$/);
+
+    // The session cookie and the URL survive a reload
+    await page.reload();
+    await expect(page.getByRole("heading", { level: 1, name: "Projects" })).toBeVisible();
     const nav = page.getByRole("navigation", { name: "Primary" });
 
-    // Sign in
-    await page.getByRole("button", { name: /sign in/i }).click();
-    const loginDialog = page.getByRole("dialog");
-    await loginDialog.getByLabel(/username/i).fill(USERNAME);
-    await loginDialog.getByLabel(/password/i).fill(PASSWORD);
-    await loginDialog.getByRole("button", { name: /^sign in$/i }).click();
-    await expect(page.getByRole("button", { name: "Sign out" })).toBeVisible();
-
     // Create a project
-    await nav.getByRole("button", { name: "Projects" }).click();
     await page.getByRole("button", { name: /new project/i }).click();
     const projectDialog = page.getByRole("dialog");
     await projectDialog.getByLabel(/project name/i).fill(projectName);
@@ -64,7 +66,7 @@ test("signs in and runs a project and task lifecycle against the Worker", async 
     await expect(page.getByText(projectName)).toBeVisible();
 
     // Create a task in that project
-    await nav.getByRole("button", { name: "Tasks" }).click();
+    await nav.getByRole("link", { name: "Tasks" }).click();
     await page.getByRole("button", { name: /new task/i }).click();
     const taskDialog = page.getByRole("dialog");
     await taskDialog.getByLabel(/project/i).selectOption({ label: projectName });

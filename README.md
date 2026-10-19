@@ -259,7 +259,7 @@ Bitig can store projects and tasks directly on Nostr relays:
 
 ### Choosing the dashboard's storage mode
 
-The web dashboard has no storage switch. Each deployment picks its mode with the Worker's `STORAGE_MODE` var (`cloudflare`, `nostr`, or `local`; defaults to `cloudflare`). Set it under `vars` in `apps/worker/wrangler.jsonc`, or in `apps/worker/.dev.vars` for local development. The dashboard reads it from `GET /health` and shows only the UI that mode supports. For example, the public/private task toggle appears only in `nostr` mode, and Basic Auth sign-in appears only in `cloudflare` mode. An unknown value makes the Worker fail its config check.
+The web dashboard has no storage switch. Each deployment picks its mode with the Worker's `STORAGE_MODE` var (`cloudflare`, `nostr`, or `local`; defaults to `cloudflare`). Set it under `vars` in `apps/worker/wrangler.jsonc`, or in `apps/worker/.dev.vars` for local development. The dashboard reads it from `GET /health` and shows only the UI that mode supports. For example, the public/private task toggle appears only in `nostr` mode, and the `/login` page appears only in `cloudflare` mode. An unknown value makes the Worker fail its config check.
 
 ---
 
