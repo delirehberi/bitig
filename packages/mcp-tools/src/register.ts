@@ -2,6 +2,7 @@
  * Registration of Bitig MCP tools onto an McpServer instance.
  */
 import {
+  ChecklistSchema,
   CreateProjectInputSchema,
   CreateTaskInputSchema,
   DueDateSchema,
@@ -9,6 +10,7 @@ import {
   NotFoundError,
   ProjectKindSchema,
   ProjectNameSchema,
+  ProjectResourcesSchema,
   TaskOrderSchema,
   TaskPrioritySchema,
   TaskStatusSchema,
@@ -19,6 +21,12 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { formatErrorResult, formatSuccessResult } from "./errors";
 import { serializeProjectLink } from "./project-link";
+
+const RESOURCES_DESCRIPTION =
+  "Links to outside resources in order, each { type, label, url }. type is repository, issue_tracker, design, documentation or other; url must be http(s). To add, edit or remove a link, send the full edited list.";
+
+const CHECKLIST_DESCRIPTION =
+  "Subtasks in order, each { text, done }. To check, rename, reorder, add or remove an item, send the full edited list.";
 
 export function registerBitigTools(server: McpServer, storage: StorageProvider): void {
   // 1. list_projects
@@ -49,6 +57,7 @@ export function registerBitigTools(server: McpServer, storage: StorageProvider):
         name: ProjectNameSchema,
         description: z.string().optional(),
         kind: ProjectKindSchema.optional(),
+        resources: ProjectResourcesSchema.optional().describe(RESOURCES_DESCRIPTION),
       },
     },
     async (args, extra) => {
@@ -71,12 +80,15 @@ export function registerBitigTools(server: McpServer, storage: StorageProvider):
   server.registerTool(
     "update_project",
     {
-      description: "Update project metadata (name, description, kind)",
+      description: "Update project metadata (name, description, kind, resources)",
       inputSchema: {
         id: IdSchema,
         name: ProjectNameSchema.optional(),
         description: z.string().optional(),
         kind: ProjectKindSchema.optional(),
+        resources: ProjectResourcesSchema.nullable()
+          .optional()
+          .describe(`${RESOURCES_DESCRIPTION} Replaces the whole list; null or [] removes it.`),
       },
     },
     async (args, extra) => {
@@ -168,6 +180,7 @@ export function registerBitigTools(server: McpServer, storage: StorageProvider):
         priority: TaskPrioritySchema.optional(),
         labels: z.array(z.string()).optional(),
         order: TaskOrderSchema.optional(),
+        checklist: ChecklistSchema.optional().describe(CHECKLIST_DESCRIPTION),
       },
     },
     async (args, extra) => {
@@ -197,6 +210,9 @@ export function registerBitigTools(server: McpServer, storage: StorageProvider):
         priority: TaskPrioritySchema.nullable().optional(),
         labels: z.array(z.string()).nullable().optional(),
         order: TaskOrderSchema.nullable().optional(),
+        checklist: ChecklistSchema.nullable()
+          .optional()
+          .describe(`${CHECKLIST_DESCRIPTION} Replaces the whole list; null or [] removes it.`),
       },
     },
     async (args, extra) => {

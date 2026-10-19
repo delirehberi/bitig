@@ -269,6 +269,7 @@ export function TasksView({
         onComplete={(t) => {
           void onCompleteTask(t.id);
         }}
+        onChecklistChange={(t, checklist) => onUpdateTask(t.id, { checklist })}
       />
 
       {/* Keyed so each open remounts the form; its fields are seeded from `task` only on mount. */}

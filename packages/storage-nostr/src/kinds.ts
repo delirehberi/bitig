@@ -30,6 +30,8 @@ export const NOSTR_TAG_DUE = "due" as const;
 export const NOSTR_TAG_ORDER = "order" as const;
 export const NOSTR_TAG_LABEL = "t" as const;
 export const NOSTR_TAG_ALT = "alt" as const;
+/** Project resource link: `["resource", url, type, label]`, one tag per link, in order. */
+export const NOSTR_TAG_RESOURCE = "resource" as const;
 
 /**
  * Builds an address coordinate string `kind:pubkey:dTag`.

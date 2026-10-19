@@ -11,6 +11,8 @@ import {
   applyTaskPatch,
   buildProject,
   buildTask,
+  cloneProject,
+  cloneTask,
   compareProjects,
   compareTasks,
   completeTaskEntity,
@@ -40,15 +42,15 @@ export interface D1StorageOptions {
 }
 
 function copyProject(project: Project): Project {
-  return { ...project };
+  return cloneProject(project);
 }
 
 function copyTask(task: Task): Task {
-  return task.labels === undefined ? { ...task } : { ...task, labels: [...task.labels] };
+  return cloneTask(task);
 }
 
 function recordToProject(row: ProjectRecord): Project {
-  return {
+  const project: Project = {
     id: row.id,
     name: row.name,
     description: row.description,
@@ -56,6 +58,10 @@ function recordToProject(row: ProjectRecord): Project {
     createdAt: new Date(row.createdAt).toISOString(),
     updatedAt: new Date(row.updatedAt).toISOString(),
   };
+  if (row.resources !== null) {
+    project.resources = row.resources.map((resource) => ({ ...resource }));
+  }
+  return project;
 }
 
 function recordToTask(row: TaskRecord): Task {
@@ -80,6 +86,9 @@ function recordToTask(row: TaskRecord): Task {
   }
   if (row.order !== null) {
     task.order = row.order;
+  }
+  if (row.checklist !== null) {
+    task.checklist = row.checklist.map((item) => ({ ...item }));
   }
   return task;
 }
@@ -131,6 +140,7 @@ export class D1Storage implements StorageProvider {
       name: project.name,
       description: project.description,
       kind: project.kind,
+      resources: project.resources ?? null,
       createdAt: Date.parse(project.createdAt),
       updatedAt: Date.parse(project.updatedAt),
     });
@@ -153,6 +163,7 @@ export class D1Storage implements StorageProvider {
         name: next.name,
         description: next.description,
         kind: next.kind,
+        resources: next.resources ?? null,
         updatedAt: Date.parse(next.updatedAt),
       })
       .where(eq(projects.id, validId));
@@ -217,6 +228,7 @@ export class D1Storage implements StorageProvider {
       priority: task.priority ?? null,
       labels: task.labels ? [...task.labels] : null,
       order: task.order ?? null,
+      checklist: task.checklist ?? null,
       createdAt: Date.parse(task.createdAt),
       updatedAt: Date.parse(task.updatedAt),
     });
@@ -252,6 +264,7 @@ export class D1Storage implements StorageProvider {
         priority: next.priority ?? null,
         labels: next.labels ? [...next.labels] : null,
         order: next.order ?? null,
+        checklist: next.checklist ?? null,
         updatedAt: Date.parse(next.updatedAt),
       })
       .where(eq(tasks.id, validId));
@@ -321,6 +334,7 @@ export class D1Storage implements StorageProvider {
       name: validated.project.name,
       description: validated.project.description,
       kind: validated.project.kind,
+      resources: validated.project.resources ?? null,
       createdAt: Date.parse(validated.project.createdAt),
       updatedAt: Date.parse(validated.project.updatedAt),
     };
@@ -347,6 +361,7 @@ export class D1Storage implements StorageProvider {
         priority: task.priority ?? null,
         labels: task.labels ? [...task.labels] : null,
         order: task.order ?? null,
+        checklist: task.checklist ?? null,
         createdAt: Date.parse(task.createdAt),
         updatedAt: Date.parse(task.updatedAt),
       };

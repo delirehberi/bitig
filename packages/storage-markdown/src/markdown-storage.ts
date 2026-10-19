@@ -14,6 +14,8 @@ import {
   applyTaskPatch,
   buildProject,
   buildTask,
+  cloneProject,
+  cloneTask,
   compareProjects,
   compareTasks,
   completeTaskEntity,
@@ -54,11 +56,11 @@ export interface MarkdownStorageOptions {
 }
 
 function copyProject(project: Project): Project {
-  return { ...project };
+  return cloneProject(project);
 }
 
 function copyTask(task: Task): Task {
-  return task.labels === undefined ? { ...task } : { ...task, labels: [...task.labels] };
+  return cloneTask(task);
 }
 
 export class MarkdownStorage implements StorageProvider {

@@ -37,6 +37,7 @@ A project groups related tasks.
 | `name` | **Yes** | Project name (1–200 characters) | `["name", "Bitig Core"]` |
 | `kind` | **Yes** | Project category: `paid`, `hobby`, `open_source`, `personal`, or `internal` (default: `hobby`) | `["kind", "open_source"]` |
 | `alt` | No | NIP-31 human-readable description for clients without kind `30331` support | `["alt", "Bitig Project: Bitig Core"]` |
+| `resource` | No | A link to an outside resource: URL (http or https), type (`repository`, `issue_tracker`, `design`, `documentation` or `other`) and label. One tag per link, up to 50, in display order. Project events are not encrypted, so these links are public. | `["resource", "https://github.com/acme/bitig", "repository", "GitHub"]` |
 
 ### Content
 - Cleartext UTF-8 string containing the project description (up to 50,000 characters). May be empty (`""`).
@@ -75,12 +76,17 @@ The `content` field contains a cleartext JSON object:
 ```json
 {
   "title": "Implement Nostr storage adapter",
-  "description": "Full details and markdown notes here..."
+  "description": "Full details and markdown notes here...",
+  "checklist": [
+    { "text": "Write the codec", "done": true },
+    { "text": "Run the contract suite", "done": false }
+  ]
 }
 ```
+`checklist` (the task's subtasks, in order) is omitted when the task has none.
 
 #### Private Task (`is_public: "false"`)
-- The `title` and `description` are packaged into the JSON object:
+- The `title`, `description` and `checklist` (when present) are packaged into the JSON object:
   ```json
   {
     "title": "Private confidential task",
@@ -89,7 +95,7 @@ The `content` field contains a cleartext JSON object:
   ```
 - The JSON string is encrypted using **NIP-44 v2** encryption with the user's own keypair (self-encryption: `senderPrivateKey = userPrivateKey`, `recipientPublicKey = userPublicKey`).
 - The resulting ciphertext (base64 string starting with version byte) is stored in `content`.
-- **Privacy Guarantee:** Relays, indexers, and third parties only see the kind, task ID, parent project coordinate, status, priority, and due date. The task title and description remain strictly confidential.
+- **Privacy Guarantee:** Relays, indexers, and third parties only see the kind, task ID, parent project coordinate, status, priority, and due date. The task title, description and checklist remain strictly confidential.
 
 ---
 

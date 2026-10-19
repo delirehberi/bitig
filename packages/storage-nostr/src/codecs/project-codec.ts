@@ -6,6 +6,7 @@ import {
   NOSTR_TAG_D,
   NOSTR_TAG_KIND,
   NOSTR_TAG_NAME,
+  NOSTR_TAG_RESOURCE,
 } from "../kinds";
 
 export interface NostrEventLike {
@@ -40,6 +41,9 @@ export function encodeProjectEvent(project: Project): {
     [NOSTR_TAG_UPDATED_AT_ISO, project.updatedAt],
     [NOSTR_TAG_ALT, `Bitig Project: ${project.name}`],
   ];
+  for (const resource of project.resources ?? []) {
+    tags.push([NOSTR_TAG_RESOURCE, resource.url, resource.type, resource.label]);
+  }
 
   return {
     kind: NOSTR_KIND_PROJECT,
@@ -63,6 +67,7 @@ export function decodeProjectEvent(event: NostrEventLike): Project {
   let kindTag: string | undefined;
   let createdAtIso: string | undefined;
   let updatedAtIso: string | undefined;
+  const resources: { url: string; type: string | undefined; label: string | undefined }[] = [];
 
   for (const tag of event.tags) {
     const key = tag[0];
@@ -79,6 +84,8 @@ export function decodeProjectEvent(event: NostrEventLike): Project {
       createdAtIso = val;
     } else if (key === NOSTR_TAG_UPDATED_AT_ISO) {
       updatedAtIso = val;
+    } else if (key === NOSTR_TAG_RESOURCE) {
+      resources.push({ url: val, type: tag[2], label: tag[3] });
     }
   }
 
@@ -94,6 +101,7 @@ export function decodeProjectEvent(event: NostrEventLike): Project {
     kind: kindTag ?? "hobby",
     createdAt: createdAtIso ?? fallbackIso,
     updatedAt: updatedAtIso ?? fallbackIso,
+    ...(resources.length > 0 ? { resources } : {}),
   };
 
   return ProjectSchema.parse(rawProject);

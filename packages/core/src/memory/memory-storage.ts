@@ -3,6 +3,8 @@ import {
   applyTaskPatch,
   buildProject,
   buildTask,
+  cloneProject,
+  cloneTask,
   compareProjects,
   compareTasks,
   completeTaskEntity,
@@ -30,15 +32,9 @@ import { defaultRuntimeDeps, toTimestamp, type RuntimeDeps } from "../runtime/id
 import { throwIfAborted, type AbortSignalLike } from "../storage/abort";
 import type { OperationOptions, StorageProvider } from "../storage/provider";
 
-/** Entities are flat apart from `labels`, so a shallow copy plus a fresh labels
- * array fully detaches callers from stored state. */
-function copyProject(project: Project): Project {
-  return { ...project };
-}
+const copyProject = cloneProject;
 
-function copyTask(task: Task): Task {
-  return task.labels === undefined ? { ...task } : { ...task, labels: [...task.labels] };
-}
+const copyTask = cloneTask;
 
 /**
  * Runs a synchronous operation as a promise. Abort checks and every thrown

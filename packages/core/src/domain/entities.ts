@@ -14,9 +14,11 @@ import {
   UpdateTaskInputSchema,
 } from "./schemas";
 import type {
+  ChecklistItem,
   CreateProjectInput,
   CreateTaskInput,
   Project,
+  ProjectResource,
   Task,
   TaskPriority,
   UpdateProjectInput,
@@ -24,13 +26,14 @@ import type {
 } from "./types";
 import { toTimestamp, type RuntimeDeps } from "../runtime/ids";
 
-type TaskRequiredFields = Omit<Task, "dueDate" | "priority" | "labels" | "order">;
+type TaskRequiredFields = Omit<Task, "dueDate" | "priority" | "labels" | "order" | "checklist">;
 
 interface TaskOptionalValues {
   readonly dueDate: string | undefined;
   readonly priority: TaskPriority | undefined;
   readonly labels: readonly string[] | undefined;
   readonly order: number | undefined;
+  readonly checklist: readonly ChecklistItem[] | undefined;
 }
 
 /** Builds a task that omits unset optional fields (exactOptionalPropertyTypes). */
@@ -40,6 +43,10 @@ function assembleTask(base: TaskRequiredFields, optional: TaskOptionalValues): T
   if (optional.priority !== undefined) task.priority = optional.priority;
   if (optional.labels !== undefined) task.labels = [...optional.labels];
   if (optional.order !== undefined) task.order = optional.order;
+  // An empty checklist is the same as none, so every adapter stores it the same way.
+  if (optional.checklist !== undefined && optional.checklist.length > 0) {
+    task.checklist = optional.checklist.map((item) => ({ ...item }));
+  }
   return task;
 }
 
@@ -59,19 +66,34 @@ function nextUpdatedAt(previous: string, now: Date): string {
   return Date.parse(candidate) >= Date.parse(previous) ? candidate : previous;
 }
 
+/** Adds resources only when there are some, as a copy; an empty list is the same as none. */
+function withResources(
+  project: Omit<Project, "resources">,
+  resources: readonly ProjectResource[] | undefined,
+): Project {
+  const result: Project = { ...project };
+  if (resources !== undefined && resources.length > 0) {
+    result.resources = resources.map((resource) => ({ ...resource }));
+  }
+  return result;
+}
+
 export function buildProject(input: CreateProjectInput, deps: RuntimeDeps): Project {
   const parsed = parseOrThrow(CreateProjectInputSchema, input, "createProject");
   const now = toTimestamp(deps.clock());
   return parseOrThrow(
     ProjectSchema,
-    {
-      id: deps.generateId(),
-      name: parsed.name,
-      description: parsed.description,
-      kind: parsed.kind,
-      createdAt: now,
-      updatedAt: now,
-    },
+    withResources(
+      {
+        id: deps.generateId(),
+        name: parsed.name,
+        description: parsed.description,
+        kind: parsed.kind,
+        createdAt: now,
+        updatedAt: now,
+      },
+      parsed.resources,
+    ),
     "createProject result",
   );
 }
@@ -82,15 +104,19 @@ export function applyProjectPatch(
   now: Date,
 ): Project {
   const parsed = parseOrThrow(UpdateProjectInputSchema, patch, "updateProject");
+  const { resources, ...rest } = project;
   return parseOrThrow(
     ProjectSchema,
-    {
-      ...project,
-      name: parsed.name ?? project.name,
-      description: parsed.description ?? project.description,
-      kind: parsed.kind ?? project.kind,
-      updatedAt: nextUpdatedAt(project.updatedAt, now),
-    },
+    withResources(
+      {
+        ...rest,
+        name: parsed.name ?? project.name,
+        description: parsed.description ?? project.description,
+        kind: parsed.kind ?? project.kind,
+        updatedAt: nextUpdatedAt(project.updatedAt, now),
+      },
+      resolveClearable(resources, parsed.resources),
+    ),
     "updateProject result",
   );
 }
@@ -114,6 +140,7 @@ export function buildTask(input: CreateTaskInput, deps: RuntimeDeps): Task {
       priority: parsed.priority,
       labels: parsed.labels,
       order: parsed.order,
+      checklist: parsed.checklist,
     },
   );
   return parseOrThrow(TaskSchema, task, "saveTask result");
@@ -137,6 +164,7 @@ export function applyTaskPatch(task: Task, patch: UpdateTaskInput, now: Date): T
       priority: resolveClearable(task.priority, parsed.priority),
       labels: resolveClearable(task.labels, parsed.labels),
       order: resolveClearable(task.order, parsed.order),
+      checklist: resolveClearable(task.checklist, parsed.checklist),
     },
   );
   return parseOrThrow(TaskSchema, next, "updateTask result");
@@ -149,6 +177,23 @@ export function applyTaskPatch(task: Task, patch: UpdateTaskInput, now: Date): T
 export function completeTaskEntity(task: Task, now: Date): Task {
   if (task.status === COMPLETED_TASK_STATUS) return task;
   return { ...task, status: COMPLETED_TASK_STATUS, updatedAt: nextUpdatedAt(task.updatedAt, now) };
+}
+
+/** A deep copy: callers that mutate it never touch stored state. */
+export function cloneProject(project: Project): Project {
+  const copy = { ...project };
+  if (project.resources !== undefined) {
+    copy.resources = project.resources.map((resource) => ({ ...resource }));
+  }
+  return copy;
+}
+
+/** A deep copy: callers that mutate it never touch stored state. */
+export function cloneTask(task: Task): Task {
+  const copy = { ...task };
+  if (task.labels !== undefined) copy.labels = [...task.labels];
+  if (task.checklist !== undefined) copy.checklist = task.checklist.map((item) => ({ ...item }));
+  return copy;
 }
 
 /**

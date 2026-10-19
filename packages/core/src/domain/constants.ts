@@ -23,3 +23,19 @@ export const DESCRIPTION_MAX = 50_000;
 export const LABEL_MAX = 64;
 export const LABELS_MAX_COUNT = 32;
 
+
+/** Subtasks: a task's checklist. Items are ordered by position; an empty list is stored as no list. */
+export const CHECKLIST_ITEM_TEXT_MAX = 500;
+export const CHECKLIST_MAX_ITEMS = 200;
+
+/** Links from a project to outside resources (repository, issue tracker, designs...). */
+export const RESOURCE_TYPES = [
+  "repository",
+  "issue_tracker",
+  "design",
+  "documentation",
+  "other",
+] as const;
+export const RESOURCE_LABEL_MAX = 200;
+export const RESOURCE_URL_MAX = 2048;
+export const RESOURCES_MAX_COUNT = 50;

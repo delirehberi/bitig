@@ -127,12 +127,14 @@ describe("Bitig CLI STDIO MCP Server E2E", () => {
       name: "All Tools Renamed",
       description: "Updated over STDIO",
       kind: "personal",
+      resources: [{ type: "repository", label: "Code", url: "https://github.com/acme/all-tools" }],
     });
     expect(updatedProject).toMatchObject({
       id: project.id,
       name: "All Tools Renamed",
       description: "Updated over STDIO",
       kind: "personal",
+      resources: [{ type: "repository", label: "Code", url: "https://github.com/acme/all-tools" }],
     });
 
     // Tasks: add, list (filtered), get, update, complete
@@ -151,8 +153,20 @@ describe("Bitig CLI STDIO MCP Server E2E", () => {
       title: "First (edited)",
       priority: "high",
       labels: ["e2e"],
+      checklist: [
+        { text: "Step one", done: true },
+        { text: "Step two", done: false },
+      ],
     });
-    expect(updatedTask).toMatchObject({ title: "First (edited)", priority: "high", labels: ["e2e"] });
+    expect(updatedTask).toMatchObject({
+      title: "First (edited)",
+      priority: "high",
+      labels: ["e2e"],
+      checklist: [
+        { text: "Step one", done: true },
+        { text: "Step two", done: false },
+      ],
+    });
 
     const completed = await callToolJson<TaskResult>("complete_task", { id: task.id });
     expect(completed.status).toBe("done");

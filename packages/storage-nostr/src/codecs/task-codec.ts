@@ -1,4 +1,4 @@
-import type { Task } from "@bitig/core";
+import type { ChecklistItem, Task } from "@bitig/core";
 import { TaskSchema } from "@bitig/core";
 import {
   formatAddressCoordinate,
@@ -17,9 +17,12 @@ import {
 } from "../kinds";
 import { NOSTR_TAG_CREATED_AT_ISO, NOSTR_TAG_UPDATED_AT_ISO, type NostrEventLike } from "./project-codec";
 
+/** Event content: cleartext for public tasks, NIP-44 encrypted for private ones. */
 export interface TaskPayload {
   title: string;
   description: string;
+  /** Omitted when the task has no checklist. */
+  checklist?: ChecklistItem[];
 }
 
 export interface TaskEncryptor {
@@ -77,6 +80,9 @@ export async function encodeTaskEvent(
     title: task.title,
     description: task.description,
   };
+  if (task.checklist !== undefined) {
+    payload.checklist = task.checklist;
+  }
   const jsonPayload = JSON.stringify(payload);
 
   let content: string;
@@ -201,6 +207,9 @@ export async function decodeTaskEvent(
   }
   if (labels.length > 0) {
     rawTask.labels = labels;
+  }
+  if (parsedPayload.checklist !== undefined) {
+    rawTask.checklist = parsedPayload.checklist;
   }
 
   return TaskSchema.parse(rawTask);

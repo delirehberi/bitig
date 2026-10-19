@@ -111,8 +111,13 @@ bitig projects list --json
 # Create a project
 bitig projects create "Bitig Development" --id bitig --kind open_source --description "Task manager for edge and local"
 
-# Get project details
-bitig projects get bitig
+# Show project details and links
+bitig projects show bitig
+
+# Link outside resources (repository, issue_tracker, design, documentation, other); positions are 1-based
+bitig projects link add bitig https://github.com/acme/bitig --type repository --label GitHub
+bitig projects link edit bitig 1 --label "GitHub (main)"
+bitig projects link remove bitig 1
 
 # Update a project
 bitig projects update bitig --name "Bitig (Core)" --kind hobby
@@ -136,6 +141,11 @@ bitig tasks get 019253ec-5a1e-7230-a89e-0123456789ab
 
 # Update task status, priority, or labels
 bitig tasks update 019253ec-5a1e-7230-a89e-0123456789ab --status in_progress --labels "mcp,cli"
+
+# Subtasks (checklist); positions are 1-based, progress shows as (2/5) in lists
+bitig tasks item add 019253ec-5a1e-7230-a89e-0123456789ab "Write release notes"
+bitig tasks item check 019253ec-5a1e-7230-a89e-0123456789ab 1
+bitig tasks item move 019253ec-5a1e-7230-a89e-0123456789ab 3 1
 
 # Mark task as completed
 bitig tasks complete 019253ec-5a1e-7230-a89e-0123456789ab

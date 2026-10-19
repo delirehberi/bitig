@@ -7,6 +7,7 @@ import {
   type TaskStatus,
 } from "@bitig/core";
 import { useFeatureFlags } from "../../hooks/useFeatureFlags";
+import { ChecklistProgressBadge } from "./Checklist";
 
 interface TaskCardProps {
   readonly task: Task;
@@ -170,14 +171,15 @@ export function TaskCard({
       </div>
 
       <div className="mt-4 flex items-center justify-between border-t border-rule pt-2.5 text-xs text-ink-3">
-        {task.dueDate ? (
-          <div className="flex items-center gap-1 font-mono text-2xs">
-            <Calendar size={12} />
-            <span>{task.dueDate}</span>
-          </div>
-        ) : (
-          <span />
-        )}
+        <div className="flex items-center gap-2">
+          {task.dueDate && (
+            <div className="flex items-center gap-1 font-mono text-2xs">
+              <Calendar size={12} />
+              <span>{task.dueDate}</span>
+            </div>
+          )}
+          <ChecklistProgressBadge checklist={task.checklist} />
+        </div>
 
         <select
           value={task.status}

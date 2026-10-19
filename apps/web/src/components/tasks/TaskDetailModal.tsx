@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Calendar,
   CheckCircle2,
@@ -10,8 +10,9 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
-import type { Project, Task, TaskPriority, TaskStatus } from "@bitig/core";
+import type { ChecklistItem, Project, Task, TaskPriority, TaskStatus } from "@bitig/core";
 import { useFeatureFlags } from "../../hooks/useFeatureFlags";
+import { ChecklistProgressBadge, ChecklistView } from "./Checklist";
 
 interface TaskDetailModalProps {
   readonly task: Task | null;
@@ -20,6 +21,8 @@ interface TaskDetailModalProps {
   readonly onEdit: (task: Task) => void;
   readonly onDelete: (task: Task) => void;
   readonly onComplete: (task: Task) => void;
+  /** Saves a checked or unchecked subtask; omit to show the checklist read-only. */
+  readonly onChecklistChange?: ((task: Task, checklist: ChecklistItem[]) => Promise<unknown>) | undefined;
 }
 
 const ICON_SIZE = 16;
@@ -71,9 +74,17 @@ export function TaskDetailModal({
   onEdit,
   onDelete,
   onComplete,
+  onChecklistChange,
 }: TaskDetailModalProps) {
   const { taskVisibility } = useFeatureFlags();
   const isOpen = task !== null;
+  // A toggled checklist shows at once and gives way to the saved task once the save settles
+  // (or reverts if it fails). Only the latest toggle clears it, so quick clicks don't flicker.
+  const [pendingChecklist, setPendingChecklist] = useState<{
+    readonly taskId: string;
+    readonly items: ChecklistItem[];
+  } | null>(null);
+  const latestToggle = useRef(0);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -90,6 +101,18 @@ export function TaskDetailModal({
 
   const project = projects.find((p) => p.id === task.projectId);
   const isDone = task.status === "done";
+  const checklist = pendingChecklist?.taskId === task.id ? pendingChecklist.items : task.checklist;
+
+  function toggleChecklist(current: Task, next: ChecklistItem[]) {
+    if (!onChecklistChange) return;
+    const toggle = ++latestToggle.current;
+    setPendingChecklist({ taskId: current.id, items: next });
+    void onChecklistChange(current, next)
+      .catch(() => undefined)
+      .finally(() => {
+        if (latestToggle.current === toggle) setPendingChecklist(null);
+      });
+  }
 
   return (
     <div
@@ -147,6 +170,27 @@ export function TaskDetailModal({
         <p className="m-0 mb-5 whitespace-pre-wrap text-sm text-ink-2">
           {task.description || <span className="text-ink-3">No description</span>}
         </p>
+
+        {checklist && (
+          <section aria-labelledby="task-detail-checklist" className="mb-5">
+            <h3
+              id="task-detail-checklist"
+              className="m-0 mb-2 flex items-center gap-2 text-2xs font-semibold uppercase tracking-wider text-ink-3"
+            >
+              Subtasks <ChecklistProgressBadge checklist={checklist} />
+            </h3>
+            <ChecklistView
+              checklist={checklist}
+              onToggle={
+                onChecklistChange
+                  ? (next) => {
+                      toggleChecklist(task, next);
+                    }
+                  : undefined
+              }
+            />
+          </section>
+        )}
 
         <dl className="m-0 mb-5 grid grid-cols-1 gap-4 sm:grid-cols-2">
           <Field label="Due date" icon={Calendar}>
