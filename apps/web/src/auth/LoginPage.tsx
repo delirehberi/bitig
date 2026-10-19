@@ -38,8 +38,7 @@ export function LoginPage({ next }: LoginPageProps) {
     <main className="grid min-h-dvh place-items-center bg-paper-2 p-4">
       <div className="w-full max-w-sm rounded-lg border border-rule bg-paper p-6 shadow-lg">
         <div className="mb-5 flex items-center gap-3">
-          <img src="/favicon.svg" alt="" width={28} height={28} />
-          <span className="font-display text-xl font-bold tracking-tight text-ink">bitig</span>
+          <img src="/logo.svg" alt="bitig" width={81} height={32} />
         </div>
 
         <div className="mb-5 flex items-center gap-3">
