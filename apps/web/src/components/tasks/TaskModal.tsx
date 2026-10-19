@@ -1,4 +1,4 @@
-import { useState, type SyntheticEvent } from "react";
+import { useRef, useState, type SyntheticEvent } from "react";
 import {
   TASK_PRIORITIES,
   TASK_STATUSES,
@@ -11,6 +11,7 @@ import {
 } from "@bitig/core";
 import { CheckSquare, X } from "lucide-react";
 import { useFeatureFlags } from "../../hooks/useFeatureFlags";
+import { useFocusTrap } from "../../hooks/useFocusTrap";
 import { ChecklistEditor } from "./Checklist";
 
 interface TaskModalProps {
@@ -62,6 +63,8 @@ export function TaskModal({
   const [checklist, setChecklist] = useState<ChecklistItem[]>(() => task?.checklist?.map((item) => ({ ...item })) ?? []);
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const panelRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(panelRef, isOpen);
 
   if (!isOpen) return null;
 
@@ -121,7 +124,11 @@ export function TaskModal({
       aria-labelledby="task-modal-title"
       className="fixed inset-0 z-modal flex items-center justify-center bg-ink/40 p-4 backdrop-blur-xs"
     >
-      <div className="relative max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-lg border border-rule bg-paper p-6 shadow-lg">
+      <div
+        ref={panelRef}
+        tabIndex={-1}
+        className="relative max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-lg border border-rule bg-paper p-6 shadow-lg outline-none"
+      >
         <button
           type="button"
           onClick={onClose}

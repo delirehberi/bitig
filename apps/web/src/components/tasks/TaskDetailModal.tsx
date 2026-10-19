@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import type { ChecklistItem, Project, Task, TaskPriority, TaskStatus } from "@bitig/core";
 import { useFeatureFlags } from "../../hooks/useFeatureFlags";
+import { useFocusTrap } from "../../hooks/useFocusTrap";
 import { ChecklistProgressBadge, ChecklistView } from "./Checklist";
 
 interface TaskDetailModalProps {
@@ -85,6 +86,8 @@ export function TaskDetailModal({
     readonly items: ChecklistItem[];
   } | null>(null);
   const latestToggle = useRef(0);
+  const panelRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(panelRef, isOpen);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -123,7 +126,9 @@ export function TaskDetailModal({
       onClick={onClose}
     >
       <div
-        className="relative max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-lg border border-rule bg-paper p-6 shadow-lg"
+        ref={panelRef}
+        tabIndex={-1}
+        className="relative max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-lg border border-rule bg-paper p-6 shadow-lg outline-none"
         onClick={(e) => {
           e.stopPropagation();
         }}
