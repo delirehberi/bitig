@@ -111,7 +111,34 @@ describe("codes", () => {
 });
 
 describe("assignMissingTicketCodes", () => {
-  it("keys projects and numbers tasks oldest first after existing numbers", () => {
+  it("numbers unnumbered tasks oldest first after existing numbers in a keyed project", () => {
+    const changed = assignMissingTicketCodes({
+      version: BUNDLE_VERSION,
+      exportedAt: TIMESTAMP,
+      bundles: [
+        {
+          version: BUNDLE_VERSION,
+          exportedAt: TIMESTAMP,
+          project: project(P1, "Bitig", "BIT"),
+          tasks: [
+            task(T1, P1, "2026-01-03T00:00:00.000Z"),
+            task(T2, P1, "2026-01-02T00:00:00.000Z"),
+            task(T3, P1, "2026-01-01T00:00:00.000Z", 5),
+          ],
+        },
+        { version: BUNDLE_VERSION, exportedAt: TIMESTAMP, project: project(P2, "Other", "OTH"), tasks: [] },
+      ],
+    });
+    expect(changed).toHaveLength(1);
+    expect(changed[0]?.project.key).toBe("BIT");
+    expect(changed[0]?.tasks.map((t) => [t.id, t.number])).toEqual([
+      [T1, 7],
+      [T2, 6],
+      [T3, 5],
+    ]);
+  });
+
+  it("renumbers every task oldest first when the project has no key yet", () => {
     const changed = assignMissingTicketCodes({
       version: BUNDLE_VERSION,
       exportedAt: TIMESTAMP,
@@ -121,20 +148,20 @@ describe("assignMissingTicketCodes", () => {
           exportedAt: TIMESTAMP,
           project: project(P1, "Bitig"),
           tasks: [
-            task(T1, P1, "2026-01-03T00:00:00.000Z"),
-            task(T2, P1, "2026-01-02T00:00:00.000Z"),
-            task(T3, P1, "2026-01-01T00:00:00.000Z", 5),
+            task(T1, P1, "2026-01-03T00:00:00.000Z", 1),
+            task(T2, P1, "2026-01-01T00:00:00.000Z"),
+            task(T3, P1, "2026-01-02T00:00:00.000Z"),
           ],
         },
-        { version: BUNDLE_VERSION, exportedAt: TIMESTAMP, project: project(P2, "Bitig", "BIT"), tasks: [] },
+        { version: BUNDLE_VERSION, exportedAt: TIMESTAMP, project: project(P2, "Other", "BIT"), tasks: [] },
       ],
     });
     expect(changed).toHaveLength(1);
     expect(changed[0]?.project.key).toBe("BIT2");
     expect(changed[0]?.tasks.map((t) => [t.id, t.number])).toEqual([
-      [T1, 7],
-      [T2, 6],
-      [T3, 5],
+      [T1, 3],
+      [T2, 1],
+      [T3, 2],
     ]);
   });
 
