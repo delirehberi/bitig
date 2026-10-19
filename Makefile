@@ -63,7 +63,7 @@ test-nostr-relay: ## Run the Nostr adapter against a local nak relay
 # Not part of `check`/CI: drives Chromium against `make dev` (Playwright starts it,
 # or reuses one already running) and writes to the local D1 database.
 e2e: ## Run browser lifecycle tests against the local dev stack
-	@if [ ! -f "$(WORKER_DEV_VARS)" ]; then echo "$(WORKER_DEV_VARS) is missing; it provides BASIC_AUTH_USER/BASIC_AUTH_PASS." >&2; exit 1; fi
+	@if [ ! -f "$(WORKER_DEV_VARS)" ]; then echo "$(WORKER_DEV_VARS) is missing; it provides BASIC_AUTH_USER/BASIC_AUTH_PASS and SESSION_SECRET." >&2; exit 1; fi
 	@$(NODE_ENV_SETUP) set -a && source "$(WORKER_DEV_VARS)" && set +a && \
 	pnpm --filter @bitig/web exec playwright install chromium && \
 	pnpm --filter @bitig/web exec playwright test

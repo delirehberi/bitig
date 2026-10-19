@@ -111,7 +111,7 @@ Bitig (Turkic for "record/document") is a flexible, edge-ready task and project 
 
 ### Storage modes
 1. **Local (Markdown as DB):** offline, no network. Projects are directories; tasks are `.md` files (YAML frontmatter + body). Node `fs` for CLI/desktop; File System Access API in the browser (Chromium only).
-2. **Cloudflare (Hono + D1):** relational storage via Drizzle ORM, web dashboard, HTTP Basic Auth.
+2. **Cloudflare (Hono + D1):** relational storage via Drizzle ORM, web dashboard with a `/login` page and session cookie (Basic Auth still accepted for API clients).
 3. **Nostr (decentralized):** browser-only SPA using `nostr-tools` with NIP-07 login. The Worker is not involved in this mode.
 
 MCP is available in every mode: STDIO (local CLI) and Streamable HTTP (Cloudflare). The web UI picks its provider at runtime from the deployment's `STORAGE_MODE` Worker var, which `GET /health` reports: `ApiStorage` (Cloudflare), `NostrStorage` (Nostr), or a local adapter (local web; currently an in-memory placeholder until the FS Access API adapter lands). Users cannot switch modes in the UI, and mode-specific controls are gated by feature flags derived from the mode (`apps/web/src/domain/features.ts`).
@@ -141,7 +141,7 @@ MCP is available in every mode: STDIO (local CLI) and Streamable HTTP (Cloudflar
 
 ## 7. Security Checklist
 
-- Basic Auth: secrets via `wrangler secret`, constant-time comparison, rate limiting, HTTPS only.
+- Dashboard sign-in: `/login` posts to `/api/auth/login`, which sets an HMAC-signed `__Host-` session cookie (`SESSION_SECRET`). Basic Auth headers still work for API clients. Secrets via `wrangler secret`, constant-time comparison, rate limiting, HTTPS only.
 - Dashboard NIP-07 against the Worker (if ever enabled) requires server-verified signing (NIP-98 or signed challenge), a session cookie and a pubkey allowlist. NIP-07 alone is not authentication.
 - MCP: Bearer token only; no credentials in logs.
 - Private Nostr tasks: encrypted content; note that tags are visible to relays.

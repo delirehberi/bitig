@@ -48,7 +48,8 @@ describe("Basic Authentication", () => {
   it("rejects unauthenticated requests to /api/projects with 401", async () => {
     const res = await exports.default.fetch(new Request(`${BASE_URL}/api/projects`));
     expect(res.status).toBe(401);
-    expect(res.headers.get("www-authenticate")).toBe('Basic realm="bitig"');
+    // No Basic challenge, so browsers never show their native login prompt.
+    expect(res.headers.get("www-authenticate")).toBeNull();
     expect(await res.json()).toEqual({ error: "unauthorized" });
   });
 

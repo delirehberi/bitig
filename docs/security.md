@@ -6,7 +6,7 @@ Bitig is an edge-ready task and project manager deployed across local filesystem
 
 ### Trust Boundaries
 1. **Local CLI / STDIO MCP:** Trusted local user executing on local filesystem. Isolation enforced via POSIX file permissions (`0700` directories) and advisory locking.
-2. **Cloudflare Worker (HTTP REST & Streamable MCP):** Public internet facing. Guarded by TLS, constant-time Basic Auth, constant-time Bearer token auth, sliding-window rate limiting, and CSRF protection.
+2. **Cloudflare Worker (HTTP REST & Streamable MCP):** Public internet facing. Guarded by TLS, HMAC-signed dashboard session cookies, constant-time Basic Auth, constant-time Bearer token auth, sliding-window rate limiting, and CSRF protection.
 3. **Nostr Relays:** Untrusted relay nodes. Cleartext is never sent for private tasks; NIP-44 authenticated encryption with ChaCha20-Poly1305 is used for task payloads.
 
 ---
@@ -20,6 +20,16 @@ All authentication mechanisms (HTTP Basic Auth for REST API, Bearer Token for re
 - If no credentials are configured in environment secrets (`BASIC_AUTH_PASS`, `MCP_AUTH_TOKEN`), all incoming requests are rejected by default with `401 Unauthorized`.
 - Credentials and secrets are never logged or exposed in client error payloads.
 
+### 2.2 Dashboard Sessions
+The dashboard signs in on its own `/login` page instead of the browser's native Basic Auth prompt:
+
+- `POST /api/auth/login` takes `{ username, password }` (JSON), checks them against `BASIC_AUTH_USER` / `BASIC_AUTH_PASS` in constant time, and sets a `__Host-bitig_session` cookie: `HttpOnly`, `Secure`, `SameSite=Strict`, `Path=/`, valid for 7 days. `GET /api/auth/session` reports the signed-in user; `POST /api/auth/logout` clears the cookie.
+- The cookie is stateless: `<expiry>:<user>` signed with HMAC-SHA256 under `SESSION_SECRET` (a Worker secret, at least 32 characters). The Worker rejects cookies with a bad signature, a past expiry, or a user other than `BASIC_AUTH_USER`. Rotating `SESSION_SECRET` signs everyone out. Logout clears the cookie in the browser; a copied cookie stays valid until it expires or the secret rotates.
+- Without `SESSION_SECRET`, login answers `503` and the dashboard says so; Basic Auth API access keeps working.
+- No credential is stored in browser storage; JavaScript never sees the cookie.
+- `/api/*` 401 responses no longer carry `WWW-Authenticate: Basic`, so browsers never show their native prompt. Scripts can still send `Authorization: Basic`.
+- Failed logins and cookies with a forged signature count toward the failed-login budget (section 3.1). Login requests pass the same CSRF check as other mutations, and `SameSite=Strict` keeps the cookie off cross-site requests.
+
 ---
 
 ## 3. Rate Limiting Architecture
@@ -27,9 +37,9 @@ All authentication mechanisms (HTTP Basic Auth for REST API, Bearer Token for re
 A sliding-window rate limiter is implemented at the Cloudflare Worker edge. Counters live in a SQLite-backed Durable Object (`RateLimiter`, binding `RATE_LIMITER`), one object per policy and client IP (`cf-connecting-ip`). This makes the limits global across Worker isolates and keeps them across object eviction; an alarm deletes an object's storage once its window has passed.
 
 ### 3.1 Rate Limit Tiers
-- **Authentication Failure Protection:** Max 10 failed login attempts per 15 minutes per IP. Mitigates brute-force attacks against Basic Auth and MCP tokens.
-  - Basic Auth (`/api/*`) and Bearer (`/mcp`) failures share one budget per IP.
-  - Only attempts that present credentials count (wrong password or token, malformed or wrong-scheme `Authorization` header). Requests without an `Authorization` header, such as the dashboard's pre-login probe, do not.
+- **Authentication Failure Protection:** Max 10 failed login attempts per 15 minutes per IP. Mitigates brute-force attacks against the dashboard login, Basic Auth and MCP tokens.
+  - Login (`/api/auth/login`), Basic Auth (`/api/*`) and Bearer (`/mcp`) failures share one budget per IP.
+  - Only attempts that present credentials count (wrong password or token, malformed or wrong-scheme `Authorization` header). Requests without credentials, such as the dashboard's session check before sign-in, do not, and neither do expired session cookies.
   - Once the budget is used up, every request from that IP to `/api/*` and `/mcp` gets `429` before credentials are checked, including requests with valid credentials, until the window passes. Other clients are not affected. A successful login does not reset the counter.
 - **REST API Routes (`/api/*`):** Max 1,000 requests per minute per IP.
 - **MCP Endpoint (`/mcp`):** Max 1,000 requests per minute per IP.
@@ -67,7 +77,7 @@ A mutating request that has neither header, is not marked cross-site, and does n
 This does not open a CSRF hole:
 - Browsers send `Origin` on cross-origin `POST`, `PATCH`, `PUT` and `DELETE` requests, so a forged request from another site is caught by step 1.
 - A cross-site browser request that could skip the CORS preflight must use a form content type, which step 4 rejects. A JSON request from another origin triggers a preflight, which CORS denies for origins not on the allowlist.
-- Every request still needs valid Basic Auth credentials, and failed logins are rate-limited (section 3).
+- Every request still needs a valid session cookie or Basic Auth credentials, and failed logins are rate-limited (section 3).
 
 What remains is a non-browser client that already holds valid credentials. That client is the account owner, not a CSRF attacker, so it is accepted.
 

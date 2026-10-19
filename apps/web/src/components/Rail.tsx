@@ -1,6 +1,8 @@
 import { FolderKanban, ListTodo, Settings, Sprout } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { HealthState } from "../hooks/useHealth";
+import { Link } from "../routing/Link";
+import { hrefFor } from "../routing/router";
 
 export type NavigationTab = "overview" | "projects" | "tasks";
 
@@ -22,11 +24,11 @@ const ICON_SIZE = 18;
 
 interface RailProps {
   readonly health: HealthState;
-  readonly activeTab: NavigationTab;
-  readonly onTabChange: (tab: NavigationTab) => void;
+  /** The section the current page belongs to; none on pages outside the nav, such as sign-in. */
+  readonly activeTab?: NavigationTab | undefined;
 }
 
-export function Rail({ health, activeTab, onTabChange }: RailProps) {
+export function Rail({ health, activeTab }: RailProps) {
   return (
     <aside className="flex flex-col gap-6 border-rule bg-paper-2 px-4 py-5 md:sticky md:top-0 md:h-dvh md:border-r md:py-6">
       <div className="flex items-center gap-3 px-2">
@@ -39,11 +41,8 @@ export function Rail({ health, activeTab, onTabChange }: RailProps) {
           {NAV_ITEMS.map(({ id, label, icon: Icon, available }) =>
             available && id !== "settings" ? (
               <li key={id}>
-                <button
-                  type="button"
-                  onClick={() => {
-                    onTabChange(id);
-                  }}
+                <Link
+                  href={hrefFor({ name: id })}
                   aria-current={activeTab === id ? "page" : undefined}
                   className={`flex w-full items-center gap-3 whitespace-nowrap rounded-md px-3 py-2 text-sm font-semibold transition-colors ${
                     activeTab === id
@@ -57,7 +56,7 @@ export function Rail({ health, activeTab, onTabChange }: RailProps) {
                     className={activeTab === id ? "text-accent-ink" : "text-ink-3"}
                   />
                   {label}
-                </button>
+                </Link>
               </li>
             ) : (
               <li key={label} className="hidden md:block">

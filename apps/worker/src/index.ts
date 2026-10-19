@@ -5,11 +5,12 @@ import { HTTPException } from "hono/http-exception";
 import { NotFoundError, ValidationError, type StorageMode, type StorageProvider } from "@bitig/core";
 import { D1Storage } from "@bitig/storage-d1";
 import { parseConfig, type AppConfig } from "./config";
-import { basicAuth, bearerAuth } from "./auth";
+import { apiAuth, bearerAuth } from "./auth";
 import { projectsRouter } from "./routes/projects";
 import { tasksRouter } from "./routes/tasks";
 import { backupRouter } from "./routes/backup";
 import { mcpRouter } from "./routes/mcp";
+import { sessionRouter } from "./routes/session";
 import { API_POLICY, MCP_POLICY, authFailureGuard, rateLimit } from "./rate-limit";
 import { csrfProtection } from "./csrf";
 import pkg from "../package.json" with { type: "json" };
@@ -87,9 +88,14 @@ export function createApp(options?: CreateAppOptions): Hono<AppEnv> {
   app.use("/api/*", rateLimit(API_POLICY));
   app.use("/api/*", csrfProtection());
 
-  // Basic auth guards all /api/* routes; clients over the failed-login budget get 429 first
+  // Clients over the failed-login budget get 429 before any credentials are checked
   app.use("/api/*", authFailureGuard());
-  app.use("/api/*", basicAuth());
+
+  // Sign-in routes answer before the guard below, so they need no credentials
+  app.route("/api/auth", sessionRouter);
+
+  // A session cookie or Basic credentials guard every other /api/* route
+  app.use("/api/*", apiAuth());
 
   // REST API routes
   app.route("/api/projects", projectsRouter);

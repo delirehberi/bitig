@@ -6,13 +6,12 @@ import { NostrStorage, Nip07Signer } from "@bitig/storage-nostr";
 import { useAuth } from "../auth/useAuth";
 
 export function useStorage(mode: StorageMode): StorageProvider {
-  const { authHeader } = useAuth();
+  const { expire } = useAuth();
 
   return useMemo(() => {
     if (mode === "cloudflare") {
-      return new ApiStorage({
-        auth: () => authHeader,
-      });
+      // The session cookie authenticates same-origin requests; a 401 means it is gone.
+      return new ApiStorage({ onUnauthorized: expire });
     }
 
     if (mode === "nostr") {
@@ -24,5 +23,5 @@ export function useStorage(mode: StorageMode): StorageProvider {
 
     // Local adapter fallback (P2 FS access API)
     return new InMemoryStorage();
-  }, [mode, authHeader]);
+  }, [mode, expire]);
 }

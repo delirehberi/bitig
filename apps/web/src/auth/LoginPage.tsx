@@ -1,22 +1,19 @@
 import { useState, type SyntheticEvent } from "react";
-import { Lock, X } from "lucide-react";
+import { Lock } from "lucide-react";
+import { navigate } from "../routing/router";
 import { useAuth } from "./useAuth";
 
-interface LoginFormProps {
-  readonly isOpen: boolean;
-  readonly onClose: () => void;
+interface LoginPageProps {
+  /** Where to go after signing in; already checked to be a same-origin path. */
+  readonly next?: string | undefined;
 }
 
-const ICON_SIZE = 16;
-
-export function LoginForm({ isOpen, onClose }: LoginFormProps) {
+export function LoginPage({ next }: LoginPageProps) {
   const { login } = useAuth();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
-
-  if (!isOpen) return null;
 
   async function handleSubmit(e: SyntheticEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -29,41 +26,29 @@ export function LoginForm({ isOpen, onClose }: LoginFormProps) {
     setError(null);
 
     const result = await login(username.trim(), password);
-    setIsSubmitting(false);
-
-    if (result.success) {
-      onClose();
-    } else {
-      setError(result.error ?? "Failed to sign in");
+    if (result.ok) {
+      navigate(next ?? "/", { replace: true });
+      return;
     }
+    setIsSubmitting(false);
+    setError(result.error);
   }
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="login-dialog-title"
-      className="fixed inset-0 z-modal flex items-center justify-center bg-ink/40 p-4 backdrop-blur-xs"
-    >
-      <div className="relative w-full max-w-sm rounded-lg border border-rule bg-paper p-6 shadow-lg">
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close"
-          className="absolute top-4 right-4 text-ink-3 transition-colors hover:text-ink"
-        >
-          <X size={ICON_SIZE} />
-        </button>
+    <main className="grid min-h-dvh place-items-center bg-paper-2 p-4">
+      <div className="w-full max-w-sm rounded-lg border border-rule bg-paper p-6 shadow-lg">
+        <div className="mb-5 flex items-center gap-3">
+          <img src="/favicon.svg" alt="" width={28} height={28} />
+          <span className="font-display text-xl font-bold tracking-tight text-ink">bitig</span>
+        </div>
 
         <div className="mb-5 flex items-center gap-3">
           <div className="flex size-9 items-center justify-center rounded-md bg-accent-soft text-accent-ink">
-            <Lock size={18} />
+            <Lock size={18} aria-hidden="true" />
           </div>
           <div>
-            <h2 id="login-dialog-title" className="m-0 font-display text-lg font-bold text-ink">
-              Sign In
-            </h2>
-            <p className="m-0 text-xs text-ink-3">Worker HTTP Basic Authentication</p>
+            <h1 className="m-0 font-display text-lg font-bold text-ink">Sign In</h1>
+            <p className="m-0 text-xs text-ink-3">Use the credentials configured on the Worker.</p>
           </div>
         </div>
 
@@ -83,9 +68,11 @@ export function LoginForm({ isOpen, onClose }: LoginFormProps) {
             </label>
             <input
               id="auth-username"
+              name="username"
               type="text"
               autoComplete="username"
               required
+              autoFocus
               value={username}
               onChange={(e) => {
                 setUsername(e.target.value);
@@ -102,6 +89,7 @@ export function LoginForm({ isOpen, onClose }: LoginFormProps) {
             </label>
             <input
               id="auth-password"
+              name="password"
               type="password"
               autoComplete="current-password"
               value={password}
@@ -114,25 +102,15 @@ export function LoginForm({ isOpen, onClose }: LoginFormProps) {
             />
           </div>
 
-          <div className="mt-2 flex items-center justify-end gap-2">
-            <button
-              type="button"
-              onClick={onClose}
-              disabled={isSubmitting}
-              className="rounded-md border border-rule px-3 py-2 text-xs font-medium text-ink-2 transition-colors hover:bg-paper-2 hover:text-ink"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={isSubmitting}
-              className="rounded-md bg-accent px-4 py-2 text-xs font-semibold text-paper transition-opacity hover:opacity-90 disabled:opacity-50"
-            >
-              {isSubmitting ? "Signing in…" : "Sign In"}
-            </button>
-          </div>
+          <button
+            type="submit"
+            disabled={isSubmitting}
+            className="mt-2 rounded-md bg-accent px-4 py-2 text-sm font-semibold text-paper transition-opacity hover:opacity-90 disabled:opacity-50"
+          >
+            {isSubmitting ? "Signing in…" : "Sign In"}
+          </button>
         </form>
       </div>
-    </div>
+    </main>
   );
 }

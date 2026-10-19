@@ -32,4 +32,13 @@ describe("parseConfig", () => {
   it("rejects an unknown STORAGE_MODE", () => {
     expect(() => parseConfig({ STORAGE_MODE: "bogus" })).toThrow(ConfigError);
   });
+
+  it("leaves sessions off when SESSION_SECRET is empty", () => {
+    expect(parseConfig({}).SESSION_SECRET).toBe("");
+  });
+
+  it("rejects a SESSION_SECRET shorter than 32 characters", () => {
+    expect(() => parseConfig({ SESSION_SECRET: "too-short" })).toThrow(ConfigError);
+    expect(parseConfig({ SESSION_SECRET: "x".repeat(32) }).SESSION_SECRET).toHaveLength(32);
+  });
 });

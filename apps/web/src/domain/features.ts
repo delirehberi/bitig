@@ -8,14 +8,14 @@ import { createContext } from "react";
 export interface FeatureFlags {
   /** Public/private task visibility: Nostr publishes public tasks and NIP-44 encrypts the rest. */
   readonly taskVisibility: boolean;
-  /** Basic Auth sign-in against the Worker's REST API. */
-  readonly basicAuthLogin: boolean;
+  /** Password sign-in on /login, backed by the Worker's session cookie. */
+  readonly passwordLogin: boolean;
 }
 
 export function featuresFor(mode: StorageMode): FeatureFlags {
   return {
     taskVisibility: mode === "nostr",
-    basicAuthLogin: mode === "cloudflare",
+    passwordLogin: mode === "cloudflare",
   };
 }
 
