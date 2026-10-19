@@ -1,5 +1,5 @@
-import type { StorageMode } from "@bitig/core";
-import { useEffect, useState } from "react";
+import { sortProjectsByActivity, type StorageMode } from "@bitig/core";
+import { useEffect, useMemo, useState } from "react";
 import { AuthProvider } from "./auth/auth-context";
 import { LoginPage } from "./auth/LoginPage";
 import { useAuth } from "./auth/useAuth";
@@ -52,6 +52,9 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
     deleteTask,
   } = useTasks(storage);
 
+  // Most recently worked on first, wherever projects are listed.
+  const recentProjects = useMemo(() => sortProjectsByActivity(projects, tasks), [projects, tasks]);
+
   function handleSelectProject(projectId: string | undefined) {
     navigate(hrefFor(projectId ? { name: "tasks", projectId } : { name: "tasks" }));
   }
@@ -86,7 +89,7 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
 
           {activeTab === "projects" && (
             <ProjectsView
-              projects={projects}
+              projects={recentProjects}
               tasks={tasks}
               isLoading={isProjectsLoading}
               error={projectsError}
@@ -101,7 +104,7 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
           {activeTab === "tasks" && (
             <TasksView
               tasks={tasks}
-              projects={projects}
+              projects={recentProjects}
               isLoading={isTasksLoading}
               error={tasksError}
               selectedProjectId={selectedProjectId}

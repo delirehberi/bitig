@@ -1,14 +1,15 @@
 import { useState } from "react";
 import { Kanban, List, Plus } from "lucide-react";
-import type {
-  CreateTaskInput,
-  Project,
-  Task,
-  TaskPriority,
-  TaskStatus,
-  UpdateTaskInput,
+import {
+  compareTasks,
+  type CreateTaskInput,
+  type Project,
+  type Task,
+  type TaskPriority,
+  type TaskStatus,
+  type UpdateTaskInput,
 } from "@bitig/core";
-import { TaskBoard } from "./TaskBoard";
+import { TaskBoard, type TaskMove } from "./TaskBoard";
 import { TaskList } from "./TaskList";
 import { TaskDetailModal } from "./TaskDetailModal";
 import { TaskModal } from "./TaskModal";
@@ -59,6 +60,7 @@ export function TasksView({
   const [viewTaskId, setViewTaskId] = useState<string | null>(null);
   const viewTask = tasks.find((t) => t.id === viewTaskId) ?? null;
 
+  // Sorted here because local updates (a status or order change) don't re-sort `tasks`.
   const filteredTasks = tasks.filter((task) => {
     if (selectedProjectId && task.projectId !== selectedProjectId) {
       return false;
@@ -76,7 +78,7 @@ export function TasksView({
       }
     }
     return true;
-  });
+  }).sort(compareTasks);
 
   async function handleModalSubmit(input: CreateTaskInput) {
     if (modalState.task) {
@@ -88,6 +90,10 @@ export function TasksView({
 
   async function handleStatusChange(task: Task, status: TaskStatus) {
     await onUpdateTask(task.id, { status });
+  }
+
+  async function handleMove(moves: readonly TaskMove[]) {
+    for (const { task, patch } of moves) await onUpdateTask(task.id, patch);
   }
 
   return (
@@ -228,6 +234,9 @@ export function TasksView({
           }}
           onStatusChange={(t, s) => {
             void handleStatusChange(t, s);
+          }}
+          onMove={(moves) => {
+            void handleMove(moves);
           }}
         />
       ) : (

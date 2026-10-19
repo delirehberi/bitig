@@ -246,3 +246,26 @@ export function compareProjects(a: Project, b: Project): number {
   return a.id < b.id ? -1 : 1;
 }
 
+
+/**
+ * Projects most recently worked on first. A project's activity is the newest
+ * `updatedAt` among the project and its tasks, so editing any task moves its
+ * project up. Ties fall back to `compareProjects`.
+ */
+export function sortProjectsByActivity(
+  projects: readonly Project[],
+  tasks: readonly Task[],
+): Project[] {
+  const activity = new Map<string, number>();
+  for (const project of projects) activity.set(project.id, Date.parse(project.updatedAt));
+  for (const task of tasks) {
+    const current = activity.get(task.projectId);
+    if (current === undefined) continue;
+    const touched = Date.parse(task.updatedAt);
+    if (touched > current) activity.set(task.projectId, touched);
+  }
+  return [...projects].sort(
+    (a, b) =>
+      (activity.get(b.id) ?? 0) - (activity.get(a.id) ?? 0) || compareProjects(a, b),
+  );
+}

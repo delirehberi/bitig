@@ -1,4 +1,14 @@
-import { Calendar, CheckCircle2, Circle, Edit2, Globe, Lock, Tag, Trash2 } from "lucide-react";
+import {
+  Calendar,
+  CheckCircle2,
+  Circle,
+  Edit2,
+  Globe,
+  GripVertical,
+  Lock,
+  Tag,
+  Trash2,
+} from "lucide-react";
 import {
   TASK_STATUSES,
   type Project,
@@ -18,6 +28,8 @@ interface TaskCardProps {
   readonly onDelete: (task: Task) => void;
   readonly onComplete: (task: Task) => void;
   readonly onStatusChange: (task: Task, status: TaskStatus) => void;
+  /** Shows a reorder handle; arrow keys on it move the card up (-1) or down (1). */
+  readonly onReorder?: (direction: -1 | 1) => void;
 }
 
 const PRIORITY_BADGES: Record<TaskPriority, string> = {
@@ -38,6 +50,7 @@ export function TaskCard({
   onDelete,
   onComplete,
   onStatusChange,
+  onReorder,
 }: TaskCardProps) {
   const { taskVisibility } = useFeatureFlags();
   const project = projects.find((p) => p.id === task.projectId);
@@ -88,6 +101,22 @@ export function TaskCard({
           </div>
 
           <div className="flex items-center gap-1 opacity-80 group-hover:opacity-100">
+            {onReorder && (
+              <button
+                type="button"
+                data-reorder-handle={task.id}
+                onKeyDown={(e) => {
+                  if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+                  e.preventDefault();
+                  onReorder(e.key === "ArrowUp" ? -1 : 1);
+                }}
+                title="Drag to reorder, or focus and press the arrow keys"
+                aria-label={`Reorder ${task.title}`}
+                className="cursor-grab rounded-md p-1 text-ink-3 transition-colors hover:bg-paper-2 hover:text-ink focus-visible:outline-focus active:cursor-grabbing"
+              >
+                <GripVertical size={ICON_SIZE} />
+              </button>
+            )}
             <button
               type="button"
               onClick={() => {
