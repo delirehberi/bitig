@@ -1,6 +1,6 @@
 import { useState, type SyntheticEvent } from "react";
 import { Lock } from "lucide-react";
-import { navigate } from "../routing/router";
+import { hrefFor, navigate } from "../routing/router";
 import { useAuth } from "./useAuth";
 
 interface LoginPageProps {
@@ -27,7 +27,7 @@ export function LoginPage({ next }: LoginPageProps) {
 
     const result = await login(username.trim(), password);
     if (result.ok) {
-      navigate(next ?? "/", { replace: true });
+      navigate(next ?? hrefFor({ name: "overview" }), { replace: true });
       return;
     }
     setIsSubmitting(false);

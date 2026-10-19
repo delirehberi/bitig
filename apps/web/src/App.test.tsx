@@ -14,7 +14,7 @@ function stubFetch(impl: () => Promise<Response>) {
 
 describe("App", () => {
   beforeEach(() => {
-    window.history.replaceState(null, "", "/");
+    window.history.replaceState(null, "", "/app");
   });
 
   it("shows the worker as online with its version", async () => {
@@ -98,7 +98,7 @@ describe("App", () => {
     render(<App />);
 
     expect(await screen.findByText(MODE_COPY.nostr.summary)).toBeInTheDocument();
-    expect(window.location.pathname).toBe("/");
+    expect(window.location.pathname).toBe("/app");
     expect(vi.mocked(fetch).mock.calls.some(([input]) => urlOf(input).includes("/api/auth"))).toBe(false);
   });
 });

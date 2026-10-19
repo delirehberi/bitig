@@ -8,6 +8,7 @@ import { useSyncExternalStore } from "react";
  */
 
 export type Route =
+  | { readonly name: "landing" }
   | { readonly name: "overview" }
   | { readonly name: "projects" }
   | { readonly name: "tasks"; readonly projectId?: string }
@@ -19,6 +20,8 @@ const PROJECT_PARAM = "project";
 const NEXT_PARAM = "next";
 
 export const LOGIN_PATH = "/login";
+/** The dashboard's home; `/` is the public landing page. */
+export const APP_PATH = "/app";
 
 function trimTrailingSlash(pathname: string): string {
   return pathname.length > 1 ? pathname.replace(/\/+$/, "") : pathname;
@@ -37,6 +40,8 @@ export function parseRoute(pathname: string, search: string): Route {
   const params = new URLSearchParams(search);
   switch (trimTrailingSlash(pathname)) {
     case "/":
+      return { name: "landing" };
+    case APP_PATH:
       return { name: "overview" };
     case "/projects":
       return { name: "projects" };
@@ -55,9 +60,11 @@ export function parseRoute(pathname: string, search: string): Route {
 
 export function hrefFor(route: Route): string {
   switch (route.name) {
+    case "landing":
+      return "/";
     case "overview":
     case "not_found":
-      return "/";
+      return APP_PATH;
     case "projects":
       return "/projects";
     case "tasks":

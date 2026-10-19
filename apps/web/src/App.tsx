@@ -15,6 +15,7 @@ import { useHealth, type HealthState } from "./hooks/useHealth";
 import { useProjects } from "./hooks/useProjects";
 import { useStorage } from "./hooks/useStorage";
 import { useTasks } from "./hooks/useTasks";
+import { LandingPage } from "./landing/LandingPage";
 import { hrefFor, navigate, useLocationHref, useRoute, type Route } from "./routing/router";
 
 type WorkspaceRoute = Extract<Route, { name: NavigationTab }>;
@@ -145,7 +146,8 @@ function Pages({ mode, health }: { readonly mode: StorageMode; readonly health: 
   const { status } = useAuth();
   const { passwordLogin } = useFeatureFlags();
 
-  if (route.name === "not_found") return <Redirect to={hrefFor({ name: "overview" })} />;
+  // App renders the landing page itself; this only narrows the route type.
+  if (route.name === "not_found" || route.name === "landing") return <Redirect to={hrefFor({ name: "overview" })} />;
 
   if (!passwordLogin) {
     if (route.name === "login") return <Redirect to={route.next ?? hrefFor({ name: "overview" })} />;
@@ -195,6 +197,9 @@ function SessionGate({ mode, health }: { readonly mode: StorageMode; readonly he
   );
 }
 
+/** `/` is the public landing page; it needs no Worker, so it renders before the health check. */
 export function App() {
+  const route = useRoute();
+  if (route.name === "landing") return <LandingPage />;
   return <Dashboard />;
 }
