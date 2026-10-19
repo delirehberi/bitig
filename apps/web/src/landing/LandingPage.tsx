@@ -176,10 +176,7 @@ function SectionHeading({
 
 function Logo() {
   return (
-    <span className="flex items-center gap-3">
-      <img src="/favicon.svg" alt="" width={28} height={28} />
-      <span className="font-display text-xl font-bold tracking-tight text-ink">bitig</span>
-    </span>
+    <img src="/logo.svg" alt="bitig" width={81} height={32} />
   );
 }
 
@@ -553,7 +550,7 @@ export function LandingPage() {
       <footer className="border-t border-rule">
         <div className={`${CONTAINER} flex flex-col gap-4 pt-7 pb-10 sm:flex-row sm:items-center sm:justify-between`}>
           <p className="flex items-center gap-2.5">
-            <span className="font-display text-lg font-bold tracking-tight">bitig</span>
+            <img src="/logo.svg" alt="bitig" width={57} height={23} />
             <span className="text-sm text-ink-3">Old Turkic for “record”.</span>
           </p>
           <nav aria-label="Footer">

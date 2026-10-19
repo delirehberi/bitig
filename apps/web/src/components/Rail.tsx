@@ -32,8 +32,7 @@ export function Rail({ health, activeTab }: RailProps) {
   return (
     <aside className="flex flex-col gap-6 border-rule bg-paper-2 px-4 py-5 md:sticky md:top-0 md:h-dvh md:border-r md:py-6">
       <div className="flex items-center gap-3 px-2">
-        <img src="/favicon.svg" alt="" width={28} height={28} />
-        <span className="font-display text-xl font-bold tracking-tight text-ink">bitig</span>
+        <img src="/logo.svg" alt="bitig" width={81} height={32} />
       </div>
 
       <nav aria-label="Primary">
