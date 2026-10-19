@@ -39,6 +39,7 @@ export {
   applyTaskPatch,
   buildProject,
   buildTask,
+  cloneProject,
   cloneTask,
   compareProjects,
   compareTasks,

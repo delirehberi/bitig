@@ -27,6 +27,29 @@ describe("Nostr codecs", () => {
     expect(decoded).toEqual(project);
   });
 
+  it("stores project resources as ordered resource tags", () => {
+    const now = toTimestamp(new Date());
+    const project = {
+      id: defaultIdGenerator(),
+      name: "Linked",
+      description: "",
+      kind: "hobby" as const,
+      createdAt: now,
+      updatedAt: now,
+      resources: [
+        { type: "repository" as const, label: "GitHub", url: "https://github.com/acme/bitig" },
+        { type: "design" as const, label: "Figma", url: "https://www.figma.com/design/abc" },
+      ],
+    };
+
+    const template = encodeProjectEvent(project);
+    expect(template.tags.filter((tag) => tag[0] === "resource")).toEqual([
+      ["resource", "https://github.com/acme/bitig", "repository", "GitHub"],
+      ["resource", "https://www.figma.com/design/abc", "design", "Figma"],
+    ]);
+    expect(decodeProjectEvent(template)).toEqual(project);
+  });
+
   it("encodes and decodes a public Task in cleartext JSON", async () => {
     const pubkey = await signer.getPublicKey();
     const now = toTimestamp(new Date());

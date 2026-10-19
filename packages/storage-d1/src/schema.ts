@@ -6,6 +6,7 @@ import {
   DEFAULT_TASK_STATUS,
   type ChecklistItem,
   type ProjectKind,
+  type ProjectResource,
   type TaskPriority,
   type TaskStatus,
 } from "@bitig/core";
@@ -15,6 +16,7 @@ export const projects = sqliteTable("projects", {
   name: text("name").notNull(),
   description: text("description").notNull().default(DEFAULT_DESCRIPTION),
   kind: text("kind").$type<ProjectKind>().notNull().default(DEFAULT_PROJECT_KIND),
+  resources: text("resources", { mode: "json" }).$type<ProjectResource[]>(),
   createdAt: integer("created_at").notNull(),
   updatedAt: integer("updated_at").notNull(),
 });

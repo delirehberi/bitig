@@ -15,6 +15,13 @@
       "when": 1792410494250,
       "tag": "0001_task_checklist",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1792411175205,
+      "tag": "0002_project_resources",
+      "breakpoints": true
     }
   ]
 }

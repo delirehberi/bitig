@@ -18,6 +18,7 @@ import type {
   CreateProjectInput,
   CreateTaskInput,
   Project,
+  ProjectResource,
   Task,
   TaskPriority,
   UpdateProjectInput,
@@ -65,19 +66,34 @@ function nextUpdatedAt(previous: string, now: Date): string {
   return Date.parse(candidate) >= Date.parse(previous) ? candidate : previous;
 }
 
+/** Adds resources only when there are some, as a copy; an empty list is the same as none. */
+function withResources(
+  project: Omit<Project, "resources">,
+  resources: readonly ProjectResource[] | undefined,
+): Project {
+  const result: Project = { ...project };
+  if (resources !== undefined && resources.length > 0) {
+    result.resources = resources.map((resource) => ({ ...resource }));
+  }
+  return result;
+}
+
 export function buildProject(input: CreateProjectInput, deps: RuntimeDeps): Project {
   const parsed = parseOrThrow(CreateProjectInputSchema, input, "createProject");
   const now = toTimestamp(deps.clock());
   return parseOrThrow(
     ProjectSchema,
-    {
-      id: deps.generateId(),
-      name: parsed.name,
-      description: parsed.description,
-      kind: parsed.kind,
-      createdAt: now,
-      updatedAt: now,
-    },
+    withResources(
+      {
+        id: deps.generateId(),
+        name: parsed.name,
+        description: parsed.description,
+        kind: parsed.kind,
+        createdAt: now,
+        updatedAt: now,
+      },
+      parsed.resources,
+    ),
     "createProject result",
   );
 }
@@ -88,15 +104,19 @@ export function applyProjectPatch(
   now: Date,
 ): Project {
   const parsed = parseOrThrow(UpdateProjectInputSchema, patch, "updateProject");
+  const { resources, ...rest } = project;
   return parseOrThrow(
     ProjectSchema,
-    {
-      ...project,
-      name: parsed.name ?? project.name,
-      description: parsed.description ?? project.description,
-      kind: parsed.kind ?? project.kind,
-      updatedAt: nextUpdatedAt(project.updatedAt, now),
-    },
+    withResources(
+      {
+        ...rest,
+        name: parsed.name ?? project.name,
+        description: parsed.description ?? project.description,
+        kind: parsed.kind ?? project.kind,
+        updatedAt: nextUpdatedAt(project.updatedAt, now),
+      },
+      resolveClearable(resources, parsed.resources),
+    ),
     "updateProject result",
   );
 }
@@ -157,6 +177,15 @@ export function applyTaskPatch(task: Task, patch: UpdateTaskInput, now: Date): T
 export function completeTaskEntity(task: Task, now: Date): Task {
   if (task.status === COMPLETED_TASK_STATUS) return task;
   return { ...task, status: COMPLETED_TASK_STATUS, updatedAt: nextUpdatedAt(task.updatedAt, now) };
+}
+
+/** A deep copy: callers that mutate it never touch stored state. */
+export function cloneProject(project: Project): Project {
+  const copy = { ...project };
+  if (project.resources !== undefined) {
+    copy.resources = project.resources.map((resource) => ({ ...resource }));
+  }
+  return copy;
 }
 
 /** A deep copy: callers that mutate it never touch stored state. */

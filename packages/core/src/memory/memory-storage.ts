@@ -3,6 +3,7 @@ import {
   applyTaskPatch,
   buildProject,
   buildTask,
+  cloneProject,
   cloneTask,
   compareProjects,
   compareTasks,
@@ -31,10 +32,7 @@ import { defaultRuntimeDeps, toTimestamp, type RuntimeDeps } from "../runtime/id
 import { throwIfAborted, type AbortSignalLike } from "../storage/abort";
 import type { OperationOptions, StorageProvider } from "../storage/provider";
 
-/** Projects are flat, so a shallow copy fully detaches callers from stored state. */
-function copyProject(project: Project): Project {
-  return { ...project };
-}
+const copyProject = cloneProject;
 
 const copyTask = cloneTask;
 

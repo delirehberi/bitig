@@ -127,12 +127,14 @@ describe("Bitig CLI STDIO MCP Server E2E", () => {
       name: "All Tools Renamed",
       description: "Updated over STDIO",
       kind: "personal",
+      resources: [{ type: "repository", label: "Code", url: "https://github.com/acme/all-tools" }],
     });
     expect(updatedProject).toMatchObject({
       id: project.id,
       name: "All Tools Renamed",
       description: "Updated over STDIO",
       kind: "personal",
+      resources: [{ type: "repository", label: "Code", url: "https://github.com/acme/all-tools" }],
     });
 
     // Tasks: add, list (filtered), get, update, complete

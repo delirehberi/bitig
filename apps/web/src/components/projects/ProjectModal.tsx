@@ -1,6 +1,8 @@
 import { useState, type SyntheticEvent } from "react";
 import { PROJECT_KINDS, type CreateProjectInput, type Project, type ProjectKind } from "@bitig/core";
 import { FolderKanban, X } from "lucide-react";
+import { toResources, type ResourceDraft } from "./resource-drafts";
+import { ResourcesEditor } from "./Resources";
 
 interface ProjectModalProps {
   readonly isOpen: boolean;
@@ -23,6 +25,9 @@ export function ProjectModal({ isOpen, onClose, onSubmit, project }: ProjectModa
   const [name, setName] = useState(project?.name ?? "");
   const [description, setDescription] = useState(project?.description ?? "");
   const [kind, setKind] = useState<ProjectKind>(project?.kind ?? "hobby");
+  const [resources, setResources] = useState<ResourceDraft[]>(
+    () => project?.resources?.map((resource) => ({ ...resource })) ?? [],
+  );
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -37,6 +42,12 @@ export function ProjectModal({ isOpen, onClose, onSubmit, project }: ProjectModa
       return;
     }
 
+    const links = toResources(resources);
+    if (!links.ok) {
+      setError(links.error);
+      return;
+    }
+
     setIsSubmitting(true);
     setError(null);
 
@@ -45,6 +56,8 @@ export function ProjectModal({ isOpen, onClose, onSubmit, project }: ProjectModa
         name: name.trim(),
         description: description.trim(),
         kind,
+        // When editing, an empty list is sent so removing every link clears them.
+        ...(links.resources.length > 0 || isEditing ? { resources: links.resources } : {}),
       });
       onClose();
     } catch (err: unknown) {
@@ -61,7 +74,7 @@ export function ProjectModal({ isOpen, onClose, onSubmit, project }: ProjectModa
       aria-labelledby="project-modal-title"
       className="fixed inset-0 z-modal flex items-center justify-center bg-ink/40 p-4 backdrop-blur-xs"
     >
-      <div className="relative w-full max-w-md rounded-lg border border-rule bg-paper p-6 shadow-lg">
+      <div className="relative max-h-[90vh] w-full max-w-md overflow-y-auto rounded-lg border border-rule bg-paper p-6 shadow-lg">
         <button
           type="button"
           onClick={onClose}
@@ -148,6 +161,11 @@ export function ProjectModal({ isOpen, onClose, onSubmit, project }: ProjectModa
               disabled={isSubmitting}
             />
           </div>
+
+          <fieldset className="m-0 border-0 p-0">
+            <legend className="mb-1 block text-xs font-semibold text-ink-2">Links</legend>
+            <ResourcesEditor items={resources} onChange={setResources} disabled={isSubmitting} />
+          </fieldset>
 
           <div className="mt-2 flex items-center justify-end gap-2">
             <button

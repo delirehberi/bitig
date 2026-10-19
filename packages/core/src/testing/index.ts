@@ -139,6 +139,70 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
         expect(await storage.getProjects()).toEqual([project]);
       });
 
+      it("creates a project without resources by default", async () => {
+        const project = await createProject();
+        expect(project).not.toHaveProperty("resources");
+      });
+
+      it("round-trips resources in order", async () => {
+        const resources = [
+          { type: "repository", label: "GitHub", url: "https://github.com/acme/bitig" },
+          { type: "issue_tracker", label: "Jira", url: "https://acme.atlassian.net/browse/BIT" },
+          { type: "design", label: "Figma", url: "https://www.figma.com/design/abc/Bitig?node-id=1-2" },
+        ] as const;
+        const project = await storage.createProject({ name: "p", resources: [...resources] });
+        expect(project.resources).toEqual(resources);
+        expect(await storage.getProject(project.id)).toEqual(project);
+        expect(await storage.getProjects()).toEqual([project]);
+      });
+
+      it("edits resources as a whole and clears them with null or []", async () => {
+        const project = await storage.createProject({
+          name: "p",
+          resources: [{ type: "other", label: "Wiki", url: "https://wiki.example.com" }],
+        });
+
+        const edited = await storage.updateProject(project.id, {
+          resources: [
+            { type: "documentation", label: "Docs", url: "https://docs.example.com" },
+            { type: "other", label: "Wiki (old)", url: "https://wiki.example.com" },
+          ],
+        });
+        expect(edited.resources?.map((r) => r.label)).toEqual(["Docs", "Wiki (old)"]);
+        expect(await storage.getProject(project.id)).toEqual(edited);
+
+        const renamed = await storage.updateProject(project.id, { name: "Renamed" });
+        expect(renamed.resources).toEqual(edited.resources);
+
+        const emptied = await storage.updateProject(project.id, { resources: [] });
+        expect(emptied).not.toHaveProperty("resources");
+        expect(await storage.getProject(project.id)).toEqual(emptied);
+
+        await storage.updateProject(project.id, {
+          resources: [{ type: "other", label: "x", url: "https://x.example.com" }],
+        });
+        const cleared = await storage.updateProject(project.id, { resources: null });
+        expect(cleared).not.toHaveProperty("resources");
+        expect(await storage.getProject(project.id)).toEqual(cleared);
+      });
+
+      it("rejects invalid resources", async () => {
+        const invalid = [
+          { type: "other", label: "x", url: "javascript:alert(1)" },
+          { type: "other", label: "x", url: "file:///etc/passwd" },
+          { type: "other", label: "x", url: "not a url" },
+          { type: "other", label: " ", url: "https://example.com" },
+          { type: "chat", label: "x", url: "https://example.com" },
+          { type: "other", label: "x" },
+        ];
+        for (const resource of invalid) {
+          await expect(
+            storage.createProject({ name: "p", resources: [resource] as never }),
+          ).rejects.toBeInstanceOf(ValidationError);
+        }
+        expect(await storage.getProjects()).toEqual([]);
+      });
+
       it("rejects malformed IDs", async () => {
         await expect(storage.getProject(MALFORMED_ID)).rejects.toBeInstanceOf(ValidationError);
         await expect(storage.deleteProject(MALFORMED_ID)).rejects.toBeInstanceOf(ValidationError);
@@ -474,7 +538,11 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
 
     describe("interoperability and bundles", () => {
       it("exports and imports a project bundle with exact fields and tasks", async () => {
-        const project = await storage.createProject({ name: "Export Test", kind: "open_source" });
+        const project = await storage.createProject({
+          name: "Export Test",
+          kind: "open_source",
+          resources: [{ type: "repository", label: "Code", url: "https://github.com/acme/export" }],
+        });
         const t1 = await storage.saveTask({
           projectId: project.id,
           title: "Task 1",
@@ -535,17 +603,26 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
 
     describe("integrity", () => {
       it("returns copies that cannot mutate stored state", async () => {
-        const project = await createProject();
+        const project = await storage.createProject({
+          name: "p",
+          resources: [{ type: "other", label: "Site", url: "https://example.com" }],
+        });
         const task = await storage.saveTask({
           projectId: project.id,
           title: "t",
           labels: ["a"],
           checklist: [{ text: "item", done: false }],
         });
-        const snapshotProject = { ...project };
+        const snapshotProject = {
+          ...project,
+          resources: [{ type: "other", label: "Site", url: "https://example.com" }],
+        };
         const snapshotTask = { ...task, labels: ["a"], checklist: [{ text: "item", done: false }] };
 
         project.name = "mutated";
+        project.resources?.push({ type: "other", label: "pushed", url: "https://x.example.com" });
+        const listedProject = (await storage.getProjects())[0]?.resources?.[0];
+        if (listedProject) listedProject.label = "mutated";
         task.title = "mutated";
         task.labels?.push("b");
         task.checklist?.push({ text: "pushed", done: false });

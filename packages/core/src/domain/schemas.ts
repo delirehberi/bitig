@@ -11,6 +11,10 @@ import {
   LABEL_MAX,
   PROJECT_KINDS,
   PROJECT_NAME_MAX,
+  RESOURCES_MAX_COUNT,
+  RESOURCE_LABEL_MAX,
+  RESOURCE_TYPES,
+  RESOURCE_URL_MAX,
   TASK_PRIORITIES,
   TASK_STATUSES,
   TASK_TITLE_MAX,
@@ -56,6 +60,20 @@ export const ChecklistItemSchema = z.strictObject({
 
 export const ChecklistSchema = z.array(ChecklistItemSchema).max(CHECKLIST_MAX_ITEMS);
 
+export const ResourceTypeSchema = z.enum(RESOURCE_TYPES);
+
+/** Only web links: other schemes (javascript:, file:) are never stored or rendered. */
+export const ResourceUrlSchema = z.url({ protocol: /^https?$/ }).max(RESOURCE_URL_MAX);
+
+/** A link from a project to something outside Bitig. Its position in the list is its order. */
+export const ProjectResourceSchema = z.strictObject({
+  type: ResourceTypeSchema,
+  label: z.string().trim().min(1).max(RESOURCE_LABEL_MAX),
+  url: ResourceUrlSchema,
+});
+
+export const ProjectResourcesSchema = z.array(ProjectResourceSchema).max(RESOURCES_MAX_COUNT);
+
 // ---------------------------------------------------------------------------
 // Entities
 // ---------------------------------------------------------------------------
@@ -67,6 +85,8 @@ export const ProjectSchema = z.strictObject({
   kind: ProjectKindSchema,
   createdAt: TimestampSchema,
   updatedAt: TimestampSchema,
+  /** Never empty: an empty list is stored as no resources. */
+  resources: ProjectResourcesSchema.min(1).exactOptional(),
 });
 
 export const TaskSchema = z.strictObject({
@@ -102,14 +122,17 @@ export const CreateProjectInputSchema = z.strictObject({
   name: ProjectNameSchema,
   description: DescriptionSchema.default(DEFAULT_DESCRIPTION),
   kind: ProjectKindSchema.default(DEFAULT_PROJECT_KIND),
+  resources: ProjectResourcesSchema.optional(),
 });
 
-/** Project fields are all required on the entity, so none can be cleared. */
+/** `undefined` leaves a field unchanged; only `resources` can be cleared, with `null` or `[]`. */
 export const UpdateProjectInputSchema = z
   .strictObject({
     name: ProjectNameSchema.optional(),
     description: DescriptionSchema.optional(),
     kind: ProjectKindSchema.optional(),
+    /** Replaces the whole list. */
+    resources: ProjectResourcesSchema.nullable().optional(),
   })
   .refine(hasAnyDefinedField, { message: EMPTY_PATCH_MESSAGE });
 

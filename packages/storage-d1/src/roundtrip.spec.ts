@@ -104,6 +104,7 @@ const STATEMENTS = [
     \`name\` text NOT NULL,
     \`description\` text DEFAULT '' NOT NULL,
     \`kind\` text DEFAULT 'hobby' NOT NULL,
+    \`resources\` text,
     \`created_at\` integer NOT NULL,
     \`updated_at\` integer NOT NULL
   )`,
@@ -156,6 +157,10 @@ describe("Cross-Mode Round-Trip Interoperability", () => {
       name: "Cross-Mode Interop Project",
       kind: "open_source",
       description: "Testing lossless roundtrip across Markdown, D1, and Nostr",
+      resources: [
+        { type: "repository", label: "Code", url: "https://github.com/acme/interop" },
+        { type: "issue_tracker", label: "Jira: INT", url: "https://acme.atlassian.net/browse/INT" },
+      ],
     });
 
     const task1 = await markdownStorage.saveTask({

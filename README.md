@@ -111,8 +111,13 @@ bitig projects list --json
 # Create a project
 bitig projects create "Bitig Development" --id bitig --kind open_source --description "Task manager for edge and local"
 
-# Get project details
-bitig projects get bitig
+# Show project details and links
+bitig projects show bitig
+
+# Link outside resources (repository, issue_tracker, design, documentation, other); positions are 1-based
+bitig projects link add bitig https://github.com/acme/bitig --type repository --label GitHub
+bitig projects link edit bitig 1 --label "GitHub (main)"
+bitig projects link remove bitig 1
 
 # Update a project
 bitig projects update bitig --name "Bitig (Core)" --kind hobby

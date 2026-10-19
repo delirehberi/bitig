@@ -1,5 +1,6 @@
 import { Edit2, FolderKanban, ListTodo, Trash2 } from "lucide-react";
 import type { Project, ProjectKind, Task } from "@bitig/core";
+import { ResourceLinks } from "./Resources";
 
 interface ProjectCardProps {
   readonly project: Project;
@@ -68,6 +69,7 @@ export function ProjectCard({ project, tasks, onEdit, onDelete, onSelect }: Proj
         ) : (
           <p className="m-0 mt-1 text-xs italic text-ink-3">No description</p>
         )}
+        <ResourceLinks resources={project.resources} />
       </div>
 
       <div className="mt-5 flex items-center justify-between border-t border-rule pt-3">

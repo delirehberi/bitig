@@ -37,6 +37,7 @@ A project groups related tasks.
 | `name` | **Yes** | Project name (1–200 characters) | `["name", "Bitig Core"]` |
 | `kind` | **Yes** | Project category: `paid`, `hobby`, `open_source`, `personal`, or `internal` (default: `hobby`) | `["kind", "open_source"]` |
 | `alt` | No | NIP-31 human-readable description for clients without kind `30331` support | `["alt", "Bitig Project: Bitig Core"]` |
+| `resource` | No | A link to an outside resource: URL (http or https), type (`repository`, `issue_tracker`, `design`, `documentation` or `other`) and label. One tag per link, up to 50, in display order. Project events are not encrypted, so these links are public. | `["resource", "https://github.com/acme/bitig", "repository", "GitHub"]` |
 
 ### Content
 - Cleartext UTF-8 string containing the project description (up to 50,000 characters). May be empty (`""`).
