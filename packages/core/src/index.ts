@@ -45,6 +45,7 @@ export {
   compareTasks,
   completeTaskEntity,
   renumberTask,
+  sortProjectsByActivity,
 } from "./domain/entities";
 export {
   assertProjectKeyAvailable,

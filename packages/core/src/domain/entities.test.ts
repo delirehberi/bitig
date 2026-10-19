@@ -6,6 +6,7 @@ import {
   buildTask,
   compareProjects,
   compareTasks,
+  sortProjectsByActivity,
   completeTaskEntity,
 } from "./entities";
 import { ValidationError } from "./errors";
@@ -211,3 +212,40 @@ describe("compareProjects", () => {
   });
 });
 
+
+describe("sortProjectsByActivity", () => {
+  const runtime = createTestRuntime();
+  const older = buildProject({ name: "older" }, runtime, []);
+  const newer = buildProject({ name: "newer" }, runtime, []);
+  const task: Task = {
+    id: "01940000-0000-7000-8000-000000000099",
+    projectId: older.id,
+    title: "t",
+    description: "",
+    status: "todo",
+    isPublic: false,
+    createdAt: older.createdAt,
+    updatedAt: older.createdAt,
+  };
+
+  it("puts the most recently updated project first", () => {
+    expect(sortProjectsByActivity([older, newer], [])).toEqual([newer, older]);
+  });
+
+  it("counts a task update as activity on its project", () => {
+    const touched = { ...task, updatedAt: "2099-01-01T00:00:00.000Z" };
+    expect(sortProjectsByActivity([older, newer], [touched])).toEqual([older, newer]);
+  });
+
+  it("ignores tasks of unknown projects and keeps ties in canonical order", () => {
+    const stray = { ...task, projectId: "01940000-0000-7000-8000-0000000000aa" };
+    const twin = { ...older, id: "01940000-0000-7000-8000-0000000000ff" };
+    expect(sortProjectsByActivity([twin, older], [stray])).toEqual([older, twin]);
+  });
+
+  it("does not mutate its input", () => {
+    const input = [older, newer];
+    sortProjectsByActivity(input, []);
+    expect(input).toEqual([older, newer]);
+  });
+});

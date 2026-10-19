@@ -1,7 +1,21 @@
-import { TASK_STATUSES, type Project, type Task, type TaskStatus } from "@bitig/core";
+import { useEffect, useRef, useState, type DragEvent } from "react";
+import {
+  TASK_STATUSES,
+  type Project,
+  type Task,
+  type TaskStatus,
+  type UpdateTaskInput,
+} from "@bitig/core";
 import { TaskCard } from "./TaskCard";
+import { planMove } from "./reorder";
+
+export interface TaskMove {
+  readonly task: Task;
+  readonly patch: UpdateTaskInput;
+}
 
 interface TaskBoardProps {
+  /** In `compareTasks` order; each column keeps it. */
   readonly tasks: Task[];
   readonly projects: Project[];
   readonly onView: (task: Task) => void;
@@ -9,6 +23,8 @@ interface TaskBoardProps {
   readonly onDelete: (task: Task) => void;
   readonly onComplete: (task: Task) => void;
   readonly onStatusChange: (task: Task, status: TaskStatus) => void;
+  /** Writes for a drag-and-drop or keyboard move; the moved task comes first. */
+  readonly onMove: (moves: readonly TaskMove[]) => void;
 }
 
 const COLUMN_CONFIG: Record<
@@ -21,6 +37,12 @@ const COLUMN_CONFIG: Record<
   archived: { label: "Archived", dotClass: "bg-ink-3" },
 };
 
+interface DropTarget {
+  readonly status: TaskStatus;
+  /** Position among the column's cards, not counting the dragged one. */
+  readonly index: number;
+}
+
 export function TaskBoard({
   tasks,
   projects,
@@ -29,17 +51,93 @@ export function TaskBoard({
   onDelete,
   onComplete,
   onStatusChange,
+  onMove,
 }: TaskBoardProps) {
+  const [draggedId, setDraggedId] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
+  // A keyboard move re-renders the card elsewhere; keep focus on its handle.
+  const refocusId = useRef<string | null>(null);
+  const boardRef = useRef<HTMLDivElement>(null);
+
+  const columns = new Map(
+    TASK_STATUSES.map((status) => [
+      status,
+      tasks.filter((t) => t.status === status),
+    ]),
+  );
+
+  useEffect(() => {
+    const id = refocusId.current;
+    if (!id) return;
+    const handle = boardRef.current?.querySelector<HTMLElement>(
+      `[data-reorder-handle="${id}"]`,
+    );
+    if (!handle) return;
+    handle.focus();
+    refocusId.current = null;
+  }, [tasks]);
+
+  function move(task: Task, status: TaskStatus, index: number) {
+    const column = columns.get(status) ?? [];
+    const changes = planMove(column, task, index);
+    const statusChanged = task.status !== status;
+    if (changes.length === 0 && !statusChanged) return;
+    const moves = changes.map(({ task: t, order }): TaskMove => ({
+      task: t,
+      patch: t.id === task.id && statusChanged ? { status, order } : { order },
+    }));
+    onMove(moves);
+  }
+
+  function dropIndex(event: DragEvent<HTMLElement>, status: TaskStatus): number {
+    const cards = Array.from(
+      event.currentTarget.querySelectorAll<HTMLElement>("[data-task-id]"),
+    ).filter((el) => el.dataset.taskId !== draggedId);
+    const below = cards.findIndex((el) => {
+      const rect = el.getBoundingClientRect();
+      return event.clientY < rect.top + rect.height / 2;
+    });
+    return below === -1 ? (columns.get(status) ?? []).filter((t) => t.id !== draggedId).length : below;
+  }
+
+  function endDrag() {
+    setDraggedId(null);
+    setDropTarget(null);
+  }
+
   return (
-    <div className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-4">
+    <div ref={boardRef} className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-4">
       {TASK_STATUSES.map((status) => {
-        const colTasks = tasks.filter((t) => t.status === status);
+        const colTasks = columns.get(status) ?? [];
         const config = COLUMN_CONFIG[status];
+        const visible = colTasks.filter((t) => t.id !== draggedId);
+        const indicatorAt = dropTarget?.status === status ? dropTarget.index : null;
 
         return (
           <div
             key={status}
-            className="flex flex-col rounded-lg border border-rule bg-paper-2/60 p-4"
+            data-testid={`column-${status}`}
+            onDragOver={(e) => {
+              if (!draggedId) return;
+              e.preventDefault();
+              e.dataTransfer.dropEffect = "move";
+              const index = dropIndex(e, status);
+              if (dropTarget?.status !== status || dropTarget.index !== index) {
+                setDropTarget({ status, index });
+              }
+            }}
+            onDragLeave={(e) => {
+              if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDropTarget(null);
+            }}
+            onDrop={(e) => {
+              e.preventDefault();
+              const task = tasks.find((t) => t.id === draggedId);
+              if (task) move(task, status, dropIndex(e, status));
+              endDrag();
+            }}
+            className={`flex flex-col rounded-lg border bg-paper-2/60 p-4 transition-colors ${
+              indicatorAt !== null ? "border-accent/50" : "border-rule"
+            }`}
           >
             <div className="mb-3 flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -54,21 +152,49 @@ export function TaskBoard({
             <div className="flex flex-col gap-3 min-h-[120px]">
               {colTasks.length === 0 ? (
                 <div className="flex flex-1 items-center justify-center rounded-md border border-dashed border-rule p-4 text-center text-xs text-ink-3">
-                  No tasks
+                  {indicatorAt !== null ? "Drop here" : "No tasks"}
                 </div>
               ) : (
-                colTasks.map((task) => (
-                  <TaskCard
-                    key={task.id}
-                    task={task}
-                    projects={projects}
-                    onView={onView}
-                    onEdit={onEdit}
-                    onDelete={onDelete}
-                    onComplete={onComplete}
-                    onStatusChange={onStatusChange}
-                  />
-                ))
+                colTasks.map((task) => {
+                  const position = visible.indexOf(task);
+                  return (
+                    <div
+                      key={task.id}
+                      data-task-id={task.id}
+                      draggable
+                      onDragStart={(e) => {
+                        e.dataTransfer.effectAllowed = "move";
+                        // Firefox only starts a drag when some data is set.
+                        e.dataTransfer.setData("text/plain", task.title);
+                        setDraggedId(task.id);
+                      }}
+                      onDragEnd={endDrag}
+                      className={`relative ${task.id === draggedId ? "opacity-40" : ""}`}
+                    >
+                      {indicatorAt !== null && position === indicatorAt && <DropIndicator />}
+                      <TaskCard
+                        task={task}
+                        projects={projects}
+                        onView={onView}
+                        onEdit={onEdit}
+                        onDelete={onDelete}
+                        onComplete={onComplete}
+                        onStatusChange={onStatusChange}
+                        onReorder={(direction) => {
+                          const index = colTasks.indexOf(task) + direction;
+                          if (index < 0 || index >= colTasks.length) return;
+                          refocusId.current = task.id;
+                          move(task, status, index);
+                        }}
+                      />
+                    </div>
+                  );
+                })
+              )}
+              {indicatorAt !== null && indicatorAt === visible.length && visible.length > 0 && (
+                <div className="relative">
+                  <DropIndicator />
+                </div>
               )}
             </div>
           </div>
@@ -78,3 +204,11 @@ export function TaskBoard({
   );
 }
 
+function DropIndicator() {
+  return (
+    <div
+      aria-hidden="true"
+      className="pointer-events-none absolute inset-x-0 -top-2 h-0.5 rounded-pill bg-accent"
+    />
+  );
+}
