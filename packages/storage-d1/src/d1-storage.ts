@@ -94,6 +94,9 @@ function recordToTask(row: TaskRecord): Task {
   if (row.checklist !== null) {
     task.checklist = row.checklist.map((item) => ({ ...item }));
   }
+  if (row.needsHuman !== null) {
+    task.needsHuman = row.needsHuman;
+  }
   if (row.number !== null) {
     task.number = row.number;
   }
@@ -241,6 +244,7 @@ export class D1Storage implements StorageProvider {
       labels: task.labels ? [...task.labels] : null,
       order: task.order ?? null,
       checklist: task.checklist ?? null,
+      needsHuman: task.needsHuman ?? null,
       number: task.number ?? null,
       createdAt: Date.parse(task.createdAt),
       updatedAt: Date.parse(task.updatedAt),
@@ -280,6 +284,7 @@ export class D1Storage implements StorageProvider {
         labels: next.labels ? [...next.labels] : null,
         order: next.order ?? null,
         checklist: next.checklist ?? null,
+        needsHuman: next.needsHuman ?? null,
         number: next.number ?? null,
         updatedAt: Date.parse(next.updatedAt),
       })
@@ -379,6 +384,7 @@ export class D1Storage implements StorageProvider {
         labels: task.labels ? [...task.labels] : null,
         order: task.order ?? null,
         checklist: task.checklist ?? null,
+        needsHuman: task.needsHuman ?? null,
         number: task.number ?? null,
         createdAt: Date.parse(task.createdAt),
         updatedAt: Date.parse(task.updatedAt),

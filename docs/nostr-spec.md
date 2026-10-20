@@ -82,13 +82,14 @@ The `content` field contains a cleartext JSON object:
   "checklist": [
     { "text": "Write the codec", "done": true },
     { "text": "Run the contract suite", "done": false }
-  ]
+  ],
+  "needsHuman": "Choose which relays to publish to"
 }
 ```
-`checklist` (the task's subtasks, in order) is omitted when the task has none.
+`checklist` (the task's subtasks, in order) is omitted when the task has none. `needsHuman` (what the task waits on a person for) is omitted when it needs nobody.
 
 #### Private Task (`is_public: "false"`)
-- The `title`, `description` and `checklist` (when present) are packaged into the JSON object:
+- The `title`, `description`, `checklist` and `needsHuman` (when present) are packaged into the JSON object:
   ```json
   {
     "title": "Private confidential task",
@@ -97,7 +98,7 @@ The `content` field contains a cleartext JSON object:
   ```
 - The JSON string is encrypted using **NIP-44 v2** encryption with the user's own keypair (self-encryption: `senderPrivateKey = userPrivateKey`, `recipientPublicKey = userPublicKey`).
 - The resulting ciphertext (base64 string starting with version byte) is stored in `content`.
-- **Privacy Guarantee:** Relays, indexers, and third parties only see the kind, task ID, parent project coordinate, status, priority, and due date. The task title, description and checklist remain strictly confidential.
+- **Privacy Guarantee:** Relays, indexers, and third parties only see the kind, task ID, parent project coordinate, status, priority, and due date. The task title, description, checklist and needs-human reason remain strictly confidential.
 
 ---
 

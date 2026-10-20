@@ -76,12 +76,14 @@ export function registerTasksCommands(
     .command("list")
     .description("List tasks (optionally filtered by project)")
     .option("-p, --project <id>", "Project ID or key (defaults to linked .bitig project)")
+    .option("--needs-human", "Only tasks waiting on a person")
     .option("--json", "Output JSON")
-    .action(async (options: { project?: string; json?: boolean }) => {
+    .action(async (options: { project?: string; needsHuman?: boolean; json?: boolean }) => {
       const storage = await getStorage();
       const pId = await resolveProjectId(storage, options.project);
+      const found = await storage.getTasks(pId !== undefined ? { projectId: pId } : undefined);
       const list = withTaskCodes(
-        await storage.getTasks(pId !== undefined ? { projectId: pId } : undefined),
+        options.needsHuman === true ? found.filter((t) => t.needsHuman !== undefined) : found,
         await storage.getProjects(),
       );
       const width = Math.max(4, ...list.map((t) => label(t).length));
@@ -93,7 +95,8 @@ export function registerTasksCommands(
           if (list.length === 0) return "No tasks found.";
           const rows = list.map((t) => {
             const progress = progressLabel(t);
-            return `${label(t).padEnd(width)}  ${t.status.padEnd(12)}  ${(t.priority ?? "-").padEnd(8)}  ${t.title}${progress ? ` (${progress})` : ""}`;
+            const flag = t.needsHuman === undefined ? "" : " [needs human]";
+            return `${label(t).padEnd(width)}  ${t.status.padEnd(12)}  ${(t.priority ?? "-").padEnd(8)}  ${t.title}${progress ? ` (${progress})` : ""}${flag}`;
           });
           return [`${"CODE".padEnd(width)}  STATUS        PRIORITY  TITLE`, ...rows].join("\n");
         },
@@ -127,6 +130,7 @@ export function registerTasksCommands(
             `Priority:    ${task.priority ?? "-"}`,
             `Due Date:    ${task.dueDate ?? "-"}`,
             `Labels:      ${task.labels?.join(", ") ?? "-"}`,
+            `Needs human: ${task.needsHuman ?? "-"}`,
             `Created:     ${task.createdAt}`,
             `Updated:     ${task.updatedAt}`,
             "",
@@ -154,6 +158,7 @@ export function registerTasksCommands(
     .option("--due <date>", "Due date (YYYY-MM-DD)")
     .option("--labels <labels>", "Comma-separated labels")
     .option("--order <num>", "Sort order number", parseFloat)
+    .option("--needs-human <reason>", "Flag the task as waiting on a person, saying what it needs")
     .option("--json", "Output JSON")
     .action(
       async (
@@ -167,6 +172,7 @@ export function registerTasksCommands(
           due?: string;
           labels?: string;
           order?: number;
+          needsHuman?: string;
           json?: boolean;
         },
       ) => {
@@ -196,6 +202,7 @@ export function registerTasksCommands(
           dueDate: options.due,
           labels,
           order: options.order,
+          needsHuman: options.needsHuman,
         });
         const created = await withCode(storage, saved);
 
@@ -222,6 +229,8 @@ export function registerTasksCommands(
     .option("--due <date>", "Due date (YYYY-MM-DD)")
     .option("--labels <labels>", "Comma-separated labels")
     .option("--order <num>", "Sort order", parseFloat)
+    .option("--needs-human <reason>", "Flag the task as waiting on a person, saying what it needs")
+    .option("--clear-needs-human", "Clear the flag once the person has answered")
     .option("--json", "Output JSON")
     .action(
       async (
@@ -236,10 +245,15 @@ export function registerTasksCommands(
           due?: string;
           labels?: string;
           order?: number;
+          needsHuman?: string;
+          clearNeedsHuman?: boolean;
           json?: boolean;
         },
       ) => {
         const storage = await getStorage();
+        if (options.needsHuman !== undefined && options.clearNeedsHuman === true) {
+          throw new Error("Use either --needs-human or --clear-needs-human, not both");
+        }
         const id = await resolveTaskRef(storage, ref);
         let description = options.description;
 
@@ -263,6 +277,7 @@ export function registerTasksCommands(
           dueDate: options.due,
           labels,
           order: options.order,
+          needsHuman: options.clearNeedsHuman === true ? null : options.needsHuman,
         });
         const updated = await withCode(storage, saved);
 

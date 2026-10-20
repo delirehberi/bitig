@@ -9,6 +9,7 @@ import {
   DESCRIPTION_MAX,
   LABELS_MAX_COUNT,
   LABEL_MAX,
+  NEEDS_HUMAN_MAX,
   PROJECT_KINDS,
   PROJECT_KEY_PATTERN,
   PROJECT_NAME_MAX,
@@ -71,6 +72,9 @@ export const ChecklistItemSchema = z.strictObject({
 
 export const ChecklistSchema = z.array(ChecklistItemSchema).max(CHECKLIST_MAX_ITEMS);
 
+/** Why a task needs a person, e.g. a decision or an approval. Set means the task waits on a human. */
+export const NeedsHumanSchema = z.string().trim().min(1).max(NEEDS_HUMAN_MAX);
+
 export const ResourceTypeSchema = z.enum(RESOURCE_TYPES);
 
 /** Only web links: other schemes (javascript:, file:) are never stored or rendered. */
@@ -118,6 +122,8 @@ export const TaskSchema = z.strictObject({
   order: TaskOrderSchema.exactOptional(),
   /** Never empty: an empty checklist is stored as no checklist. */
   checklist: ChecklistSchema.min(1).exactOptional(),
+  /** Set while the task waits on a person; the text says what it needs. */
+  needsHuman: NeedsHumanSchema.exactOptional(),
   /** Assigned by storage, never by callers; tasks created before ticket codes may lack one until backfilled. */
   number: TaskNumberSchema.exactOptional(),
 });
@@ -166,6 +172,7 @@ export const CreateTaskInputSchema = z.strictObject({
   labels: LabelsSchema.optional(),
   order: TaskOrderSchema.optional(),
   checklist: ChecklistSchema.optional(),
+  needsHuman: NeedsHumanSchema.optional(),
 });
 
 /** `undefined` (or a missing key) leaves a field unchanged; `null` clears an
@@ -183,6 +190,8 @@ export const UpdateTaskInputSchema = z
     order: TaskOrderSchema.nullable().optional(),
     /** Replaces the whole checklist; `null` or `[]` removes it. */
     checklist: ChecklistSchema.nullable().optional(),
+    /** `null` clears it once a person has answered. */
+    needsHuman: NeedsHumanSchema.nullable().optional(),
   })
   .refine(hasAnyDefinedField, { message: EMPTY_PATCH_MESSAGE });
 

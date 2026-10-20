@@ -44,6 +44,7 @@ const TASK_KEY_ORDER = [
   "labels",
   "order",
   "checklist",
+  "needsHuman",
   "createdAt",
   "updatedAt",
 ] as const satisfies readonly (keyof TaskFileData)[];

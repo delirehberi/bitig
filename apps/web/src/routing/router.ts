@@ -11,12 +11,15 @@ export type Route =
   | { readonly name: "landing" }
   | { readonly name: "overview" }
   | { readonly name: "projects" }
-  | { readonly name: "tasks"; readonly projectId?: string }
+  | { readonly name: "tasks"; readonly projectId?: string; readonly needsHuman?: true }
   | { readonly name: "login"; readonly next?: string }
   | { readonly name: "not_found" };
 
 const NAVIGATE_EVENT = "bitig:navigate";
 const PROJECT_PARAM = "project";
+/** `?needs=human` shows only the tasks waiting on a person. */
+const NEEDS_PARAM = "needs";
+const NEEDS_HUMAN_VALUE = "human";
 const NEXT_PARAM = "next";
 
 export const LOGIN_PATH = "/login";
@@ -47,7 +50,11 @@ export function parseRoute(pathname: string, search: string): Route {
       return { name: "projects" };
     case "/tasks": {
       const projectId = params.get(PROJECT_PARAM);
-      return projectId ? { name: "tasks", projectId } : { name: "tasks" };
+      return {
+        name: "tasks",
+        ...(projectId ? { projectId } : {}),
+        ...(params.get(NEEDS_PARAM) === NEEDS_HUMAN_VALUE ? { needsHuman: true as const } : {}),
+      };
     }
     case LOGIN_PATH: {
       const next = safeNextPath(params.get(NEXT_PARAM));
@@ -67,10 +74,13 @@ export function hrefFor(route: Route): string {
       return APP_PATH;
     case "projects":
       return "/projects";
-    case "tasks":
-      return route.projectId
-        ? `/tasks?${new URLSearchParams({ [PROJECT_PARAM]: route.projectId }).toString()}`
-        : "/tasks";
+    case "tasks": {
+      const params = new URLSearchParams();
+      if (route.projectId) params.set(PROJECT_PARAM, route.projectId);
+      if (route.needsHuman) params.set(NEEDS_PARAM, NEEDS_HUMAN_VALUE);
+      const query = params.toString();
+      return query ? `/tasks?${query}` : "/tasks";
+    }
     case "login":
       return route.next ? `${LOGIN_PATH}?${new URLSearchParams({ [NEXT_PARAM]: route.next }).toString()}` : LOGIN_PATH;
   }

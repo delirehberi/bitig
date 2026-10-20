@@ -24,6 +24,8 @@ export interface TaskPayload {
   description: string;
   /** Omitted when the task has no checklist. */
   checklist?: ChecklistItem[];
+  /** What the task needs from a person; omitted when it needs nobody. */
+  needsHuman?: string;
 }
 
 export interface TaskEncryptor {
@@ -86,6 +88,9 @@ export async function encodeTaskEvent(
   };
   if (task.checklist !== undefined) {
     payload.checklist = task.checklist;
+  }
+  if (task.needsHuman !== undefined) {
+    payload.needsHuman = task.needsHuman;
   }
   const jsonPayload = JSON.stringify(payload);
 
@@ -220,6 +225,9 @@ export async function decodeTaskEvent(
   }
   if (parsedPayload.checklist !== undefined) {
     rawTask.checklist = parsedPayload.checklist;
+  }
+  if (parsedPayload.needsHuman !== undefined) {
+    rawTask.needsHuman = parsedPayload.needsHuman;
   }
 
   return TaskSchema.parse(rawTask);

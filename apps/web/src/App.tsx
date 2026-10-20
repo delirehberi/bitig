@@ -30,6 +30,7 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const activeTab = route.name;
   const selectedProjectId = route.name === "tasks" ? route.projectId : undefined;
+  const needsHumanOnly = route.name === "tasks" && route.needsHuman === true;
 
   const storage = useStorage(mode);
 
@@ -59,9 +60,21 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
     navigate(hrefFor(projectId ? { name: "tasks", projectId } : { name: "tasks" }));
   }
 
+  function tasksHref(projectId: string | undefined, needsHuman: boolean): string {
+    return hrefFor({
+      name: "tasks",
+      ...(projectId ? { projectId } : {}),
+      ...(needsHuman ? { needsHuman: true as const } : {}),
+    });
+  }
+
+  // Changing a filter refines the current page rather than opening a new one.
   function handleFilterProject(projectId: string | undefined) {
-    // Changing the filter refines the current page rather than opening a new one.
-    navigate(hrefFor(projectId ? { name: "tasks", projectId } : { name: "tasks" }), { replace: true });
+    navigate(tasksHref(projectId, needsHumanOnly), { replace: true });
+  }
+
+  function handleFilterNeedsHuman(only: boolean) {
+    navigate(tasksHref(selectedProjectId, only), { replace: true });
   }
 
   return (
@@ -81,8 +94,9 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
               health={health}
               projectsCount={projects.length}
               tasksCount={tasks.length}
+              needsHumanCount={tasks.filter((task) => task.needsHuman !== undefined).length}
               onNavigate={(tab) => {
-                navigate(hrefFor({ name: tab }));
+                navigate(tab === "needs_human" ? tasksHref(undefined, true) : hrefFor({ name: tab }));
               }}
             />
           )}
@@ -109,6 +123,8 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
               error={tasksError}
               selectedProjectId={selectedProjectId}
               onSelectProject={handleFilterProject}
+              needsHumanOnly={needsHumanOnly}
+              onNeedsHumanOnlyChange={handleFilterNeedsHuman}
               onSaveTask={saveTask}
               onUpdateTask={updateTask}
               onCompleteTask={completeTask}

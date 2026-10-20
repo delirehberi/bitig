@@ -22,6 +22,7 @@ interface TaskResult {
   status: string;
   priority?: string;
   labels?: string[];
+  needsHuman?: string;
   code?: string;
 }
 
@@ -169,6 +170,15 @@ describe("Bitig CLI STDIO MCP Server E2E", () => {
         { text: "Step two", done: false },
       ],
     });
+
+    // Needs-human flag: set with a reason, filter on it, clear it
+    const flagged = await callToolJson<TaskResult>("update_task", { id: task.id, needsHuman: "Pick a name" });
+    expect(flagged).toMatchObject({ needsHuman: "Pick a name" });
+    const waiting = await callToolJson<TaskResult[]>("list_tasks", { needsHuman: true });
+    expect(waiting.map((t) => t.id)).toEqual([task.id]);
+    expect(await callToolJson<TaskResult[]>("list_tasks", { needsHuman: false })).toHaveLength(1);
+    const answered = await callToolJson<TaskResult>("update_task", { id: task.id, needsHuman: null });
+    expect(answered).not.toHaveProperty("needsHuman");
 
     // Ticket codes stand in for IDs
     expect(task.code).toBe("ALL-1");

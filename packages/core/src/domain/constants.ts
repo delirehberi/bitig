@@ -38,6 +38,9 @@ export const LABELS_MAX_COUNT = 32;
 export const CHECKLIST_ITEM_TEXT_MAX = 500;
 export const CHECKLIST_MAX_ITEMS = 200;
 
+/** Human in the loop: what a task needs from a person. A task without it needs nobody. */
+export const NEEDS_HUMAN_MAX = 2000;
+
 /** Links from a project to outside resources (repository, issue tracker, designs...). */
 export const RESOURCE_TYPES = [
   "repository",

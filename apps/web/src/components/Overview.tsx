@@ -1,5 +1,5 @@
 import type { StorageMode } from "@bitig/core";
-import { FolderKanban, ListTodo } from "lucide-react";
+import { FolderKanban, Hand, ListTodo } from "lucide-react";
 import type { ReactNode } from "react";
 import { MODE_COPY } from "../domain/modes";
 import type { HealthState } from "../hooks/useHealth";
@@ -9,7 +9,9 @@ interface OverviewProps {
   readonly health: HealthState;
   readonly projectsCount?: number;
   readonly tasksCount?: number;
-  readonly onNavigate?: (tab: "projects" | "tasks") => void;
+  /** Tasks waiting on a person. */
+  readonly needsHumanCount?: number;
+  readonly onNavigate?: (tab: "projects" | "tasks" | "needs_human") => void;
 }
 
 const DOT_CLASS: Record<HealthState["kind"], string> = {
@@ -50,6 +52,7 @@ export function Overview({
   health,
   projectsCount = 0,
   tasksCount = 0,
+  needsHumanCount = 0,
   onNavigate,
 }: OverviewProps) {
   const modeCopy = MODE_COPY[mode];
@@ -92,7 +95,7 @@ export function Overview({
           <h2 id="summary-heading" className="m-0 font-display text-lg font-semibold text-ink">
             Current Workspace
           </h2>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
             <button
               type="button"
               onClick={() => onNavigate?.("projects")}
@@ -117,6 +120,27 @@ export function Overview({
               </div>
               <span className="mt-2 font-display text-2xl font-bold text-ink">
                 {tasksCount}
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => onNavigate?.("needs_human")}
+              className={`flex flex-col items-start rounded-md border p-4 text-left transition-colors ${
+                needsHumanCount > 0
+                  ? "border-accent/30 bg-accent-soft hover:border-accent"
+                  : "border-rule bg-paper-2 hover:border-rule-strong"
+              }`}
+            >
+              <div
+                className={`flex items-center gap-2 text-xs font-semibold ${
+                  needsHumanCount > 0 ? "text-accent-ink" : "text-ink-3"
+                }`}
+              >
+                <Hand size={14} />
+                <span>Needs you</span>
+              </div>
+              <span className="mt-2 font-display text-2xl font-bold text-ink">
+                {needsHumanCount}
               </span>
             </button>
           </div>

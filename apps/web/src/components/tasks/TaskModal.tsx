@@ -60,6 +60,7 @@ export function TaskModal({
   const [dueDate, setDueDate] = useState(task?.dueDate ?? "");
   const [labelsInput, setLabelsInput] = useState(task?.labels ? task.labels.join(", ") : "");
   const [isPublic, setIsPublic] = useState(task?.isPublic ?? false);
+  const [needsHuman, setNeedsHuman] = useState(task?.needsHuman ?? "");
   const [checklist, setChecklist] = useState<ChecklistItem[]>(() => task?.checklist?.map((item) => ({ ...item })) ?? []);
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -103,6 +104,7 @@ export function TaskModal({
       ...(priority ? { priority } : {}),
       ...(dueDate ? { dueDate } : {}),
       ...(labels.length > 0 ? { labels } : {}),
+      ...(needsHuman.trim() ? { needsHuman: needsHuman.trim() } : {}),
       // When editing, an empty list is sent so removing every item clears the checklist.
       ...(items.length > 0 || isEditing ? { checklist: items } : {}),
     };
@@ -310,6 +312,24 @@ export function TaskModal({
                 setDescription(e.target.value);
               }}
               placeholder="Detailed description and notes"
+              className="mt-1 w-full rounded-md border border-rule bg-paper-2 px-3 py-2 text-sm text-ink placeholder:text-ink-3 focus-visible:outline-focus"
+              disabled={isSubmitting}
+            />
+          </div>
+
+          <div>
+            <label htmlFor="task-needs-human" className="block text-xs font-semibold text-ink-2">
+              Needs a human{" "}
+              <span className="text-xs font-normal text-ink-3">(what the task waits on a person for; clear it once answered)</span>
+            </label>
+            <textarea
+              id="task-needs-human"
+              rows={2}
+              value={needsHuman}
+              onChange={(e) => {
+                setNeedsHuman(e.target.value);
+              }}
+              placeholder="e.g. Approve the database migration"
               className="mt-1 w-full rounded-md border border-rule bg-paper-2 px-3 py-2 text-sm text-ink placeholder:text-ink-3 focus-visible:outline-focus"
               disabled={isSubmitting}
             />

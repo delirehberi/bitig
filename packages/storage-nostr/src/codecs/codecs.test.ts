@@ -124,6 +124,7 @@ describe("Nostr codecs", () => {
       isPublic: false,
       priority: "urgent" as const,
       checklist: [{ text: "Hidden subtask", done: false }],
+      needsHuman: "Hidden question",
       createdAt: now,
       updatedAt: now,
     };
@@ -135,7 +136,9 @@ describe("Nostr codecs", () => {
     expect(template.content).not.toContain("Secret Task");
     expect(template.content).not.toContain("Sensitive notes");
     expect(template.content).not.toContain("Hidden subtask");
+    expect(template.content).not.toContain("Hidden question");
     expect(JSON.stringify(template.tags)).not.toContain("Hidden subtask");
+    expect(JSON.stringify(template.tags)).not.toContain("Hidden question");
 
     // Decodes cleanly with signer
     const decoded = await decodeTaskEvent(template, pubkey, signer);
