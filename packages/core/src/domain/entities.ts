@@ -3,7 +3,7 @@
  * entities these functions return; they never construct entities themselves,
  * so defaults, validation and timestamp rules live in exactly one place.
  */
-import { COMPLETED_TASK_STATUS, WEBHOOK_TOKEN_PREFIX } from "./constants";
+import { COMPLETED_TASK_STATUS, TASK_ACTIVITY_MAX_ITEMS, WEBHOOK_TOKEN_PREFIX } from "./constants";
 import { parseOrThrow } from "./errors";
 import {
   CommentSchema,
@@ -12,6 +12,7 @@ import {
   CreateTaskInputSchema,
   CreateWebhookInputSchema,
   ProjectSchema,
+  TaskActorSchema,
   TaskSchema,
   UpdateProjectInputSchema,
   UpdateTaskInputSchema,
@@ -28,6 +29,7 @@ import type {
   Project,
   ProjectResource,
   Task,
+  TaskActivityEntry,
   TaskPriority,
   UpdateProjectInput,
   UpdateTaskInput,
@@ -40,12 +42,30 @@ import { assertProjectKeyAvailable, deriveProjectKey } from "./ticket-codes";
 
 type TaskRequiredFields = Omit<
   Task,
-  "startedAt" | "completedAt" | "dueDate" | "priority" | "labels" | "order" | "checklist" | "needsHuman" | "number"
+  | "startedAt"
+  | "completedAt"
+  | "createdBy"
+  | "startedBy"
+  | "completedBy"
+  | "updatedBy"
+  | "activity"
+  | "dueDate"
+  | "priority"
+  | "labels"
+  | "order"
+  | "checklist"
+  | "needsHuman"
+  | "number"
 >;
 
 interface TaskOptionalValues {
   readonly startedAt: string | undefined;
   readonly completedAt: string | undefined;
+  readonly createdBy: string | undefined;
+  readonly startedBy: string | undefined;
+  readonly completedBy: string | undefined;
+  readonly updatedBy: string | undefined;
+  readonly activity: readonly TaskActivityEntry[] | undefined;
   readonly dueDate: string | undefined;
   readonly priority: TaskPriority | undefined;
   readonly labels: readonly string[] | undefined;
@@ -60,6 +80,13 @@ function assembleTask(base: TaskRequiredFields, optional: TaskOptionalValues): T
   const task: Task = { ...base };
   if (optional.startedAt !== undefined) task.startedAt = optional.startedAt;
   if (optional.completedAt !== undefined) task.completedAt = optional.completedAt;
+  if (optional.createdBy !== undefined) task.createdBy = optional.createdBy;
+  if (optional.startedBy !== undefined) task.startedBy = optional.startedBy;
+  if (optional.completedBy !== undefined) task.completedBy = optional.completedBy;
+  if (optional.updatedBy !== undefined) task.updatedBy = optional.updatedBy;
+  if (optional.activity !== undefined && optional.activity.length > 0) {
+    task.activity = optional.activity.slice(-TASK_ACTIVITY_MAX_ITEMS).map((entry) => ({ ...entry }));
+  }
   if (optional.dueDate !== undefined) task.dueDate = optional.dueDate;
   if (optional.priority !== undefined) task.priority = optional.priority;
   if (optional.labels !== undefined) task.labels = [...optional.labels];
@@ -153,6 +180,54 @@ function resolveTaskLifecycleTimestamps(
   }
 }
 
+function resolveTaskLifecycleActors(
+  task: Task,
+  nextStatus: Task["status"],
+  actor: string | undefined,
+): { readonly startedBy: string | undefined; readonly completedBy: string | undefined } {
+  switch (nextStatus) {
+    case "todo":
+      return { startedBy: undefined, completedBy: undefined };
+    case "in_progress":
+      return {
+        startedBy: task.startedBy ?? (task.startedAt === undefined ? actor : undefined),
+        completedBy: undefined,
+      };
+    case "done":
+      return {
+        startedBy: task.startedBy,
+        completedBy: task.status === "done" ? (task.completedBy ?? actor) : actor,
+      };
+    case "archived":
+      return {
+        startedBy: task.startedBy,
+        completedBy: task.completedBy,
+      };
+  }
+}
+
+function buildUpdateActivityEntry(
+  previousStatus: Task["status"],
+  nextStatus: Task["status"],
+  actor: string,
+  timestamp: string,
+): TaskActivityEntry {
+  if (nextStatus !== previousStatus) {
+    return {
+      action: nextStatus === COMPLETED_TASK_STATUS ? "completed" : "status_changed",
+      actor,
+      timestamp,
+      fromStatus: previousStatus,
+      toStatus: nextStatus,
+    };
+  }
+  return {
+    action: "updated",
+    actor,
+    timestamp,
+  };
+}
+
 /** `undefined` keeps the current value, `null` clears it, anything else replaces it. */
 function resolveClearable<T>(current: T | undefined, patch: T | null | undefined): T | undefined {
   if (patch === undefined) return current;
@@ -241,11 +316,31 @@ export function applyProjectPatch(
 }
 
 /** `number` comes from `nextTaskNumber` over the target project's tasks. */
-export function buildTask(input: CreateTaskInput, deps: RuntimeDeps, number: number): Task {
+export function buildTask(
+  input: CreateTaskInput,
+  deps: RuntimeDeps,
+  number: number,
+  actor?: string,
+): Task {
   const parsed = parseOrThrow(CreateTaskInputSchema, input, "saveTask");
+  const validActor =
+    actor === undefined ? undefined : parseOrThrow(TaskActorSchema, actor, "saveTask actor");
   const now = toTimestamp(deps.clock());
-  const startedAt = parsed.status === "in_progress" || parsed.status === "done" ? now : undefined;
-  const completedAt = parsed.status === "done" ? now : undefined;
+  const isStarted = parsed.status === "in_progress" || parsed.status === "done";
+  const isCompleted = parsed.status === "done";
+  const startedAt = isStarted ? now : undefined;
+  const completedAt = isCompleted ? now : undefined;
+  const activity: TaskActivityEntry[] | undefined =
+    validActor === undefined
+      ? undefined
+      : [
+          {
+            action: "created",
+            actor: validActor,
+            timestamp: now,
+            toStatus: parsed.status,
+          },
+        ];
   const task = assembleTask(
     {
       id: deps.generateId(),
@@ -260,6 +355,11 @@ export function buildTask(input: CreateTaskInput, deps: RuntimeDeps, number: num
     {
       startedAt,
       completedAt,
+      createdBy: validActor,
+      startedBy: isStarted ? validActor : undefined,
+      completedBy: isCompleted ? validActor : undefined,
+      updatedBy: validActor,
+      activity,
       dueDate: parsed.dueDate,
       priority: parsed.priority,
       labels: parsed.labels,
@@ -276,11 +376,23 @@ export function buildTask(input: CreateTaskInput, deps: RuntimeDeps, number: num
  * Applies a patch. A task moved to another project keeps its old number here; adapters then give
  * it `nextTaskNumber` of the target project with `renumberTask`.
  */
-export function applyTaskPatch(task: Task, patch: UpdateTaskInput, now: Date): Task {
+export function applyTaskPatch(
+  task: Task,
+  patch: UpdateTaskInput,
+  now: Date,
+  actor?: string,
+): Task {
   const parsed = parseOrThrow(UpdateTaskInputSchema, patch, "updateTask");
+  const validActor =
+    actor === undefined ? undefined : parseOrThrow(TaskActorSchema, actor, "updateTask actor");
   const updatedAt = nextUpdatedAt(task.updatedAt, now);
   const nextStatus = parsed.status ?? task.status;
   const { startedAt, completedAt } = resolveTaskLifecycleTimestamps(task, nextStatus, updatedAt);
+  const { startedBy, completedBy } = resolveTaskLifecycleActors(task, nextStatus, validActor);
+  const activity =
+    validActor === undefined
+      ? task.activity
+      : [...(task.activity ?? []), buildUpdateActivityEntry(task.status, nextStatus, validActor, updatedAt)];
   const next = assembleTask(
     {
       id: task.id,
@@ -295,6 +407,11 @@ export function applyTaskPatch(task: Task, patch: UpdateTaskInput, now: Date): T
     {
       startedAt,
       completedAt,
+      createdBy: task.createdBy,
+      startedBy,
+      completedBy,
+      updatedBy: validActor,
+      activity,
       dueDate: resolveClearable(task.dueDate, parsed.dueDate),
       priority: resolveClearable(task.priority, parsed.priority),
       labels: resolveClearable(task.labels, parsed.labels),
@@ -316,15 +433,47 @@ export function renumberTask(task: Task, number: number): Task {
  * Marks a task done. Idempotent: an already-done task is returned unchanged
  * (same `updatedAt`), so repeated MCP calls don't churn timestamps.
  */
-export function completeTaskEntity(task: Task, now: Date): Task {
+export function completeTaskEntity(task: Task, now: Date, actor?: string): Task {
+  const validActor =
+    actor === undefined ? undefined : parseOrThrow(TaskActorSchema, actor, "completeTask actor");
   if (task.status === COMPLETED_TASK_STATUS) return task;
   const updatedAt = nextUpdatedAt(task.updatedAt, now);
-  return {
-    ...task,
-    status: COMPLETED_TASK_STATUS,
-    completedAt: updatedAt,
-    updatedAt,
-  };
+  const activity =
+    validActor === undefined
+      ? task.activity
+      : [
+          ...(task.activity ?? []),
+          buildUpdateActivityEntry(task.status, COMPLETED_TASK_STATUS, validActor, updatedAt),
+        ];
+  const next = assembleTask(
+    {
+      id: task.id,
+      projectId: task.projectId,
+      title: task.title,
+      description: task.description,
+      status: COMPLETED_TASK_STATUS,
+      isPublic: task.isPublic,
+      createdAt: task.createdAt,
+      updatedAt,
+    },
+    {
+      startedAt: task.startedAt,
+      completedAt: updatedAt,
+      createdBy: task.createdBy,
+      startedBy: task.startedBy,
+      completedBy: validActor,
+      updatedBy: validActor,
+      activity,
+      dueDate: task.dueDate,
+      priority: task.priority,
+      labels: task.labels,
+      order: task.order,
+      checklist: task.checklist,
+      needsHuman: task.needsHuman,
+      number: task.number,
+    },
+  );
+  return parseOrThrow(TaskSchema, next, "completeTask result");
 }
 
 export function buildComment(input: CreateCommentInput, deps: RuntimeDeps): Comment {
@@ -366,6 +515,7 @@ export function cloneTask(task: Task): Task {
   const copy = { ...task };
   if (task.labels !== undefined) copy.labels = [...task.labels];
   if (task.checklist !== undefined) copy.checklist = task.checklist.map((item) => ({ ...item }));
+  if (task.activity !== undefined) copy.activity = task.activity.map((entry) => ({ ...entry }));
   return copy;
 }
 

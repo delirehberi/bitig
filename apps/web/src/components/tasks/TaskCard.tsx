@@ -1,4 +1,5 @@
 import {
+  Bot,
   Calendar,
   CheckCircle2,
   Circle,
@@ -65,6 +66,12 @@ export function TaskCard({
   const isArchived = task.status === "archived";
   const hasRecordedTime = task.startedAt !== undefined || task.completedAt !== undefined;
   const spentMs = hasRecordedTime ? getTaskTiming(task).spentMs : undefined;
+  const actor =
+    task.updatedBy ??
+    task.completedBy ??
+    task.startedBy ??
+    task.createdBy ??
+    task.activity?.at(-1)?.actor;
 
   return (
     <article
@@ -240,6 +247,15 @@ export function TaskCard({
             >
               <Clock size={12} aria-hidden="true" />
               <span>{formatDuration(spentMs)}</span>
+            </div>
+          )}
+          {actor !== undefined && (
+            <div
+              className="flex items-center gap-1 rounded-pill bg-paper-2 px-1.5 py-0.5 font-mono text-2xs text-ink-2"
+              title={`Last touched by ${actor}`}
+            >
+              <Bot size={11} aria-hidden="true" />
+              <span>{actor}</span>
             </div>
           )}
           <ChecklistProgressBadge checklist={task.checklist} />

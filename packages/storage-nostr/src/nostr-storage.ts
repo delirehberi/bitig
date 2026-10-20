@@ -323,7 +323,7 @@ export class NostrStorage implements StorageProvider {
     throwIfAborted(opts?.signal);
 
     const projectId = parseOrThrow(IdSchema, input.projectId, "saveTask");
-    const task = buildTask(input, this.deps, nextTaskNumber(this.tasksOf(projectId)));
+    const task = buildTask(input, this.deps, nextTaskNumber(this.tasksOf(projectId)), opts?.actor);
     if (!this.projects.has(task.projectId)) {
       throw new NotFoundError("project", task.projectId);
     }
@@ -358,7 +358,7 @@ export class NostrStorage implements StorageProvider {
       throw new NotFoundError("project", patch.projectId);
     }
 
-    let updated = applyTaskPatch(existing, patch, this.deps.clock());
+    let updated = applyTaskPatch(existing, patch, this.deps.clock(), opts?.actor);
     if (updated.projectId !== existing.projectId) {
       updated = renumberTask(updated, nextTaskNumber(this.tasksOf(updated.projectId)));
     }
@@ -433,12 +433,11 @@ export class NostrStorage implements StorageProvider {
       throw new NotFoundError("task", id);
     }
 
+    const completed = completeTaskEntity(existing, this.deps.clock(), opts?.actor);
     // Idempotent: if already done, return unchanged without publishing
-    if (existing.status === "done") {
+    if (completed === existing) {
       return copyTask(existing);
     }
-
-    const completed = completeTaskEntity(existing, this.deps.clock());
     const pubkey = await this.signer.getPublicKey();
     throwIfAborted(opts?.signal);
 

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
+  Bot,
   Calendar,
   CheckCircle2,
   Clock,
@@ -19,6 +20,7 @@ import {
   type Project,
   type StorageProvider,
   type Task,
+  type TaskActivityEntry,
   type TaskPriority,
   type TaskStatus,
 } from "@bitig/core";
@@ -65,6 +67,24 @@ const PRIORITY_BADGES: Record<TaskPriority, string> = {
 function formatTimestamp(iso: string): string {
   const date = new Date(iso);
   return Number.isNaN(date.getTime()) ? iso : date.toLocaleString();
+}
+
+function formatActivityAction(entry: TaskActivityEntry): string {
+  switch (entry.action) {
+    case "created":
+      return entry.toStatus && entry.toStatus !== "todo"
+        ? `created task in ${STATUS_LABELS[entry.toStatus]}`
+        : "created task";
+    case "status_changed":
+      if (entry.fromStatus && entry.toStatus) {
+        return `moved from ${STATUS_LABELS[entry.fromStatus]} to ${STATUS_LABELS[entry.toStatus]}`;
+      }
+      return entry.toStatus ? `moved to ${STATUS_LABELS[entry.toStatus]}` : "changed status";
+    case "completed":
+      return "completed task";
+    case "updated":
+      return "updated task";
+  }
 }
 
 function Field({
@@ -287,12 +307,30 @@ export function TaskDetailModal({
             )}
           </Field>
           <Field label="Created">
-            <span className="text-xs">{formatTimestamp(task.createdAt)}</span>
+            <div className="flex flex-col gap-0.5">
+              <span className="text-xs">{formatTimestamp(task.createdAt)}</span>
+              {task.createdBy && (
+                <span className="inline-flex items-center gap-1 text-2xs text-ink-3">
+                  <Bot size={11} aria-hidden="true" />
+                  <span>
+                    by <strong className="font-semibold text-ink-2">{task.createdBy}</strong>
+                  </span>
+                </span>
+              )}
+            </div>
           </Field>
           <Field label="Started" icon={PlayCircle}>
             {task.startedAt ? (
               <div className="flex flex-col gap-0.5">
                 <span className="text-xs">{formatTimestamp(task.startedAt)}</span>
+                {task.startedBy && (
+                  <span className="inline-flex items-center gap-1 text-2xs text-ink-3">
+                    <Bot size={11} aria-hidden="true" />
+                    <span>
+                      by <strong className="font-semibold text-ink-2">{task.startedBy}</strong>
+                    </span>
+                  </span>
+                )}
                 {timing.leadTimeMs !== undefined && timing.leadTimeMs > 0 && (
                   <span className="text-2xs text-ink-3">
                     Started {formatDuration(timing.leadTimeMs)} after creation
@@ -307,6 +345,14 @@ export function TaskDetailModal({
             {task.completedAt ? (
               <div className="flex flex-col gap-0.5">
                 <span className="text-xs">{formatTimestamp(task.completedAt)}</span>
+                {task.completedBy && (
+                  <span className="inline-flex items-center gap-1 text-2xs text-ink-3">
+                    <Bot size={11} aria-hidden="true" />
+                    <span>
+                      by <strong className="font-semibold text-ink-2">{task.completedBy}</strong>
+                    </span>
+                  </span>
+                )}
                 {timing.spentMs !== undefined && (
                   <span className="text-2xs text-ink-3">
                     Completed in {formatDuration(timing.spentMs)}
@@ -318,9 +364,48 @@ export function TaskDetailModal({
             )}
           </Field>
           <Field label="Updated">
-            <span className="text-xs">{formatTimestamp(task.updatedAt)}</span>
+            <div className="flex flex-col gap-0.5">
+              <span className="text-xs">{formatTimestamp(task.updatedAt)}</span>
+              {task.updatedBy && (
+                <span className="inline-flex items-center gap-1 text-2xs text-ink-3">
+                  <Bot size={11} aria-hidden="true" />
+                  <span>
+                    by <strong className="font-semibold text-ink-2">{task.updatedBy}</strong>
+                  </span>
+                </span>
+              )}
+            </div>
           </Field>
         </dl>
+
+        {task.activity && task.activity.length > 0 && (
+          <section aria-labelledby="task-detail-activity" className="mb-5">
+            <h3
+              id="task-detail-activity"
+              className="m-0 mb-2 flex items-center gap-1 text-2xs font-semibold uppercase tracking-wider text-ink-3"
+            >
+              <Bot size={12} aria-hidden="true" />
+              Activity ({String(task.activity.length)})
+            </h3>
+            <ol className="m-0 flex list-none flex-col gap-1.5 rounded-md border border-rule bg-paper-2 px-3 py-2">
+              {task.activity.map((entry, idx) => (
+                <li
+                  key={`${entry.timestamp}-${entry.actor}-${entry.action}-${String(idx)}`}
+                  className="flex flex-wrap items-center justify-between gap-2 text-xs text-ink-2"
+                >
+                  <span className="inline-flex items-center gap-1.5">
+                    <Bot size={11} aria-hidden="true" className="shrink-0 text-ink-3" />
+                    <span className="font-semibold text-ink">{entry.actor}</span>
+                    <span>{formatActivityAction(entry)}</span>
+                  </span>
+                  <time dateTime={entry.timestamp} className="font-mono text-2xs text-ink-3">
+                    {formatTimestamp(entry.timestamp)}
+                  </time>
+                </li>
+              ))}
+            </ol>
+          </section>
+        )}
 
         {/* Keyed so a draft never carries over to another task. */}
         {storage && (

@@ -146,7 +146,7 @@ export class InMemoryStorage implements StorageProvider {
   saveTask(input: CreateTaskInput, opts?: OperationOptions): Promise<Task> {
     return run(opts?.signal, () => {
       const projectId = parseOrThrow(IdSchema, input.projectId, "saveTask");
-      const task = buildTask(input, this.#deps, nextTaskNumber(this.#tasksOf(projectId)));
+      const task = buildTask(input, this.#deps, nextTaskNumber(this.#tasksOf(projectId)), opts?.actor);
       this.#requireProject(task.projectId);
       this.#tasks.set(task.id, task);
       return copyTask(task);
@@ -156,7 +156,7 @@ export class InMemoryStorage implements StorageProvider {
   updateTask(id: string, patch: UpdateTaskInput, opts?: OperationOptions): Promise<Task> {
     return run(opts?.signal, () => {
       const existing = this.#requireTask(parseId(id, "updateTask"));
-      let next = applyTaskPatch(existing, patch, this.#deps.clock());
+      let next = applyTaskPatch(existing, patch, this.#deps.clock(), opts?.actor);
       if (next.projectId !== existing.projectId) {
         this.#requireProject(next.projectId);
         next = renumberTask(next, nextTaskNumber(this.#tasksOf(next.projectId)));
@@ -176,7 +176,7 @@ export class InMemoryStorage implements StorageProvider {
   completeTask(id: string, opts?: OperationOptions): Promise<Task> {
     return run(opts?.signal, () => {
       const existing = this.#requireTask(parseId(id, "completeTask"));
-      const next = completeTaskEntity(existing, this.#deps.clock());
+      const next = completeTaskEntity(existing, this.#deps.clock(), opts?.actor);
       this.#tasks.set(next.id, next);
       return copyTask(next);
     });

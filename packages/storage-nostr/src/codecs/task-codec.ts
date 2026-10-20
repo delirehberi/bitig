@@ -1,4 +1,4 @@
-import type { ChecklistItem, Task } from "@bitig/core";
+import type { ChecklistItem, Task, TaskActivityEntry } from "@bitig/core";
 import { TaskSchema } from "@bitig/core";
 import {
   formatAddressCoordinate,
@@ -7,6 +7,8 @@ import {
   NOSTR_TAG_A,
   NOSTR_TAG_ALT,
   NOSTR_TAG_COMPLETED_AT_ISO,
+  NOSTR_TAG_COMPLETED_BY,
+  NOSTR_TAG_CREATED_BY,
   NOSTR_TAG_D,
   NOSTR_TAG_DUE,
   NOSTR_TAG_IS_PUBLIC,
@@ -16,7 +18,9 @@ import {
   NOSTR_TAG_PRIORITY,
   NOSTR_TAG_PROJECT,
   NOSTR_TAG_STARTED_AT_ISO,
+  NOSTR_TAG_STARTED_BY,
   NOSTR_TAG_STATUS,
+  NOSTR_TAG_UPDATED_BY,
 } from "../kinds";
 import { NOSTR_TAG_CREATED_AT_ISO, NOSTR_TAG_UPDATED_AT_ISO, type NostrEventLike } from "./project-codec";
 
@@ -28,6 +32,8 @@ export interface TaskPayload {
   checklist?: ChecklistItem[];
   /** What the task needs from a person; omitted when it needs nobody. */
   needsHuman?: string;
+  /** Ordered LLM/actor activity entries; omitted when none. */
+  activity?: TaskActivityEntry[];
 }
 
 export interface TaskEncryptor {
@@ -82,6 +88,18 @@ export async function encodeTaskEvent(
   if (task.completedAt !== undefined) {
     tags.push([NOSTR_TAG_COMPLETED_AT_ISO, task.completedAt]);
   }
+  if (task.createdBy !== undefined) {
+    tags.push([NOSTR_TAG_CREATED_BY, task.createdBy]);
+  }
+  if (task.startedBy !== undefined) {
+    tags.push([NOSTR_TAG_STARTED_BY, task.startedBy]);
+  }
+  if (task.completedBy !== undefined) {
+    tags.push([NOSTR_TAG_COMPLETED_BY, task.completedBy]);
+  }
+  if (task.updatedBy !== undefined) {
+    tags.push([NOSTR_TAG_UPDATED_BY, task.updatedBy]);
+  }
   if (task.labels !== undefined) {
     for (const label of task.labels) {
       tags.push([NOSTR_TAG_LABEL, label]);
@@ -99,6 +117,9 @@ export async function encodeTaskEvent(
   }
   if (task.needsHuman !== undefined) {
     payload.needsHuman = task.needsHuman;
+  }
+  if (task.activity !== undefined) {
+    payload.activity = task.activity;
   }
   const jsonPayload = JSON.stringify(payload);
 
@@ -143,6 +164,10 @@ export async function decodeTaskEvent(
   let numberTag: string | undefined;
   let startedAtIso: string | undefined;
   let completedAtIso: string | undefined;
+  let createdByTag: string | undefined;
+  let startedByTag: string | undefined;
+  let completedByTag: string | undefined;
+  let updatedByTag: string | undefined;
   let createdAtIso: string | undefined;
   let updatedAtIso: string | undefined;
   const labels: string[] = [];
@@ -172,6 +197,14 @@ export async function decodeTaskEvent(
       startedAtIso = val;
     } else if (key === NOSTR_TAG_COMPLETED_AT_ISO) {
       completedAtIso = val;
+    } else if (key === NOSTR_TAG_CREATED_BY) {
+      createdByTag = val;
+    } else if (key === NOSTR_TAG_STARTED_BY) {
+      startedByTag = val;
+    } else if (key === NOSTR_TAG_COMPLETED_BY) {
+      completedByTag = val;
+    } else if (key === NOSTR_TAG_UPDATED_BY) {
+      updatedByTag = val;
     } else if (key === NOSTR_TAG_LABEL) {
       labels.push(val);
     } else if (key === NOSTR_TAG_CREATED_AT_ISO) {
@@ -240,6 +273,18 @@ export async function decodeTaskEvent(
   if (completedAtIso !== undefined) {
     rawTask.completedAt = completedAtIso;
   }
+  if (createdByTag !== undefined) {
+    rawTask.createdBy = createdByTag;
+  }
+  if (startedByTag !== undefined) {
+    rawTask.startedBy = startedByTag;
+  }
+  if (completedByTag !== undefined) {
+    rawTask.completedBy = completedByTag;
+  }
+  if (updatedByTag !== undefined) {
+    rawTask.updatedBy = updatedByTag;
+  }
   if (labels.length > 0) {
     rawTask.labels = labels;
   }
@@ -248,6 +293,9 @@ export async function decodeTaskEvent(
   }
   if (parsedPayload.needsHuman !== undefined) {
     rawTask.needsHuman = parsedPayload.needsHuman;
+  }
+  if (parsedPayload.activity !== undefined) {
+    rawTask.activity = parsedPayload.activity;
   }
 
   return TaskSchema.parse(rawTask);

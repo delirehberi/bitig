@@ -572,6 +572,73 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
         expect(await storage.getTask(created.id)).toEqual(archived);
       });
 
+      it("records LLM actor attribution and chronological activity across task lifecycle", async () => {
+        const project = await createProject();
+        const created = await storage.saveTask(
+          {
+            projectId: project.id,
+            title: "Attributed task",
+          },
+          { actor: " claude " },
+        );
+        expect(created.createdBy).toBe("claude");
+        expect(created.updatedBy).toBe("claude");
+        expect(created).not.toHaveProperty("startedBy");
+        expect(created).not.toHaveProperty("completedBy");
+        expect(created.activity).toEqual([
+          {
+            action: "created",
+            actor: "claude",
+            timestamp: created.createdAt,
+            toStatus: "todo",
+          },
+        ]);
+
+        const started = await storage.updateTask(
+          created.id,
+          { status: "in_progress" },
+          { actor: "antigravity" },
+        );
+        expect(started.createdBy).toBe("claude");
+        expect(started.startedBy).toBe("antigravity");
+        expect(started.updatedBy).toBe("antigravity");
+        expect(started).not.toHaveProperty("completedBy");
+        expect(started.activity).toEqual([
+          ...(created.activity ?? []),
+          {
+            action: "status_changed",
+            actor: "antigravity",
+            timestamp: started.updatedAt,
+            fromStatus: "todo",
+            toStatus: "in_progress",
+          },
+        ]);
+        expect(await storage.getTask(created.id)).toEqual(started);
+
+        const editedByHuman = await storage.updateTask(created.id, { title: "Edited by human" });
+        expect(editedByHuman.createdBy).toBe("claude");
+        expect(editedByHuman.startedBy).toBe("antigravity");
+        expect(editedByHuman).not.toHaveProperty("updatedBy");
+        expect(editedByHuman.activity).toEqual(started.activity);
+
+        const completed = await storage.completeTask(created.id, { actor: "claude" });
+        expect(completed.createdBy).toBe("claude");
+        expect(completed.startedBy).toBe("antigravity");
+        expect(completed.completedBy).toBe("claude");
+        expect(completed.updatedBy).toBe("claude");
+        expect(completed.activity).toEqual([
+          ...(started.activity ?? []),
+          {
+            action: "completed",
+            actor: "claude",
+            timestamp: completed.updatedAt,
+            fromStatus: "in_progress",
+            toStatus: "done",
+          },
+        ]);
+        expect(await storage.getTask(created.id)).toEqual(completed);
+      });
+
       it("throws NotFoundError for a missing task", async () => {
         await expect(storage.completeTask(UNKNOWN_ID)).rejects.toBeInstanceOf(NotFoundError);
       });

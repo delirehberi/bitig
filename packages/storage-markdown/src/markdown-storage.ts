@@ -250,7 +250,7 @@ export class MarkdownStorage implements StorageProvider {
       throwIfAborted(opts?.signal);
       const projectId = parseOrThrow(IdSchema, input.projectId, "saveTask");
       const siblings = await this.#readProjectTasks(projectId, opts?.signal);
-      const task = buildTask(input, this.#deps, nextTaskNumber(siblings));
+      const task = buildTask(input, this.#deps, nextTaskNumber(siblings), opts?.actor);
       const pFilePath = projectFilePath(task.projectId);
       const pExists = await this.#fs.fileExists(pFilePath, { signal: opts?.signal });
       if (!pExists) throw new NotFoundError("project", task.projectId);
@@ -274,7 +274,7 @@ export class MarkdownStorage implements StorageProvider {
       if (text === null) throw new NotFoundError("task", validId);
 
       const existing = decodeTask(found.projectId, validId, text, found.filePath);
-      let next = applyTaskPatch(existing, patch, this.#deps.clock());
+      let next = applyTaskPatch(existing, patch, this.#deps.clock(), opts?.actor);
 
       if (next.projectId !== existing.projectId) {
         const targetProjFile = projectFilePath(next.projectId);
@@ -325,7 +325,7 @@ export class MarkdownStorage implements StorageProvider {
       if (text === null) throw new NotFoundError("task", validId);
 
       const existing = decodeTask(found.projectId, validId, text, found.filePath);
-      const next = completeTaskEntity(existing, this.#deps.clock());
+      const next = completeTaskEntity(existing, this.#deps.clock(), opts?.actor);
       await this.#fs.writeTextAtomic(found.filePath, encodeTask(next), { signal: opts?.signal });
       return copyTask(next);
     }, { signal: opts?.signal });

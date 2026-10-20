@@ -21,6 +21,7 @@ import {
   TaskPrioritySchema,
   TaskStatusSchema,
   TaskTitleSchema,
+  TASK_ACTOR_MAX,
   WebhookMappingSchema,
   WebhookNameSchema,
   WebhookProviderSchema,
@@ -53,7 +54,86 @@ const KEY_DESCRIPTION =
 const WEBHOOK_MAPPING_DESCRIPTION =
   "Optional JSON dot-path mappings from incoming payload fields to task fields, e.g. { title: 'issue.fields.summary', description: 'issue.fields.description', priority: 'issue.fields.priority.name', labels: 'issue.fields.labels' }.";
 
-export function registerBitigTools(server: McpServer, storage: StorageProvider): void {
+const GENERIC_USER_AGENTS =
+  /^(?:node(?:-fetch)?|undici|mozilla|curl|fetch|okhttp|axios|python-requests|go-http-client)(?:\/|\s|$)/i;
+
+export interface RegisterBitigToolsOptions {
+  /**
+   * Optional fallback actor name (or getter) when the MCP transport is stateless
+   * and `server.server.getClientVersion()` is not populated on the per-request server instance.
+   */
+  readonly fallbackActor?: string | (() => string | undefined) | undefined;
+}
+
+interface McpExtraLike {
+  readonly requestInfo?:
+    | {
+        readonly headers?: Record<string, string | string[] | undefined>;
+        readonly url?: URL;
+      }
+    | undefined;
+}
+
+function getHeader(
+  headers: Record<string, string | string[] | undefined> | undefined,
+  name: string,
+): string | undefined {
+  if (!headers) return undefined;
+  const target = name.toLowerCase();
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === target) {
+      const str = Array.isArray(value) ? value[0] : value;
+      const trimmed = str?.trim();
+      if (trimmed) return trimmed;
+    }
+  }
+  return undefined;
+}
+
+function normalizeActor(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  return trimmed.slice(0, TASK_ACTOR_MAX);
+}
+
+export function resolveMcpActor(
+  server: McpServer,
+  extra?: McpExtraLike,
+  fallbackActor?: string | (() => string | undefined),
+): string {
+  const headers = extra?.requestInfo?.headers;
+  const headerActor =
+    getHeader(headers, "x-bitig-agent") ??
+    getHeader(headers, "x-agent-name") ??
+    getHeader(headers, "x-mcp-client-name") ??
+    extra?.requestInfo?.url?.searchParams.get("agent") ??
+    undefined;
+  const normalizedHeader = normalizeActor(headerActor);
+  if (normalizedHeader) return normalizedHeader;
+
+  const clientName = normalizeActor(server.server.getClientVersion()?.name);
+  if (clientName) return clientName;
+
+  const resolvedFallback = normalizeActor(
+    typeof fallbackActor === "function" ? fallbackActor() : fallbackActor,
+  );
+  if (resolvedFallback) return resolvedFallback;
+
+  const userAgent = getHeader(headers, "user-agent");
+  if (userAgent && !GENERIC_USER_AGENTS.test(userAgent)) {
+    const token = userAgent.split(/\s+/)[0]?.split("/")[0];
+    const normalizedUa = normalizeActor(token);
+    if (normalizedUa) return normalizedUa;
+  }
+
+  return "mcp";
+}
+
+export function registerBitigTools(
+  server: McpServer,
+  storage: StorageProvider,
+  options?: RegisterBitigToolsOptions,
+): void {
   /** The task with its ticket code (`code`), which callers can pass wherever a task ID is accepted. */
   async function withCode(task: Task, opts: OperationOptions) {
     const project = await storage.getProject(task.projectId, opts);
@@ -248,7 +328,8 @@ export function registerBitigTools(server: McpServer, storage: StorageProvider):
     },
     async (args, extra) => {
       try {
-        const opts = { signal: extra.signal };
+        const actor = resolveMcpActor(server, extra, options?.fallbackActor);
+        const opts: OperationOptions = { signal: extra.signal, actor };
         const projectId = await resolveProjectRef(storage, args.projectId, opts);
         const parsed = CreateTaskInputSchema.parse({ ...args, projectId });
         const task = await storage.saveTask(parsed, opts);
@@ -288,7 +369,8 @@ export function registerBitigTools(server: McpServer, storage: StorageProvider):
     },
     async (args, extra) => {
       try {
-        const opts = { signal: extra.signal };
+        const actor = resolveMcpActor(server, extra, options?.fallbackActor);
+        const opts: OperationOptions = { signal: extra.signal, actor };
         const { id: ref, projectId: projectRef, ...rest } = args;
         const id = await resolveTaskRef(storage, ref, opts);
         const patch =
@@ -313,7 +395,8 @@ export function registerBitigTools(server: McpServer, storage: StorageProvider):
     },
     async (args, extra) => {
       try {
-        const opts = { signal: extra.signal };
+        const actor = resolveMcpActor(server, extra, options?.fallbackActor);
+        const opts: OperationOptions = { signal: extra.signal, actor };
         const task = await storage.completeTask(await resolveTaskRef(storage, args.id, opts), opts);
         return formatSuccessResult(await withCode(task, opts));
       } catch (err) {

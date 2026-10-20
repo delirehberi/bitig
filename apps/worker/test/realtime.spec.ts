@@ -40,6 +40,11 @@ const DB_SETUP_STATEMENTS = [
     \`number\` integer,
     \`started_at\` integer,
     \`completed_at\` integer,
+    \`created_by\` text,
+    \`started_by\` text,
+    \`completed_by\` text,
+    \`updated_by\` text,
+    \`activity\` text,
     \`created_at\` integer NOT NULL,
     \`updated_at\` integer NOT NULL,
     FOREIGN KEY (\`project_id\`) REFERENCES \`projects\`(\`id\`) ON UPDATE no action ON DELETE cascade

@@ -3,6 +3,7 @@ import {
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
+  Bot,
   CheckCircle2,
   Circle,
   Clock,
@@ -209,6 +210,12 @@ export function TaskList({
             const hasRecordedTime =
               task.startedAt !== undefined || task.completedAt !== undefined;
             const spentMs = hasRecordedTime ? getTaskTiming(task).spentMs : undefined;
+            const actor =
+              task.updatedBy ??
+              task.completedBy ??
+              task.startedBy ??
+              task.createdBy ??
+              task.activity?.at(-1)?.actor;
 
             return (
               <tr
@@ -262,6 +269,15 @@ export function TaskList({
                         >
                           <Clock size={11} aria-hidden="true" />
                           <span>{formatDuration(spentMs)}</span>
+                        </span>
+                      )}
+                      {actor !== undefined && (
+                        <span
+                          className="inline-flex items-center gap-1 rounded-pill bg-paper-2 px-2 py-0.5 font-mono text-2xs font-medium text-ink-2"
+                          title={`Last touched by ${actor}`}
+                        >
+                          <Bot size={11} aria-hidden="true" />
+                          <span>{actor}</span>
                         </span>
                       )}
                       <NeedsHumanBadge reason={task.needsHuman} />

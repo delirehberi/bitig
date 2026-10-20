@@ -26,7 +26,8 @@ export const tasksRouter = new Hono<AppEnv>()
     async (c) => {
       const storage = c.get("storage");
       const input = c.req.valid("json");
-      const task = await storage.saveTask(input);
+      const actor = c.req.header("X-Bitig-Actor") ?? c.req.header("X-Bitig-Agent");
+      const task = await storage.saveTask(input, actor ? { actor } : undefined);
       return c.json(task, HTTP_CREATED);
     },
   )
@@ -51,7 +52,8 @@ export const tasksRouter = new Hono<AppEnv>()
       const storage = c.get("storage");
       const id = c.req.param("id");
       const patch = c.req.valid("json");
-      const updated = await storage.updateTask(id, patch);
+      const actor = c.req.header("X-Bitig-Actor") ?? c.req.header("X-Bitig-Agent");
+      const updated = await storage.updateTask(id, patch, actor ? { actor } : undefined);
       return c.json(updated);
     },
   )
@@ -64,7 +66,8 @@ export const tasksRouter = new Hono<AppEnv>()
   .post("/:id/complete", async (c) => {
     const storage = c.get("storage");
     const id = c.req.param("id");
-    const completed = await storage.completeTask(id);
+    const actor = c.req.header("X-Bitig-Actor") ?? c.req.header("X-Bitig-Agent");
+    const completed = await storage.completeTask(id, actor ? { actor } : undefined);
     return c.json(completed);
   })
   .get("/:id/comments", async (c) => {

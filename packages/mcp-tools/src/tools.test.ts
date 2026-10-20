@@ -3,7 +3,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { registerBitigTools } from "./register";
+import { registerBitigTools, resolveMcpActor } from "./register";
 
 describe("MCP Tools integration", () => {
   let storage: InMemoryStorage;
@@ -265,5 +265,86 @@ describe("MCP Tools integration", () => {
       deletedWebhookId: created.id,
     });
     expect((await call("list_webhooks", {})).data).toEqual([]);
+  });
+
+  it("automatically attributes task creation, status changes, updates, and completion to the MCP client", async () => {
+    const project = (await call("create_project", { name: "Bitig", key: "BIT" })).data as { id: string };
+
+    const created = (await call("add_task", {
+      projectId: project.id,
+      title: "LLM Marked Task",
+    })) as {
+      data: {
+        id: string;
+        createdBy?: string;
+        updatedBy?: string;
+        activity?: { action: string; actor: string; toStatus?: string }[];
+      };
+    };
+    expect(created.data.createdBy).toBe("client-test");
+    expect(created.data.updatedBy).toBe("client-test");
+    expect(created.data.activity).toEqual([
+      expect.objectContaining({ action: "created", actor: "client-test", toStatus: "todo" }),
+    ]);
+
+    const started = (await call("update_task", {
+      id: "BIT-1",
+      status: "in_progress",
+    })) as {
+      data: {
+        startedBy?: string;
+        updatedBy?: string;
+        activity?: { action: string; actor: string; fromStatus?: string; toStatus?: string }[];
+      };
+    };
+    expect(started.data.startedBy).toBe("client-test");
+    expect(started.data.updatedBy).toBe("client-test");
+    expect(started.data.activity).toHaveLength(2);
+    expect(started.data.activity?.[1]).toMatchObject({
+      action: "status_changed",
+      actor: "client-test",
+      fromStatus: "todo",
+      toStatus: "in_progress",
+    });
+
+    const completed = (await call("complete_task", { id: "BIT-1" })) as {
+      data: {
+        completedBy?: string;
+        updatedBy?: string;
+        activity?: { action: string; actor: string; fromStatus?: string; toStatus?: string }[];
+      };
+    };
+    expect(completed.data.completedBy).toBe("client-test");
+    expect(completed.data.updatedBy).toBe("client-test");
+    expect(completed.data.activity).toHaveLength(3);
+    expect(completed.data.activity?.[2]).toMatchObject({
+      action: "completed",
+      actor: "client-test",
+      fromStatus: "in_progress",
+      toStatus: "done",
+    });
+  });
+
+  it("resolves actor precedence across headers, clientInfo, fallback, and user-agent", () => {
+    const freshServer = new McpServer({ name: "bitig", version: "1.0.0" });
+    expect(
+      resolveMcpActor(
+        server,
+        { requestInfo: { headers: { "x-bitig-agent": "antigravity" } } },
+        "fallback-agent",
+      ),
+    ).toBe("antigravity");
+    expect(resolveMcpActor(server, undefined, "fallback-agent")).toBe("client-test");
+    expect(resolveMcpActor(freshServer, undefined, () => "claude-code")).toBe("claude-code");
+    expect(
+      resolveMcpActor(freshServer, {
+        requestInfo: { headers: { "user-agent": "claude-desktop/1.2.0" } },
+      }),
+    ).toBe("claude-desktop");
+    expect(
+      resolveMcpActor(freshServer, {
+        requestInfo: { headers: { "user-agent": "node-fetch/3.0" } },
+      }),
+    ).toBe("mcp");
   });
 });

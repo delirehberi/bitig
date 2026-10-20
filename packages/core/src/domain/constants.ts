@@ -41,6 +41,19 @@ export const CHECKLIST_MAX_ITEMS = 200;
 /** Human in the loop: what a task needs from a person. A task without it needs nobody. */
 export const NEEDS_HUMAN_MAX = 2000;
 
+/**
+ * LLM / actor attribution on tasks: records who created, started, completed, or updated a task,
+ * plus an ordered history of touches.
+ */
+export const TASK_ACTOR_MAX = 100;
+export const TASK_ACTIVITY_MAX_ITEMS = 200;
+export const TASK_ACTIVITY_ACTIONS = [
+  "created",
+  "status_changed",
+  "updated",
+  "completed",
+] as const;
+
 /** Links from a project to outside resources (repository, issue tracker, designs...). */
 export const RESOURCE_TYPES = [
   "repository",

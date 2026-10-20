@@ -84,6 +84,94 @@ describe("TaskDetailModal", () => {
     expect(screen.getByText("Completed in 1h 30m")).toBeInTheDocument();
   });
 
+  it("displays LLM actor attribution and activity history across modal, card, and list", () => {
+    const markedTask: Task = {
+      ...TASK,
+      status: "done",
+      createdAt: "2026-01-01T10:00:00.000Z",
+      startedAt: "2026-01-01T10:30:00.000Z",
+      completedAt: "2026-01-01T12:00:00.000Z",
+      updatedAt: "2026-01-01T12:00:00.000Z",
+      createdBy: "claude",
+      startedBy: "antigravity",
+      completedBy: "codex",
+      updatedBy: "codex",
+      activity: [
+        {
+          action: "created",
+          actor: "claude",
+          timestamp: "2026-01-01T10:00:00.000Z",
+          toStatus: "todo",
+        },
+        {
+          action: "status_changed",
+          actor: "antigravity",
+          timestamp: "2026-01-01T10:30:00.000Z",
+          fromStatus: "todo",
+          toStatus: "in_progress",
+        },
+        {
+          action: "completed",
+          actor: "codex",
+          timestamp: "2026-01-01T12:00:00.000Z",
+          fromStatus: "in_progress",
+          toStatus: "done",
+        },
+      ],
+    };
+
+    const { unmount } = render(
+      <FeatureFlagsProvider mode="local">
+        <TaskDetailModal
+          task={markedTask}
+          projects={[PROJECT]}
+          onClose={vi.fn()}
+          onEdit={vi.fn()}
+          onDelete={vi.fn()}
+          onComplete={vi.fn()}
+        />
+      </FeatureFlagsProvider>,
+    );
+
+    expect(screen.getByRole("region", { name: "Activity (3)" })).toBeInTheDocument();
+    expect(screen.getByText("created task")).toBeInTheDocument();
+    expect(screen.getByText("moved from To Do to In Progress")).toBeInTheDocument();
+    expect(screen.getByText("completed task")).toBeInTheDocument();
+    expect(screen.getAllByText("claude")).toHaveLength(2);
+    expect(screen.getAllByText("antigravity")).toHaveLength(2);
+    expect(screen.getAllByText("codex")).toHaveLength(3);
+    unmount();
+
+    const { unmount: unmountCard } = render(
+      <FeatureFlagsProvider mode="local">
+        <TaskCard
+          task={markedTask}
+          projects={[PROJECT]}
+          onView={vi.fn()}
+          onEdit={vi.fn()}
+          onDelete={vi.fn()}
+          onComplete={vi.fn()}
+          onStatusChange={vi.fn()}
+        />
+      </FeatureFlagsProvider>,
+    );
+    expect(screen.getByTitle("Last touched by codex")).toHaveTextContent("codex");
+    unmountCard();
+
+    render(
+      <TaskList
+        tasks={[markedTask]}
+        projects={[PROJECT]}
+        onView={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onComplete={vi.fn()}
+        onStatusChange={vi.fn()}
+      />,
+    );
+    expect(screen.getByTitle("Last touched by codex")).toHaveTextContent("codex");
+  });
+
   it("shows what the task needs from a human and clears it", async () => {
     const onNeedsHumanResolve = vi.fn();
     render(

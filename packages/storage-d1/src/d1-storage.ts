@@ -136,6 +136,21 @@ function recordToTask(row: TaskRecord): Task {
   if (row.completedAt !== null) {
     task.completedAt = new Date(row.completedAt).toISOString();
   }
+  if (row.createdBy !== null) {
+    task.createdBy = row.createdBy;
+  }
+  if (row.startedBy !== null) {
+    task.startedBy = row.startedBy;
+  }
+  if (row.completedBy !== null) {
+    task.completedBy = row.completedBy;
+  }
+  if (row.updatedBy !== null) {
+    task.updatedBy = row.updatedBy;
+  }
+  if (row.activity !== null) {
+    task.activity = row.activity.map((entry) => ({ ...entry }));
+  }
   return task;
 }
 
@@ -337,7 +352,7 @@ export class D1Storage implements StorageProvider {
   async saveTask(input: CreateTaskInput, opts?: OperationOptions): Promise<Task> {
     throwIfAborted(opts?.signal);
     const projectId = parseOrThrow(IdSchema, input.projectId, "saveTask");
-    const task = buildTask(input, this.#deps, await this.#nextTaskNumber(projectId));
+    const task = buildTask(input, this.#deps, await this.#nextTaskNumber(projectId), opts?.actor);
 
     const projectRow = await this.#db.select().from(projects).where(eq(projects.id, task.projectId)).get();
     throwIfAborted(opts?.signal);
@@ -359,6 +374,11 @@ export class D1Storage implements StorageProvider {
       number: task.number ?? null,
       startedAt: task.startedAt !== undefined ? Date.parse(task.startedAt) : null,
       completedAt: task.completedAt !== undefined ? Date.parse(task.completedAt) : null,
+      createdBy: task.createdBy ?? null,
+      startedBy: task.startedBy ?? null,
+      completedBy: task.completedBy ?? null,
+      updatedBy: task.updatedBy ?? null,
+      activity: task.activity ? task.activity.map((entry) => ({ ...entry })) : null,
       createdAt: Date.parse(task.createdAt),
       updatedAt: Date.parse(task.updatedAt),
     });
@@ -374,7 +394,7 @@ export class D1Storage implements StorageProvider {
     if (!existingRow) throw new NotFoundError("task", validId);
 
     const existing = recordToTask(existingRow);
-    let next = applyTaskPatch(existing, patch, this.#deps.clock());
+    let next = applyTaskPatch(existing, patch, this.#deps.clock(), opts?.actor);
 
     if (next.projectId !== existing.projectId) {
       const targetProject = await this.#db.select().from(projects).where(eq(projects.id, next.projectId)).get();
@@ -401,6 +421,11 @@ export class D1Storage implements StorageProvider {
         number: next.number ?? null,
         startedAt: next.startedAt !== undefined ? Date.parse(next.startedAt) : null,
         completedAt: next.completedAt !== undefined ? Date.parse(next.completedAt) : null,
+        createdBy: next.createdBy ?? null,
+        startedBy: next.startedBy ?? null,
+        completedBy: next.completedBy ?? null,
+        updatedBy: next.updatedBy ?? null,
+        activity: next.activity ? next.activity.map((entry) => ({ ...entry })) : null,
         updatedAt: Date.parse(next.updatedAt),
       })
       .where(eq(tasks.id, validId));
@@ -428,7 +453,7 @@ export class D1Storage implements StorageProvider {
     if (!existingRow) throw new NotFoundError("task", validId);
 
     const existing = recordToTask(existingRow);
-    const next = completeTaskEntity(existing, this.#deps.clock());
+    const next = completeTaskEntity(existing, this.#deps.clock(), opts?.actor);
 
     if (next.status !== existing.status || next.updatedAt !== existing.updatedAt) {
       await this.#db
@@ -436,6 +461,9 @@ export class D1Storage implements StorageProvider {
         .set({
           status: next.status,
           completedAt: next.completedAt !== undefined ? Date.parse(next.completedAt) : null,
+          completedBy: next.completedBy ?? null,
+          updatedBy: next.updatedBy ?? null,
+          activity: next.activity ? next.activity.map((entry) => ({ ...entry })) : null,
           updatedAt: Date.parse(next.updatedAt),
         })
         .where(eq(tasks.id, validId));
@@ -629,6 +657,11 @@ export class D1Storage implements StorageProvider {
         number: task.number ?? null,
         startedAt: task.startedAt !== undefined ? Date.parse(task.startedAt) : null,
         completedAt: task.completedAt !== undefined ? Date.parse(task.completedAt) : null,
+        createdBy: task.createdBy ?? null,
+        startedBy: task.startedBy ?? null,
+        completedBy: task.completedBy ?? null,
+        updatedBy: task.updatedBy ?? null,
+        activity: task.activity ? task.activity.map((entry) => ({ ...entry })) : null,
         createdAt: Date.parse(task.createdAt),
         updatedAt: Date.parse(task.updatedAt),
       };

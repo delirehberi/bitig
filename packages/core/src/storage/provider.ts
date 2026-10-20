@@ -20,6 +20,8 @@ import type { AbortSignalLike } from "./abort";
 export interface OperationOptions {
   /** Any standard `AbortSignal`. Aborting rejects the promise with `signal.reason`. */
   readonly signal?: AbortSignalLike;
+  /** Optional LLM / actor name that is performing the mutation (e.g. `"claude"`, `"antigravity"`). */
+  readonly actor?: string | undefined;
 }
 
 /**

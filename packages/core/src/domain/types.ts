@@ -11,6 +11,8 @@ import type {
   ProjectResourceSchema,
   ProjectSchema,
   ResourceTypeSchema,
+  TaskActivityActionSchema,
+  TaskActivityEntrySchema,
   TaskFilterSchema,
   TaskPrioritySchema,
   TaskSchema,
@@ -30,6 +32,8 @@ export type Project = z.output<typeof ProjectSchema>;
 export type Task = z.output<typeof TaskSchema>;
 export type TaskStatus = z.output<typeof TaskStatusSchema>;
 export type TaskPriority = z.output<typeof TaskPrioritySchema>;
+export type TaskActivityAction = z.output<typeof TaskActivityActionSchema>;
+export type TaskActivityEntry = z.output<typeof TaskActivityEntrySchema>;
 export type ProjectKind = z.output<typeof ProjectKindSchema>;
 export type ChecklistItem = z.output<typeof ChecklistItemSchema>;
 export type ProjectResource = z.output<typeof ProjectResourceSchema>;

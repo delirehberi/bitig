@@ -7,6 +7,8 @@ import type { AppEnv } from "../index";
 const MCP_SERVER_NAME = "bitig";
 const MCP_SERVER_VERSION = "1.0.0";
 
+let lastInitializedClientName: string | undefined;
+
 export const mcpRouter = new Hono<AppEnv>().all("*", async (c) => {
   const storage = c.get("storage");
   const server = new McpServer(
@@ -19,12 +21,19 @@ export const mcpRouter = new Hono<AppEnv>().all("*", async (c) => {
     },
   );
 
-  registerBitigTools(server, storage);
+  registerBitigTools(server, storage, {
+    fallbackActor: () => lastInitializedClientName,
+  });
 
   // Stateless mode: session management is disabled when sessionIdGenerator is omitted
   const transport = new WebStandardStreamableHTTPServerTransport();
 
   await server.connect(transport);
 
-  return transport.handleRequest(c.req.raw);
+  const response = await transport.handleRequest(c.req.raw);
+  const initializedClientName = server.server.getClientVersion()?.name.trim();
+  if (initializedClientName) {
+    lastInitializedClientName = initializedClientName;
+  }
+  return response;
 });

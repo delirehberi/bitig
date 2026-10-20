@@ -113,6 +113,9 @@ export class ApiStorage implements StorageProvider {
     if (!headers.has("X-Bitig-Request")) {
       headers.set("X-Bitig-Request", "true");
     }
+    if (opts?.actor && !headers.has("X-Bitig-Actor")) {
+      headers.set("X-Bitig-Actor", opts.actor);
+    }
     if (authHeader && !headers.has("Authorization")) {
       headers.set("Authorization", authHeader);
     }

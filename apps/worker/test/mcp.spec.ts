@@ -39,6 +39,11 @@ const DB_SETUP_STATEMENTS = [
     \`number\` integer,
     \`started_at\` integer,
     \`completed_at\` integer,
+    \`created_by\` text,
+    \`started_by\` text,
+    \`completed_by\` text,
+    \`updated_by\` text,
+    \`activity\` text,
     \`created_at\` integer NOT NULL,
     \`updated_at\` integer NOT NULL,
     FOREIGN KEY (\`project_id\`) REFERENCES \`projects\`(\`id\`) ON UPDATE no action ON DELETE cascade
@@ -304,10 +309,18 @@ describe("Remote MCP Protocol & Tool Execution", () => {
       title: string;
       status: string;
       priority: string;
+      createdBy?: string;
+      updatedBy?: string;
+      activity?: { action: string; actor: string; toStatus?: string }[];
     };
     expect(task.title).toBe("Remote Task 1");
     expect(task.status).toBe("todo");
     expect(task.priority).toBe("high");
+    expect(task.createdBy).toBe("mcp-test-client");
+    expect(task.updatedBy).toBe("mcp-test-client");
+    expect(task.activity).toEqual([
+      expect.objectContaining({ action: "created", actor: "mcp-test-client", toStatus: "todo" }),
+    ]);
 
     // 4. Get task
     const getTaskRes = await client.callTool({
@@ -340,8 +353,20 @@ describe("Remote MCP Protocol & Tool Execution", () => {
     expect(completeTaskRes.isError).toBeFalsy();
     const completedTask = JSON.parse((completeTaskRes.content as { text: string }[])[0]?.text ?? "{}") as {
       status: string;
+      completedBy?: string;
+      updatedBy?: string;
+      activity?: { action: string; actor: string; fromStatus?: string; toStatus?: string }[];
     };
     expect(completedTask.status).toBe("done");
+    expect(completedTask.completedBy).toBe("mcp-test-client");
+    expect(completedTask.updatedBy).toBe("mcp-test-client");
+    expect(completedTask.activity).toHaveLength(2);
+    expect(completedTask.activity?.[1]).toMatchObject({
+      action: "completed",
+      actor: "mcp-test-client",
+      fromStatus: "todo",
+      toStatus: "done",
+    });
 
     // 7. Update task
     const updateTaskRes = await client.callTool({

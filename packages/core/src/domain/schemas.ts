@@ -23,6 +23,9 @@ import {
   RESOURCE_LABEL_MAX,
   RESOURCE_TYPES,
   RESOURCE_URL_MAX,
+  TASK_ACTIVITY_ACTIONS,
+  TASK_ACTIVITY_MAX_ITEMS,
+  TASK_ACTOR_MAX,
   TASK_PRIORITIES,
   TASK_STATUSES,
   TASK_TITLE_MAX,
@@ -88,6 +91,22 @@ export const ChecklistSchema = z.array(ChecklistItemSchema).max(CHECKLIST_MAX_IT
 
 /** Why a task needs a person, e.g. a decision or an approval. Set means the task waits on a human. */
 export const NeedsHumanSchema = z.string().trim().min(1).max(NEEDS_HUMAN_MAX);
+
+/** Name of the LLM or actor that touched a task, e.g. `claude` or `antigravity`. */
+export const TaskActorSchema = z.string().trim().min(1).max(TASK_ACTOR_MAX);
+
+export const TaskActivityActionSchema = z.enum(TASK_ACTIVITY_ACTIONS);
+
+/** One recorded LLM/actor touch on a task, in chronological order. */
+export const TaskActivityEntrySchema = z.strictObject({
+  action: TaskActivityActionSchema,
+  actor: TaskActorSchema,
+  timestamp: TimestampSchema,
+  fromStatus: TaskStatusSchema.exactOptional(),
+  toStatus: TaskStatusSchema.exactOptional(),
+});
+
+export const TaskActivitySchema = z.array(TaskActivityEntrySchema).max(TASK_ACTIVITY_MAX_ITEMS);
 
 export const ResourceTypeSchema = z.enum(RESOURCE_TYPES);
 
@@ -159,6 +178,16 @@ export const TaskSchema = z.strictObject({
   startedAt: TimestampSchema.exactOptional(),
   /** Set when the task enters `done`; cleared if reopened to `todo` or `in_progress`. */
   completedAt: TimestampSchema.exactOptional(),
+  /** Actor/LLM that created the task, when created by an attributed caller. */
+  createdBy: TaskActorSchema.exactOptional(),
+  /** Actor/LLM that moved the task into `in_progress` (or created it active/done); cleared if reset to `todo`. */
+  startedBy: TaskActorSchema.exactOptional(),
+  /** Actor/LLM that marked the task `done`; cleared if reopened to `todo` or `in_progress`. */
+  completedBy: TaskActorSchema.exactOptional(),
+  /** Actor/LLM that performed the most recent attributed touch on the task. */
+  updatedBy: TaskActorSchema.exactOptional(),
+  /** Chronological history of attributed touches on the task; omitted when empty. */
+  activity: TaskActivitySchema.min(1).exactOptional(),
   dueDate: DueDateSchema.exactOptional(),
   priority: TaskPrioritySchema.exactOptional(),
   labels: LabelsSchema.exactOptional(),
