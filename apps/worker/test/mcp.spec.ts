@@ -36,6 +36,7 @@ const DB_SETUP_STATEMENTS = [
     \`order\` real,
     \`checklist\` text,
     \`needs_human\` text,
+    \`pending_approval\` integer,
     \`number\` integer,
     \`started_at\` integer,
     \`completed_at\` integer,
@@ -345,7 +346,25 @@ describe("Remote MCP Protocol & Tool Execution", () => {
     }[];
     expect(tasksList.some((t) => t.id === task.id)).toBe(true);
 
-    // 6. Complete task
+    // 6. Agents cannot complete a task a person has not approved; a person approves it over REST
+    expect((task as { pendingApproval?: true }).pendingApproval).toBe(true);
+    const refusedCompleteRes = await client.callTool({
+      name: "complete_task",
+      arguments: { id: task.id },
+    });
+    expect(refusedCompleteRes.isError).toBe(true);
+    expect((refusedCompleteRes.content as { text: string }[])[0]?.text).toContain("awaiting human approval");
+    const approveRes = await exports.default.fetch(
+      new Request(`${BASE_URL}/api/tasks/${task.id}`, {
+        method: "PATCH",
+        headers: { Authorization: TEST_AUTH_HEADER, "Content-Type": "application/json" },
+        body: JSON.stringify({ pendingApproval: null }),
+      }),
+    );
+    expect(approveRes.status).toBe(200);
+    expect(await approveRes.json()).not.toHaveProperty("pendingApproval");
+
+    // 7. Complete task
     const completeTaskRes = await client.callTool({
       name: "complete_task",
       arguments: { id: task.id },
@@ -368,7 +387,7 @@ describe("Remote MCP Protocol & Tool Execution", () => {
       toStatus: "done",
     });
 
-    // 7. Update task
+    // 8. Update task
     const updateTaskRes = await client.callTool({
       name: "update_task",
       arguments: {
@@ -385,7 +404,7 @@ describe("Remote MCP Protocol & Tool Execution", () => {
     expect(updatedTask.title).toBe("Updated Remote Task Title");
     expect(updatedTask.needsHuman).toBe("Confirm the deploy window");
 
-    // 8. Delete task
+    // 9. Delete task
     const deleteTaskRes = await client.callTool({
       name: "delete_task",
       arguments: { id: task.id },
@@ -399,7 +418,7 @@ describe("Remote MCP Protocol & Tool Execution", () => {
     });
     expect(getDeletedTaskRes.isError).toBe(true);
 
-    // 9. Delete project
+    // 10. Delete project
     const deleteProjectRes = await client.callTool({
       name: "delete_project",
       arguments: { id: project.id },

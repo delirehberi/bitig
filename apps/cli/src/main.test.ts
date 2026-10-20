@@ -132,6 +132,17 @@ describe("CLI main commands", () => {
     expect(await exec(["tasks", "update", taskId, "--clear-needs-human"])).toBe(0);
     expect(await reader.getTask(taskId)).not.toHaveProperty("needsHuman");
 
+    // 7c. Approve a task an agent created over MCP
+    const agentTask = await reader.saveTask({ projectId, title: "Agent idea", pendingApproval: true });
+    expect(await exec(["tasks", "list", "-p", projectId, "--awaiting-approval"])).toBe(0);
+    expect(await exec(["tasks", "show", agentTask.id])).toBe(0);
+    expect(await exec(["tasks", "approve", agentTask.id])).toBe(0);
+    expect(await reader.getTask(agentTask.id)).not.toHaveProperty("pendingApproval");
+    // Approving again is a no-op
+    expect(await exec(["tasks", "approve", agentTask.id])).toBe(0);
+    expect(await exec(["tasks", "approve", "NOPE-404"])).not.toBe(0);
+    await reader.deleteTask(agentTask.id);
+
     // 8. Link outside resources to the project
     for (const args of [
       ["projects", "link", "add", projectId, "https://github.com/acme/work", "-t", "repository"],

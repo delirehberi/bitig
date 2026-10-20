@@ -81,6 +81,7 @@ describe("MCP Tools integration", () => {
     };
     expect(taskData.title).toBe("Test Task");
     expect(taskData.status).toBe("todo");
+    await approve(taskData.id);
 
     // Complete task
     const completeResult = await client.callTool({
@@ -139,6 +140,50 @@ describe("MCP Tools integration", () => {
     return data as TaskResult;
   }
 
+  /** What a person does in the web UI or CLI; agents have no MCP tool for it. */
+  async function approve(id: string): Promise<void> {
+    await storage.updateTask(id, { pendingApproval: null });
+  }
+
+  it("creates tasks awaiting approval and refuses to start or complete them until a person approves", async () => {
+    await call("create_project", { name: "Bitig", key: "BIT" });
+    const created = (await call("add_task", { projectId: "BIT", title: "Agent idea" })).data as TaskResult & {
+      pendingApproval?: true;
+    };
+    expect(created.pendingApproval).toBe(true);
+
+    // An agent cannot opt out at creation or approve through update_task
+    const optedOut = (await call("add_task", { projectId: "BIT", title: "Sneaky", pendingApproval: false }))
+      .data as { pendingApproval?: true };
+    expect(optedOut.pendingApproval).toBe(true);
+    await call("update_task", { id: "BIT-1", pendingApproval: null });
+    expect((await storage.getTask(created.id))?.pendingApproval).toBe(true);
+
+    for (const status of ["in_progress", "done"]) {
+      const refused = await call("update_task", { id: "BIT-1", status });
+      expect(refused.isError).toBe(true);
+      expect(refused.data).toContain("awaiting human approval");
+    }
+    const refusedComplete = await call("complete_task", { id: "BIT-1" });
+    expect(refusedComplete.isError).toBe(true);
+    expect(refusedComplete.data).toContain("awaiting human approval");
+    expect((await storage.getTask(created.id))?.status).toBe("todo");
+
+    // Edits other than starting or completing still work
+    expect((await task("update_task", { id: "BIT-1", title: "Agent idea, refined" })).title).toBe(
+      "Agent idea, refined",
+    );
+
+    const pending = (await call("list_tasks", { projectId: "BIT", pendingApproval: true })).data as TaskResult[];
+    expect(pending.map((t) => t.code)).toEqual(["BIT-1", "BIT-2"]);
+
+    await approve(created.id);
+    const approvedList = (await call("list_tasks", { pendingApproval: false })).data as TaskResult[];
+    expect(approvedList.map((t) => t.code)).toEqual(["BIT-1"]);
+    expect((await task("update_task", { id: "BIT-1", status: "in_progress" })).status).toBe("in_progress");
+    expect((await task("complete_task", { id: "BIT-1" })).status).toBe("done");
+  });
+
   it("names tasks by ticket code and accepts codes and keys in place of IDs", async () => {
     const project = (await call("create_project", { name: "Bitig" })).data as { id: string; key: string };
     expect(project.key).toBe("BIT");
@@ -149,6 +194,7 @@ describe("MCP Tools integration", () => {
 
     expect((await task("get_task", { id: "bit-2" })).id).toBe(second.id);
     expect((await task("update_task", { id: "BIT-1", title: "Uno" })).title).toBe("Uno");
+    await approve(first.id);
     expect((await task("complete_task", { id: "BIT-1" })).status).toBe("done");
     const listed = (await call("list_tasks", { projectId: "BIT" })).data as TaskResult[];
     expect(listed.map((t) => t.code)).toEqual(["BIT-1", "BIT-2"]);
@@ -286,6 +332,7 @@ describe("MCP Tools integration", () => {
     expect(created.data.activity).toEqual([
       expect.objectContaining({ action: "created", actor: "client-test", toStatus: "todo" }),
     ]);
+    await approve(created.data.id);
 
     const started = (await call("update_task", {
       id: "BIT-1",

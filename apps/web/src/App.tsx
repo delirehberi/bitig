@@ -35,6 +35,7 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
   const selectedProjectId =
     route.name === "tasks" || route.name === "webhooks" ? route.projectId : undefined;
   const needsHumanOnly = route.name === "tasks" && route.needsHuman === true;
+  const awaitingApprovalOnly = route.name === "tasks" && route.awaitingApproval === true;
   const archivedProjectsOnly = route.name === "projects" && route.archived === true;
 
   const { realtimeSync } = useFeatureFlags();
@@ -77,21 +78,26 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
     navigate(hrefFor(projectId ? { name: "tasks", projectId } : { name: "tasks" }));
   }
 
-  function tasksHref(projectId: string | undefined, needsHuman: boolean): string {
+  function tasksHref(projectId: string | undefined, needsHuman: boolean, awaitingApproval: boolean): string {
     return hrefFor({
       name: "tasks",
       ...(projectId ? { projectId } : {}),
       ...(needsHuman ? { needsHuman: true as const } : {}),
+      ...(awaitingApproval ? { awaitingApproval: true as const } : {}),
     });
   }
 
   // Changing a filter refines the current page rather than opening a new one.
   function handleFilterProject(projectId: string | undefined) {
-    navigate(tasksHref(projectId, needsHumanOnly), { replace: true });
+    navigate(tasksHref(projectId, needsHumanOnly, awaitingApprovalOnly), { replace: true });
   }
 
   function handleFilterNeedsHuman(only: boolean) {
-    navigate(tasksHref(selectedProjectId, only), { replace: true });
+    navigate(tasksHref(selectedProjectId, only, awaitingApprovalOnly), { replace: true });
+  }
+
+  function handleFilterAwaitingApproval(only: boolean) {
+    navigate(tasksHref(selectedProjectId, needsHumanOnly, only), { replace: true });
   }
 
   function handleFilterWebhooksProject(projectId: string | undefined) {
@@ -121,8 +127,11 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
               projectsCount={projects.filter((project) => !project.archived).length}
               tasksCount={tasks.length}
               needsHumanCount={tasks.filter((task) => task.needsHuman !== undefined).length}
+              awaitingApprovalCount={tasks.filter((task) => task.pendingApproval === true).length}
               onNavigate={(tab) => {
-                navigate(tab === "needs_human" ? tasksHref(undefined, true) : hrefFor({ name: tab }));
+                if (tab === "needs_human") navigate(tasksHref(undefined, true, false));
+                else if (tab === "awaiting_approval") navigate(tasksHref(undefined, false, true));
+                else navigate(hrefFor({ name: tab }));
               }}
             />
           )}
@@ -155,6 +164,8 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
               onSelectProject={handleFilterProject}
               needsHumanOnly={needsHumanOnly}
               onNeedsHumanOnlyChange={handleFilterNeedsHuman}
+              awaitingApprovalOnly={awaitingApprovalOnly}
+              onAwaitingApprovalOnlyChange={handleFilterAwaitingApproval}
               onSaveTask={saveTask}
               onUpdateTask={updateTask}
               onCompleteTask={completeTask}

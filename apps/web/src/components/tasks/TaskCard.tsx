@@ -23,6 +23,7 @@ import {
 } from "@bitig/core";
 import { useFeatureFlags } from "../../hooks/useFeatureFlags";
 import { ChecklistProgressBadge } from "./Checklist";
+import { ApprovalNote } from "./Approval";
 import { NeedsHumanNote } from "./NeedsHuman";
 import { TaskCode } from "./TaskCode";
 
@@ -34,6 +35,8 @@ interface TaskCardProps {
   readonly onDelete: (task: Task) => void;
   readonly onComplete: (task: Task) => void;
   readonly onStatusChange: (task: Task, status: TaskStatus) => void;
+  /** Approves a task an agent or webhook created; omit to show the flag read-only. */
+  readonly onApprove?: ((task: Task) => void) | undefined;
   /** Shows a reorder handle; arrow keys on it move the card up (-1) or down (1). */
   readonly onReorder?: (direction: -1 | 1) => void;
   /** Whether to show the project name badge; defaults to true. */
@@ -58,6 +61,7 @@ export function TaskCard({
   onDelete,
   onComplete,
   onStatusChange,
+  onApprove,
   onReorder,
   showProject = true,
 }: TaskCardProps) {
@@ -208,6 +212,25 @@ export function TaskCard({
             )}
           </div>
         </div>
+
+        {task.pendingApproval === true && (
+          <div className="mt-3">
+            <ApprovalNote
+              pending
+              compact
+              onApprove={
+                onApprove
+                  ? () => {
+                      onApprove(task);
+                    }
+                  : undefined
+              }
+              onReject={() => {
+                onDelete(task);
+              }}
+            />
+          </div>
+        )}
 
         {task.needsHuman !== undefined && (
           <div className="mt-3">

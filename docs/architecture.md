@@ -137,7 +137,7 @@ MCP is available in every mode: STDIO (local CLI) and Streamable HTTP (Cloudflar
 
 - `Project`: `id`, `name`, `description`, `kind`, `createdAt`, `updatedAt`, plus optional `key` (2–10 uppercase characters for ticket codes), `resources` (`repository | issue_tracker | design | documentation | other`), and `archived`.
   - `kind`: `paid | hobby | open_source | personal | internal`; defaults to `hobby`, cannot be cleared.
-- `Task`: `id`, `projectId`, `title`, `description`, `status`, `createdAt`, `updatedAt`, `isPublic`, plus optional `dueDate`, `priority`, `labels`, `order`, `number` (for ticket codes like `BIT-12`), `checklist` (`{ text, done, startedAt?, completedAt? }[]`), `needsHuman`, `startedAt`, `completedAt`, `createdBy`, `startedBy`, `completedBy`, `updatedBy`, `activity`, and `commentCount`.
+- `Task`: `id`, `projectId`, `title`, `description`, `status`, `createdAt`, `updatedAt`, `isPublic`, plus optional `dueDate`, `priority`, `labels`, `order`, `number` (for ticket codes like `BIT-12`), `checklist` (`{ text, done, startedAt?, completedAt? }[]`), `needsHuman`, `pendingApproval` (`true` while a task an agent or webhook created waits for a person's approval), `startedAt`, `completedAt`, `createdBy`, `startedBy`, `completedBy`, `updatedBy`, `activity`, and `commentCount`.
 - `Comment`: `id`, `taskId`, `body`, `authorType` (`human | agent`), `createdAt`, plus optional `author`.
 - `Webhook`: `id`, `projectId`, `name`, `provider` (`generic | sentry | github | linear`), `token`, `enabled`, `triggerCount`, `createdAt`, `updatedAt`, plus optional `mapping`, `defaultPriority`, `defaultLabels`, and `lastTriggeredAt`.
 - `status`: `todo | in_progress | done | archived`.

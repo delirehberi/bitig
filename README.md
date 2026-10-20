@@ -154,6 +154,10 @@ bitig tasks update BIT-12 --needs-human "Approve the schema change"
 bitig tasks list --needs-human
 bitig tasks update BIT-12 --clear-needs-human
 
+# Approval: tasks agents add over MCP, and tasks webhooks create, wait for you to approve them
+bitig tasks list --awaiting-approval
+bitig tasks approve BIT-12
+
 # Comments: context agents keep on a task, and answers people give (oldest first, Markdown)
 bitig tasks comment add BIT-12 "Use the staging key"     # no text opens $EDITOR, '-' reads stdin
 bitig tasks comment add BIT-12 - --agent --author claude < notes.md
@@ -242,11 +246,11 @@ Or run against an explicit data directory:
 2. `create_project` - Create a project (optionally with a `key` for ticket codes).
 3. `update_project` - Update a project's name, description, kind, links or key.
 4. `delete_project` - Delete a project and its tasks.
-5. `list_tasks` - List tasks with their codes, optionally for one project (ID or key) or only those that need a human (`needsHuman: true`).
+5. `list_tasks` - List tasks with their codes, optionally for one project (ID or key) only those that need a human (`needsHuman: true`), or only those awaiting approval (`pendingApproval: true`).
 6. `get_task` - Retrieve a task by ID or code (`BIT-12`), with its comments.
-7. `add_task` - Add a task to a project (ID or key).
+7. `add_task` - Add a task to a project (ID or key). The task awaits a person's approval (`pendingApproval: true`): agents cannot move it to `in_progress` or `done`, or approve it, until a person approves it in the web dashboard, with `bitig tasks approve`, or via REST `PATCH /api/tasks/:id` with `{ "pendingApproval": null }`.
 8. `update_task` - Update a task's fields, or move it to another project. Agents set `needsHuman` to what they need from a person (a decision, an approval, access); `null` clears it.
-9. `complete_task` - Mark a task done.
+9. `complete_task` - Mark a task done (refused while the task awaits approval).
 10. `delete_task` - Delete a task.
 11. `backfill_ticket_codes` - Key older projects and number their tasks.
 12. `list_comments` - List a task's comments, oldest first.

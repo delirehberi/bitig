@@ -22,6 +22,7 @@ import {
   TaskStatusSchema,
   TaskTitleSchema,
   TASK_ACTOR_MAX,
+  ValidationError,
   WebhookMappingSchema,
   WebhookNameSchema,
   WebhookProviderSchema,
@@ -32,6 +33,7 @@ import {
   type OperationOptions,
   type StorageProvider,
   type Task,
+  type TaskStatus,
 } from "@bitig/core";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
@@ -46,6 +48,11 @@ const CHECKLIST_DESCRIPTION =
 
 const NEEDS_HUMAN_DESCRIPTION =
   "Set when the task is blocked on a person: say what you need from them (a decision, an approval, access, an answer). The task then shows as needing a human until it is cleared.";
+
+/** Statuses an agent may not move a task to until a person has approved it. */
+const APPROVAL_GATED_STATUSES: ReadonlySet<TaskStatus> = new Set<TaskStatus>(["in_progress", "done"]);
+const AWAITING_APPROVAL_MESSAGE =
+  "Task is awaiting human approval. A person must approve it in Bitig before it can be started or completed.";
 
 const TASK_REF = z.string().min(1).describe("Task ID or ticket code, e.g. BIT-12");
 const PROJECT_REF = z.string().min(1).describe("Project ID or project key, e.g. BIT");
@@ -138,6 +145,17 @@ export function registerBitigTools(
   async function withCode(task: Task, opts: OperationOptions) {
     const project = await storage.getProject(task.projectId, opts);
     return withTaskCodes([task], project === null ? [] : [project])[0] ?? task;
+  }
+
+  /**
+   * Refuses to start or complete a task a person has not approved yet. Agents
+   * have no way to approve over MCP; an unknown ID falls through so storage
+   * reports it as not found.
+   */
+  async function assertApproved(id: string, context: string, opts: OperationOptions): Promise<void> {
+    const task = await storage.getTask(id, opts);
+    if (task?.pendingApproval !== true) return;
+    throw new ValidationError(context, [{ code: "custom", path: ["status"], message: AWAITING_APPROVAL_MESSAGE }]);
   }
 
   // 1. list_projects
@@ -256,7 +274,7 @@ export function registerBitigTools(
     "list_tasks",
     {
       description:
-        "List tasks with their ticket codes, optionally filtered by project ID or key, or to the tasks that need a human",
+        "List tasks with their ticket codes, optionally filtered by project ID or key, to the tasks that need a human, or to the tasks awaiting approval",
       annotations: { readOnlyHint: true },
       inputSchema: {
         projectId: PROJECT_REF.optional(),
@@ -264,6 +282,10 @@ export function registerBitigTools(
           .boolean()
           .optional()
           .describe("true lists only tasks waiting on a person, false only tasks that are not"),
+        pendingApproval: z
+          .boolean()
+          .optional()
+          .describe("true lists only tasks awaiting a person's approval, false only approved tasks"),
       },
     },
     async (args, extra) => {
@@ -272,10 +294,11 @@ export function registerBitigTools(
         const projectId =
           args.projectId === undefined ? undefined : await resolveProjectRef(storage, args.projectId, opts);
         const tasks = await storage.getTasks(projectId === undefined ? undefined : { projectId }, opts);
-        const matching =
-          args.needsHuman === undefined
-            ? tasks
-            : tasks.filter((task) => (task.needsHuman !== undefined) === args.needsHuman);
+        const matching = tasks.filter(
+          (task) =>
+            (args.needsHuman === undefined || (task.needsHuman !== undefined) === args.needsHuman) &&
+            (args.pendingApproval === undefined || (task.pendingApproval === true) === args.pendingApproval),
+        );
         return formatSuccessResult(withTaskCodes(matching, await storage.getProjects(opts)));
       } catch (err) {
         return formatErrorResult(err);
@@ -311,7 +334,8 @@ export function registerBitigTools(
   server.registerTool(
     "add_task",
     {
-      description: "Add a new task to a project. The result's code (e.g. BIT-12) names the task from then on.",
+      description:
+        "Add a new task to a project. The result's code (e.g. BIT-12) names the task from then on. The task awaits a person's approval and cannot be started or completed until approved.",
       inputSchema: {
         projectId: PROJECT_REF,
         title: TaskTitleSchema,
@@ -331,7 +355,8 @@ export function registerBitigTools(
         const actor = resolveMcpActor(server, extra, options?.fallbackActor);
         const opts: OperationOptions = { signal: extra.signal, actor };
         const projectId = await resolveProjectRef(storage, args.projectId, opts);
-        const parsed = CreateTaskInputSchema.parse({ ...args, projectId });
+        // Not an input: every task an agent creates waits for a person to approve it.
+        const parsed = CreateTaskInputSchema.parse({ ...args, projectId, pendingApproval: true });
         const task = await storage.saveTask(parsed, opts);
         return formatSuccessResult(await withCode(task, opts));
       } catch (err) {
@@ -373,6 +398,9 @@ export function registerBitigTools(
         const opts: OperationOptions = { signal: extra.signal, actor };
         const { id: ref, projectId: projectRef, ...rest } = args;
         const id = await resolveTaskRef(storage, ref, opts);
+        if (rest.status !== undefined && APPROVAL_GATED_STATUSES.has(rest.status)) {
+          await assertApproved(id, "update_task", opts);
+        }
         const patch =
           projectRef === undefined ? rest : { ...rest, projectId: await resolveProjectRef(storage, projectRef, opts) };
         const task = await storage.updateTask(id, patch, opts);
@@ -397,7 +425,9 @@ export function registerBitigTools(
       try {
         const actor = resolveMcpActor(server, extra, options?.fallbackActor);
         const opts: OperationOptions = { signal: extra.signal, actor };
-        const task = await storage.completeTask(await resolveTaskRef(storage, args.id, opts), opts);
+        const id = await resolveTaskRef(storage, args.id, opts);
+        await assertApproved(id, "complete_task", opts);
+        const task = await storage.completeTask(id, opts);
         return formatSuccessResult(await withCode(task, opts));
       } catch (err) {
         return formatErrorResult(err);

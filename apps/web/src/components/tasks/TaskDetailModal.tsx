@@ -28,6 +28,7 @@ import { useFeatureFlags } from "../../hooks/useFeatureFlags";
 import { useFocusTrap } from "../../hooks/useFocusTrap";
 import { Markdown } from "../Markdown";
 import { ChecklistProgressBadge, ChecklistView } from "./Checklist";
+import { ApprovalNote } from "./Approval";
 import { NeedsHumanNote } from "./NeedsHuman";
 import { TaskCode } from "./TaskCode";
 import { TaskComments } from "./TaskComments";
@@ -43,6 +44,8 @@ interface TaskDetailModalProps {
   readonly onChecklistChange?: ((task: Task, checklist: ChecklistItem[]) => Promise<unknown>) | undefined;
   /** Clears the needs-human flag once a person has answered; omit to show it read-only. */
   readonly onNeedsHumanResolve?: ((task: Task) => void) | undefined;
+  /** Approves a task an agent or webhook created; omit to show the flag read-only. */
+  readonly onApprove?: ((task: Task) => void) | undefined;
   /** Loads and saves the task's comments; omit to hide them. */
   readonly storage?: StorageProvider | undefined;
 }
@@ -116,6 +119,7 @@ export function TaskDetailModal({
   onComplete,
   onChecklistChange,
   onNeedsHumanResolve,
+  onApprove,
   storage,
 }: TaskDetailModalProps) {
   const { taskVisibility } = useFeatureFlags();
@@ -225,6 +229,24 @@ export function TaskDetailModal({
             {task.title}
           </h2>
         </div>
+
+        {task.pendingApproval === true && (
+          <div className="mb-5">
+            <ApprovalNote
+              pending
+              onApprove={
+                onApprove
+                  ? () => {
+                      onApprove(task);
+                    }
+                  : undefined
+              }
+              onReject={() => {
+                onDelete(task);
+              }}
+            />
+          </div>
+        )}
 
         {task.needsHuman !== undefined && (
           <div className="mb-5">

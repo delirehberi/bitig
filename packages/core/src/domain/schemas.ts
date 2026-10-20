@@ -196,6 +196,8 @@ export const TaskSchema = z.strictObject({
   checklist: ChecklistSchema.min(1).exactOptional(),
   /** Set while the task waits on a person; the text says what it needs. */
   needsHuman: NeedsHumanSchema.exactOptional(),
+  /** Set while an agent- or webhook-created task waits for a person to approve it; omitted once approved. */
+  pendingApproval: z.literal(true).exactOptional(),
   /** Assigned by storage, never by callers; tasks created before ticket codes may lack one until backfilled. */
   number: TaskNumberSchema.exactOptional(),
   /** Number of comments on the task; omitted when zero. */
@@ -277,6 +279,8 @@ export const CreateTaskInputSchema = z.strictObject({
   order: TaskOrderSchema.optional(),
   checklist: ChecklistSchema.optional(),
   needsHuman: NeedsHumanSchema.optional(),
+  /** Set by MCP and webhook creation; people create approved tasks. */
+  pendingApproval: z.literal(true).optional(),
 });
 
 /** `undefined` (or a missing key) leaves a field unchanged; `null` clears an
@@ -296,6 +300,8 @@ export const UpdateTaskInputSchema = z
     checklist: ChecklistSchema.nullable().optional(),
     /** `null` clears it once a person has answered. */
     needsHuman: NeedsHumanSchema.nullable().optional(),
+    /** `null` approves the task. A patch can never re-flag it. */
+    pendingApproval: z.null().optional(),
   })
   .refine(hasAnyDefinedField, { message: EMPTY_PATCH_MESSAGE });
 

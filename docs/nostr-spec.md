@@ -84,13 +84,14 @@ The `content` field contains a cleartext JSON object:
     { "text": "Write the codec", "done": true },
     { "text": "Run the contract suite", "done": false }
   ],
-  "needsHuman": "Choose which relays to publish to"
+  "needsHuman": "Choose which relays to publish to",
+  "pendingApproval": true
 }
 ```
-`checklist` (the task's subtasks, in order) is omitted when the task has none. `needsHuman` (what the task waits on a person for) is omitted when it needs nobody.
+`checklist` (the task's subtasks, in order) is omitted when the task has none. `needsHuman` (what the task waits on a person for) is omitted when it needs nobody. `pendingApproval` is `true` while a task an agent or webhook created waits for a person to approve it, and is omitted once it is approved.
 
 #### Private Task (`is_public: "false"`)
-- The `title`, `description`, `checklist` and `needsHuman` (when present) are packaged into the JSON object:
+- The `title`, `description`, `checklist`, `needsHuman` and `pendingApproval` (when present) are packaged into the JSON object:
   ```json
   {
     "title": "Private confidential task",

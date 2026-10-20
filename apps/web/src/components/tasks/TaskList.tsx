@@ -9,6 +9,7 @@ import {
   Clock,
   Edit2,
   MessageSquare,
+  ShieldCheck,
   Trash2,
 } from "lucide-react";
 import {
@@ -23,6 +24,7 @@ import {
   type TaskStatus,
 } from "@bitig/core";
 import { ChecklistProgressBadge } from "./Checklist";
+import { ApprovalBadge } from "./Approval";
 import { NeedsHumanBadge } from "./NeedsHuman";
 import { TaskCode } from "./TaskCode";
 
@@ -42,6 +44,8 @@ interface TaskListProps {
   readonly onDelete: (task: Task) => void;
   readonly onComplete: (task: Task) => void;
   readonly onStatusChange: (task: Task, status: TaskStatus) => void;
+  /** Approves a task an agent or webhook created; omit to show the flag read-only. */
+  readonly onApprove?: ((task: Task) => void) | undefined;
   /** Whether to show the Project column; defaults to true. */
   readonly showProject?: boolean;
 }
@@ -134,6 +138,7 @@ export function TaskList({
   onDelete,
   onComplete,
   onStatusChange,
+  onApprove,
   showProject = true,
 }: TaskListProps) {
   const [sort, setSort] = useState<SortState | null>(null);
@@ -291,6 +296,7 @@ export function TaskList({
                           <span>{actor}</span>
                         </span>
                       )}
+                      <ApprovalBadge pending={task.pendingApproval === true} />
                       <NeedsHumanBadge reason={task.needsHuman} />
                     </span>
                     {task.description && (
@@ -338,6 +344,19 @@ export function TaskList({
                 </td>
                 <td className="py-3 pr-4 text-right whitespace-nowrap">
                   <div className="flex items-center justify-end gap-1">
+                    {task.pendingApproval === true && onApprove && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onApprove(task);
+                        }}
+                        title="Approve task"
+                        aria-label={`Approve ${task.title}`}
+                        className="rounded-md p-1.5 text-ink-3 transition-colors hover:bg-ok-soft hover:text-ok focus-visible:outline-focus"
+                      >
+                        <ShieldCheck size={ICON_SIZE} />
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={() => {

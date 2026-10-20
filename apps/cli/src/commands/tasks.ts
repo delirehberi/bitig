@@ -85,13 +85,18 @@ export function registerTasksCommands(
     .description("List tasks (optionally filtered by project)")
     .option("-p, --project <id>", "Project ID or key (defaults to linked .bitig project)")
     .option("--needs-human", "Only tasks waiting on a person")
+    .option("--awaiting-approval", "Only tasks an agent or webhook created that wait for your approval")
     .option("--json", "Output JSON")
-    .action(async (options: { project?: string; needsHuman?: boolean; json?: boolean }) => {
+    .action(async (options: { project?: string; needsHuman?: boolean; awaitingApproval?: boolean; json?: boolean }) => {
       const storage = await getStorage();
       const pId = await resolveProjectId(storage, options.project);
       const found = await storage.getTasks(pId !== undefined ? { projectId: pId } : undefined);
       const list = withTaskCodes(
-        options.needsHuman === true ? found.filter((t) => t.needsHuman !== undefined) : found,
+        found.filter(
+          (t) =>
+            (options.needsHuman !== true || t.needsHuman !== undefined) &&
+            (options.awaitingApproval !== true || t.pendingApproval === true),
+        ),
         await storage.getProjects(),
       );
       const width = Math.max(4, ...list.map((t) => label(t).length));
@@ -103,7 +108,9 @@ export function registerTasksCommands(
           if (list.length === 0) return "No tasks found.";
           const rows = list.map((t) => {
             const progress = progressLabel(t);
-            const flag = t.needsHuman === undefined ? "" : " [needs human]";
+            const flag =
+              (t.needsHuman === undefined ? "" : " [needs human]") +
+              (t.pendingApproval === true ? " [awaiting approval]" : "");
             return `${label(t).padEnd(width)}  ${t.status.padEnd(12)}  ${(t.priority ?? "-").padEnd(8)}  ${t.title}${progress ? ` (${progress})` : ""}${flag}`;
           });
           return [`${"CODE".padEnd(width)}  STATUS        PRIORITY  TITLE`, ...rows].join("\n");
@@ -140,6 +147,7 @@ export function registerTasksCommands(
             `Due Date:    ${task.dueDate ?? "-"}`,
             `Labels:      ${task.labels?.join(", ") ?? "-"}`,
             `Needs human: ${task.needsHuman ?? "-"}`,
+            `Approval:    ${task.pendingApproval === true ? "awaiting approval" : "approved"}`,
             `Created:     ${task.createdAt}`,
             `Updated:     ${task.updatedAt}`,
             "",
@@ -302,6 +310,30 @@ export function registerTasksCommands(
         console.log(output);
       },
     );
+
+  // approve
+  tasks
+    .command("approve <id>")
+    .description("Approve a task an agent or webhook created, by ID or ticket code")
+    .option("--json", "Output JSON")
+    .action(async (ref: string, options: { json?: boolean }) => {
+      const storage = await getStorage();
+      const id = await resolveTaskRef(storage, ref);
+      const current = await storage.getTask(id);
+      if (current === null) {
+        throw new Error(`Task ${ref} not found`);
+      }
+      // Approving twice is a no-op rather than an error, so scripts can re-run it.
+      const saved = current.pendingApproval === true ? await storage.updateTask(id, { pendingApproval: null }) : current;
+      const approved = await withCode(storage, saved);
+      const output = formatOutput(
+        approved,
+        () => `${approved.id}\t${approved.status}`,
+        () => `Approved task ${label(approved)} '${approved.title}'`,
+        options,
+      );
+      console.log(output);
+    });
 
   // done
   tasks

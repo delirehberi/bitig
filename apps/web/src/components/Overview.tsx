@@ -8,7 +8,7 @@ import {
   type Task,
   type TimeCsvExportMode,
 } from "@bitig/core";
-import { Clock, Download, FolderKanban, Hand, ListTodo } from "lucide-react";
+import { Clock, Download, FolderKanban, Hand, ListTodo, ShieldQuestionMark } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
 import { MODE_COPY } from "../domain/modes";
 import type { HealthState } from "../hooks/useHealth";
@@ -22,7 +22,9 @@ interface OverviewProps {
   readonly tasksCount?: number;
   /** Tasks waiting on a person. */
   readonly needsHumanCount?: number;
-  readonly onNavigate?: (tab: "projects" | "tasks" | "needs_human") => void;
+  /** Tasks an agent or webhook created that wait for a person's approval. */
+  readonly awaitingApprovalCount?: number;
+  readonly onNavigate?: (tab: "projects" | "tasks" | "needs_human" | "awaiting_approval") => void;
   readonly onExportCsv?: (filename: string, csvContent: string, kind: TimeCsvExportMode) => void;
 }
 
@@ -93,6 +95,7 @@ export function Overview({
   projectsCount,
   tasksCount,
   needsHumanCount = 0,
+  awaitingApprovalCount = 0,
   onNavigate,
   onExportCsv,
 }: OverviewProps) {
@@ -188,7 +191,7 @@ export function Overview({
             <h2 id="summary-heading" className="m-0 font-display text-lg font-semibold text-ink">
               Current Workspace
             </h2>
-            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
               <button
                 type="button"
                 onClick={() => onNavigate?.("projects")}
@@ -234,6 +237,27 @@ export function Overview({
                 </div>
                 <span className="mt-2 font-display text-2xl font-bold text-ink">
                   {needsHumanCount}
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => onNavigate?.("awaiting_approval")}
+                className={`flex flex-col items-start rounded-md p-4 text-left transition-colors ${
+                  awaitingApprovalCount > 0
+                    ? "border border-dashed border-rule-strong bg-paper-3 hover:border-ink-3"
+                    : "border border-rule bg-paper-2 hover:border-rule-strong"
+                }`}
+              >
+                <div
+                  className={`flex items-center gap-2 text-xs font-semibold ${
+                    awaitingApprovalCount > 0 ? "text-ink" : "text-ink-3"
+                  }`}
+                >
+                  <ShieldQuestionMark size={14} />
+                  <span>Awaiting approval</span>
+                </div>
+                <span className="mt-2 font-display text-2xl font-bold text-ink">
+                  {awaitingApprovalCount}
                 </span>
               </button>
             </div>

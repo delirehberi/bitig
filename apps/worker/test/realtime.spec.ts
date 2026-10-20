@@ -37,6 +37,7 @@ const DB_SETUP_STATEMENTS = [
     \`order\` real,
     \`checklist\` text,
     \`needs_human\` text,
+    \`pending_approval\` integer,
     \`number\` integer,
     \`started_at\` integer,
     \`completed_at\` integer,
@@ -249,6 +250,16 @@ describe("RealtimeHub Durable Object broadcasts", () => {
       code: string;
     };
 
+    // 2b. A person approves it over REST; agents cannot start unapproved tasks
+    const approveRes = await exports.default.fetch(
+      new Request(`${BASE_URL}/api/tasks/${createdTask.id}`, {
+        method: "PATCH",
+        headers: { Authorization: TEST_AUTH_HEADER, "Content-Type": "application/json" },
+        body: JSON.stringify({ pendingApproval: null }),
+      }),
+    );
+    expect(approveRes.status).toBe(200);
+
     // 3. Move task from todo -> in_progress via MCP
     const updateTaskRes = await client.callTool({
       name: "update_task",
@@ -290,6 +301,7 @@ describe("RealtimeHub Durable Object broadcasts", () => {
       "task.created",
       "task.updated",
       "task.updated",
+      "task.updated",
       "comment.created",
       "comment.deleted",
       "task.deleted",
@@ -298,13 +310,15 @@ describe("RealtimeHub Durable Object broadcasts", () => {
 
     expect(events[1]).toMatchObject({
       type: "task.created",
-      task: { id: createdTask.id, status: "todo", title: "Realtime Update in web ui" },
+      task: { id: createdTask.id, status: "todo", title: "Realtime Update in web ui", pendingApproval: true },
     });
-    expect(events[2]).toMatchObject({
+    expect(events[2]).toMatchObject({ type: "task.updated", task: { id: createdTask.id, status: "todo" } });
+    expect(events[2]).not.toHaveProperty("task.pendingApproval");
+    expect(events[3]).toMatchObject({
       type: "task.updated",
       task: { id: createdTask.id, status: "in_progress" },
     });
-    expect(events[3]).toMatchObject({
+    expect(events[4]).toMatchObject({
       type: "task.updated",
       task: { id: createdTask.id, status: "done" },
     });

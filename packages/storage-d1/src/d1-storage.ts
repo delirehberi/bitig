@@ -128,6 +128,9 @@ function recordToTask(row: TaskRecord): Task {
   if (row.needsHuman !== null) {
     task.needsHuman = row.needsHuman;
   }
+  if (row.pendingApproval === true) {
+    task.pendingApproval = true;
+  }
   if (row.number !== null) {
     task.number = row.number;
   }
@@ -403,6 +406,7 @@ export class D1Storage implements StorageProvider {
       order: task.order ?? null,
       checklist: task.checklist ?? null,
       needsHuman: task.needsHuman ?? null,
+      pendingApproval: task.pendingApproval ?? null,
       number: task.number ?? null,
       startedAt: task.startedAt !== undefined ? Date.parse(task.startedAt) : null,
       completedAt: task.completedAt !== undefined ? Date.parse(task.completedAt) : null,
@@ -450,6 +454,7 @@ export class D1Storage implements StorageProvider {
         order: next.order ?? null,
         checklist: next.checklist ?? null,
         needsHuman: next.needsHuman ?? null,
+        pendingApproval: next.pendingApproval ?? null,
         number: next.number ?? null,
         startedAt: next.startedAt !== undefined ? Date.parse(next.startedAt) : null,
         completedAt: next.completedAt !== undefined ? Date.parse(next.completedAt) : null,
@@ -700,6 +705,7 @@ export class D1Storage implements StorageProvider {
         order: task.order ?? null,
         checklist: task.checklist ?? null,
         needsHuman: task.needsHuman ?? null,
+        pendingApproval: task.pendingApproval ?? null,
         number: task.number ?? null,
         startedAt: task.startedAt !== undefined ? Date.parse(task.startedAt) : null,
         completedAt: task.completedAt !== undefined ? Date.parse(task.completedAt) : null,

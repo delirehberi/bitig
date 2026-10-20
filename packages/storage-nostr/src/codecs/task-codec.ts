@@ -32,6 +32,8 @@ export interface TaskPayload {
   checklist?: ChecklistItem[];
   /** What the task needs from a person; omitted when it needs nobody. */
   needsHuman?: string;
+  /** Set while the task waits for a person to approve it; omitted once approved. */
+  pendingApproval?: true;
   /** Ordered LLM/actor activity entries; omitted when none. */
   activity?: TaskActivityEntry[];
 }
@@ -117,6 +119,9 @@ export async function encodeTaskEvent(
   }
   if (task.needsHuman !== undefined) {
     payload.needsHuman = task.needsHuman;
+  }
+  if (task.pendingApproval !== undefined) {
+    payload.pendingApproval = task.pendingApproval;
   }
   if (task.activity !== undefined) {
     payload.activity = task.activity;
@@ -293,6 +298,9 @@ export async function decodeTaskEvent(
   }
   if (parsedPayload.needsHuman !== undefined) {
     rawTask.needsHuman = parsedPayload.needsHuman;
+  }
+  if (parsedPayload.pendingApproval !== undefined) {
+    rawTask.pendingApproval = parsedPayload.pendingApproval;
   }
   if (parsedPayload.activity !== undefined) {
     rawTask.activity = parsedPayload.activity;

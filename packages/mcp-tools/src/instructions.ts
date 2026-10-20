@@ -19,5 +19,9 @@ Comments: use 'add_comment' to keep context on a task (findings, decisions, what
 something. 'get_task' returns the task's comments, so read them before picking a task up again. When a task has
 'needsHuman' set, it is cleared by a person's manual resolve action in the UI, or by calling 'update_task' with
 'needsHuman: null' only if a person's comment explicitly states that the question or blocker is resolved.
+
+Approval: every task created with 'add_task' starts with 'pendingApproval: true' and waits for a person to approve
+it in Bitig. Until then it cannot be moved to 'in_progress' or 'done', and agents cannot approve it. Tell the person
+which tasks you created; 'list_tasks' with 'pendingApproval: true' lists the ones still waiting.
 `;
 

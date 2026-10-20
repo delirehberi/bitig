@@ -401,10 +401,12 @@ export function extractTaskFromWebhookPayload(webhook: Webhook, payload: unknown
     mappedLabels !== undefined && mappedLabels.length > 0 ? mappedLabels : providerFields.labels,
   );
 
+  // Tasks from outside systems wait for a person to approve them, like tasks agents create over MCP.
   const input: CreateTaskInput = {
     projectId: webhook.projectId,
     title,
     description,
+    pendingApproval: true,
   };
   if (priority !== undefined) input.priority = priority;
   if (labels !== undefined) input.labels = labels;

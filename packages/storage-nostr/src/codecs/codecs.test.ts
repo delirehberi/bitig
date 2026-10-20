@@ -96,6 +96,7 @@ describe("Nostr codecs", () => {
       priority: "high" as const,
       labels: ["release", "nostr"],
       order: 1.5,
+      pendingApproval: true as const,
       createdAt: now,
       updatedAt: now,
     };
@@ -104,9 +105,10 @@ describe("Nostr codecs", () => {
     expect(template.kind).toBe(NOSTR_KIND_TASK);
 
     // Payload must be cleartext JSON
-    const parsed = JSON.parse(template.content) as { title: string; description: string };
+    const parsed = JSON.parse(template.content) as { title: string; description: string; pendingApproval?: true };
     expect(parsed.title).toBe(task.title);
     expect(parsed.description).toBe(task.description);
+    expect(parsed.pendingApproval).toBe(true);
 
     const decoded = await decodeTaskEvent(template, pubkey, signer);
     expect(decoded).toEqual(task);

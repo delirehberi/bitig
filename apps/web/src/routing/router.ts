@@ -11,7 +11,12 @@ export type Route =
   | { readonly name: "landing" }
   | { readonly name: "overview" }
   | { readonly name: "projects"; readonly archived?: true }
-  | { readonly name: "tasks"; readonly projectId?: string; readonly needsHuman?: true }
+  | {
+      readonly name: "tasks";
+      readonly projectId?: string;
+      readonly needsHuman?: true;
+      readonly awaitingApproval?: true;
+    }
   | { readonly name: "webhooks"; readonly projectId?: string }
   | { readonly name: "login"; readonly next?: string }
   | { readonly name: "not_found" };
@@ -22,6 +27,9 @@ const PROJECT_PARAM = "project";
 /** `?needs=human` shows only the tasks waiting on a person. */
 const NEEDS_PARAM = "needs";
 const NEEDS_HUMAN_VALUE = "human";
+/** `?awaiting=approval` shows only the tasks an agent or webhook created that wait for approval. */
+const AWAITING_PARAM = "awaiting";
+const AWAITING_APPROVAL_VALUE = "approval";
 const NEXT_PARAM = "next";
 
 export const LOGIN_PATH = "/login";
@@ -58,6 +66,7 @@ export function parseRoute(pathname: string, search: string): Route {
         name: "tasks",
         ...(projectId ? { projectId } : {}),
         ...(params.get(NEEDS_PARAM) === NEEDS_HUMAN_VALUE ? { needsHuman: true as const } : {}),
+        ...(params.get(AWAITING_PARAM) === AWAITING_APPROVAL_VALUE ? { awaitingApproval: true as const } : {}),
       };
     }
     case "/webhooks": {
@@ -89,6 +98,7 @@ export function hrefFor(route: Route): string {
       const params = new URLSearchParams();
       if (route.projectId) params.set(PROJECT_PARAM, route.projectId);
       if (route.needsHuman) params.set(NEEDS_PARAM, NEEDS_HUMAN_VALUE);
+      if (route.awaitingApproval) params.set(AWAITING_PARAM, AWAITING_APPROVAL_VALUE);
       const query = params.toString();
       return query ? `/tasks?${query}` : "/tasks";
     }

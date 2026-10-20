@@ -24,6 +24,8 @@ interface TaskBoardProps {
   readonly onDelete: (task: Task) => void;
   readonly onComplete: (task: Task) => void;
   readonly onStatusChange: (task: Task, status: TaskStatus) => void;
+  /** Approves a task an agent or webhook created; omit to show the flag read-only. */
+  readonly onApprove?: ((task: Task) => void) | undefined;
   /** Writes for a drag-and-drop or keyboard move; the moved task comes first. */
   readonly onMove: (moves: readonly TaskMove[]) => void;
   /** Whether to show the project name badge on each card; defaults to true. */
@@ -57,6 +59,7 @@ export function TaskBoard({
   onDelete,
   onComplete,
   onStatusChange,
+  onApprove,
   onMove,
   showProject = true,
 }: TaskBoardProps) {
@@ -256,6 +259,7 @@ export function TaskBoard({
                           onDelete={onDelete}
                           onComplete={onComplete}
                           onStatusChange={onStatusChange}
+                          onApprove={onApprove}
                           onReorder={(direction) => {
                             const index = colTasks.indexOf(task) + direction;
                             if (index < 0 || index >= colTasks.length) return;
@@ -322,6 +326,7 @@ export function TaskBoard({
                     onDelete={onDelete}
                     onComplete={onComplete}
                     onStatusChange={onStatusChange}
+                    onApprove={onApprove}
                   />
                 </div>
               ))}

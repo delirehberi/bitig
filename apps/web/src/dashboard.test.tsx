@@ -88,8 +88,12 @@ function stubApi(responses: {
           const existing = (tasksData as { id: string }[]).find((t) => t.id === id);
           if (!existing) return Promise.resolve(Response.json({ error: "not_found" }, { status: 404 }));
           const patch = JSON.parse(init.body as string) as Record<string, unknown>;
+          // Like the server, null clears a field.
+          const merged = Object.fromEntries(
+            Object.entries<unknown>({ ...existing, ...patch }).filter(([, value]) => value !== null),
+          );
           return Promise.resolve(
-            Response.json({ ...existing, ...patch, updatedAt: new Date().toISOString() }, { status: 200 }),
+            Response.json({ ...merged, updatedAt: new Date().toISOString() }, { status: 200 }),
           );
         }
         if (init?.method === "POST" && url.endsWith("/complete")) {
@@ -729,6 +733,48 @@ describe("Dashboard routing", () => {
     expect(window.location.pathname).toBe("/tasks");
     expect(new URLSearchParams(window.location.search).get("needs")).toBe("human");
     expect(await screen.findByText("Blocked task")).toBeInTheDocument();
+    expect(screen.queryByText("Alpha task")).not.toBeInTheDocument();
+  });
+
+  it("filters to tasks awaiting approval, from the URL and the toggle, and approves one", async () => {
+    const pending = { ...TASK_B, pendingApproval: true };
+    window.history.replaceState(null, "", "/tasks?awaiting=approval");
+    stubApi({ projects: [PROJECT_A, PROJECT_B], tasks: [TASK_A, pending] });
+    const user = userEvent.setup();
+    render(<App />);
+
+    expect(await screen.findByText("Beta task")).toBeInTheDocument();
+    expect(screen.queryByText("Alpha task")).not.toBeInTheDocument();
+
+    const card = screen.getByText("Beta task").closest("article");
+    if (!card) throw new Error("expected task card article");
+    await user.click(within(card).getByRole("button", { name: "Approve" }));
+    await waitFor(() => {
+      const patchCall = vi.mocked(fetch).mock.calls.find(([, init]) => init?.method === "PATCH");
+      expect(patchCall?.[0]).toContain(`/api/tasks/${TASK_B.id}`);
+      expect(JSON.parse(patchCall?.[1]?.body as string)).toEqual({ pendingApproval: null });
+    });
+
+    const toggle = screen.getByRole("button", { name: /awaiting approval \(\d\)/i });
+    expect(toggle).toHaveAttribute("aria-pressed", "true");
+    await user.click(toggle);
+    expect(await screen.findByText("Alpha task")).toBeInTheDocument();
+    expect(new URLSearchParams(window.location.search).get("awaiting")).toBeNull();
+  });
+
+  it("counts tasks awaiting approval on the overview and opens them", async () => {
+    stubApi({
+      projects: [PROJECT_A],
+      tasks: [TASK_A, { ...TASK_A, id: "01940000-0000-7000-8000-0000000000a3", title: "Agent idea", pendingApproval: true }],
+    });
+    const user = userEvent.setup();
+    render(<App />);
+
+    const tile = await screen.findByRole("button", { name: /awaiting approval\s*1/i });
+    await user.click(tile);
+    expect(window.location.pathname).toBe("/tasks");
+    expect(new URLSearchParams(window.location.search).get("awaiting")).toBe("approval");
+    expect(await screen.findByText("Agent idea")).toBeInTheDocument();
     expect(screen.queryByText("Alpha task")).not.toBeInTheDocument();
   });
 

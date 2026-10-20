@@ -258,6 +258,7 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
         expect(task).not.toHaveProperty("order");
         expect(task).not.toHaveProperty("checklist");
         expect(task).not.toHaveProperty("needsHuman");
+        expect(task).not.toHaveProperty("pendingApproval");
         expect(TaskSchema.parse(task)).toEqual(task);
         expect(await storage.getTask(task.id)).toEqual(task);
       });
@@ -279,6 +280,7 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
             { text: "Second", done: false },
           ],
           needsHuman: "Pick a pricing tier",
+          pendingApproval: true,
         });
         expect(await storage.getTask(task.id)).toEqual(task);
         expect(task).toMatchObject({
@@ -291,6 +293,7 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
             { text: "Second", done: false },
           ],
           needsHuman: "Pick a pricing tier",
+          pendingApproval: true,
           isPublic: true,
           status: "in_progress",
         });
@@ -430,6 +433,32 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
         const cleared = await storage.updateTask(task.id, { needsHuman: null });
         expect(cleared).not.toHaveProperty("needsHuman");
         expect(await storage.getTask(task.id)).toEqual(cleared);
+      });
+
+      it("keeps a task pending approval until a patch approves it", async () => {
+        const project = await createProject();
+        const task = await storage.saveTask({ projectId: project.id, title: "t", pendingApproval: true });
+        expect(task.pendingApproval).toBe(true);
+        expect(await storage.getTask(task.id)).toEqual(task);
+
+        // Other edits and completion keep the flag
+        const retitled = await storage.updateTask(task.id, { title: "renamed" });
+        expect(retitled.pendingApproval).toBe(true);
+        const completed = await storage.completeTask(task.id);
+        expect(completed.pendingApproval).toBe(true);
+
+        const approved = await storage.updateTask(task.id, { pendingApproval: null });
+        expect(approved).not.toHaveProperty("pendingApproval");
+        expect(await storage.getTask(task.id)).toEqual(approved);
+      });
+
+      it("never flags a task as pending approval through a patch", async () => {
+        const project = await createProject();
+        const task = await storage.saveTask({ projectId: project.id, title: "t" });
+        await expect(
+          storage.updateTask(task.id, { pendingApproval: true } as never),
+        ).rejects.toBeInstanceOf(ValidationError);
+        expect(await storage.getTask(task.id)).toEqual(task);
       });
 
       it("rejects a blank needs-human reason", async () => {

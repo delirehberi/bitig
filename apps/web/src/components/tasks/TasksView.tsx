@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Hand, Kanban, List, Plus } from "lucide-react";
+import { Hand, Kanban, List, Plus, ShieldQuestionMark } from "lucide-react";
 import {
   compareTasks,
   type CreateTaskInput,
@@ -26,6 +26,9 @@ interface TasksViewProps {
   /** Shows only the tasks waiting on a person. */
   readonly needsHumanOnly?: boolean;
   readonly onNeedsHumanOnlyChange?: (only: boolean) => void;
+  /** Shows only the tasks an agent or webhook created that wait for approval. */
+  readonly awaitingApprovalOnly?: boolean;
+  readonly onAwaitingApprovalOnlyChange?: (only: boolean) => void;
   readonly onSaveTask: (input: CreateTaskInput) => Promise<Task>;
   readonly onUpdateTask: (id: string, patch: UpdateTaskInput) => Promise<Task>;
   readonly onCompleteTask: (id: string) => Promise<Task>;
@@ -46,6 +49,8 @@ export function TasksView({
   onSelectProject,
   needsHumanOnly = false,
   onNeedsHumanOnlyChange,
+  awaitingApprovalOnly = false,
+  onAwaitingApprovalOnlyChange,
   onSaveTask,
   onUpdateTask,
   onCompleteTask,
@@ -90,6 +95,9 @@ export function TasksView({
   const needsHumanCount = tasks.filter(
     (task) => task.needsHuman !== undefined && (!selectedProjectId || task.projectId === selectedProjectId),
   ).length;
+  const awaitingApprovalCount = tasks.filter(
+    (task) => task.pendingApproval === true && (!selectedProjectId || task.projectId === selectedProjectId),
+  ).length;
 
   // Sorted here because local updates (a status or order change) don't re-sort `tasks`.
   const filteredTasks = tasks.filter((task) => {
@@ -97,6 +105,9 @@ export function TasksView({
       return false;
     }
     if (needsHumanOnly && task.needsHuman === undefined) {
+      return false;
+    }
+    if (awaitingApprovalOnly && task.pendingApproval !== true) {
       return false;
     }
     if (priorityFilter && task.priority !== priorityFilter) {
@@ -117,10 +128,19 @@ export function TasksView({
   async function handleModalSubmit(input: CreateTaskInput) {
     if (modalState.task) {
       // The form leaves needsHuman out when its field is empty; null clears a flag the task had.
-      await onUpdateTask(modalState.task.id, { ...input, needsHuman: input.needsHuman ?? null });
+      // Editing never touches approval: only Approve clears it.
+      await onUpdateTask(modalState.task.id, {
+        ...input,
+        needsHuman: input.needsHuman ?? null,
+        pendingApproval: undefined,
+      });
     } else {
       await onSaveTask(input);
     }
+  }
+
+  function handleApprove(task: Task) {
+    void onUpdateTask(task.id, { pendingApproval: null });
   }
 
   async function handleStatusChange(task: Task, status: TaskStatus) {
@@ -207,6 +227,23 @@ export function TasksView({
             <Hand size={14} aria-hidden="true" />
             Needs you ({needsHumanCount})
           </button>
+
+          <button
+            type="button"
+            aria-pressed={awaitingApprovalOnly}
+            onClick={() => {
+              onAwaitingApprovalOnlyChange?.(!awaitingApprovalOnly);
+            }}
+            title="Show only tasks an agent or webhook created that wait for your approval"
+            className={`inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-semibold transition-colors focus-visible:outline-focus ${
+              awaitingApprovalOnly
+                ? "border-dashed border-rule-strong bg-paper-3 text-ink"
+                : "border-rule bg-paper-2 text-ink-2 hover:text-ink"
+            }`}
+          >
+            <ShieldQuestionMark size={14} aria-hidden="true" />
+            Awaiting approval ({awaitingApprovalCount})
+          </button>
         </div>
 
         <div className="flex items-center gap-1 border-l border-rule pl-3">
@@ -288,6 +325,7 @@ export function TasksView({
           onStatusChange={(t, s) => {
             void handleStatusChange(t, s);
           }}
+          onApprove={handleApprove}
           onMove={(moves) => {
             void handleMove(moves);
           }}
@@ -312,6 +350,7 @@ export function TasksView({
           onStatusChange={(t, s) => {
             void handleStatusChange(t, s);
           }}
+          onApprove={handleApprove}
         />
       )}
 
@@ -336,6 +375,7 @@ export function TasksView({
         onNeedsHumanResolve={(t) => {
           void onUpdateTask(t.id, { needsHuman: null });
         }}
+        onApprove={handleApprove}
         storage={storage}
       />
 

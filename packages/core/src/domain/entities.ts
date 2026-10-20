@@ -55,6 +55,7 @@ type TaskRequiredFields = Omit<
   | "order"
   | "checklist"
   | "needsHuman"
+  | "pendingApproval"
   | "number"
   | "commentCount"
 >;
@@ -73,6 +74,7 @@ interface TaskOptionalValues {
   readonly order: number | undefined;
   readonly checklist: readonly ChecklistItem[] | undefined;
   readonly needsHuman: string | undefined;
+  readonly pendingApproval: true | undefined;
   readonly number: number | undefined;
   readonly commentCount?: number | undefined;
 }
@@ -98,6 +100,7 @@ function assembleTask(base: TaskRequiredFields, optional: TaskOptionalValues): T
     task.checklist = optional.checklist.map((item) => ({ ...item }));
   }
   if (optional.needsHuman !== undefined) task.needsHuman = optional.needsHuman;
+  if (optional.pendingApproval !== undefined) task.pendingApproval = optional.pendingApproval;
   if (optional.number !== undefined) task.number = optional.number;
   if (optional.commentCount !== undefined && optional.commentCount > 0) {
     task.commentCount = optional.commentCount;
@@ -371,6 +374,7 @@ export function buildTask(
       order: parsed.order,
       checklist: stampChecklistOnCreate(parsed.checklist, now),
       needsHuman: parsed.needsHuman,
+      pendingApproval: parsed.pendingApproval,
       number,
     },
   );
@@ -423,6 +427,7 @@ export function applyTaskPatch(
       order: resolveClearable(task.order, parsed.order),
       checklist: stampChecklistOnUpdate(task.checklist, parsed.checklist, updatedAt),
       needsHuman: resolveClearable(task.needsHuman, parsed.needsHuman),
+      pendingApproval: resolveClearable(task.pendingApproval, parsed.pendingApproval),
       number: task.number,
       commentCount: task.commentCount,
     },
@@ -476,6 +481,7 @@ export function completeTaskEntity(task: Task, now: Date, actor?: string): Task 
       order: task.order,
       checklist: task.checklist,
       needsHuman: task.needsHuman,
+      pendingApproval: task.pendingApproval,
       number: task.number,
       commentCount: task.commentCount,
     },

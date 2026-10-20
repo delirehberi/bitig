@@ -186,5 +186,7 @@ describe("ProjectsView filtering and detail modal", () => {
     expect(parseRoute("/projects", "?archived=true")).toEqual({ name: "projects", archived: true });
     expect(hrefFor({ name: "projects" })).toBe("/projects");
     expect(hrefFor({ name: "projects", archived: true })).toBe("/projects?archived=true");
+    expect(parseRoute("/tasks", "?awaiting=approval")).toEqual({ name: "tasks", awaitingApproval: true });
+    expect(hrefFor({ name: "tasks", awaitingApproval: true })).toBe("/tasks?awaiting=approval");
   });
 });

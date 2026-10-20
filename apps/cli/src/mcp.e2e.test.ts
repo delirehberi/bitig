@@ -3,6 +3,8 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { promises as fs } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 type ToolArguments = Record<string, unknown>;
@@ -23,6 +25,7 @@ interface TaskResult {
   priority?: string;
   labels?: string[];
   needsHuman?: string;
+  pendingApproval?: true;
   code?: string;
 }
 
@@ -35,6 +38,8 @@ function parseToolJson(result: ToolResult): unknown {
   }
   return JSON.parse(first.text);
 }
+
+const cliPath = path.resolve(import.meta.dirname, "../dist/bitig.js");
 
 describe("Bitig CLI STDIO MCP Server E2E", () => {
   let tempDir: string;
@@ -49,6 +54,13 @@ describe("Bitig CLI STDIO MCP Server E2E", () => {
     return parseToolJson(result) as T;
   }
 
+  /** What a person does: approve over the CLI, since agents have no MCP tool for it. */
+  async function approveWithCli(taskRef: string): Promise<void> {
+    await promisify(execFile)("node", [cliPath, "tasks", "approve", taskRef], {
+      env: { ...process.env, XDG_DATA_HOME: dataHome, XDG_CONFIG_HOME: configHome },
+    });
+  }
+
   beforeEach(async () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "bitig-e2e-mcp-"));
     dataHome = path.join(tempDir, "data");
@@ -56,7 +68,6 @@ describe("Bitig CLI STDIO MCP Server E2E", () => {
     await fs.mkdir(dataHome, { recursive: true, mode: 0o700 });
     await fs.mkdir(configHome, { recursive: true, mode: 0o700 });
 
-    const cliPath = path.resolve(import.meta.dirname, "../dist/bitig.js");
 
     transport = new StdioClientTransport({
       command: "node",
@@ -96,8 +107,14 @@ describe("Bitig CLI STDIO MCP Server E2E", () => {
       dueDate: "2026-10-30",
     });
     expect(task.title).toBe("E2E Task");
+    expect(task.pendingApproval).toBe(true);
 
-    // 3. Complete task
+    // 3. Agents cannot complete it until a person approves it
+    const refused = await client.callTool({ name: "complete_task", arguments: { id: task.id } });
+    expect(refused.isError).toBe(true);
+    await approveWithCli(task.id);
+
+    // 4. Complete task
     const completed = await callToolJson<TaskResult>("complete_task", { id: task.id });
     expect(completed.status).toBe("done");
   });
@@ -189,6 +206,9 @@ describe("Bitig CLI STDIO MCP Server E2E", () => {
 
     // Ticket codes stand in for IDs
     expect(task.code).toBe("ALL-1");
+    const awaiting = await callToolJson<TaskResult[]>("list_tasks", { pendingApproval: true });
+    expect(awaiting).toHaveLength(2);
+    await approveWithCli("ALL-1");
     const completed = await callToolJson<TaskResult>("complete_task", { id: "all-1" });
     expect(completed).toMatchObject({ id: task.id, status: "done", code: "ALL-1" });
     expect(await callToolJson("backfill_ticket_codes")).toEqual({ keyedProjects: 0, numberedTasks: 0 });

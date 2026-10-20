@@ -57,6 +57,7 @@ describe("extractTaskFromWebhookPayload", () => {
       title: "[BITIG-42] TypeError: Cannot read properties of undefined",
       priority: "high",
       labels: ["monitoring", "sentry", "error"],
+      pendingApproval: true,
     });
     expect(taskInput.description).toContain("https://sentry.io/issues/42/");
     expect(taskInput.description).toContain("apps/worker/src/index.ts");
@@ -132,6 +133,7 @@ describe("extractTaskFromWebhookPayload", () => {
       labels: ["synced", "backend", "webhook"],
       status: "todo",
       isPublic: false,
+      pendingApproval: true,
     });
   });
 

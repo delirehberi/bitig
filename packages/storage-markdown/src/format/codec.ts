@@ -65,6 +65,7 @@ const TASK_KEY_ORDER = [
   "order",
   "checklist",
   "needsHuman",
+  "pendingApproval",
   "createdBy",
   "startedBy",
   "completedBy",

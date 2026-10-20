@@ -34,6 +34,7 @@ const STATEMENTS = [
     \`order\` real,
     \`checklist\` text,
     \`needs_human\` text,
+    \`pending_approval\` integer,
     \`number\` integer,
     \`started_at\` integer,
     \`completed_at\` integer,
@@ -371,6 +372,7 @@ describe("REST API & Incoming Receiver: Webhooks", () => {
     expect(createdTask.title).toBe("[SENTRY-99] ReferenceError: window is not defined");
     expect(createdTask.priority).toBe("urgent");
     expect(createdTask.labels).toEqual(["production", "sentry", "fatal"]);
+    expect(createdTask.pendingApproval).toBe(true);
 
     // Verify triggerCount and lastTriggeredAt updated
     const updatedHook = await (await apiRequest(`/api/webhooks/${webhook.id}`)).json<Webhook>();

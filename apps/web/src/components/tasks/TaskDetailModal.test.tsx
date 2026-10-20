@@ -1,5 +1,5 @@
 import type { Project, StorageMode, Task } from "@bitig/core";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
@@ -193,6 +193,36 @@ describe("TaskDetailModal", () => {
     expect(onNeedsHumanResolve).toHaveBeenCalledWith(expect.objectContaining({ id: TASK.id }));
   });
 
+  it("asks a person to approve an agent-created task, and approves or rejects it", async () => {
+    const user = userEvent.setup();
+    const onApprove = vi.fn();
+    const onDelete = vi.fn();
+    render(
+      <FeatureFlagsProvider mode="local">
+        <TaskDetailModal
+          task={{ ...TASK, pendingApproval: true }}
+          projects={[PROJECT]}
+          onClose={vi.fn()}
+          onEdit={vi.fn()}
+          onDelete={onDelete}
+          onComplete={vi.fn()}
+          onApprove={onApprove}
+        />
+      </FeatureFlagsProvider>,
+    );
+
+    const note = screen.getByRole("note", { name: "Awaiting approval" });
+    await user.click(within(note).getByRole("button", { name: "Approve" }));
+    expect(onApprove).toHaveBeenCalledWith(expect.objectContaining({ id: TASK.id }));
+    await user.click(within(note).getByRole("button", { name: "Reject" }));
+    expect(onDelete).toHaveBeenCalledWith(expect.objectContaining({ id: TASK.id }));
+  });
+
+  it("shows no approval note for an approved task", () => {
+    renderModal();
+    expect(screen.queryByRole("note", { name: "Awaiting approval" })).not.toBeInTheDocument();
+  });
+
   it("shows no needs-human note for a task that needs nobody", () => {
     renderModal();
     expect(screen.queryByRole("note", { name: "Needs you" })).not.toBeInTheDocument();
@@ -330,6 +360,76 @@ describe("TaskDetailModal focus", () => {
     await closeWith(user);
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(opener).toHaveFocus();
+  });
+});
+
+describe("approving from cards and list rows", () => {
+  it("approves from the card and rejects through the delete flow", async () => {
+    const user = userEvent.setup();
+    const onApprove = vi.fn();
+    const onDelete = vi.fn();
+    render(
+      <FeatureFlagsProvider mode="local">
+        <TaskCard
+          task={{ ...TASK, pendingApproval: true }}
+          projects={[PROJECT]}
+          onView={vi.fn()}
+          onEdit={vi.fn()}
+          onDelete={onDelete}
+          onComplete={vi.fn()}
+          onStatusChange={vi.fn()}
+          onApprove={onApprove}
+        />
+      </FeatureFlagsProvider>,
+    );
+
+    const note = screen.getByRole("note", { name: "Awaiting approval" });
+    await user.click(within(note).getByRole("button", { name: "Approve" }));
+    expect(onApprove).toHaveBeenCalledTimes(1);
+    await user.click(within(note).getByRole("button", { name: "Reject" }));
+    expect(onDelete).toHaveBeenCalledTimes(1);
+  });
+
+  it("badges a pending task in list rows and approves it", async () => {
+    const onApprove = vi.fn();
+    render(
+      <FeatureFlagsProvider mode="local">
+        <TaskList
+          tasks={[{ ...TASK, pendingApproval: true }]}
+          projects={[PROJECT]}
+          onView={vi.fn()}
+          onEdit={vi.fn()}
+          onDelete={vi.fn()}
+          onComplete={vi.fn()}
+          onStatusChange={vi.fn()}
+          onApprove={onApprove}
+        />
+      </FeatureFlagsProvider>,
+    );
+
+    expect(screen.getByText("Awaiting approval")).toBeInTheDocument();
+    await userEvent.setup().click(screen.getByRole("button", { name: `Approve ${TASK.title}` }));
+    expect(onApprove).toHaveBeenCalledWith(expect.objectContaining({ id: TASK.id }));
+  });
+
+  it("shows no approve control once a task is approved", () => {
+    render(
+      <FeatureFlagsProvider mode="local">
+        <TaskList
+          tasks={[TASK]}
+          projects={[PROJECT]}
+          onView={vi.fn()}
+          onEdit={vi.fn()}
+          onDelete={vi.fn()}
+          onComplete={vi.fn()}
+          onStatusChange={vi.fn()}
+          onApprove={vi.fn()}
+        />
+      </FeatureFlagsProvider>,
+    );
+
+    expect(screen.queryByText("Awaiting approval")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: `Approve ${TASK.title}` })).not.toBeInTheDocument();
   });
 });
 
