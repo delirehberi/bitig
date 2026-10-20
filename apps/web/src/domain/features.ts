@@ -10,12 +10,15 @@ export interface FeatureFlags {
   readonly taskVisibility: boolean;
   /** Password sign-in on /login, backed by the Worker's session cookie. */
   readonly passwordLogin: boolean;
+  /** Live WebSocket updates from the Worker's RealtimeHub Durable Object (/api/realtime). */
+  readonly realtimeSync: boolean;
 }
 
 export function featuresFor(mode: StorageMode): FeatureFlags {
   return {
     taskVisibility: mode === "nostr",
     passwordLogin: mode === "cloudflare",
+    realtimeSync: mode === "cloudflare",
   };
 }
 

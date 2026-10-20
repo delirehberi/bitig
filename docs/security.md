@@ -29,6 +29,7 @@ The dashboard signs in on its own `/login` page instead of the browser's native 
 - No credential is stored in browser storage; JavaScript never sees the cookie.
 - `/api/*` 401 responses no longer carry `WWW-Authenticate: Basic`, so browsers never show their native prompt. Scripts can still send `Authorization: Basic`.
 - Failed logins and cookies with a forged signature count toward the failed-login budget (section 3.1). Login requests pass the same CSRF check as other mutations, and `SameSite=Strict` keeps the cookie off cross-site requests.
+- Realtime WebSocket upgrades (`GET /api/realtime`, backed by the `RealtimeHub` Durable Object) require the same session cookie or Basic Auth credentials (`apiAuth()`) and verify that any `Origin` header matches the Worker's origin or `ALLOWED_ORIGINS`, blocking cross-site WebSocket hijacking.
 
 ---
 

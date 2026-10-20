@@ -13,6 +13,7 @@ import { DEFAULT_MODE } from "./domain/modes";
 import { useFeatureFlags } from "./hooks/useFeatureFlags";
 import { useHealth, type HealthState } from "./hooks/useHealth";
 import { useProjects } from "./hooks/useProjects";
+import { useRealtime } from "./hooks/useRealtime";
 import { useStorage } from "./hooks/useStorage";
 import { useTasks } from "./hooks/useTasks";
 import { LandingPage } from "./landing/LandingPage";
@@ -32,6 +33,9 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
   const selectedProjectId = route.name === "tasks" ? route.projectId : undefined;
   const needsHumanOnly = route.name === "tasks" && route.needsHuman === true;
   const archivedProjectsOnly = route.name === "projects" && route.archived === true;
+
+  const { realtimeSync } = useFeatureFlags();
+  useRealtime(realtimeSync && health.kind === "online");
 
   const storage = useStorage(mode);
 

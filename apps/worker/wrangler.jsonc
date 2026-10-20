@@ -24,11 +24,18 @@
   ],
   // The dashboard (apps/web) is served as static assets. API routes run the
   // Worker first; every other path falls back to the SPA's index.html.
-  // Rate limit counters (one object per policy + client IP), shared by all isolates.
+  // Rate limit counters (one object per policy + client IP) and the workspace
+  // realtime WebSocket hub, shared by all isolates.
   "durable_objects": {
-    "bindings": [{ "name": "RATE_LIMITER", "class_name": "RateLimiter" }]
+    "bindings": [
+      { "name": "RATE_LIMITER", "class_name": "RateLimiter" },
+      { "name": "REALTIME_HUB", "class_name": "RealtimeHub" }
+    ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RateLimiter"] }],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["RateLimiter"] },
+    { "tag": "v2", "new_sqlite_classes": ["RealtimeHub"] }
+  ],
   "assets": {
     "directory": "../web/dist",
     "binding": "ASSETS",

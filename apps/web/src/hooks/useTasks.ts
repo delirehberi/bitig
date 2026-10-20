@@ -6,6 +6,17 @@ import type {
   Task,
   UpdateTaskInput,
 } from "@bitig/core";
+import { useRealtimeEvent } from "./useRealtime";
+
+function upsertTask(tasks: readonly Task[], incoming: Task, projectId?: string): Task[] {
+  if (projectId !== undefined && incoming.projectId !== projectId) {
+    return tasks.filter((t) => t.id !== incoming.id);
+  }
+  if (tasks.some((t) => t.id === incoming.id)) {
+    return tasks.map((t) => (t.id === incoming.id ? incoming : t));
+  }
+  return [...tasks, incoming];
+}
 
 export function useTasks(storage: StorageProvider, projectId?: string) {
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -33,6 +44,35 @@ export function useTasks(storage: StorageProvider, projectId?: string) {
     };
   }, [storage, projectId]);
 
+  useRealtimeEvent((event) => {
+    switch (event.type) {
+      case "task.created":
+      case "task.updated":
+        setTasks((prev) => upsertTask(prev, event.task, projectId));
+        break;
+      case "task.deleted":
+        setTasks((prev) => prev.filter((t) => t.id !== event.id));
+        break;
+      case "project.deleted":
+        setTasks((prev) => prev.filter((t) => t.projectId !== event.id));
+        break;
+      case "sync": {
+        const filter = projectId ? { projectId } : undefined;
+        void storage
+          .getTasks(filter)
+          .then((result) => {
+            setTasks(result);
+          })
+          .catch((err: unknown) => {
+            console.warn("failed to resync tasks", err);
+          });
+        break;
+      }
+      default:
+        break;
+    }
+  });
+
   const refreshTasks = useCallback(async () => {
     setIsLoading(true);
     setError(null);
@@ -50,28 +90,28 @@ export function useTasks(storage: StorageProvider, projectId?: string) {
   const saveTask = useCallback(
     async (input: CreateTaskInput): Promise<Task> => {
       const created = await storage.saveTask(input);
-      setTasks((prev) => [...prev, created]);
+      setTasks((prev) => upsertTask(prev, created, projectId));
       return created;
     },
-    [storage],
+    [storage, projectId],
   );
 
   const updateTask = useCallback(
     async (id: string, patch: UpdateTaskInput): Promise<Task> => {
       const updated = await storage.updateTask(id, patch);
-      setTasks((prev) => prev.map((t) => (t.id === id ? updated : t)));
+      setTasks((prev) => upsertTask(prev, updated, projectId));
       return updated;
     },
-    [storage],
+    [storage, projectId],
   );
 
   const completeTask = useCallback(
     async (id: string): Promise<Task> => {
       const completed = await storage.completeTask(id);
-      setTasks((prev) => prev.map((t) => (t.id === id ? completed : t)));
+      setTasks((prev) => upsertTask(prev, completed, projectId));
       return completed;
     },
-    [storage],
+    [storage, projectId],
   );
 
   const deleteTask = useCallback(

@@ -11,11 +11,12 @@ interface __BaseEnv_Env {
 	MCP_AUTH_TOKEN: string;
 	SESSION_SECRET: string;
 	RATE_LIMITER: DurableObjectNamespace<import("./src/index").RateLimiter>;
+	REALTIME_HUB: DurableObjectNamespace<import("./src/index").RealtimeHub>;
 }
 declare namespace Cloudflare {
 	interface GlobalProps {
 		mainModule: typeof import("./src/index");
-		durableNamespaces: "RateLimiter";
+		durableNamespaces: "RateLimiter" | "RealtimeHub";
 	}
 	interface Env extends __BaseEnv_Env {}
 }

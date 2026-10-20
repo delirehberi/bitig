@@ -1,7 +1,8 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
+import { MockWebSocket } from "./test/setup";
 
 const TEST_USER = "admin";
 const TEST_PASSWORD = "secret123";
@@ -77,6 +78,9 @@ function stubApi(responses: {
       }
 
       if (url.includes("/api/tasks")) {
+        if (url.endsWith("/comments")) {
+          return Promise.resolve(Response.json([], { status: 200 }));
+        }
         if (init?.method === "PATCH") {
           const id = decodeURIComponent(url.split("/").pop() ?? "");
           const existing = (tasksData as { id: string }[]).find((t) => t.id === id);
@@ -627,5 +631,90 @@ describe("Dashboard routing", () => {
       await screen.findByRole("heading", { level: 1, name: "Your agents keep the record." }),
     ).toBeInTheDocument();
     expect(window.location.pathname).toBe("/app");
+  });
+
+  it("updates the project tasks board and detail modal in realtime when MCP broadcasts events", async () => {
+    window.history.replaceState(null, "", `/tasks?project=${PROJECT_A.id}`);
+    stubApi({ projects: [PROJECT_A], tasks: [TASK_A] });
+    const user = userEvent.setup();
+    render(<App />);
+
+    expect(await screen.findByText("Alpha task")).toBeInTheDocument();
+    const ws = MockWebSocket.instances.at(-1);
+    expect(ws?.url).toContain("/api/realtime");
+    ws?.open();
+
+    const todoColumn = screen.getByTestId("column-todo");
+    const inProgressColumn = screen.getByTestId("column-in_progress");
+    const doneColumn = screen.getByTestId("column-done");
+
+    expect(within(todoColumn).getByText("Alpha task")).toBeInTheDocument();
+
+    // 1. MCP moves TASK_A from todo -> in_progress
+    act(() => {
+      ws?.receiveMessage({
+        type: "task.updated",
+        task: { ...TASK_A, status: "in_progress", updatedAt: "2026-10-20T12:05:00.000Z" },
+      });
+    });
+
+    expect(within(todoColumn).queryByText("Alpha task")).not.toBeInTheDocument();
+    expect(within(inProgressColumn).getByText("Alpha task")).toBeInTheDocument();
+
+    // 2. MCP adds a new task to the project
+    const NEW_TASK = {
+      id: "01940000-0000-7000-8000-0000000000a9",
+      projectId: PROJECT_A.id,
+      title: "Agent created task",
+      description: "Created by MCP",
+      status: "todo" as const,
+      isPublic: false,
+      number: 2,
+      createdAt: "2026-10-20T12:06:00.000Z",
+      updatedAt: "2026-10-20T12:06:00.000Z",
+    };
+    act(() => {
+      ws?.receiveMessage({
+        type: "task.created",
+        task: NEW_TASK,
+      });
+    });
+    expect(within(todoColumn).getByText("Agent created task")).toBeInTheDocument();
+
+    // 3. Open detail modal on Alpha task and receive a live comment + completion
+    await user.click(screen.getByText("Alpha task"));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("In Progress")).toBeInTheDocument();
+
+    act(() => {
+      ws?.receiveMessage({
+        type: "comment.created",
+        comment: {
+          id: "01940000-0000-7000-8000-0000000000c1",
+          taskId: TASK_A.id,
+          body: "Finished implementation",
+          authorType: "agent",
+          author: "antigravity",
+          createdAt: "2026-10-20T12:07:00.000Z",
+        },
+      });
+      ws?.receiveMessage({
+        type: "task.updated",
+        task: { ...TASK_A, status: "done", updatedAt: "2026-10-20T12:08:00.000Z" },
+      });
+    });
+
+    expect(await within(dialog).findByText("Finished implementation")).toBeInTheDocument();
+    expect(within(dialog).getByText("Done")).toBeInTheDocument();
+    expect(within(doneColumn).getByText("Alpha task")).toBeInTheDocument();
+
+    // 4. MCP deletes the second task
+    act(() => {
+      ws?.receiveMessage({
+        type: "task.deleted",
+        id: NEW_TASK.id,
+      });
+    });
+    expect(screen.queryByText("Agent created task")).not.toBeInTheDocument();
   });
 });

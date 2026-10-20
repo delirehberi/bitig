@@ -1,11 +1,19 @@
 import { useCallback, useEffect, useState } from "react";
-import type {
-  CreateProjectInput,
-  OperationOptions,
-  Project,
-  StorageProvider,
-  UpdateProjectInput,
+import {
+  compareProjects,
+  type CreateProjectInput,
+  type OperationOptions,
+  type Project,
+  type StorageProvider,
+  type UpdateProjectInput,
 } from "@bitig/core";
+import { useRealtimeEvent } from "./useRealtime";
+
+function upsertProject(projects: readonly Project[], incoming: Project): Project[] {
+  const exists = projects.some((p) => p.id === incoming.id);
+  const next = exists ? projects.map((p) => (p.id === incoming.id ? incoming : p)) : [...projects, incoming];
+  return next.sort(compareProjects);
+}
 
 export function useProjects(storage: StorageProvider) {
   const [projects, setProjects] = useState<Project[]>([]);
@@ -32,6 +40,30 @@ export function useProjects(storage: StorageProvider) {
     };
   }, [storage]);
 
+  useRealtimeEvent((event) => {
+    switch (event.type) {
+      case "project.created":
+      case "project.updated":
+        setProjects((prev) => upsertProject(prev, event.project));
+        break;
+      case "project.deleted":
+        setProjects((prev) => prev.filter((p) => p.id !== event.id));
+        break;
+      case "sync":
+        void storage
+          .getProjects()
+          .then((result) => {
+            setProjects(result);
+          })
+          .catch((err: unknown) => {
+            console.warn("failed to resync projects", err);
+          });
+        break;
+      default:
+        break;
+    }
+  });
+
   const refreshProjects = useCallback(async () => {
     setIsLoading(true);
     setError(null);
@@ -48,7 +80,7 @@ export function useProjects(storage: StorageProvider) {
   const createProject = useCallback(
     async (input: CreateProjectInput): Promise<Project> => {
       const created = await storage.createProject(input);
-      setProjects((prev) => [...prev, created]);
+      setProjects((prev) => upsertProject(prev, created));
       return created;
     },
     [storage],
@@ -57,7 +89,7 @@ export function useProjects(storage: StorageProvider) {
   const updateProject = useCallback(
     async (id: string, patch: UpdateProjectInput): Promise<Project> => {
       const updated = await storage.updateProject(id, patch);
-      setProjects((prev) => prev.map((p) => (p.id === id ? updated : p)));
+      setProjects((prev) => upsertProject(prev, updated));
       return updated;
     },
     [storage],

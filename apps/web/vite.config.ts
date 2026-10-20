@@ -13,7 +13,10 @@ export default defineConfig({
     strictPort: true,
     proxy: {
       "/health": WORKER_DEV_ORIGIN,
-      "/api": WORKER_DEV_ORIGIN,
+      "/api": {
+        target: WORKER_DEV_ORIGIN,
+        ws: true,
+      },
     },
   },
   build: {

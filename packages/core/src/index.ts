@@ -17,6 +17,7 @@ export function isStorageMode(value: unknown): value is StorageMode {
 
 export * from "./domain/constants";
 export * from "./domain/schemas";
+export * from "./domain/realtime";
 export type * from "./domain/types";
 export {
   BitigError,

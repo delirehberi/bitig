@@ -14,6 +14,7 @@ import { mcpRouter } from "./routes/mcp";
 import { sessionRouter } from "./routes/session";
 import { API_POLICY, MCP_POLICY, authFailureGuard, rateLimit } from "./rate-limit";
 import { csrfProtection } from "./csrf";
+import { publishRealtimeEvent, realtimeRouter, withRealtimeBroadcast } from "./realtime";
 import pkg from "../package.json" with { type: "json" };
 
 export interface AppEnv {
@@ -45,7 +46,11 @@ export function createApp(options?: CreateAppOptions): Hono<AppEnv> {
 
   app.use("*", async (c, next) => {
     c.set("config", options?.config ?? parseConfig(c.env));
-    c.set("storage", options?.storageFactory ? options.storageFactory(c.env) : new D1Storage(c.env.DB));
+    const baseStorage = options?.storageFactory ? options.storageFactory(c.env) : new D1Storage(c.env.DB);
+    c.set(
+      "storage",
+      withRealtimeBroadcast(baseStorage, (event) => publishRealtimeEvent(c.env, event)),
+    );
     await next();
   });
 
@@ -103,6 +108,7 @@ export function createApp(options?: CreateAppOptions): Hono<AppEnv> {
   app.route("/api/tasks", tasksRouter);
   app.route("/api/comments", commentsRouter);
   app.route("/api/backup", backupRouter);
+  app.route("/api/realtime", realtimeRouter);
 
   // Remote MCP endpoint guarded by Bearer token authentication and rate limiting
   app.use("/mcp", rateLimit(MCP_POLICY));
@@ -141,6 +147,7 @@ const app = createApp();
 
 // Durable Object classes must be exported from the Worker's main module.
 export { RateLimiter } from "./rate-limiter-do";
+export { RealtimeHub } from "./realtime-do";
 
 export default {
   fetch: app.fetch,
