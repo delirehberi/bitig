@@ -61,3 +61,15 @@ export const COMMENT_AUTHOR_TYPES = ["human", "agent"] as const;
 export const DEFAULT_COMMENT_AUTHOR_TYPE = "human" satisfies (typeof COMMENT_AUTHOR_TYPES)[number];
 export const COMMENT_BODY_MAX = 20_000;
 export const COMMENT_AUTHOR_MAX = 100;
+
+/**
+ * Incoming webhooks: external services (Sentry, Jira, GitHub, or generic JSON) post payloads to
+ * `/webhooks/:token` to create tasks in a project.
+ */
+export const WEBHOOK_PROVIDERS = ["generic", "sentry", "jira", "github"] as const;
+export const DEFAULT_WEBHOOK_PROVIDER = "generic" satisfies (typeof WEBHOOK_PROVIDERS)[number];
+export const DEFAULT_WEBHOOK_ENABLED = true;
+export const WEBHOOK_NAME_MAX = 200;
+export const WEBHOOK_MAPPING_PATH_MAX = 200;
+export const WEBHOOK_TOKEN_PREFIX = "whk_";
+export const WEBHOOK_TOKEN_PATTERN = /^whk_[0-9a-f]{32,64}$/;

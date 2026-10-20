@@ -12,6 +12,7 @@ export type Route =
   | { readonly name: "overview" }
   | { readonly name: "projects"; readonly archived?: true }
   | { readonly name: "tasks"; readonly projectId?: string; readonly needsHuman?: true }
+  | { readonly name: "webhooks"; readonly projectId?: string }
   | { readonly name: "login"; readonly next?: string }
   | { readonly name: "not_found" };
 
@@ -59,6 +60,13 @@ export function parseRoute(pathname: string, search: string): Route {
         ...(params.get(NEEDS_PARAM) === NEEDS_HUMAN_VALUE ? { needsHuman: true as const } : {}),
       };
     }
+    case "/webhooks": {
+      const projectId = params.get(PROJECT_PARAM);
+      return {
+        name: "webhooks",
+        ...(projectId ? { projectId } : {}),
+      };
+    }
     case LOGIN_PATH: {
       const next = safeNextPath(params.get(NEXT_PARAM));
       return next ? { name: "login", next } : { name: "login" };
@@ -83,6 +91,12 @@ export function hrefFor(route: Route): string {
       if (route.needsHuman) params.set(NEEDS_PARAM, NEEDS_HUMAN_VALUE);
       const query = params.toString();
       return query ? `/tasks?${query}` : "/tasks";
+    }
+    case "webhooks": {
+      const params = new URLSearchParams();
+      if (route.projectId) params.set(PROJECT_PARAM, route.projectId);
+      const query = params.toString();
+      return query ? `/webhooks?${query}` : "/webhooks";
     }
     case "login":
       return route.next ? `${LOGIN_PATH}?${new URLSearchParams({ [NEXT_PARAM]: route.next }).toString()}` : LOGIN_PATH;

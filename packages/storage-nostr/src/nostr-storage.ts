@@ -5,21 +5,28 @@ import {
   NotFoundError,
   ProjectBundleSchema,
   TaskFilterSchema,
+  WebhookFilterSchema,
+  WebhookTokenSchema,
   applyProjectPatch,
   applyTaskPatch,
+  applyWebhookPatch,
   buildComment,
   buildProject,
   buildTask,
+  buildWebhook,
   cloneComment,
   cloneProject,
   cloneTask,
+  cloneWebhook,
   compareComments,
   compareProjects,
   compareTasks,
+  compareWebhooks,
   completeTaskEntity,
   defaultRuntimeDeps,
   nextTaskNumber,
   parseOrThrow,
+  recordWebhookTriggerEntity,
   renumberTask,
   throwIfAborted,
   toTimestamp,
@@ -28,6 +35,7 @@ import {
   type CreateCommentInput,
   type CreateProjectInput,
   type CreateTaskInput,
+  type CreateWebhookInput,
   type OperationOptions,
   type Project,
   type ProjectBundle,
@@ -37,16 +45,21 @@ import {
   type TaskFilter,
   type UpdateProjectInput,
   type UpdateTaskInput,
+  type UpdateWebhookInput,
+  type Webhook,
+  type WebhookFilter,
 } from "@bitig/core";
 import { decodeCommentEvent, encodeCommentEvent } from "./codecs/comment-codec";
 import { decodeProjectEvent, encodeProjectEvent } from "./codecs/project-codec";
 import { decodeTaskEvent, encodeTaskEvent } from "./codecs/task-codec";
+import { decodeWebhookEvent, encodeWebhookEvent } from "./codecs/webhook-codec";
 import {
   formatAddressCoordinate,
   NOSTR_KIND_COMMENT,
   NOSTR_KIND_DELETE,
   NOSTR_KIND_PROJECT,
   NOSTR_KIND_TASK,
+  NOSTR_KIND_WEBHOOK,
   NOSTR_TAG_A,
   NOSTR_TAG_D,
 } from "./kinds";
@@ -77,6 +90,7 @@ export class NostrStorage implements StorageProvider {
   private readonly projects = new Map<string, Project>();
   private readonly tasks = new Map<string, Task>();
   private readonly comments = new Map<string, Comment>();
+  private readonly webhooks = new Map<string, Webhook>();
   private synced = false;
 
   constructor(options: NostrStorageOptions) {
@@ -100,10 +114,11 @@ export class NostrStorage implements StorageProvider {
     const pubkey = await this.signer.getPublicKey();
     throwIfAborted(opts?.signal);
 
-    const [projectEvents, taskEvents, commentEvents] = await Promise.all([
+    const [projectEvents, taskEvents, commentEvents, webhookEvents] = await Promise.all([
       this.relayManager.queryReplaceable({ kinds: [NOSTR_KIND_PROJECT], authors: [pubkey] }, pubkey),
       this.relayManager.queryReplaceable({ kinds: [NOSTR_KIND_TASK], authors: [pubkey] }, pubkey),
       this.relayManager.queryReplaceable({ kinds: [NOSTR_KIND_COMMENT], authors: [pubkey] }, pubkey),
+      this.relayManager.queryReplaceable({ kinds: [NOSTR_KIND_WEBHOOK], authors: [pubkey] }, pubkey),
     ]);
     throwIfAborted(opts?.signal);
 
@@ -131,6 +146,15 @@ export class NostrStorage implements StorageProvider {
         this.comments.set(comment.id, comment);
       } catch {
         // Discard malformed or un-decryptable comment events
+      }
+    }
+
+    for (const event of webhookEvents) {
+      try {
+        const webhook = await decodeWebhookEvent(event, pubkey, this.signer);
+        this.webhooks.set(webhook.id, webhook);
+      } catch {
+        // Discard malformed or un-decryptable webhook events
       }
     }
 
@@ -217,6 +241,7 @@ export class NostrStorage implements StorageProvider {
 
     // Cascading deletion: collect all task coordinates belonging to this project
     const childTasks = Array.from(this.tasks.values()).filter((t) => t.projectId === id);
+    const childWebhooks = Array.from(this.webhooks.values()).filter((w) => w.projectId === id);
 
     const tags: string[][] = [
       [NOSTR_TAG_A, formatAddressCoordinate(NOSTR_KIND_PROJECT, pubkey, id)],
@@ -228,12 +253,18 @@ export class NostrStorage implements StorageProvider {
     for (const c of childComments) {
       tags.push([NOSTR_TAG_A, formatAddressCoordinate(NOSTR_KIND_COMMENT, pubkey, c.id)]);
     }
+    for (const w of childWebhooks) {
+      tags.push([NOSTR_TAG_A, formatAddressCoordinate(NOSTR_KIND_WEBHOOK, pubkey, w.id)]);
+    }
     tags.push(["k", String(NOSTR_KIND_PROJECT)]);
     if (childTasks.length > 0) {
       tags.push(["k", String(NOSTR_KIND_TASK)]);
     }
     if (childComments.length > 0) {
       tags.push(["k", String(NOSTR_KIND_COMMENT)]);
+    }
+    if (childWebhooks.length > 0) {
+      tags.push(["k", String(NOSTR_KIND_WEBHOOK)]);
     }
 
     const deleteTemplate = {
@@ -256,6 +287,9 @@ export class NostrStorage implements StorageProvider {
     }
     for (const c of childComments) {
       this.comments.delete(c.id);
+    }
+    for (const w of childWebhooks) {
+      this.webhooks.delete(w.id);
     }
   }
 
@@ -475,6 +509,123 @@ export class NostrStorage implements StorageProvider {
     this.comments.delete(id);
   }
 
+  async getWebhooks(filter?: WebhookFilter, opts?: OperationOptions): Promise<Webhook[]> {
+    throwIfAborted(opts?.signal);
+    const parsedFilter = filter ? parseOrThrow(WebhookFilterSchema, filter, "getWebhooks filter") : undefined;
+    await this.syncFromRelays(opts);
+    throwIfAborted(opts?.signal);
+
+    let list = Array.from(this.webhooks.values());
+    if (parsedFilter?.projectId !== undefined) {
+      list = list.filter((w) => w.projectId === parsedFilter.projectId);
+    }
+    return list.sort(compareWebhooks).map(cloneWebhook);
+  }
+
+  async getWebhook(id: string, opts?: OperationOptions): Promise<Webhook | null> {
+    throwIfAborted(opts?.signal);
+    parseOrThrow(IdSchema, id, "getWebhook id");
+    await this.syncFromRelays(opts);
+    throwIfAborted(opts?.signal);
+
+    const webhook = this.webhooks.get(id);
+    return webhook ? cloneWebhook(webhook) : null;
+  }
+
+  async getWebhookByToken(token: string, opts?: OperationOptions): Promise<Webhook | null> {
+    throwIfAborted(opts?.signal);
+    const validToken = parseOrThrow(WebhookTokenSchema, token, "getWebhookByToken token");
+    await this.syncFromRelays(opts);
+    throwIfAborted(opts?.signal);
+
+    for (const webhook of this.webhooks.values()) {
+      if (webhook.token === validToken) return cloneWebhook(webhook);
+    }
+    return null;
+  }
+
+  async createWebhook(input: CreateWebhookInput, opts?: OperationOptions): Promise<Webhook> {
+    throwIfAborted(opts?.signal);
+    const webhook = buildWebhook(input, this.deps);
+    await this.syncFromRelays(opts);
+    throwIfAborted(opts?.signal);
+    if (!this.projects.has(webhook.projectId)) {
+      throw new NotFoundError("project", webhook.projectId);
+    }
+
+    await this.publishWebhook(webhook, opts);
+    this.webhooks.set(webhook.id, webhook);
+    return cloneWebhook(webhook);
+  }
+
+  async updateWebhook(id: string, patch: UpdateWebhookInput, opts?: OperationOptions): Promise<Webhook> {
+    throwIfAborted(opts?.signal);
+    parseOrThrow(IdSchema, id, "updateWebhook id");
+    await this.syncFromRelays(opts);
+    throwIfAborted(opts?.signal);
+
+    const existing = this.webhooks.get(id);
+    if (!existing) {
+      throw new NotFoundError("webhook", id);
+    }
+    if (patch.projectId !== undefined && !this.projects.has(patch.projectId)) {
+      throw new NotFoundError("project", patch.projectId);
+    }
+
+    const updated = applyWebhookPatch(existing, patch, this.deps);
+    await this.publishWebhook(updated, opts);
+    this.webhooks.set(id, updated);
+    return cloneWebhook(updated);
+  }
+
+  async deleteWebhook(id: string, opts?: OperationOptions): Promise<void> {
+    throwIfAborted(opts?.signal);
+    parseOrThrow(IdSchema, id, "deleteWebhook id");
+    await this.syncFromRelays(opts);
+    throwIfAborted(opts?.signal);
+
+    if (!this.webhooks.has(id)) {
+      throw new NotFoundError("webhook", id);
+    }
+
+    const pubkey = await this.signer.getPublicKey();
+    throwIfAborted(opts?.signal);
+
+    const deleteTemplate = {
+      kind: NOSTR_KIND_DELETE,
+      created_at: Math.floor(Date.now() / 1000),
+      tags: [
+        [NOSTR_TAG_A, formatAddressCoordinate(NOSTR_KIND_WEBHOOK, pubkey, id)],
+        ["k", String(NOSTR_KIND_WEBHOOK)],
+      ],
+      content: `Deleted webhook ${id}`,
+    };
+
+    throwIfAborted(opts?.signal);
+    const signed = await this.signer.signEvent(deleteTemplate);
+    throwIfAborted(opts?.signal);
+    await this.relayManager.publishEvent(signed);
+
+    this.webhooks.delete(id);
+  }
+
+  async recordWebhookTrigger(id: string, opts?: OperationOptions): Promise<Webhook> {
+    throwIfAborted(opts?.signal);
+    parseOrThrow(IdSchema, id, "recordWebhookTrigger id");
+    await this.syncFromRelays(opts);
+    throwIfAborted(opts?.signal);
+
+    const existing = this.webhooks.get(id);
+    if (!existing) {
+      throw new NotFoundError("webhook", id);
+    }
+
+    const updated = recordWebhookTriggerEntity(existing, this.deps.clock());
+    await this.publishWebhook(updated, opts);
+    this.webhooks.set(id, updated);
+    return cloneWebhook(updated);
+  }
+
   async exportProject(id: string, opts?: OperationOptions): Promise<ProjectBundle> {
     throwIfAborted(opts?.signal);
     parseOrThrow(IdSchema, id, "exportProject id");
@@ -487,12 +638,14 @@ export class NostrStorage implements StorageProvider {
     }
 
     const tasks = await this.getTasks({ projectId: id }, opts);
+    const webhooks = await this.getWebhooks({ projectId: id }, opts);
     const bundle: ProjectBundle = {
       version: BUNDLE_VERSION,
       exportedAt: toTimestamp(this.deps.clock()),
       project: copyProject(project),
       tasks,
       comments: this.commentsOf(tasks.map((t) => t.id)).map(cloneComment),
+      ...(webhooks.length > 0 ? { webhooks } : {}),
     };
     return parseOrThrow(ProjectBundleSchema, bundle, "exportProject result");
   }
@@ -526,6 +679,12 @@ export class NostrStorage implements StorageProvider {
       throwIfAborted(opts?.signal);
       await this.publishComment(comment, opts);
       this.comments.set(comment.id, cloneComment(comment));
+    }
+
+    for (const webhook of validated.webhooks ?? []) {
+      throwIfAborted(opts?.signal);
+      await this.publishWebhook(webhook, opts);
+      this.webhooks.set(webhook.id, cloneWebhook(webhook));
     }
 
     return copyProject(validated.project);
@@ -567,6 +726,16 @@ export class NostrStorage implements StorageProvider {
     const pubkey = await this.signer.getPublicKey();
     throwIfAborted(opts?.signal);
     const template = await encodeCommentEvent(comment, pubkey, this.signer);
+    throwIfAborted(opts?.signal);
+    const signed = await this.signer.signEvent(template);
+    throwIfAborted(opts?.signal);
+    await this.relayManager.publishEvent(signed);
+  }
+
+  private async publishWebhook(webhook: Webhook, opts?: OperationOptions): Promise<void> {
+    const pubkey = await this.signer.getPublicKey();
+    throwIfAborted(opts?.signal);
+    const template = await encodeWebhookEvent(webhook, pubkey, this.signer);
     throwIfAborted(opts?.signal);
     const signed = await this.signer.signEvent(template);
     throwIfAborted(opts?.signal);

@@ -10,6 +10,8 @@ import {
   DEFAULT_IS_PUBLIC,
   DEFAULT_PROJECT_KIND,
   DEFAULT_TASK_STATUS,
+  DEFAULT_WEBHOOK_ENABLED,
+  DEFAULT_WEBHOOK_PROVIDER,
   DESCRIPTION_MAX,
   LABELS_MAX_COUNT,
   LABEL_MAX,
@@ -24,6 +26,10 @@ import {
   TASK_PRIORITIES,
   TASK_STATUSES,
   TASK_TITLE_MAX,
+  WEBHOOK_MAPPING_PATH_MAX,
+  WEBHOOK_NAME_MAX,
+  WEBHOOK_PROVIDERS,
+  WEBHOOK_TOKEN_PATTERN,
 } from "./constants";
 
 // ---------------------------------------------------------------------------
@@ -103,6 +109,23 @@ export const CommentBodySchema = z.string().trim().min(1).max(COMMENT_BODY_MAX);
 /** A display name such as `Emre` or `claude`; never used for access control. */
 export const CommentAuthorSchema = z.string().trim().min(1).max(COMMENT_AUTHOR_MAX);
 
+export const WebhookProviderSchema = z.enum(WEBHOOK_PROVIDERS);
+export const WebhookNameSchema = z.string().trim().min(1).max(WEBHOOK_NAME_MAX);
+export const WebhookTokenSchema = z.string().regex(WEBHOOK_TOKEN_PATTERN, "Invalid webhook token");
+export const WebhookMappingPathSchema = z.string().trim().min(1).max(WEBHOOK_MAPPING_PATH_MAX);
+export const WebhookTriggerCountSchema = z.int().nonnegative();
+
+/**
+ * Custom dot-path mappings from an incoming JSON webhook payload to Bitig task fields
+ * (e.g. `{ title: "issue.fields.summary", description: "issue.fields.description" }`).
+ */
+export const WebhookMappingSchema = z.strictObject({
+  title: WebhookMappingPathSchema.exactOptional(),
+  description: WebhookMappingPathSchema.exactOptional(),
+  priority: WebhookMappingPathSchema.exactOptional(),
+  labels: WebhookMappingPathSchema.exactOptional(),
+});
+
 // ---------------------------------------------------------------------------
 // Entities
 // ---------------------------------------------------------------------------
@@ -157,6 +180,23 @@ export const CommentSchema = z.strictObject({
   authorType: CommentAuthorTypeSchema,
   createdAt: TimestampSchema,
   author: CommentAuthorSchema.exactOptional(),
+});
+
+/** An incoming webhook endpoint bound to a project. */
+export const WebhookSchema = z.strictObject({
+  id: IdSchema,
+  projectId: IdSchema,
+  name: WebhookNameSchema,
+  provider: WebhookProviderSchema,
+  token: WebhookTokenSchema,
+  enabled: z.boolean(),
+  triggerCount: WebhookTriggerCountSchema,
+  createdAt: TimestampSchema,
+  updatedAt: TimestampSchema,
+  mapping: WebhookMappingSchema.exactOptional(),
+  defaultPriority: TaskPrioritySchema.exactOptional(),
+  defaultLabels: LabelsSchema.exactOptional(),
+  lastTriggeredAt: TimestampSchema.exactOptional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -239,6 +279,34 @@ export const TaskFilterSchema = z.strictObject({
   projectId: IdSchema.optional(),
 });
 
+export const CreateWebhookInputSchema = z.strictObject({
+  projectId: IdSchema,
+  name: WebhookNameSchema,
+  provider: WebhookProviderSchema.default(DEFAULT_WEBHOOK_PROVIDER),
+  enabled: z.boolean().default(DEFAULT_WEBHOOK_ENABLED),
+  mapping: WebhookMappingSchema.optional(),
+  defaultPriority: TaskPrioritySchema.optional(),
+  defaultLabels: LabelsSchema.optional(),
+});
+
+export const UpdateWebhookInputSchema = z
+  .strictObject({
+    projectId: IdSchema.optional(),
+    name: WebhookNameSchema.optional(),
+    provider: WebhookProviderSchema.optional(),
+    enabled: z.boolean().optional(),
+    mapping: WebhookMappingSchema.nullable().optional(),
+    defaultPriority: TaskPrioritySchema.nullable().optional(),
+    defaultLabels: LabelsSchema.nullable().optional(),
+    /** When true, generates a fresh secret token for this webhook. */
+    regenerateToken: z.boolean().optional(),
+  })
+  .refine(hasAnyDefinedField, { message: EMPTY_PATCH_MESSAGE });
+
+export const WebhookFilterSchema = z.strictObject({
+  projectId: IdSchema.optional(),
+});
+
 // ---------------------------------------------------------------------------
 // Bundles & Interop
 // ---------------------------------------------------------------------------
@@ -253,9 +321,14 @@ export const ProjectBundleSchema = z
     tasks: z.array(TaskSchema),
     /** Comments on the bundled tasks, oldest first. Bundles made before comments have none. */
     comments: z.array(CommentSchema).exactOptional(),
+    /** Webhooks belonging to the bundled project, oldest first. Bundles made before webhooks have none. */
+    webhooks: z.array(WebhookSchema).exactOptional(),
   })
   .refine((bundle) => bundle.tasks.every((task) => task.projectId === bundle.project.id), {
     message: "All tasks in bundle must belong to the bundled project",
+  })
+  .refine((bundle) => (bundle.webhooks ?? []).every((webhook) => webhook.projectId === bundle.project.id), {
+    message: "All webhooks in bundle must belong to the bundled project",
   })
   .refine(
     (bundle) => {

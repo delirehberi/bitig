@@ -11,6 +11,7 @@ function stubApi(responses: {
   health?: { status: string; version: string; storageMode: string };
   projects?: unknown[];
   tasks?: unknown[];
+  webhooks?: unknown[];
   /** Whether the browser starts with a valid session cookie; defaults to signed in. */
   signedIn?: boolean;
 }) {
@@ -18,6 +19,7 @@ function stubApi(responses: {
   const healthData = responses.health ?? { status: "ok", version: "0.4.1", storageMode: "cloudflare" };
   const projectsData = responses.projects ?? [];
   const tasksData = responses.tasks ?? [];
+  const webhooksData = [...(responses.webhooks ?? [])] as Record<string, unknown>[];
 
   vi.stubGlobal(
     "fetch",
@@ -124,6 +126,65 @@ function stubApi(responses: {
         return Promise.resolve(Response.json(tasksData, { status: 200 }));
       }
 
+      if (url.includes("/api/webhooks")) {
+        if (init?.method === "DELETE") {
+          return Promise.resolve(new Response(null, { status: 204 }));
+        }
+        if (init?.method === "PATCH") {
+          const id = decodeURIComponent(url.split("/").pop() ?? "");
+          const index = webhooksData.findIndex((w) => w.id === id);
+          const existing = webhooksData[index];
+          if (index === -1 || !existing) {
+            return Promise.resolve(Response.json({ error: "not_found" }, { status: 404 }));
+          }
+          const patch = JSON.parse(init.body as string) as Record<string, unknown>;
+          const updated: Record<string, unknown> = {
+            ...existing,
+            ...(patch.name !== undefined ? { name: patch.name } : {}),
+            ...(patch.provider !== undefined ? { provider: patch.provider } : {}),
+            ...(patch.enabled !== undefined ? { enabled: patch.enabled } : {}),
+            ...(patch.regenerateToken === true
+              ? { token: "whk_ffffffffffffffffffffffffffffffff" }
+              : {}),
+            updatedAt: new Date().toISOString(),
+          };
+          if ("defaultPriority" in patch) {
+            if (patch.defaultPriority === null) delete updated.defaultPriority;
+            else updated.defaultPriority = patch.defaultPriority;
+          }
+          if ("defaultLabels" in patch) {
+            if (patch.defaultLabels === null) delete updated.defaultLabels;
+            else updated.defaultLabels = patch.defaultLabels;
+          }
+          if ("mapping" in patch) {
+            if (patch.mapping === null) delete updated.mapping;
+            else updated.mapping = patch.mapping;
+          }
+          webhooksData[index] = updated;
+          return Promise.resolve(Response.json(updated, { status: 200 }));
+        }
+        if (init?.method === "POST") {
+          const body = JSON.parse(init.body as string) as Record<string, unknown>;
+          const created = {
+            id: "01940000-0000-7000-8000-000000000099",
+            projectId: body.projectId,
+            name: body.name,
+            provider: body.provider ?? "generic",
+            token: "whk_0123456789abcdef0123456789abcdef",
+            enabled: body.enabled ?? true,
+            ...(body.defaultPriority ? { defaultPriority: body.defaultPriority } : {}),
+            ...(body.defaultLabels ? { defaultLabels: body.defaultLabels } : {}),
+            ...(body.mapping ? { mapping: body.mapping } : {}),
+            triggerCount: 0,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          };
+          webhooksData.push(created);
+          return Promise.resolve(Response.json(created, { status: 201 }));
+        }
+        return Promise.resolve(Response.json(webhooksData, { status: 200 }));
+      }
+
       return Promise.resolve(new Response(null, { status: 404 }));
     }),
   );
@@ -156,6 +217,11 @@ describe("Dashboard Phase 4 Integration", () => {
     await user.click(within(nav).getByRole("link", { name: "Tasks" }));
     expect(await screen.findByRole("heading", { level: 1, name: "Tasks" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /new task/i })).toBeInTheDocument();
+
+    // Click Webhooks tab in primary nav
+    await user.click(within(nav).getByRole("link", { name: "Webhooks" }));
+    expect(await screen.findByRole("heading", { level: 1, name: "Webhooks" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /new webhook/i })).toBeInTheDocument();
 
     // Click back to Overview
     await user.click(within(nav).getByRole("link", { name: "Overview" }));
@@ -484,6 +550,80 @@ describe("Dashboard Phase 4 Integration", () => {
     expect(screen.getByText("Status")).toBeInTheDocument();
     expect(screen.getByText("Priority")).toBeInTheDocument();
     expect(screen.getByText("Write documentation")).toBeInTheDocument();
+  });
+
+  it("supports creating, editing, toggling, regenerating token, and deleting a webhook", async () => {
+    const existingProject = {
+      id: "01940000-0000-7000-8000-000000000001",
+      name: "Bitig App",
+      key: "BIT",
+      description: "App description",
+      kind: "hobby",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    stubApi({ projects: [existingProject] });
+    const user = userEvent.setup();
+    render(<App />);
+
+    const nav = await screen.findByRole("navigation", { name: "Primary" });
+    await user.click(within(nav).getByRole("link", { name: "Webhooks" }));
+    expect(await screen.findByRole("heading", { level: 1, name: "Webhooks" })).toBeInTheDocument();
+
+    // Open New Webhook modal
+    await user.click(screen.getByRole("button", { name: /new webhook/i }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("heading", { name: "New Webhook" })).toBeInTheDocument();
+
+    // Fill webhook form with provider and custom mapping
+    await user.selectOptions(within(dialog).getByLabelText(/provider/i), "jira");
+    await user.type(within(dialog).getByLabelText(/webhook name/i), "Jira Issues");
+    await user.selectOptions(within(dialog).getByLabelText(/default priority/i), "high");
+    await user.type(within(dialog).getByLabelText(/default labels/i), "jira, incoming");
+    await user.type(within(dialog).getByLabelText("bitig.title"), "issue.fields.summary");
+    await user.click(within(dialog).getByRole("button", { name: "Create Webhook" }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
+
+    // Created webhook card appears with provider, mapping, and masked URL
+    expect(await screen.findByText("Jira Issues")).toBeInTheDocument();
+    expect(screen.getByText("issue.fields.summary")).toBeInTheDocument();
+    expect(screen.getByText(/whk_0123••••••••cdef/)).toBeInTheDocument();
+
+    // Reveal full URL
+    await user.click(screen.getByRole("button", { name: "Reveal URL for Jira Issues" }));
+    expect(screen.getByText(/whk_0123456789abcdef0123456789abcdef/)).toBeInTheDocument();
+
+    // Regenerate token
+    await user.click(screen.getByRole("button", { name: "Regenerate token for Jira Issues" }));
+    expect(await screen.findByText(/whk_ffffffffffffffffffffffffffffffff/)).toBeInTheDocument();
+
+    // Toggle enabled -> disabled
+    await user.click(screen.getByRole("button", { name: "Disable Jira Issues" }));
+    expect(await screen.findByText("Disabled")).toBeInTheDocument();
+
+    // Edit webhook name
+    await user.click(screen.getByRole("button", { name: "Edit Jira Issues" }));
+    const editDialog = await screen.findByRole("dialog");
+    const nameInput = within(editDialog).getByLabelText(/webhook name/i);
+    await user.clear(nameInput);
+    await user.type(nameInput, "Jira Cloud Issues");
+    await user.click(within(editDialog).getByRole("button", { name: "Save Changes" }));
+
+    expect(await screen.findByText("Jira Cloud Issues")).toBeInTheDocument();
+
+    // Delete webhook
+    await user.click(screen.getByRole("button", { name: "Delete Jira Cloud Issues" }));
+    const deleteDialog = await screen.findByRole("dialog");
+    expect(within(deleteDialog).getByRole("heading", { name: "Delete Webhook" })).toBeInTheDocument();
+    await user.click(within(deleteDialog).getByRole("button", { name: "Delete Webhook" }));
+
+    await waitFor(() => {
+      expect(screen.queryByText("Jira Cloud Issues")).not.toBeInTheDocument();
+    });
   });
 });
 

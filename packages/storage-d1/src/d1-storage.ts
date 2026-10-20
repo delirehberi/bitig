@@ -7,20 +7,27 @@ import {
   NotFoundError,
   ProjectBundleSchema,
   TaskFilterSchema,
+  WebhookFilterSchema,
+  WebhookTokenSchema,
   applyProjectPatch,
   applyTaskPatch,
+  applyWebhookPatch,
   buildComment,
   buildProject,
   buildTask,
+  buildWebhook,
   cloneComment,
   cloneProject,
   cloneTask,
+  cloneWebhook,
   compareComments,
   compareProjects,
   compareTasks,
+  compareWebhooks,
   completeTaskEntity,
   defaultRuntimeDeps,
   parseOrThrow,
+  recordWebhookTriggerEntity,
   renumberTask,
   throwIfAborted,
   toTimestamp,
@@ -29,6 +36,7 @@ import {
   type CreateCommentInput,
   type CreateProjectInput,
   type CreateTaskInput,
+  type CreateWebhookInput,
   type OperationOptions,
   type Project,
   type ProjectBundle,
@@ -38,16 +46,22 @@ import {
   type TaskFilter,
   type UpdateProjectInput,
   type UpdateTaskInput,
+  type UpdateWebhookInput,
+  type Webhook,
+  type WebhookFilter,
 } from "@bitig/core";
 import * as schema from "./schema";
 import {
   comments,
   projects,
   tasks,
+  webhooks,
   type CommentRecord,
   type InsertCommentRecord,
+  type InsertWebhookRecord,
   type ProjectRecord,
   type TaskRecord,
+  type WebhookRecord,
 } from "./schema";
 
 export interface D1StorageOptions {
@@ -150,6 +164,51 @@ function commentToRecord(comment: Comment): InsertCommentRecord {
   };
 }
 
+function recordToWebhook(row: WebhookRecord): Webhook {
+  const webhook: Webhook = {
+    id: row.id,
+    projectId: row.projectId,
+    name: row.name,
+    provider: row.provider,
+    token: row.token,
+    enabled: row.enabled,
+    triggerCount: row.triggerCount,
+    createdAt: new Date(row.createdAt).toISOString(),
+    updatedAt: new Date(row.updatedAt).toISOString(),
+  };
+  if (row.mapping !== null) {
+    webhook.mapping = { ...row.mapping };
+  }
+  if (row.defaultPriority !== null) {
+    webhook.defaultPriority = row.defaultPriority;
+  }
+  if (row.defaultLabels !== null) {
+    webhook.defaultLabels = [...row.defaultLabels];
+  }
+  if (row.lastTriggeredAt !== null) {
+    webhook.lastTriggeredAt = new Date(row.lastTriggeredAt).toISOString();
+  }
+  return webhook;
+}
+
+function webhookToRecord(webhook: Webhook): InsertWebhookRecord {
+  return {
+    id: webhook.id,
+    projectId: webhook.projectId,
+    name: webhook.name,
+    provider: webhook.provider,
+    token: webhook.token,
+    enabled: webhook.enabled,
+    mapping: webhook.mapping ? { ...webhook.mapping } : null,
+    defaultPriority: webhook.defaultPriority ?? null,
+    defaultLabels: webhook.defaultLabels ? [...webhook.defaultLabels] : null,
+    triggerCount: webhook.triggerCount,
+    lastTriggeredAt: webhook.lastTriggeredAt !== undefined ? Date.parse(webhook.lastTriggeredAt) : null,
+    createdAt: Date.parse(webhook.createdAt),
+    updatedAt: Date.parse(webhook.updatedAt),
+  };
+}
+
 function isD1Database(db: unknown): db is D1Database {
   return typeof db === "object" && db !== null && "prepare" in db && typeof db.prepare === "function";
 }
@@ -245,6 +304,7 @@ export class D1Storage implements StorageProvider {
     const projectTaskIds = this.#db.select({ id: tasks.id }).from(tasks).where(eq(tasks.projectId, validId));
     await this.#db.delete(comments).where(inArray(comments.taskId, projectTaskIds));
     await this.#db.delete(tasks).where(eq(tasks.projectId, validId));
+    await this.#db.delete(webhooks).where(eq(webhooks.projectId, validId));
     await this.#db.delete(projects).where(eq(projects.id, validId));
     throwIfAborted(opts?.signal);
   }
@@ -412,6 +472,92 @@ export class D1Storage implements StorageProvider {
     if (deleted.length === 0) throw new NotFoundError("comment", validId);
   }
 
+  async getWebhooks(filter?: WebhookFilter, opts?: OperationOptions): Promise<Webhook[]> {
+    throwIfAborted(opts?.signal);
+    const parsedFilter = filter === undefined ? undefined : parseOrThrow(WebhookFilterSchema, filter, "getWebhooks");
+
+    let rows: WebhookRecord[];
+    if (parsedFilter?.projectId !== undefined) {
+      rows = await this.#db.select().from(webhooks).where(eq(webhooks.projectId, parsedFilter.projectId)).all();
+    } else {
+      rows = await this.#db.select().from(webhooks).all();
+    }
+    throwIfAborted(opts?.signal);
+    return rows.map(recordToWebhook).sort(compareWebhooks).map(cloneWebhook);
+  }
+
+  async getWebhook(id: string, opts?: OperationOptions): Promise<Webhook | null> {
+    throwIfAborted(opts?.signal);
+    const validId = parseOrThrow(IdSchema, id, "getWebhook");
+    const row = await this.#db.select().from(webhooks).where(eq(webhooks.id, validId)).get();
+    throwIfAborted(opts?.signal);
+    if (!row) return null;
+    return cloneWebhook(recordToWebhook(row));
+  }
+
+  async getWebhookByToken(token: string, opts?: OperationOptions): Promise<Webhook | null> {
+    throwIfAborted(opts?.signal);
+    const validToken = parseOrThrow(WebhookTokenSchema, token, "getWebhookByToken");
+    const row = await this.#db.select().from(webhooks).where(eq(webhooks.token, validToken)).get();
+    throwIfAborted(opts?.signal);
+    if (!row) return null;
+    return cloneWebhook(recordToWebhook(row));
+  }
+
+  async createWebhook(input: CreateWebhookInput, opts?: OperationOptions): Promise<Webhook> {
+    throwIfAborted(opts?.signal);
+    const webhook = buildWebhook(input, this.#deps);
+    const projectRow = await this.#db.select().from(projects).where(eq(projects.id, webhook.projectId)).get();
+    throwIfAborted(opts?.signal);
+    if (!projectRow) throw new NotFoundError("project", webhook.projectId);
+
+    await this.#db.insert(webhooks).values(webhookToRecord(webhook));
+    throwIfAborted(opts?.signal);
+    return cloneWebhook(webhook);
+  }
+
+  async updateWebhook(id: string, patch: UpdateWebhookInput, opts?: OperationOptions): Promise<Webhook> {
+    throwIfAborted(opts?.signal);
+    const validId = parseOrThrow(IdSchema, id, "updateWebhook");
+    const existingRow = await this.#db.select().from(webhooks).where(eq(webhooks.id, validId)).get();
+    throwIfAborted(opts?.signal);
+    if (!existingRow) throw new NotFoundError("webhook", validId);
+
+    const existing = recordToWebhook(existingRow);
+    const next = applyWebhookPatch(existing, patch, this.#deps);
+    if (next.projectId !== existing.projectId) {
+      const targetProject = await this.#db.select().from(projects).where(eq(projects.id, next.projectId)).get();
+      throwIfAborted(opts?.signal);
+      if (!targetProject) throw new NotFoundError("project", next.projectId);
+    }
+
+    await this.#db.update(webhooks).set(webhookToRecord(next)).where(eq(webhooks.id, validId));
+    throwIfAborted(opts?.signal);
+    return cloneWebhook(next);
+  }
+
+  async deleteWebhook(id: string, opts?: OperationOptions): Promise<void> {
+    throwIfAborted(opts?.signal);
+    const validId = parseOrThrow(IdSchema, id, "deleteWebhook");
+    const deleted = await this.#db.delete(webhooks).where(eq(webhooks.id, validId)).returning({ id: webhooks.id });
+    throwIfAborted(opts?.signal);
+    if (deleted.length === 0) throw new NotFoundError("webhook", validId);
+  }
+
+  async recordWebhookTrigger(id: string, opts?: OperationOptions): Promise<Webhook> {
+    throwIfAborted(opts?.signal);
+    const validId = parseOrThrow(IdSchema, id, "recordWebhookTrigger");
+    const existingRow = await this.#db.select().from(webhooks).where(eq(webhooks.id, validId)).get();
+    throwIfAborted(opts?.signal);
+    if (!existingRow) throw new NotFoundError("webhook", validId);
+
+    const existing = recordToWebhook(existingRow);
+    const next = recordWebhookTriggerEntity(existing, this.#deps.clock());
+    await this.#db.update(webhooks).set(webhookToRecord(next)).where(eq(webhooks.id, validId));
+    throwIfAborted(opts?.signal);
+    return cloneWebhook(next);
+  }
+
   async exportProject(id: string, opts?: OperationOptions): Promise<ProjectBundle> {
     throwIfAborted(opts?.signal);
     const validId = parseOrThrow(IdSchema, id, "exportProject");
@@ -419,6 +565,7 @@ export class D1Storage implements StorageProvider {
     if (project === null) throw new NotFoundError("project", validId);
 
     const projectTasks = await this.getTasks({ projectId: validId }, opts);
+    const projectWebhooks = await this.getWebhooks({ projectId: validId }, opts);
     const commentRows = await this.#db
       .select()
       .from(comments)
@@ -431,6 +578,7 @@ export class D1Storage implements StorageProvider {
       project,
       tasks: projectTasks,
       comments: commentRows.map(recordToComment).sort(compareComments),
+      ...(projectWebhooks.length > 0 ? { webhooks: projectWebhooks } : {}),
     };
     return parseOrThrow(ProjectBundleSchema, bundle, "exportProject result");
   }
@@ -496,6 +644,12 @@ export class D1Storage implements StorageProvider {
       throwIfAborted(opts?.signal);
       const values = commentToRecord(comment);
       await this.#db.insert(comments).values(values).onConflictDoUpdate({ target: comments.id, set: values });
+    }
+
+    for (const webhook of validated.webhooks ?? []) {
+      throwIfAborted(opts?.signal);
+      const values = webhookToRecord(webhook);
+      await this.#db.insert(webhooks).values(values).onConflictDoUpdate({ target: webhooks.id, set: values });
     }
 
     return copyProject(validated.project);

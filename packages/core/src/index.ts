@@ -38,19 +38,29 @@ export type {
 export {
   applyProjectPatch,
   applyTaskPatch,
+  applyWebhookPatch,
   buildComment,
   buildProject,
   buildTask,
+  buildWebhook,
   cloneComment,
   cloneProject,
   cloneTask,
+  cloneWebhook,
   compareComments,
   compareProjects,
   compareTasks,
+  compareWebhooks,
   completeTaskEntity,
+  recordWebhookTriggerEntity,
   renumberTask,
   sortProjectsByActivity,
 } from "./domain/entities";
+export {
+  extractTaskFromWebhookPayload,
+  normalizeExternalPriority,
+  resolveJsonPath,
+} from "./domain/webhooks";
 export {
   assertProjectKeyAvailable,
   assignMissingTicketCodes,

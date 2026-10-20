@@ -13,10 +13,12 @@ import {
   StorageError,
   TaskSchema,
   ValidationError,
+  WebhookSchema,
   parseOrThrow,
   type Comment,
   type Project,
   type Task,
+  type Webhook,
 } from "@bitig/core";
 import { z } from "zod";
 import {
@@ -32,10 +34,12 @@ const ProjectFileSchema = z.object(ProjectSchema.shape).omit({ id: true });
 const TaskFileSchema = z.object(TaskSchema.shape).omit({ id: true, projectId: true, description: true });
 
 const CommentFileSchema = z.object(CommentSchema.shape).omit({ id: true, taskId: true, body: true });
+const WebhookFileSchema = z.object(WebhookSchema.shape).omit({ id: true, projectId: true });
 
 type CommentFileData = z.output<typeof CommentFileSchema>;
 type ProjectFileData = z.output<typeof ProjectFileSchema>;
 type TaskFileData = z.output<typeof TaskFileSchema>;
+type WebhookFileData = z.output<typeof WebhookFileSchema>;
 
 /** Field order in written files; stable order keeps diffs minimal. */
 const PROJECT_KEY_ORDER = [
@@ -66,15 +70,30 @@ const TASK_KEY_ORDER = [
 ] as const satisfies readonly (keyof TaskFileData)[];
 
 const COMMENT_KEY_ORDER = ["authorType", "author", "createdAt"] as const satisfies readonly (keyof CommentFileData)[];
+const WEBHOOK_KEY_ORDER = [
+  "name",
+  "provider",
+  "token",
+  "enabled",
+  "mapping",
+  "defaultPriority",
+  "defaultLabels",
+  "triggerCount",
+  "lastTriggeredAt",
+  "createdAt",
+  "updatedAt",
+] as const satisfies readonly (keyof WebhookFileData)[];
 
 /** Date-like strings and project keys (`NO`, `ON`) are quoted so YAML 1.1 readers never coerce them. */
 const QUOTED_KEYS: ReadonlySet<string> = new Set([
   "startedAt",
   "completedAt",
+  "lastTriggeredAt",
   "createdAt",
   "updatedAt",
   "dueDate",
   "key",
+  "token",
 ]);
 
 /** Upper bound on a single file in UTF-16 code units, well above the largest valid entity. */
@@ -143,6 +162,20 @@ export function decodeComment(taskId: string, id: string, text: string, location
     const { data, body } = parseFrontmatter(text);
     const fields = parseOrThrow(CommentFileSchema, data, "comment file");
     return parseOrThrow(CommentSchema, { ...fields, id, taskId, body }, "comment file");
+  } catch (error) {
+    throw corrupt(location, error);
+  }
+}
+
+export function encodeWebhook(webhook: Webhook): string {
+  return stringifyYamlMapping(ordered(webhook, WEBHOOK_KEY_ORDER), QUOTED_KEYS);
+}
+
+export function decodeWebhook(projectId: string, id: string, text: string, location: string): Webhook {
+  assertSize(text, location);
+  try {
+    const fields = parseOrThrow(WebhookFileSchema, parseYamlMapping(text), "webhook file");
+    return parseOrThrow(WebhookSchema, { ...fields, id, projectId }, "webhook file");
   } catch (error) {
     throw corrupt(location, error);
   }

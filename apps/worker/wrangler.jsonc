@@ -40,7 +40,7 @@
     "directory": "../web/dist",
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/api/*", "/health", "/mcp", "/mcp/*"]
+    "run_worker_first": ["/api/*", "/health", "/mcp", "/mcp/*", "/webhooks/*"]
   },
   "vars": {
     // Comma-separated list of extra origins allowed to call /api/* cross-origin.

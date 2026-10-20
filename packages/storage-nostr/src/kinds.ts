@@ -10,6 +10,7 @@
 export const NOSTR_KIND_PROJECT = 30331 as const;
 export const NOSTR_KIND_TASK = 30332 as const;
 export const NOSTR_KIND_COMMENT = 30333 as const;
+export const NOSTR_KIND_WEBHOOK = 30334 as const;
 export const NOSTR_KIND_APP_HANDLER = 31989 as const;
 export const NOSTR_KIND_DELETE = 5 as const;
 
@@ -17,6 +18,7 @@ export type BitigNostrKind =
   | typeof NOSTR_KIND_PROJECT
   | typeof NOSTR_KIND_TASK
   | typeof NOSTR_KIND_COMMENT
+  | typeof NOSTR_KIND_WEBHOOK
   | typeof NOSTR_KIND_APP_HANDLER
   | typeof NOSTR_KIND_DELETE;
 

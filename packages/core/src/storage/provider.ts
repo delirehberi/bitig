@@ -4,12 +4,16 @@ import type {
   CreateCommentInput,
   CreateProjectInput,
   CreateTaskInput,
+  CreateWebhookInput,
   Project,
   ProjectBundle,
   Task,
   TaskFilter,
   UpdateProjectInput,
   UpdateTaskInput,
+  UpdateWebhookInput,
+  Webhook,
+  WebhookFilter,
 } from "../domain/types";
 import type { AbortSignalLike } from "./abort";
 
@@ -37,7 +41,7 @@ export interface StorageProvider {
   getProject(id: string, opts?: OperationOptions): Promise<Project | null>;
   createProject(input: CreateProjectInput, opts?: OperationOptions): Promise<Project>;
   updateProject(id: string, patch: UpdateProjectInput, opts?: OperationOptions): Promise<Project>;
-  /** Deletes the project and every task (and comment) that belongs to it. */
+  /** Deletes the project and every task, comment and webhook that belongs to it. */
   deleteProject(id: string, opts?: OperationOptions): Promise<void>;
 
   /** Tasks, optionally limited to one project, in `compareTasks` order. An
@@ -61,6 +65,20 @@ export interface StorageProvider {
   addComment(input: CreateCommentInput, opts?: OperationOptions): Promise<Comment>;
   /** Rejects with `NotFoundError` if no comment has this ID. */
   deleteComment(id: string, opts?: OperationOptions): Promise<void>;
+
+  /** Webhooks, optionally limited to one project, oldest first (`compareWebhooks`). */
+  getWebhooks(filter?: WebhookFilter, opts?: OperationOptions): Promise<Webhook[]>;
+  getWebhook(id: string, opts?: OperationOptions): Promise<Webhook | null>;
+  /** Finds a webhook by its secret token, or `null` if none matches. */
+  getWebhookByToken(token: string, opts?: OperationOptions): Promise<Webhook | null>;
+  /** Creates a webhook. Rejects with `NotFoundError` if the project does not exist. */
+  createWebhook(input: CreateWebhookInput, opts?: OperationOptions): Promise<Webhook>;
+  /** Patches a webhook. Moving it to another project requires that project to exist. */
+  updateWebhook(id: string, patch: UpdateWebhookInput, opts?: OperationOptions): Promise<Webhook>;
+  /** Deletes a webhook by ID. Rejects with `NotFoundError` if missing. */
+  deleteWebhook(id: string, opts?: OperationOptions): Promise<void>;
+  /** Increments `triggerCount` and updates `lastTriggeredAt` on a webhook. */
+  recordWebhookTrigger(id: string, opts?: OperationOptions): Promise<Webhook>;
 
   /** Exports a project with all its tasks and their comments as a validated bundle. */
   exportProject(id: string, opts?: OperationOptions): Promise<ProjectBundle>;

@@ -1,11 +1,12 @@
 import { env, exports } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
-import type { Comment, Project, Task } from "@bitig/core";
+import type { Comment, Project, Task, TaskWithCode, Webhook } from "@bitig/core";
 import { TEST_AUTH_HEADER } from "./constants";
 
 const BASE_URL = "https://bitig.test";
 
 const STATEMENTS = [
+  "DROP TABLE IF EXISTS `webhooks`",
   "DROP TABLE IF EXISTS `comments`",
   "DROP TABLE IF EXISTS `tasks`",
   "DROP TABLE IF EXISTS `projects`",
@@ -54,6 +55,24 @@ const STATEMENTS = [
     FOREIGN KEY (\`task_id\`) REFERENCES \`tasks\`(\`id\`) ON UPDATE no action ON DELETE cascade
   )`,
   "CREATE INDEX `comments_task_id_idx` ON `comments` (`task_id`)",
+  `CREATE TABLE \`webhooks\` (
+    \`id\` text PRIMARY KEY NOT NULL,
+    \`project_id\` text NOT NULL,
+    \`name\` text NOT NULL,
+    \`provider\` text DEFAULT 'generic' NOT NULL,
+    \`token\` text NOT NULL,
+    \`enabled\` integer DEFAULT 1 NOT NULL,
+    \`mapping\` text,
+    \`default_priority\` text,
+    \`default_labels\` text,
+    \`trigger_count\` integer DEFAULT 0 NOT NULL,
+    \`last_triggered_at\` integer,
+    \`created_at\` integer NOT NULL,
+    \`updated_at\` integer NOT NULL,
+    FOREIGN KEY (\`project_id\`) REFERENCES \`projects\`(\`id\`) ON UPDATE no action ON DELETE cascade
+  )`,
+  "CREATE INDEX `webhooks_project_id_idx` ON `webhooks` (`project_id`)",
+  "CREATE UNIQUE INDEX `webhooks_token_idx` ON `webhooks` (`token`)",
 ];
 
 function apiRequest(path: string, init?: RequestInit): Promise<Response> {
@@ -293,5 +312,90 @@ describe("REST API: Comments", () => {
     expect((await apiRequest(`/api/comments/${comment.id}`, { method: "DELETE" })).status).toBe(204);
     expect((await apiRequest(`/api/comments/${comment.id}`, { method: "DELETE" })).status).toBe(404);
     expect(await (await apiRequest(`/api/tasks/${task.id}/comments`)).json<Comment[]>()).toEqual([]);
+  });
+});
+
+describe("REST API & Incoming Receiver: Webhooks", () => {
+  beforeEach(async () => {
+    await env.DB.batch(STATEMENTS.map((sql) => env.DB.prepare(sql)));
+  });
+
+  async function postJson(path: string, body: unknown): Promise<Response> {
+    return apiRequest(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it("creates a webhook and saves tasks from incoming Sentry and mapped payloads via POST /webhooks/:token", async () => {
+    const project = await (await postJson("/api/projects", { name: "Bitig", key: "BIT" })).json<Project>();
+
+    const createRes = await postJson("/api/webhooks", {
+      projectId: project.id,
+      name: "Sentry Prod",
+      provider: "sentry",
+      defaultLabels: ["production"],
+    });
+    expect(createRes.status).toBe(201);
+    const webhook = await createRes.json<Webhook>();
+    expect(webhook.provider).toBe("sentry");
+    expect(webhook.token).toMatch(/^whk_[0-9a-f]{32,64}$/);
+
+    // Trigger incoming webhook without Basic Auth (uses secret token in URL)
+    const hookRes = await exports.default.fetch(
+      new Request(`${BASE_URL}/webhooks/${webhook.token}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          data: {
+            issue: {
+              shortId: "SENTRY-99",
+              title: "ReferenceError: window is not defined",
+              culprit: "apps/worker/src/index.ts",
+              level: "fatal",
+              permalink: "https://sentry.io/issues/99/",
+            },
+          },
+        }),
+      }),
+    );
+    expect(hookRes.status).toBe(201);
+    const createdTask = await hookRes.json<TaskWithCode>();
+    expect(createdTask.code).toBe("BIT-1");
+    expect(createdTask.title).toBe("[SENTRY-99] ReferenceError: window is not defined");
+    expect(createdTask.priority).toBe("urgent");
+    expect(createdTask.labels).toEqual(["production", "sentry", "fatal"]);
+
+    // Verify triggerCount and lastTriggeredAt updated
+    const updatedHook = await (await apiRequest(`/api/webhooks/${webhook.id}`)).json<Webhook>();
+    expect(updatedHook.triggerCount).toBe(1);
+    expect(updatedHook.lastTriggeredAt).toBeDefined();
+
+    // Disable webhook and verify 403
+    await apiRequest(`/api/webhooks/${webhook.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: false }),
+    });
+
+    const disabledRes = await exports.default.fetch(
+      new Request(`${BASE_URL}/webhooks/${webhook.token}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: "Should be blocked" }),
+      }),
+    );
+    expect(disabledRes.status).toBe(403);
+
+    // Invalid token returns 404
+    const notFoundRes = await exports.default.fetch(
+      new Request(`${BASE_URL}/webhooks/whk_00000000000000000000000000000000`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: "Unknown token" }),
+      }),
+    );
+    expect(notFoundRes.status).toBe(404);
   });
 });

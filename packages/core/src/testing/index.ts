@@ -13,7 +13,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { NotFoundError, ValidationError } from "../domain/errors";
-import { CommentSchema, ProjectSchema, TaskSchema } from "../domain/schemas";
+import { CommentSchema, ProjectSchema, TaskSchema, WebhookSchema } from "../domain/schemas";
 import type { Project, Task } from "../domain/types";
 import { PROJECT_KINDS } from "../domain/constants";
 import type { AbortSignalLike } from "../storage/abort";
@@ -690,11 +690,93 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
       });
     });
 
+    describe("webhooks", () => {
+      it("starts empty", async () => {
+        expect(await storage.getWebhooks()).toEqual([]);
+        expect(await storage.getWebhook(UNKNOWN_ID)).toBeNull();
+      });
+
+      it("creates a webhook, resolves it by ID and token, updates and records triggers", async () => {
+        const project = await createProject("Hooked");
+        const created = await storage.createWebhook({
+          projectId: project.id,
+          name: "  Sentry Prod  ",
+          provider: "sentry",
+          defaultPriority: "high",
+          defaultLabels: ["sentry", "prod"],
+          mapping: { title: "data.issue.title" },
+        });
+        expect(created).toMatchObject({
+          projectId: project.id,
+          name: "Sentry Prod",
+          provider: "sentry",
+          enabled: true,
+          triggerCount: 0,
+          defaultPriority: "high",
+          defaultLabels: ["sentry", "prod"],
+          mapping: { title: "data.issue.title" },
+        });
+        expect(WebhookSchema.parse(created)).toEqual(created);
+        expect(await storage.getWebhook(created.id)).toEqual(created);
+        expect(await storage.getWebhookByToken(created.token)).toEqual(created);
+        expect(await storage.getWebhooks({ projectId: project.id })).toEqual([created]);
+
+        const updated = await storage.updateWebhook(created.id, {
+          name: "Jira Sync",
+          provider: "jira",
+          enabled: false,
+          mapping: null,
+          defaultPriority: null,
+          regenerateToken: true,
+        });
+        expect(updated.name).toBe("Jira Sync");
+        expect(updated.provider).toBe("jira");
+        expect(updated.enabled).toBe(false);
+        expect(updated.token).not.toBe(created.token);
+        expect(updated).not.toHaveProperty("mapping");
+        expect(updated).not.toHaveProperty("defaultPriority");
+        expect(await storage.getWebhookByToken(created.token)).toBeNull();
+        expect(await storage.getWebhookByToken(updated.token)).toEqual(updated);
+
+        const triggered = await storage.recordWebhookTrigger(updated.id);
+        expect(triggered.triggerCount).toBe(1);
+        expect(triggered.lastTriggeredAt).toBeDefined();
+        expect(await storage.getWebhook(updated.id)).toEqual(triggered);
+
+        await storage.deleteWebhook(updated.id);
+        expect(await storage.getWebhook(updated.id)).toBeNull();
+        expect(await storage.getWebhooks()).toEqual([]);
+      });
+
+      it("deletes project webhooks when the project is deleted", async () => {
+        const doomed = await createProject("doomed");
+        const survivor = await createProject("survivor");
+        const doomedHook = await storage.createWebhook({ projectId: doomed.id, name: "Doomed Hook" });
+        const survivorHook = await storage.createWebhook({ projectId: survivor.id, name: "Survivor Hook" });
+
+        await storage.deleteProject(doomed.id);
+        expect(await storage.getWebhook(doomedHook.id)).toBeNull();
+        expect(await storage.getWebhooks()).toEqual([survivorHook]);
+      });
+
+      it("rejects webhooks on missing projects and mutations on missing webhooks", async () => {
+        await expect(
+          storage.createWebhook({ projectId: UNKNOWN_ID, name: "Missing" }),
+        ).rejects.toBeInstanceOf(NotFoundError);
+        await expect(storage.updateWebhook(UNKNOWN_ID, { name: "Renamed" })).rejects.toBeInstanceOf(
+          NotFoundError,
+        );
+        await expect(storage.deleteWebhook(UNKNOWN_ID)).rejects.toBeInstanceOf(NotFoundError);
+        await expect(storage.recordWebhookTrigger(UNKNOWN_ID)).rejects.toBeInstanceOf(NotFoundError);
+      });
+    });
+
     describe("abort", () => {
       it("rejects every method with the signal reason and changes nothing", async () => {
         const project = await createProject();
         const task = await storage.saveTask({ projectId: project.id, title: "t" });
         const comment = await storage.addComment({ taskId: task.id, body: "c" });
+        const webhook = await storage.createWebhook({ projectId: project.id, name: "w" });
         const { signal, reason } = abortedSignal();
         const opts = { signal };
 
@@ -713,6 +795,13 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
           () => storage.getComments(task.id, opts),
           () => storage.addComment({ taskId: task.id, body: "new" }, opts),
           () => storage.deleteComment(comment.id, opts),
+          () => storage.getWebhooks(undefined, opts),
+          () => storage.getWebhook(webhook.id, opts),
+          () => storage.getWebhookByToken(webhook.token, opts),
+          () => storage.createWebhook({ projectId: project.id, name: "new" }, opts),
+          () => storage.updateWebhook(webhook.id, { name: "changed" }, opts),
+          () => storage.deleteWebhook(webhook.id, opts),
+          () => storage.recordWebhookTrigger(webhook.id, opts),
           () => storage.exportProject(project.id, opts),
           () => storage.exportAll(opts),
         ];
@@ -723,6 +812,7 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
         expect(await storage.getProjects()).toEqual([project]);
         expect(await storage.getTasks()).toEqual([task]);
         expect(await storage.getComments(task.id)).toEqual([comment]);
+        expect(await storage.getWebhooks()).toEqual([webhook]);
       });
     });
 

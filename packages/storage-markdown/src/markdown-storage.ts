@@ -10,21 +10,28 @@ import {
   ProjectBundleSchema,
   StorageError,
   TaskFilterSchema,
+  WebhookFilterSchema,
+  WebhookTokenSchema,
   applyProjectPatch,
   applyTaskPatch,
+  applyWebhookPatch,
   buildComment,
   buildProject,
   buildTask,
+  buildWebhook,
   cloneComment,
   cloneProject,
   cloneTask,
+  cloneWebhook,
   compareComments,
   compareProjects,
   compareTasks,
+  compareWebhooks,
   completeTaskEntity,
   defaultRuntimeDeps,
   nextTaskNumber,
   parseOrThrow,
+  recordWebhookTriggerEntity,
   renumberTask,
   throwIfAborted,
   toTimestamp,
@@ -33,6 +40,7 @@ import {
   type CreateCommentInput,
   type CreateProjectInput,
   type CreateTaskInput,
+  type CreateWebhookInput,
   type OperationOptions,
   type Project,
   type ProjectBundle,
@@ -42,14 +50,19 @@ import {
   type TaskFilter,
   type UpdateProjectInput,
   type UpdateTaskInput,
+  type UpdateWebhookInput,
+  type Webhook,
+  type WebhookFilter,
 } from "@bitig/core";
 import {
   decodeComment,
   decodeProject,
   decodeTask,
+  decodeWebhook,
   encodeComment,
   encodeProject,
   encodeTask,
+  encodeWebhook,
 } from "./format/codec";
 import type { FileSystemPort } from "./fs/port";
 import {
@@ -63,6 +76,9 @@ import {
   taskFilePath,
   taskIdFromCommentsDirName,
   taskIdFromFileName,
+  webhookFilePath,
+  webhookIdFromFileName,
+  webhooksDirPath,
 } from "./layout";
 import { AsyncMutex } from "./lock/mutex";
 import type { LockPort } from "./lock/port";
@@ -353,6 +369,138 @@ export class MarkdownStorage implements StorageProvider {
     }, { signal: opts?.signal });
   }
 
+  async getWebhooks(filter?: WebhookFilter, opts?: OperationOptions): Promise<Webhook[]> {
+    throwIfAborted(opts?.signal);
+    const parsedFilter = filter === undefined ? undefined : parseOrThrow(WebhookFilterSchema, filter, "getWebhooks");
+
+    return this.#lock.withLock(async () => {
+      throwIfAborted(opts?.signal);
+      const webhooks: Webhook[] = [];
+
+      if (parsedFilter?.projectId !== undefined) {
+        webhooks.push(...(await this.#readProjectWebhooks(parsedFilter.projectId, opts?.signal)));
+      } else {
+        const rootEntries = await this.#fs.listDir(ROOT_PATH, { signal: opts?.signal });
+        if (rootEntries === null) return [];
+        for (const rootEntry of rootEntries) {
+          throwIfAborted(opts?.signal);
+          if (rootEntry.kind === "directory" && isEntityId(rootEntry.name)) {
+            webhooks.push(...(await this.#readProjectWebhooks(rootEntry.name, opts?.signal)));
+          }
+        }
+      }
+
+      webhooks.sort(compareWebhooks);
+      return webhooks.map(cloneWebhook);
+    }, { signal: opts?.signal });
+  }
+
+  async getWebhook(id: string, opts?: OperationOptions): Promise<Webhook | null> {
+    throwIfAborted(opts?.signal);
+    const validId = parseOrThrow(IdSchema, id, "getWebhook");
+
+    return this.#lock.withLock(async () => {
+      throwIfAborted(opts?.signal);
+      const found = await this.#locateWebhook(validId, opts?.signal);
+      if (found === null) return null;
+      const text = await this.#fs.readText(found.filePath, { signal: opts?.signal });
+      if (text === null) return null;
+      return cloneWebhook(decodeWebhook(found.projectId, validId, text, found.filePath));
+    }, { signal: opts?.signal });
+  }
+
+  async getWebhookByToken(token: string, opts?: OperationOptions): Promise<Webhook | null> {
+    throwIfAborted(opts?.signal);
+    const validToken = parseOrThrow(WebhookTokenSchema, token, "getWebhookByToken");
+
+    return this.#lock.withLock(async () => {
+      throwIfAborted(opts?.signal);
+      const rootEntries = await this.#fs.listDir(ROOT_PATH, { signal: opts?.signal });
+      if (rootEntries === null) return null;
+
+      for (const rootEntry of rootEntries) {
+        throwIfAborted(opts?.signal);
+        if (rootEntry.kind === "directory" && isEntityId(rootEntry.name)) {
+          const hooks = await this.#readProjectWebhooks(rootEntry.name, opts?.signal);
+          const matched = hooks.find((w) => w.token === validToken);
+          if (matched !== undefined) return cloneWebhook(matched);
+        }
+      }
+      return null;
+    }, { signal: opts?.signal });
+  }
+
+  async createWebhook(input: CreateWebhookInput, opts?: OperationOptions): Promise<Webhook> {
+    throwIfAborted(opts?.signal);
+    return this.#lock.withLock(async () => {
+      throwIfAborted(opts?.signal);
+      const webhook = buildWebhook(input, this.#deps);
+      const pExists = await this.#fs.fileExists(projectFilePath(webhook.projectId), { signal: opts?.signal });
+      if (!pExists) throw new NotFoundError("project", webhook.projectId);
+
+      await this.#writeWebhooks(webhook.projectId, [webhook], opts?.signal);
+      return cloneWebhook(webhook);
+    }, { signal: opts?.signal });
+  }
+
+  async updateWebhook(id: string, patch: UpdateWebhookInput, opts?: OperationOptions): Promise<Webhook> {
+    throwIfAborted(opts?.signal);
+    const validId = parseOrThrow(IdSchema, id, "updateWebhook");
+
+    return this.#lock.withLock(async () => {
+      throwIfAborted(opts?.signal);
+      const found = await this.#locateWebhook(validId, opts?.signal);
+      if (found === null) throw new NotFoundError("webhook", validId);
+
+      const text = await this.#fs.readText(found.filePath, { signal: opts?.signal });
+      if (text === null) throw new NotFoundError("webhook", validId);
+
+      const existing = decodeWebhook(found.projectId, validId, text, found.filePath);
+      const next = applyWebhookPatch(existing, patch, this.#deps);
+
+      if (next.projectId !== existing.projectId) {
+        const targetProjExists = await this.#fs.fileExists(projectFilePath(next.projectId), { signal: opts?.signal });
+        if (!targetProjExists) throw new NotFoundError("project", next.projectId);
+        await this.#writeWebhooks(next.projectId, [next], opts?.signal);
+        await this.#fs.removeFile(found.filePath, { signal: opts?.signal });
+      } else {
+        await this.#fs.writeTextAtomic(found.filePath, encodeWebhook(next), { signal: opts?.signal });
+      }
+      return cloneWebhook(next);
+    }, { signal: opts?.signal });
+  }
+
+  async deleteWebhook(id: string, opts?: OperationOptions): Promise<void> {
+    throwIfAborted(opts?.signal);
+    const validId = parseOrThrow(IdSchema, id, "deleteWebhook");
+
+    return this.#lock.withLock(async () => {
+      throwIfAborted(opts?.signal);
+      const found = await this.#locateWebhook(validId, opts?.signal);
+      if (found === null) throw new NotFoundError("webhook", validId);
+      await this.#fs.removeFile(found.filePath, { signal: opts?.signal });
+    }, { signal: opts?.signal });
+  }
+
+  async recordWebhookTrigger(id: string, opts?: OperationOptions): Promise<Webhook> {
+    throwIfAborted(opts?.signal);
+    const validId = parseOrThrow(IdSchema, id, "recordWebhookTrigger");
+
+    return this.#lock.withLock(async () => {
+      throwIfAborted(opts?.signal);
+      const found = await this.#locateWebhook(validId, opts?.signal);
+      if (found === null) throw new NotFoundError("webhook", validId);
+
+      const text = await this.#fs.readText(found.filePath, { signal: opts?.signal });
+      if (text === null) throw new NotFoundError("webhook", validId);
+
+      const existing = decodeWebhook(found.projectId, validId, text, found.filePath);
+      const next = recordWebhookTriggerEntity(existing, this.#deps.clock());
+      await this.#fs.writeTextAtomic(found.filePath, encodeWebhook(next), { signal: opts?.signal });
+      return cloneWebhook(next);
+    }, { signal: opts?.signal });
+  }
+
   async exportProject(id: string, opts?: OperationOptions): Promise<ProjectBundle> {
     throwIfAborted(opts?.signal);
     const validId = parseOrThrow(IdSchema, id, "exportProject");
@@ -361,6 +509,7 @@ export class MarkdownStorage implements StorageProvider {
     if (project === null) throw new NotFoundError("project", validId);
 
     const tasks = await this.getTasks({ projectId: validId }, opts);
+    const webhooks = await this.getWebhooks({ projectId: validId }, opts);
     const comments = await this.#lock.withLock(
       async () => this.#readProjectComments(validId, tasks, opts?.signal),
       { signal: opts?.signal },
@@ -372,6 +521,7 @@ export class MarkdownStorage implements StorageProvider {
       project,
       tasks,
       comments,
+      ...(webhooks.length > 0 ? { webhooks } : {}),
     };
     return parseOrThrow(ProjectBundleSchema, bundle, "exportProject result");
   }
@@ -398,6 +548,7 @@ export class MarkdownStorage implements StorageProvider {
         await this.#fs.writeTextAtomic(tPath, encodeTask(task), { signal: opts?.signal });
       }
       await this.#writeComments(validated.project.id, validated.comments ?? [], opts?.signal);
+      await this.#writeWebhooks(validated.project.id, validated.webhooks ?? [], opts?.signal);
 
       return copyProject(validated.project);
     }, { signal: opts?.signal });
@@ -515,6 +666,53 @@ export class MarkdownStorage implements StorageProvider {
         signal,
       });
     }
+  }
+
+  /** One project's webhooks, unsorted; call under the lock. */
+  async #readProjectWebhooks(projectId: string, signal?: OperationOptions["signal"]): Promise<Webhook[]> {
+    const entries = await this.#fs.listDir(webhooksDirPath(projectId), { signal });
+    if (entries === null) return [];
+
+    const webhooks: Webhook[] = [];
+    for (const entry of entries) {
+      throwIfAborted(signal);
+      if (entry.kind !== "file") continue;
+      const webhookId = webhookIdFromFileName(entry.name);
+      if (webhookId === null) continue;
+      const filePath = webhookFilePath(projectId, webhookId);
+      const text = await this.#fs.readText(filePath, { signal });
+      if (text !== null) webhooks.push(decodeWebhook(projectId, webhookId, text, filePath));
+    }
+    return webhooks;
+  }
+
+  /** Writes webhooks into `projectId`'s webhooks directory; call under the lock. */
+  async #writeWebhooks(projectId: string, webhooks: readonly Webhook[], signal?: OperationOptions["signal"]): Promise<void> {
+    if (webhooks.length === 0) return;
+    const dir = webhooksDirPath(projectId);
+    if ((await this.#fs.listDir(dir, { signal })) === null) {
+      await this.#fs.makeDir(dir, { signal });
+    }
+    for (const webhook of webhooks) {
+      throwIfAborted(signal);
+      await this.#fs.writeTextAtomic(webhookFilePath(projectId, webhook.id), encodeWebhook(webhook), { signal });
+    }
+  }
+
+  async #locateWebhook(webhookId: string, signal?: OperationOptions["signal"]): Promise<{ projectId: string; filePath: string } | null> {
+    const rootEntries = await this.#fs.listDir(ROOT_PATH, { signal });
+    if (rootEntries === null) return null;
+
+    for (const entry of rootEntries) {
+      throwIfAborted(signal);
+      if (entry.kind === "directory" && isEntityId(entry.name)) {
+        const filePath = webhookFilePath(entry.name, webhookId);
+        if (await this.#fs.fileExists(filePath, { signal })) {
+          return { projectId: entry.name, filePath };
+        }
+      }
+    }
+    return null;
   }
 
   /** Path of the comment's file, or `null` if no task has it; call under the lock. */

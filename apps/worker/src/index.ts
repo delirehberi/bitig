@@ -12,7 +12,8 @@ import { commentsRouter } from "./routes/comments";
 import { backupRouter } from "./routes/backup";
 import { mcpRouter } from "./routes/mcp";
 import { sessionRouter } from "./routes/session";
-import { API_POLICY, MCP_POLICY, authFailureGuard, rateLimit } from "./rate-limit";
+import { webhookReceiverRouter, webhooksApiRouter } from "./routes/webhooks";
+import { API_POLICY, MCP_POLICY, WEBHOOK_POLICY, authFailureGuard, rateLimit } from "./rate-limit";
 import { csrfProtection } from "./csrf";
 import { publishRealtimeEvent, realtimeRouter, withRealtimeBroadcast } from "./realtime";
 import pkg from "../package.json" with { type: "json" };
@@ -107,8 +108,14 @@ export function createApp(options?: CreateAppOptions): Hono<AppEnv> {
   app.route("/api/projects", projectsRouter);
   app.route("/api/tasks", tasksRouter);
   app.route("/api/comments", commentsRouter);
+  app.route("/api/webhooks", webhooksApiRouter);
   app.route("/api/backup", backupRouter);
   app.route("/api/realtime", realtimeRouter);
+
+  // Incoming webhook receiver endpoint guarded by secret token in the URL and rate limiting
+  app.use("/webhooks/*", rateLimit(WEBHOOK_POLICY));
+  app.use("/webhooks/*", authFailureGuard());
+  app.route("/webhooks", webhookReceiverRouter);
 
   // Remote MCP endpoint guarded by Bearer token authentication and rate limiting
   app.use("/mcp", rateLimit(MCP_POLICY));

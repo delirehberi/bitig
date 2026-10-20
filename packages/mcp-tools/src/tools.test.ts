@@ -44,6 +44,10 @@ describe("MCP Tools integration", () => {
       "list_comments",
       "add_comment",
       "delete_comment",
+      "list_webhooks",
+      "create_webhook",
+      "update_webhook",
+      "delete_webhook",
     ]);
 
     // Create project
@@ -219,5 +223,47 @@ describe("MCP Tools integration", () => {
 
     await call("delete_comment", { id: asked.id });
     expect(await storage.getComments(task.id)).toMatchObject([{ body: "The staging one." }]);
+  });
+
+  it("creates, lists, updates and deletes webhooks using project keys", async () => {
+    await storage.createProject({ name: "Bitig", key: "BIT" });
+
+    const created = (
+      await call("create_webhook", {
+        projectId: "BIT",
+        name: "Sentry Alerts",
+        provider: "sentry",
+        defaultPriority: "high",
+        mapping: { title: "data.issue.title" },
+      })
+    ).data as { id: string; token: string; provider: string; enabled: boolean };
+
+    expect(created.provider).toBe("sentry");
+    expect(created.enabled).toBe(true);
+    expect(created.token).toMatch(/^whk_[0-9a-f]{32,64}$/);
+
+    const listed = (await call("list_webhooks", { projectId: "bit" })).data as { id: string }[];
+    expect(listed.map((w) => w.id)).toEqual([created.id]);
+
+    const updated = (
+      await call("update_webhook", {
+        id: created.id,
+        name: "Jira Alerts",
+        provider: "jira",
+        enabled: false,
+        regenerateToken: true,
+      })
+    ).data as { id: string; name: string; provider: string; enabled: boolean; token: string };
+
+    expect(updated.name).toBe("Jira Alerts");
+    expect(updated.provider).toBe("jira");
+    expect(updated.enabled).toBe(false);
+    expect(updated.token).not.toBe(created.token);
+
+    expect((await call("delete_webhook", { id: created.id })).data).toEqual({
+      success: true,
+      deletedWebhookId: created.id,
+    });
+    expect((await call("list_webhooks", {})).data).toEqual([]);
   });
 });

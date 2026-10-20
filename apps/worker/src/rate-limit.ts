@@ -28,11 +28,19 @@ const API_MAX_REQUESTS = 1000;
 const MCP_WINDOW_MS = 60 * 1000; // 1 minute
 const MCP_MAX_REQUESTS = 1000;
 
+const WEBHOOK_WINDOW_MS = 60 * 1000; // 1 minute
+const WEBHOOK_MAX_REQUESTS = 120;
+
 const AUTH_FAIL_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
 const AUTH_FAIL_MAX_ATTEMPTS = 10;
 
 export const API_POLICY: RateLimitPolicy = { name: "api", windowMs: API_WINDOW_MS, max: API_MAX_REQUESTS };
 export const MCP_POLICY: RateLimitPolicy = { name: "mcp", windowMs: MCP_WINDOW_MS, max: MCP_MAX_REQUESTS };
+export const WEBHOOK_POLICY: RateLimitPolicy = {
+  name: "webhook",
+  windowMs: WEBHOOK_WINDOW_MS,
+  max: WEBHOOK_MAX_REQUESTS,
+};
 /** Shared by Basic Auth (/api) and Bearer auth (/mcp): one failure budget per client. */
 export const AUTH_FAIL_POLICY: RateLimitPolicy = {
   name: "auth-fail",

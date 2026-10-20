@@ -8,6 +8,7 @@ import {
   CommentBodySchema,
   CreateProjectInputSchema,
   CreateTaskInputSchema,
+  CreateWebhookInputSchema,
   DueDateSchema,
   IdSchema,
   NeedsHumanSchema,
@@ -20,6 +21,9 @@ import {
   TaskPrioritySchema,
   TaskStatusSchema,
   TaskTitleSchema,
+  WebhookMappingSchema,
+  WebhookNameSchema,
+  WebhookProviderSchema,
   backfillTicketCodes,
   resolveProjectRef,
   resolveTaskRef,
@@ -46,6 +50,8 @@ const TASK_REF = z.string().min(1).describe("Task ID or ticket code, e.g. BIT-12
 const PROJECT_REF = z.string().min(1).describe("Project ID or project key, e.g. BIT");
 const KEY_DESCRIPTION =
   "Project key for ticket codes (BIT in BIT-12): 2-10 letters or digits starting with a letter, unique across projects.";
+const WEBHOOK_MAPPING_DESCRIPTION =
+  "Optional JSON dot-path mappings from incoming payload fields to task fields, e.g. { title: 'issue.fields.summary', description: 'issue.fields.description', priority: 'issue.fields.priority.name', labels: 'issue.fields.labels' }.";
 
 export function registerBitigTools(server: McpServer, storage: StorageProvider): void {
   /** The task with its ticket code (`code`), which callers can pass wherever a task ID is accepted. */
@@ -419,6 +425,111 @@ export function registerBitigTools(server: McpServer, storage: StorageProvider):
       try {
         await storage.deleteComment(args.id, { signal: extra.signal });
         return formatSuccessResult({ success: true, deletedCommentId: args.id });
+      } catch (err) {
+        return formatErrorResult(err);
+      }
+    },
+  );
+
+  // 15. list_webhooks
+  server.registerTool(
+    "list_webhooks",
+    {
+      description: "List incoming webhooks, optionally filtered by project ID or key",
+      annotations: { readOnlyHint: true },
+      inputSchema: {
+        projectId: PROJECT_REF.optional(),
+      },
+    },
+    async (args, extra) => {
+      try {
+        const opts = { signal: extra.signal };
+        const projectId =
+          args.projectId === undefined ? undefined : await resolveProjectRef(storage, args.projectId, opts);
+        return formatSuccessResult(
+          await storage.getWebhooks(projectId === undefined ? undefined : { projectId }, opts),
+        );
+      } catch (err) {
+        return formatErrorResult(err);
+      }
+    },
+  );
+
+  // 16. create_webhook
+  server.registerTool(
+    "create_webhook",
+    {
+      description:
+        "Create an incoming webhook endpoint for a project. Returns the webhook including its secret token for POST /webhooks/<token>.",
+      inputSchema: {
+        projectId: PROJECT_REF,
+        name: WebhookNameSchema,
+        provider: WebhookProviderSchema.optional().describe("generic (default), sentry, jira, or github"),
+        enabled: z.boolean().optional(),
+        mapping: WebhookMappingSchema.optional().describe(WEBHOOK_MAPPING_DESCRIPTION),
+        defaultPriority: TaskPrioritySchema.optional(),
+        defaultLabels: z.array(z.string()).optional(),
+      },
+    },
+    async (args, extra) => {
+      try {
+        const opts = { signal: extra.signal };
+        const projectId = await resolveProjectRef(storage, args.projectId, opts);
+        const parsed = CreateWebhookInputSchema.parse({ ...args, projectId });
+        const webhook = await storage.createWebhook(parsed, opts);
+        return formatSuccessResult(webhook);
+      } catch (err) {
+        return formatErrorResult(err);
+      }
+    },
+  );
+
+  // 17. update_webhook
+  server.registerTool(
+    "update_webhook",
+    {
+      description:
+        "Update a webhook's configuration, field mapping, enabled state, or rotate its secret token (regenerateToken: true)",
+      inputSchema: {
+        id: IdSchema,
+        projectId: PROJECT_REF.optional(),
+        name: WebhookNameSchema.optional(),
+        provider: WebhookProviderSchema.optional(),
+        enabled: z.boolean().optional(),
+        mapping: WebhookMappingSchema.nullable().optional().describe(WEBHOOK_MAPPING_DESCRIPTION),
+        defaultPriority: TaskPrioritySchema.nullable().optional(),
+        defaultLabels: z.array(z.string()).nullable().optional(),
+        regenerateToken: z.boolean().optional().describe("Set true to rotate the secret token"),
+      },
+    },
+    async (args, extra) => {
+      try {
+        const opts = { signal: extra.signal };
+        const { id, projectId: projectRef, ...rest } = args;
+        const patch =
+          projectRef === undefined ? rest : { ...rest, projectId: await resolveProjectRef(storage, projectRef, opts) };
+        const webhook = await storage.updateWebhook(id, patch, opts);
+        return formatSuccessResult(webhook);
+      } catch (err) {
+        return formatErrorResult(err);
+      }
+    },
+  );
+
+  // 18. delete_webhook
+  server.registerTool(
+    "delete_webhook",
+    {
+      description: "Permanently delete a webhook by its ID",
+      annotations: { destructiveHint: true },
+      inputSchema: {
+        id: IdSchema,
+      },
+    },
+    async (args, extra) => {
+      try {
+        await storage.deleteWebhook(args.id, { signal: extra.signal });
+        return formatSuccessResult({ success: true, deletedWebhookId: args.id });
       } catch (err) {
         return formatErrorResult(err);
       }

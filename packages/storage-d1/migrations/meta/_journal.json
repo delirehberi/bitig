@@ -57,6 +57,13 @@
       "when": 1792505200000,
       "tag": "0007_task_time_tracking",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1792507500000,
+      "tag": "0008_webhooks",
+      "breakpoints": true
     }
   ]
 }

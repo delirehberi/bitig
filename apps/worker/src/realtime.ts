@@ -79,6 +79,29 @@ export function withRealtimeBroadcast(
       await notify({ type: "comment.deleted", id });
     },
 
+    getWebhooks: (filter, opts) => storage.getWebhooks(filter, opts),
+    getWebhook: (id, opts) => storage.getWebhook(id, opts),
+    getWebhookByToken: (token, opts) => storage.getWebhookByToken(token, opts),
+    createWebhook: async (input, opts) => {
+      const webhook = await storage.createWebhook(input, opts);
+      await notify({ type: "webhook.created", webhook });
+      return webhook;
+    },
+    updateWebhook: async (id, patch, opts) => {
+      const webhook = await storage.updateWebhook(id, patch, opts);
+      await notify({ type: "webhook.updated", webhook });
+      return webhook;
+    },
+    deleteWebhook: async (id, opts) => {
+      await storage.deleteWebhook(id, opts);
+      await notify({ type: "webhook.deleted", id });
+    },
+    recordWebhookTrigger: async (id, opts) => {
+      const webhook = await storage.recordWebhookTrigger(id, opts);
+      await notify({ type: "webhook.updated", webhook });
+      return webhook;
+    },
+
     exportProject: (id, opts) => storage.exportProject(id, opts),
     importProject: async (bundle, opts) => {
       const project = await storage.importProject(bundle, opts);

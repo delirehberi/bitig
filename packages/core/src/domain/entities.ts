@@ -3,17 +3,20 @@
  * entities these functions return; they never construct entities themselves,
  * so defaults, validation and timestamp rules live in exactly one place.
  */
-import { COMPLETED_TASK_STATUS } from "./constants";
+import { COMPLETED_TASK_STATUS, WEBHOOK_TOKEN_PREFIX } from "./constants";
 import { parseOrThrow } from "./errors";
 import {
   CommentSchema,
   CreateCommentInputSchema,
   CreateProjectInputSchema,
   CreateTaskInputSchema,
+  CreateWebhookInputSchema,
   ProjectSchema,
   TaskSchema,
   UpdateProjectInputSchema,
   UpdateTaskInputSchema,
+  UpdateWebhookInputSchema,
+  WebhookSchema,
 } from "./schemas";
 import type {
   ChecklistItem,
@@ -21,12 +24,16 @@ import type {
   CreateCommentInput,
   CreateProjectInput,
   CreateTaskInput,
+  CreateWebhookInput,
   Project,
   ProjectResource,
   Task,
   TaskPriority,
   UpdateProjectInput,
   UpdateTaskInput,
+  UpdateWebhookInput,
+  Webhook,
+  WebhookMapping,
 } from "./types";
 import { toTimestamp, type RuntimeDeps } from "../runtime/ids";
 import { assertProjectKeyAvailable, deriveProjectKey } from "./ticket-codes";
@@ -379,6 +386,102 @@ export function compareTasks(a: Task, b: Task): number {
 
 /** Projects are listed oldest first, with `id` as a stable tiebreaker. */
 export function compareProjects(a: Project, b: Project): number {
+  if (a.createdAt !== b.createdAt) return Date.parse(a.createdAt) - Date.parse(b.createdAt);
+  if (a.id === b.id) return 0;
+  return a.id < b.id ? -1 : 1;
+}
+
+function generateWebhookToken(deps: RuntimeDeps): string {
+  const partA = deps.generateId().replaceAll("-", "");
+  const partB = deps.generateId().replaceAll("-", "");
+  return `${WEBHOOK_TOKEN_PREFIX}${partA}${partB}`;
+}
+
+function normalizeWebhookMapping(mapping: WebhookMapping | undefined): WebhookMapping | undefined {
+  if (mapping === undefined) return undefined;
+  const cleaned: WebhookMapping = {};
+  if (mapping.title !== undefined) cleaned.title = mapping.title;
+  if (mapping.description !== undefined) cleaned.description = mapping.description;
+  if (mapping.priority !== undefined) cleaned.priority = mapping.priority;
+  if (mapping.labels !== undefined) cleaned.labels = mapping.labels;
+  return Object.keys(cleaned).length > 0 ? cleaned : undefined;
+}
+
+function normalizeWebhookLabels(labels: readonly string[] | undefined): string[] | undefined {
+  if (labels === undefined || labels.length === 0) return undefined;
+  return [...labels];
+}
+
+export function buildWebhook(input: CreateWebhookInput, deps: RuntimeDeps): Webhook {
+  const parsed = parseOrThrow(CreateWebhookInputSchema, input, "createWebhook");
+  const now = toTimestamp(deps.clock());
+  const id = deps.generateId();
+  const token = generateWebhookToken(deps);
+  const mapping = normalizeWebhookMapping(parsed.mapping);
+  const defaultLabels = normalizeWebhookLabels(parsed.defaultLabels);
+
+  const webhook: Webhook = {
+    id,
+    projectId: parsed.projectId,
+    name: parsed.name,
+    provider: parsed.provider,
+    token,
+    enabled: parsed.enabled,
+    triggerCount: 0,
+    createdAt: now,
+    updatedAt: now,
+  };
+  if (mapping !== undefined) webhook.mapping = mapping;
+  if (parsed.defaultPriority !== undefined) webhook.defaultPriority = parsed.defaultPriority;
+  if (defaultLabels !== undefined) webhook.defaultLabels = defaultLabels;
+  return parseOrThrow(WebhookSchema, webhook, "createWebhook result");
+}
+
+export function applyWebhookPatch(webhook: Webhook, patch: UpdateWebhookInput, deps: RuntimeDeps): Webhook {
+  const parsed = parseOrThrow(UpdateWebhookInputSchema, patch, "updateWebhook");
+  const updatedAt = nextUpdatedAt(webhook.updatedAt, deps.clock());
+  const mapping = normalizeWebhookMapping(resolveClearable(webhook.mapping, parsed.mapping));
+  const defaultPriority = resolveClearable(webhook.defaultPriority, parsed.defaultPriority);
+  const defaultLabels = normalizeWebhookLabels(resolveClearable(webhook.defaultLabels, parsed.defaultLabels));
+
+  const next: Webhook = {
+    id: webhook.id,
+    projectId: parsed.projectId ?? webhook.projectId,
+    name: parsed.name ?? webhook.name,
+    provider: parsed.provider ?? webhook.provider,
+    token: parsed.regenerateToken === true ? generateWebhookToken(deps) : webhook.token,
+    enabled: parsed.enabled ?? webhook.enabled,
+    triggerCount: webhook.triggerCount,
+    createdAt: webhook.createdAt,
+    updatedAt,
+  };
+  if (mapping !== undefined) next.mapping = mapping;
+  if (defaultPriority !== undefined) next.defaultPriority = defaultPriority;
+  if (defaultLabels !== undefined) next.defaultLabels = defaultLabels;
+  if (webhook.lastTriggeredAt !== undefined) next.lastTriggeredAt = webhook.lastTriggeredAt;
+  return parseOrThrow(WebhookSchema, next, "updateWebhook result");
+}
+
+export function recordWebhookTriggerEntity(webhook: Webhook, now: Date): Webhook {
+  const triggeredAt = nextUpdatedAt(webhook.lastTriggeredAt ?? webhook.updatedAt, now);
+  const next: Webhook = {
+    ...cloneWebhook(webhook),
+    triggerCount: webhook.triggerCount + 1,
+    lastTriggeredAt: triggeredAt,
+    updatedAt: nextUpdatedAt(webhook.updatedAt, now),
+  };
+  return parseOrThrow(WebhookSchema, next, "recordWebhookTrigger result");
+}
+
+export function cloneWebhook(webhook: Webhook): Webhook {
+  const copy: Webhook = { ...webhook };
+  if (webhook.mapping !== undefined) copy.mapping = { ...webhook.mapping };
+  if (webhook.defaultLabels !== undefined) copy.defaultLabels = [...webhook.defaultLabels];
+  return copy;
+}
+
+/** Webhooks are listed oldest first, with `id` as a stable tiebreaker. */
+export function compareWebhooks(a: Webhook, b: Webhook): number {
   if (a.createdAt !== b.createdAt) return Date.parse(a.createdAt) - Date.parse(b.createdAt);
   if (a.id === b.id) return 0;
   return a.id < b.id ? -1 : 1;

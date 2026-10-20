@@ -5,6 +5,7 @@ import { D1Storage } from "./d1-storage";
 import * as schema from "./schema";
 
 const STATEMENTS = [
+  "DROP TABLE IF EXISTS `webhooks`",
   "DROP TABLE IF EXISTS `comments`",
   "DROP TABLE IF EXISTS `tasks`",
   "DROP TABLE IF EXISTS `projects`",
@@ -53,6 +54,24 @@ const STATEMENTS = [
     FOREIGN KEY (\`task_id\`) REFERENCES \`tasks\`(\`id\`) ON UPDATE no action ON DELETE cascade
   )`,
   "CREATE INDEX `comments_task_id_idx` ON `comments` (`task_id`)",
+  `CREATE TABLE \`webhooks\` (
+    \`id\` text PRIMARY KEY NOT NULL,
+    \`project_id\` text NOT NULL,
+    \`name\` text NOT NULL,
+    \`provider\` text DEFAULT 'generic' NOT NULL,
+    \`token\` text NOT NULL,
+    \`enabled\` integer DEFAULT 1 NOT NULL,
+    \`mapping\` text,
+    \`default_priority\` text,
+    \`default_labels\` text,
+    \`trigger_count\` integer DEFAULT 0 NOT NULL,
+    \`last_triggered_at\` integer,
+    \`created_at\` integer NOT NULL,
+    \`updated_at\` integer NOT NULL,
+    FOREIGN KEY (\`project_id\`) REFERENCES \`projects\`(\`id\`) ON UPDATE no action ON DELETE cascade
+  )`,
+  "CREATE INDEX `webhooks_project_id_idx` ON `webhooks` (`project_id`)",
+  "CREATE UNIQUE INDEX `webhooks_token_idx` ON `webhooks` (`token`)",
 ];
 
 describe("D1Storage extra tests", () => {

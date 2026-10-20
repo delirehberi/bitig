@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { CommentSchema, IdSchema, ProjectSchema, TaskSchema } from "./schemas";
+import { CommentSchema, IdSchema, ProjectSchema, TaskSchema, WebhookSchema } from "./schemas";
 
 /**
  * Live workspace mutation events broadcast by the Worker's RealtimeHub Durable
@@ -36,6 +36,18 @@ export const RealtimeEventSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     type: z.literal("comment.deleted"),
+    id: IdSchema,
+  }),
+  z.strictObject({
+    type: z.literal("webhook.created"),
+    webhook: WebhookSchema,
+  }),
+  z.strictObject({
+    type: z.literal("webhook.updated"),
+    webhook: WebhookSchema,
+  }),
+  z.strictObject({
+    type: z.literal("webhook.deleted"),
     id: IdSchema,
   }),
   z.strictObject({

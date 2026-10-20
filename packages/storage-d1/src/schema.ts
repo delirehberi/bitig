@@ -1,15 +1,19 @@
-import { sqliteTable, text, integer, real, index } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, real, index, uniqueIndex } from "drizzle-orm/sqlite-core";
 import {
   DEFAULT_DESCRIPTION,
   DEFAULT_IS_PUBLIC,
   DEFAULT_PROJECT_KIND,
   DEFAULT_TASK_STATUS,
+  DEFAULT_WEBHOOK_ENABLED,
+  DEFAULT_WEBHOOK_PROVIDER,
   type ChecklistItem,
   type CommentAuthorType,
   type ProjectKind,
   type ProjectResource,
   type TaskPriority,
   type TaskStatus,
+  type WebhookMapping,
+  type WebhookProvider,
 } from "@bitig/core";
 
 export const projects = sqliteTable("projects", {
@@ -72,6 +76,33 @@ export const comments = sqliteTable(
   (table) => [index("comments_task_id_idx").on(table.taskId)],
 );
 
+export const webhooks = sqliteTable(
+  "webhooks",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    provider: text("provider").$type<WebhookProvider>().notNull().default(DEFAULT_WEBHOOK_PROVIDER),
+    token: text("token").notNull(),
+    enabled: integer("enabled", { mode: "boolean" })
+      .notNull()
+      .default(DEFAULT_WEBHOOK_ENABLED),
+    mapping: text("mapping", { mode: "json" }).$type<WebhookMapping>(),
+    defaultPriority: text("default_priority").$type<TaskPriority>(),
+    defaultLabels: text("default_labels", { mode: "json" }).$type<string[]>(),
+    triggerCount: integer("trigger_count").notNull().default(0),
+    lastTriggeredAt: integer("last_triggered_at"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [
+    index("webhooks_project_id_idx").on(table.projectId),
+    uniqueIndex("webhooks_token_idx").on(table.token),
+  ],
+);
+
 export type ProjectRecord = typeof projects.$inferSelect;
 export type InsertProjectRecord = typeof projects.$inferInsert;
 export type TaskRecord = typeof tasks.$inferSelect;
@@ -79,3 +110,5 @@ export type InsertTaskRecord = typeof tasks.$inferInsert;
 
 export type CommentRecord = typeof comments.$inferSelect;
 export type InsertCommentRecord = typeof comments.$inferInsert;
+export type WebhookRecord = typeof webhooks.$inferSelect;
+export type InsertWebhookRecord = typeof webhooks.$inferInsert;

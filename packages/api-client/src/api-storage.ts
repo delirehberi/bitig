@@ -4,6 +4,7 @@ import {
   CreateCommentInputSchema,
   CreateProjectInputSchema,
   CreateTaskInputSchema,
+  CreateWebhookInputSchema,
   IdSchema,
   NotFoundError,
   ProjectBundleSchema,
@@ -12,7 +13,11 @@ import {
   TaskFilterSchema,
   UpdateProjectInputSchema,
   UpdateTaskInputSchema,
+  UpdateWebhookInputSchema,
   ValidationError,
+  WebhookFilterSchema,
+  WebhookSchema,
+  WebhookTokenSchema,
   parseOrThrow,
   throwIfAborted,
   type BackupBundle,
@@ -20,6 +25,7 @@ import {
   type CreateCommentInput,
   type CreateProjectInput,
   type CreateTaskInput,
+  type CreateWebhookInput,
   type OperationOptions,
   type Project,
   type ProjectBundle,
@@ -28,6 +34,9 @@ import {
   type TaskFilter,
   type UpdateProjectInput,
   type UpdateTaskInput,
+  type UpdateWebhookInput,
+  type Webhook,
+  type WebhookFilter,
 } from "@bitig/core";
 import { AuthError } from "./errors";
 
@@ -468,6 +477,175 @@ export class ApiStorage implements StorageProvider {
     if (res.status !== HTTP_NO_CONTENT && !res.ok) {
       throw new StorageError("io", `Failed to delete comment ${id}: HTTP ${res.status.toString()}`);
     }
+  }
+
+  async getWebhooks(filter?: WebhookFilter, opts?: OperationOptions): Promise<Webhook[]> {
+    throwIfAborted(opts?.signal);
+    const validFilter = filter ? parseOrThrow(WebhookFilterSchema, filter, "getWebhooks filter") : undefined;
+
+    let path = "/api/webhooks";
+    if (validFilter?.projectId) {
+      path += `?projectId=${encodeURIComponent(validFilter.projectId)}`;
+    }
+
+    const res = await this.request(path, { method: "GET" }, opts);
+
+    if (res.status === HTTP_UNAUTHORIZED) {
+      throw new AuthError();
+    }
+    if (!res.ok) {
+      throw new StorageError("io", `Failed to get webhooks: HTTP ${res.status.toString()}`);
+    }
+
+    return this.parseJsonResponse<Webhook[]>(res);
+  }
+
+  async getWebhook(id: string, opts?: OperationOptions): Promise<Webhook | null> {
+    throwIfAborted(opts?.signal);
+    const validId = parseOrThrow(IdSchema, id, "getWebhook id");
+    const res = await this.request(`/api/webhooks/${encodeURIComponent(validId)}`, { method: "GET" }, opts);
+
+    if (res.status === HTTP_NOT_FOUND) {
+      return null;
+    }
+    if (res.status === HTTP_UNAUTHORIZED) {
+      throw new AuthError();
+    }
+    if (!res.ok) {
+      throw new StorageError("io", `Failed to get webhook ${id}: HTTP ${res.status.toString()}`);
+    }
+
+    return this.parseJsonResponse<Webhook>(res);
+  }
+
+  async getWebhookByToken(token: string, opts?: OperationOptions): Promise<Webhook | null> {
+    throwIfAborted(opts?.signal);
+    const validToken = parseOrThrow(WebhookTokenSchema, token, "getWebhookByToken token");
+    const res = await this.request(
+      `/api/webhooks?token=${encodeURIComponent(validToken)}`,
+      { method: "GET" },
+      opts,
+    );
+
+    if (res.status === HTTP_UNAUTHORIZED) {
+      throw new AuthError();
+    }
+    if (!res.ok) {
+      throw new StorageError("io", `Failed to get webhook by token: HTTP ${res.status.toString()}`);
+    }
+
+    const list = await this.parseJsonResponse<Webhook[]>(res);
+    return list[0] ?? null;
+  }
+
+  async createWebhook(input: CreateWebhookInput, opts?: OperationOptions): Promise<Webhook> {
+    throwIfAborted(opts?.signal);
+    const validated = parseOrThrow(CreateWebhookInputSchema, input, "createWebhook");
+
+    const res = await this.request(
+      "/api/webhooks",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(validated),
+      },
+      opts,
+    );
+
+    if (res.status === HTTP_NOT_FOUND) {
+      throw new NotFoundError("project", input.projectId);
+    }
+    if (res.status === HTTP_BAD_REQUEST) {
+      const err = await this.parseJsonResponse<{ details?: readonly [] }>(res);
+      throw new ValidationError("createWebhook", err.details ?? []);
+    }
+    if (res.status === HTTP_UNAUTHORIZED) {
+      throw new AuthError();
+    }
+    if (res.status !== HTTP_CREATED && res.status !== HTTP_OK) {
+      throw new StorageError("io", `Failed to create webhook: HTTP ${res.status.toString()}`);
+    }
+
+    const data = await this.parseJsonResponse<unknown>(res);
+    return parseOrThrow(WebhookSchema, data, "createWebhook response");
+  }
+
+  async updateWebhook(id: string, patch: UpdateWebhookInput, opts?: OperationOptions): Promise<Webhook> {
+    throwIfAborted(opts?.signal);
+    const validId = parseOrThrow(IdSchema, id, "updateWebhook id");
+    const validated = parseOrThrow(UpdateWebhookInputSchema, patch, "updateWebhook");
+
+    const res = await this.request(
+      `/api/webhooks/${encodeURIComponent(validId)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(validated),
+      },
+      opts,
+    );
+
+    if (res.status === HTTP_NOT_FOUND) {
+      throw new NotFoundError(patch.projectId ? "project" : "webhook", id);
+    }
+    if (res.status === HTTP_BAD_REQUEST) {
+      const err = await this.parseJsonResponse<{ details?: readonly [] }>(res);
+      throw new ValidationError("updateWebhook", err.details ?? []);
+    }
+    if (res.status === HTTP_UNAUTHORIZED) {
+      throw new AuthError();
+    }
+    if (!res.ok) {
+      throw new StorageError("io", `Failed to update webhook ${id}: HTTP ${res.status.toString()}`);
+    }
+
+    const data = await this.parseJsonResponse<unknown>(res);
+    return parseOrThrow(WebhookSchema, data, "updateWebhook response");
+  }
+
+  async deleteWebhook(id: string, opts?: OperationOptions): Promise<void> {
+    throwIfAborted(opts?.signal);
+    const validId = parseOrThrow(IdSchema, id, "deleteWebhook id");
+
+    const res = await this.request(
+      `/api/webhooks/${encodeURIComponent(validId)}`,
+      { method: "DELETE" },
+      opts,
+    );
+
+    if (res.status === HTTP_NOT_FOUND) {
+      throw new NotFoundError("webhook", id);
+    }
+    if (res.status === HTTP_UNAUTHORIZED) {
+      throw new AuthError();
+    }
+    if (res.status !== HTTP_NO_CONTENT && !res.ok) {
+      throw new StorageError("io", `Failed to delete webhook ${id}: HTTP ${res.status.toString()}`);
+    }
+  }
+
+  async recordWebhookTrigger(id: string, opts?: OperationOptions): Promise<Webhook> {
+    throwIfAborted(opts?.signal);
+    const validId = parseOrThrow(IdSchema, id, "recordWebhookTrigger id");
+
+    const res = await this.request(
+      `/api/webhooks/${encodeURIComponent(validId)}/trigger`,
+      { method: "POST" },
+      opts,
+    );
+
+    if (res.status === HTTP_NOT_FOUND) {
+      throw new NotFoundError("webhook", id);
+    }
+    if (res.status === HTTP_UNAUTHORIZED) {
+      throw new AuthError();
+    }
+    if (!res.ok) {
+      throw new StorageError("io", `Failed to record webhook trigger ${id}: HTTP ${res.status.toString()}`);
+    }
+
+    const data = await this.parseJsonResponse<unknown>(res);
+    return parseOrThrow(WebhookSchema, data, "recordWebhookTrigger response");
   }
 
   async exportProject(id: string, opts?: OperationOptions): Promise<ProjectBundle> {

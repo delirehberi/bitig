@@ -8,6 +8,7 @@ import { Overview } from "./components/Overview";
 import { ProjectsView } from "./components/projects/ProjectsView";
 import { Rail, type NavigationTab } from "./components/Rail";
 import { TasksView } from "./components/tasks/TasksView";
+import { WebhooksView } from "./components/webhooks/WebhooksView";
 import { FeatureFlagsProvider } from "./domain/feature-context";
 import { DEFAULT_MODE } from "./domain/modes";
 import { useFeatureFlags } from "./hooks/useFeatureFlags";
@@ -16,6 +17,7 @@ import { useProjects } from "./hooks/useProjects";
 import { useRealtime } from "./hooks/useRealtime";
 import { useStorage } from "./hooks/useStorage";
 import { useTasks } from "./hooks/useTasks";
+import { useWebhooks } from "./hooks/useWebhooks";
 import { LandingPage } from "./landing/LandingPage";
 import { hrefFor, navigate, useLocationHref, useRoute, type Route } from "./routing/router";
 
@@ -30,7 +32,8 @@ interface WorkspaceProps {
 function Workspace({ mode, health, route }: WorkspaceProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const activeTab = route.name;
-  const selectedProjectId = route.name === "tasks" ? route.projectId : undefined;
+  const selectedProjectId =
+    route.name === "tasks" || route.name === "webhooks" ? route.projectId : undefined;
   const needsHumanOnly = route.name === "tasks" && route.needsHuman === true;
   const archivedProjectsOnly = route.name === "projects" && route.archived === true;
 
@@ -58,6 +61,15 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
     deleteTask,
   } = useTasks(storage);
 
+  const {
+    webhooks,
+    isLoading: isWebhooksLoading,
+    error: webhooksError,
+    createWebhook,
+    updateWebhook,
+    deleteWebhook,
+  } = useWebhooks(storage);
+
   // Most recently worked on first, wherever projects are listed.
   const recentProjects = useMemo(() => sortProjectsByActivity(projects, tasks), [projects, tasks]);
 
@@ -80,6 +92,13 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
 
   function handleFilterNeedsHuman(only: boolean) {
     navigate(tasksHref(selectedProjectId, only), { replace: true });
+  }
+
+  function handleFilterWebhooksProject(projectId: string | undefined) {
+    navigate(
+      hrefFor(projectId ? { name: "webhooks", projectId } : { name: "webhooks" }),
+      { replace: true },
+    );
   }
 
   return (
@@ -142,6 +161,22 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
               onDeleteTask={deleteTask}
               searchQuery={searchQuery}
               storage={storage}
+            />
+          )}
+
+          {activeTab === "webhooks" && (
+            <WebhooksView
+              webhooks={webhooks}
+              projects={recentProjects}
+              isLoading={isWebhooksLoading}
+              error={webhooksError}
+              selectedProjectId={selectedProjectId}
+              onSelectProjectFilter={handleFilterWebhooksProject}
+              onOpenProjectTasks={handleSelectProject}
+              onCreateWebhook={createWebhook}
+              onUpdateWebhook={updateWebhook}
+              onDeleteWebhook={deleteWebhook}
+              searchQuery={searchQuery}
             />
           )}
         </main>

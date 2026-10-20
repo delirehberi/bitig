@@ -19,8 +19,11 @@ import { IdSchema } from "@bitig/core";
 export const PROJECT_FILE_NAME = "_project.yaml";
 export const TASK_FILE_EXTENSION = ".md";
 export const COMMENT_FILE_EXTENSION = ".md";
+export const WEBHOOK_FILE_EXTENSION = ".yaml";
 /** A task's comments live in a directory next to its file, one file per comment. */
 export const COMMENTS_DIR_SUFFIX = ".comments";
+/** A project's webhooks live in `_webhooks/<webhookId>.yaml` inside its directory. */
+export const WEBHOOKS_DIR_NAME = "_webhooks";
 export const PATH_SEPARATOR = "/";
 
 /** Relative path of the data directory itself. */
@@ -48,6 +51,13 @@ export function commentIdFromFileName(fileName: string): string | null {
 export function taskIdFromCommentsDirName(dirName: string): string | null {
   if (!dirName.endsWith(COMMENTS_DIR_SUFFIX)) return null;
   const id = dirName.slice(0, -COMMENTS_DIR_SUFFIX.length);
+  return isEntityId(id) ? id : null;
+}
+
+/** Returns the webhook ID encoded in a file name, or `null` if the name is not a webhook file. */
+export function webhookIdFromFileName(fileName: string): string | null {
+  if (!fileName.endsWith(WEBHOOK_FILE_EXTENSION)) return null;
+  const id = fileName.slice(0, -WEBHOOK_FILE_EXTENSION.length);
   return isEntityId(id) ? id : null;
 }
 
@@ -80,4 +90,13 @@ export function commentsDirPath(projectId: string, taskId: string): string {
 export function commentFilePath(projectId: string, taskId: string, commentId: string): string {
   assertEntityId(commentId);
   return `${commentsDirPath(projectId, taskId)}${PATH_SEPARATOR}${commentId}${COMMENT_FILE_EXTENSION}`;
+}
+
+export function webhooksDirPath(projectId: string): string {
+  return `${projectDirPath(projectId)}${PATH_SEPARATOR}${WEBHOOKS_DIR_NAME}`;
+}
+
+export function webhookFilePath(projectId: string, webhookId: string): string {
+  assertEntityId(webhookId);
+  return `${webhooksDirPath(projectId)}${PATH_SEPARATOR}${webhookId}${WEBHOOK_FILE_EXTENSION}`;
 }

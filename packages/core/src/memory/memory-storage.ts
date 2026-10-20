@@ -1,16 +1,21 @@
 import {
   applyProjectPatch,
   applyTaskPatch,
+  applyWebhookPatch,
   buildComment,
   buildProject,
   buildTask,
+  buildWebhook,
   cloneComment,
   cloneProject,
   cloneTask,
+  cloneWebhook,
   compareComments,
   compareProjects,
   compareTasks,
+  compareWebhooks,
   completeTaskEntity,
+  recordWebhookTriggerEntity,
   renumberTask,
 } from "../domain/entities";
 import { nextTaskNumber } from "../domain/ticket-codes";
@@ -21,6 +26,8 @@ import {
   IdSchema,
   ProjectBundleSchema,
   TaskFilterSchema,
+  WebhookFilterSchema,
+  WebhookTokenSchema,
 } from "../domain/schemas";
 import type {
   BackupBundle,
@@ -28,12 +35,16 @@ import type {
   CreateCommentInput,
   CreateProjectInput,
   CreateTaskInput,
+  CreateWebhookInput,
   Project,
   ProjectBundle,
   Task,
   TaskFilter,
   UpdateProjectInput,
   UpdateTaskInput,
+  UpdateWebhookInput,
+  Webhook,
+  WebhookFilter,
 } from "../domain/types";
 import { defaultRuntimeDeps, toTimestamp, type RuntimeDeps } from "../runtime/ids";
 import { throwIfAborted, type AbortSignalLike } from "../storage/abort";
@@ -67,6 +78,7 @@ export class InMemoryStorage implements StorageProvider {
   readonly #projects = new Map<string, Project>();
   readonly #tasks = new Map<string, Task>();
   readonly #comments = new Map<string, Comment>();
+  readonly #webhooks = new Map<string, Webhook>();
   readonly #deps: RuntimeDeps;
 
   constructor(deps: RuntimeDeps = defaultRuntimeDeps) {
@@ -106,6 +118,9 @@ export class InMemoryStorage implements StorageProvider {
       const project = this.#requireProject(parseId(id, "deleteProject"));
       for (const task of [...this.#tasks.values()]) {
         if (task.projectId === project.id) this.#deleteTaskAndComments(task.id);
+      }
+      for (const webhook of [...this.#webhooks.values()]) {
+        if (webhook.projectId === project.id) this.#webhooks.delete(webhook.id);
       }
       this.#projects.delete(project.id);
     });
@@ -190,6 +205,70 @@ export class InMemoryStorage implements StorageProvider {
     });
   }
 
+  getWebhooks(filter?: WebhookFilter, opts?: OperationOptions): Promise<Webhook[]> {
+    return run(opts?.signal, () => {
+      const { projectId } = parseOrThrow(WebhookFilterSchema, filter ?? {}, "getWebhooks");
+      return [...this.#webhooks.values()]
+        .filter((webhook) => projectId === undefined || webhook.projectId === projectId)
+        .sort(compareWebhooks)
+        .map(cloneWebhook);
+    });
+  }
+
+  getWebhook(id: string, opts?: OperationOptions): Promise<Webhook | null> {
+    return run(opts?.signal, () => {
+      const webhook = this.#webhooks.get(parseId(id, "getWebhook"));
+      return webhook === undefined ? null : cloneWebhook(webhook);
+    });
+  }
+
+  getWebhookByToken(token: string, opts?: OperationOptions): Promise<Webhook | null> {
+    return run(opts?.signal, () => {
+      const validToken = parseOrThrow(WebhookTokenSchema, token, "getWebhookByToken");
+      for (const webhook of this.#webhooks.values()) {
+        if (webhook.token === validToken) return cloneWebhook(webhook);
+      }
+      return null;
+    });
+  }
+
+  createWebhook(input: CreateWebhookInput, opts?: OperationOptions): Promise<Webhook> {
+    return run(opts?.signal, () => {
+      const webhook = buildWebhook(input, this.#deps);
+      this.#requireProject(webhook.projectId);
+      this.#webhooks.set(webhook.id, webhook);
+      return cloneWebhook(webhook);
+    });
+  }
+
+  updateWebhook(id: string, patch: UpdateWebhookInput, opts?: OperationOptions): Promise<Webhook> {
+    return run(opts?.signal, () => {
+      const existing = this.#requireWebhook(parseId(id, "updateWebhook"));
+      const next = applyWebhookPatch(existing, patch, this.#deps);
+      if (next.projectId !== existing.projectId) {
+        this.#requireProject(next.projectId);
+      }
+      this.#webhooks.set(next.id, next);
+      return cloneWebhook(next);
+    });
+  }
+
+  deleteWebhook(id: string, opts?: OperationOptions): Promise<void> {
+    return run(opts?.signal, () => {
+      const webhook = this.#requireWebhook(parseId(id, "deleteWebhook"));
+      this.#webhooks.delete(webhook.id);
+    });
+  }
+
+  recordWebhookTrigger(id: string, opts?: OperationOptions): Promise<Webhook> {
+    return run(opts?.signal, () => {
+      const existing = this.#requireWebhook(parseId(id, "recordWebhookTrigger"));
+      const next = recordWebhookTriggerEntity(existing, this.#deps.clock());
+      this.#webhooks.set(next.id, next);
+      return cloneWebhook(next);
+    });
+  }
+
   exportProject(id: string, opts?: OperationOptions): Promise<ProjectBundle> {
     return run(opts?.signal, () => {
       const project = this.#requireProject(parseId(id, "exportProject"));
@@ -197,12 +276,17 @@ export class InMemoryStorage implements StorageProvider {
         .filter((t) => t.projectId === project.id)
         .sort(compareTasks)
         .map(copyTask);
+      const webhooks = [...this.#webhooks.values()]
+        .filter((w) => w.projectId === project.id)
+        .sort(compareWebhooks)
+        .map(cloneWebhook);
       const bundle: ProjectBundle = {
         version: BUNDLE_VERSION,
         exportedAt: toTimestamp(this.#deps.clock()),
         project: copyProject(project),
         tasks,
         comments: this.#commentsOf(tasks.map((t) => t.id)).map(cloneComment),
+        ...(webhooks.length > 0 ? { webhooks } : {}),
       };
       return parseOrThrow(ProjectBundleSchema, bundle, "exportProject result");
     });
@@ -217,6 +301,9 @@ export class InMemoryStorage implements StorageProvider {
       }
       for (const comment of validated.comments ?? []) {
         this.#comments.set(comment.id, cloneComment(comment));
+      }
+      for (const webhook of validated.webhooks ?? []) {
+        this.#webhooks.set(webhook.id, cloneWebhook(webhook));
       }
       return copyProject(validated.project);
     });
@@ -277,6 +364,12 @@ export class InMemoryStorage implements StorageProvider {
     const task = this.#tasks.get(id);
     if (task === undefined) throw new NotFoundError("task", id);
     return task;
+  }
+
+  #requireWebhook(id: string): Webhook {
+    const webhook = this.#webhooks.get(id);
+    if (webhook === undefined) throw new NotFoundError("webhook", id);
+    return webhook;
   }
 }
 

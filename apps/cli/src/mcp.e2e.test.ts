@@ -79,7 +79,7 @@ describe("Bitig CLI STDIO MCP Server E2E", () => {
 
   it("completes full MCP project and task lifecycle over STDIO", async () => {
     const { tools } = await client.listTools();
-    expect(tools.length).toBe(14);
+    expect(tools.length).toBe(18);
 
     // 1. Create project
     const proj = await callToolJson<ProjectResult & { bitig_file_content: string }>("create_project", {
@@ -110,15 +110,19 @@ describe("Bitig CLI STDIO MCP Server E2E", () => {
       "backfill_ticket_codes",
       "complete_task",
       "create_project",
+      "create_webhook",
       "delete_comment",
       "delete_project",
       "delete_task",
+      "delete_webhook",
       "get_task",
       "list_comments",
       "list_projects",
       "list_tasks",
+      "list_webhooks",
       "update_project",
       "update_task",
+      "update_webhook",
     ]);
 
     // Projects: create, list, update
