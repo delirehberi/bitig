@@ -158,4 +158,38 @@ describe("TaskBoard reordering", () => {
     if (!thirdCard) throw new Error("expected Task 3 card");
     expect(thirdCard.querySelector('[title*="comment"]')).toBeNull();
   });
+
+  it("hides the archived column by default and toggles it via the archive icon button", async () => {
+    const user = userEvent.setup();
+    const archivedTask = task(7, 0, "archived");
+    render(
+      <FeatureFlagsProvider mode="cloudflare">
+        <TaskBoard
+          tasks={[FIRST, STARTED, archivedTask]}
+          projects={[PROJECT]}
+          onView={vi.fn()}
+          onEdit={vi.fn()}
+          onDelete={vi.fn()}
+          onComplete={vi.fn()}
+          onStatusChange={vi.fn()}
+          onMove={vi.fn()}
+        />
+      </FeatureFlagsProvider>,
+    );
+
+    expect(screen.queryByTestId("column-archived")).not.toBeInTheDocument();
+    expect(screen.queryByText("Task 7")).not.toBeInTheDocument();
+
+    const archiveToggle = screen.getByTestId("toggle-archived-tasks");
+    expect(archiveToggle).toHaveAttribute("aria-label", "Archived tasks (1)");
+    expect(archiveToggle).toHaveAttribute("aria-pressed", "false");
+
+    await user.click(archiveToggle);
+    expect(archiveToggle).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByTestId("column-archived")).toBeInTheDocument();
+    expect(screen.getByText("Task 7")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Hide archived tasks" }));
+    expect(screen.queryByTestId("column-archived")).not.toBeInTheDocument();
+  });
 });

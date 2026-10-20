@@ -137,8 +137,9 @@ export function TaskList({
   showProject = true,
 }: TaskListProps) {
   const [sort, setSort] = useState<SortState | null>(null);
+  const activeTasks = tasks.filter((task) => task.status !== "archived");
 
-  if (tasks.length === 0) {
+  if (activeTasks.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center rounded-lg border border-dashed border-rule bg-paper-2 p-12 text-center text-xs text-ink-3">
         No tasks found
@@ -147,7 +148,7 @@ export function TaskList({
   }
 
   const projectsById = new Map(projects.map((p) => [p.id, p]));
-  const sortedTasks = sortTasksByColumn(tasks, projectsById, sort, showProject);
+  const sortedTasks = sortTasksByColumn(activeTasks, projectsById, sort, showProject);
 
   function handleSort(column: SortColumn) {
     setSort((prev) => {

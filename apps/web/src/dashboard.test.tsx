@@ -534,11 +534,12 @@ describe("Dashboard Phase 4 Integration", () => {
     const nav = await screen.findByRole("navigation", { name: "Primary" });
     await user.click(within(nav).getByRole("link", { name: "Tasks" }));
 
-    // Board view has Kanban columns
+    // Board view has active Kanban columns and compact archive toggle icon
     expect(await screen.findByText("To Do")).toBeInTheDocument();
     expect(screen.getByText("In Progress")).toBeInTheDocument();
     expect(screen.getByText("Done")).toBeInTheDocument();
-    expect(screen.getByText("Archived")).toBeInTheDocument();
+    expect(screen.queryByTestId("column-archived")).not.toBeInTheDocument();
+    expect(screen.getByTestId("toggle-archived-tasks")).toBeInTheDocument();
     expect(screen.getByText("Write documentation")).toBeInTheDocument();
 
     // Switch to List view

@@ -214,5 +214,47 @@ describe("TaskList sorting and project column visibility", () => {
     expect(screen.getByTitle("2 comments")).toHaveTextContent("2");
     expect(screen.queryByTitle(/1 comment/)).not.toBeInTheDocument();
   });
+
+  it("excludes archived tasks from the table view", () => {
+    const firstTask = TASKS[0];
+    const secondTask = TASKS[1];
+    if (!firstTask || !secondTask) throw new Error("expected tasks");
+    const archivedTask: Task = {
+      ...secondTask,
+      id: "01940000-0000-7000-8000-000000000099",
+      title: "Hidden archived task",
+      status: "archived",
+    };
+
+    const { rerender } = render(
+      <TaskList
+        tasks={[firstTask, archivedTask]}
+        projects={[PROJECT_ALPHA, PROJECT_ZETA]}
+        onView={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onComplete={vi.fn()}
+        onStatusChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("Charlie task")).toBeInTheDocument();
+    expect(screen.queryByText("Hidden archived task")).not.toBeInTheDocument();
+
+    // When only archived tasks are passed, renders the empty state
+    rerender(
+      <TaskList
+        tasks={[archivedTask]}
+        projects={[PROJECT_ALPHA, PROJECT_ZETA]}
+        onView={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onComplete={vi.fn()}
+        onStatusChange={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("No tasks found")).toBeInTheDocument();
+    expect(screen.queryByText("Hidden archived task")).not.toBeInTheDocument();
+  });
 });
 

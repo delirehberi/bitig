@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type DragEvent } from "react";
+import { Archive, X } from "lucide-react";
 import {
   TASK_STATUSES,
   type Project,
@@ -29,6 +30,9 @@ interface TaskBoardProps {
   readonly showProject?: boolean;
 }
 
+const ACTIVE_STATUSES: readonly TaskStatus[] = ["todo", "in_progress", "done"];
+const ARCHIVE_ICON_SIZE = 15;
+
 const COLUMN_CONFIG: Record<
   TaskStatus,
   { label: string; dotClass: string }
@@ -58,6 +62,7 @@ export function TaskBoard({
 }: TaskBoardProps) {
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
+  const [showArchived, setShowArchived] = useState(false);
   // A keyboard move re-renders the card elsewhere; keep focus on its handle.
   const refocusId = useRef<string | null>(null);
   const boardRef = useRef<HTMLDivElement>(null);
@@ -68,6 +73,7 @@ export function TaskBoard({
       tasks.filter((t) => t.status === status),
     ]),
   );
+  const archivedTasks = columns.get("archived") ?? [];
 
   useEffect(() => {
     const id = refocusId.current;
@@ -109,116 +115,220 @@ export function TaskBoard({
   }
 
   return (
-    <div ref={boardRef} className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-4">
-      {TASK_STATUSES.map((status) => {
-        const colTasks = columns.get(status) ?? [];
-        const config = COLUMN_CONFIG[status];
-        const visible = colTasks.filter((t) => t.id !== draggedId);
-        const indicatorAt = dropTarget?.status === status ? dropTarget.index : null;
+    <div ref={boardRef} className="flex flex-col gap-5">
+      <div className="grid grid-cols-1 gap-5 md:grid-cols-3">
+        {ACTIVE_STATUSES.map((status) => {
+          const colTasks = columns.get(status) ?? [];
+          const config = COLUMN_CONFIG[status];
+          const visible = colTasks.filter((t) => t.id !== draggedId);
+          const indicatorAt = dropTarget?.status === status ? dropTarget.index : null;
 
-        return (
-          <div
-            key={status}
-            data-testid={`column-${status}`}
-            onDragOver={(e) => {
-              if (!draggedId) return;
-              e.preventDefault();
-              e.dataTransfer.dropEffect = "move";
-              const index = dropIndex(e, status);
-              if (dropTarget?.status !== status || dropTarget.index !== index) {
-                setDropTarget({ status, index });
-              }
-            }}
-            onDragLeave={(e) => {
-              if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDropTarget(null);
-            }}
-            onDrop={(e) => {
-              e.preventDefault();
-              const task = tasks.find((t) => t.id === draggedId);
-              if (task) move(task, status, dropIndex(e, status));
-              endDrag();
-            }}
-            className={`flex flex-col rounded-lg border bg-paper-2/60 p-4 transition-colors ${
-              indicatorAt !== null ? "border-accent/50" : "border-rule"
-            }`}
-          >
-            <div className="mb-3 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <span aria-hidden="true" className={`size-2 rounded-full ${config.dotClass}`} />
-                <h3 className="m-0 font-display text-sm font-bold text-ink">{config.label}</h3>
-              </div>
-              <div className="flex items-center gap-2">
-                {status === "done" && colTasks.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      for (const task of colTasks) {
-                        onStatusChange(task, "archived");
-                      }
-                    }}
-                    className="rounded-md border border-rule bg-paper px-2 py-0.5 text-2xs font-semibold text-ink-2 transition-colors hover:bg-paper-2 hover:text-ink focus-visible:outline-focus"
-                  >
-                    Archive all
-                  </button>
-                )}
-                <span className="rounded-pill bg-paper px-2 py-0.5 font-mono text-2xs font-semibold text-ink-2">
-                  {colTasks.length}
-                </span>
-              </div>
-            </div>
-
-            <div className="flex flex-col gap-3 min-h-[120px]">
-              {colTasks.length === 0 ? (
-                <div className="flex flex-1 items-center justify-center rounded-md border border-dashed border-rule p-4 text-center text-xs text-ink-3">
-                  {indicatorAt !== null ? "Drop here" : "No tasks"}
+          return (
+            <div
+              key={status}
+              data-testid={`column-${status}`}
+              onDragOver={(e) => {
+                if (!draggedId) return;
+                e.preventDefault();
+                e.dataTransfer.dropEffect = "move";
+                const index = dropIndex(e, status);
+                if (dropTarget?.status !== status || dropTarget.index !== index) {
+                  setDropTarget({ status, index });
+                }
+              }}
+              onDragLeave={(e) => {
+                if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDropTarget(null);
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                const task = tasks.find((t) => t.id === draggedId);
+                if (task) move(task, status, dropIndex(e, status));
+                endDrag();
+              }}
+              className={`flex flex-col rounded-lg border bg-paper-2/60 p-4 transition-colors ${
+                indicatorAt !== null ? "border-accent/50" : "border-rule"
+              }`}
+            >
+              <div className="mb-3 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span aria-hidden="true" className={`size-2 rounded-full ${config.dotClass}`} />
+                  <h3 className="m-0 font-display text-sm font-bold text-ink">{config.label}</h3>
                 </div>
-              ) : (
-                colTasks.map((task) => {
-                  const position = visible.indexOf(task);
-                  return (
-                    <div
-                      key={task.id}
-                      data-task-id={task.id}
-                      draggable
-                      onDragStart={(e) => {
-                        e.dataTransfer.effectAllowed = "move";
-                        // Firefox only starts a drag when some data is set.
-                        e.dataTransfer.setData("text/plain", task.title);
-                        setDraggedId(task.id);
+                <div className="flex items-center gap-2">
+                  {status === "done" && colTasks.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        for (const task of colTasks) {
+                          onStatusChange(task, "archived");
+                        }
                       }}
-                      onDragEnd={endDrag}
-                      className={`relative ${task.id === draggedId ? "opacity-40" : ""}`}
+                      className="rounded-md border border-rule bg-paper px-2 py-0.5 text-2xs font-semibold text-ink-2 transition-colors hover:bg-paper-2 hover:text-ink focus-visible:outline-focus"
                     >
-                      {indicatorAt !== null && position === indicatorAt && <DropIndicator />}
-                      <TaskCard
-                        task={task}
-                        projects={projects}
-                        showProject={showProject}
-                        onView={onView}
-                        onEdit={onEdit}
-                        onDelete={onDelete}
-                        onComplete={onComplete}
-                        onStatusChange={onStatusChange}
-                        onReorder={(direction) => {
-                          const index = colTasks.indexOf(task) + direction;
-                          if (index < 0 || index >= colTasks.length) return;
-                          refocusId.current = task.id;
-                          move(task, status, index);
-                        }}
-                      />
-                    </div>
-                  );
-                })
-              )}
-              {indicatorAt !== null && indicatorAt === visible.length && visible.length > 0 && (
-                <div className="relative">
-                  <DropIndicator />
+                      Archive all
+                    </button>
+                  )}
+                  <span className="rounded-pill bg-paper px-2 py-0.5 font-mono text-2xs font-semibold text-ink-2">
+                    {colTasks.length}
+                  </span>
+                  {status === "done" && (
+                    <button
+                      type="button"
+                      data-testid="toggle-archived-tasks"
+                      aria-label={`Archived tasks (${String(archivedTasks.length)})`}
+                      aria-pressed={showArchived}
+                      title={
+                        showArchived
+                          ? "Hide archived tasks"
+                          : `Show archived tasks (${String(archivedTasks.length)})`
+                      }
+                      onClick={() => {
+                        setShowArchived((prev) => !prev);
+                      }}
+                      onDragOver={(e) => {
+                        if (!draggedId) return;
+                        e.preventDefault();
+                        e.stopPropagation();
+                        e.dataTransfer.dropEffect = "move";
+                        if (dropTarget?.status !== "archived") {
+                          setDropTarget({ status: "archived", index: archivedTasks.length });
+                        }
+                      }}
+                      onDragLeave={(e) => {
+                        e.stopPropagation();
+                        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+                          setDropTarget(null);
+                        }
+                      }}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        const task = tasks.find((t) => t.id === draggedId);
+                        if (task) move(task, "archived", archivedTasks.length);
+                        endDrag();
+                      }}
+                      className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-2xs font-semibold transition-colors focus-visible:outline-focus ${
+                        dropTarget?.status === "archived"
+                          ? "border-accent bg-accent-soft text-accent-ink"
+                          : showArchived
+                            ? "border-rule-strong bg-paper-3 text-ink"
+                            : "border-rule bg-paper text-ink-3 hover:bg-paper-2 hover:text-ink"
+                      }`}
+                    >
+                      <Archive size={ARCHIVE_ICON_SIZE} aria-hidden="true" />
+                      {archivedTasks.length > 0 && (
+                        <span className="font-mono">{archivedTasks.length}</span>
+                      )}
+                    </button>
+                  )}
                 </div>
-              )}
+              </div>
+
+              <div className="flex flex-col gap-3 min-h-[120px]">
+                {colTasks.length === 0 ? (
+                  <div className="flex flex-1 items-center justify-center rounded-md border border-dashed border-rule p-4 text-center text-xs text-ink-3">
+                    {indicatorAt !== null ? "Drop here" : "No tasks"}
+                  </div>
+                ) : (
+                  colTasks.map((task) => {
+                    const position = visible.indexOf(task);
+                    return (
+                      <div
+                        key={task.id}
+                        data-task-id={task.id}
+                        draggable
+                        onDragStart={(e) => {
+                          e.dataTransfer.effectAllowed = "move";
+                          // Firefox only starts a drag when some data is set.
+                          e.dataTransfer.setData("text/plain", task.title);
+                          setDraggedId(task.id);
+                        }}
+                        onDragEnd={endDrag}
+                        className={`relative ${task.id === draggedId ? "opacity-40" : ""}`}
+                      >
+                        {indicatorAt !== null && position === indicatorAt && <DropIndicator />}
+                        <TaskCard
+                          task={task}
+                          projects={projects}
+                          showProject={showProject}
+                          onView={onView}
+                          onEdit={onEdit}
+                          onDelete={onDelete}
+                          onComplete={onComplete}
+                          onStatusChange={onStatusChange}
+                          onReorder={(direction) => {
+                            const index = colTasks.indexOf(task) + direction;
+                            if (index < 0 || index >= colTasks.length) return;
+                            refocusId.current = task.id;
+                            move(task, status, index);
+                          }}
+                        />
+                      </div>
+                    );
+                  })
+                )}
+                {indicatorAt !== null && indicatorAt === visible.length && visible.length > 0 && (
+                  <div className="relative">
+                    <DropIndicator />
+                  </div>
+                )}
+              </div>
             </div>
+          );
+        })}
+      </div>
+
+      {showArchived && (
+        <div
+          data-testid="column-archived"
+          className="flex flex-col rounded-lg border border-rule bg-paper-2/60 p-4"
+        >
+          <div className="mb-3 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Archive size={ARCHIVE_ICON_SIZE} className="text-ink-3" aria-hidden="true" />
+              <h3 className="m-0 font-display text-sm font-bold text-ink">
+                {COLUMN_CONFIG.archived.label}
+              </h3>
+              <span className="rounded-pill bg-paper px-2 py-0.5 font-mono text-2xs font-semibold text-ink-2">
+                {archivedTasks.length}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setShowArchived(false);
+              }}
+              aria-label="Hide archived tasks"
+              className="rounded-md p-1 text-ink-3 transition-colors hover:bg-paper hover:text-ink focus-visible:outline-focus"
+            >
+              <X size={ARCHIVE_ICON_SIZE} aria-hidden="true" />
+            </button>
           </div>
-        );
-      })}
+
+          {archivedTasks.length === 0 ? (
+            <div className="flex items-center justify-center rounded-md border border-dashed border-rule p-4 text-center text-xs text-ink-3">
+              No archived tasks
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
+              {archivedTasks.map((task) => (
+                <div key={task.id} data-task-id={task.id}>
+                  <TaskCard
+                    task={task}
+                    projects={projects}
+                    showProject={showProject}
+                    onView={onView}
+                    onEdit={onEdit}
+                    onDelete={onDelete}
+                    onComplete={onComplete}
+                    onStatusChange={onStatusChange}
+                  />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
