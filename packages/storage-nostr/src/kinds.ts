@@ -42,6 +42,8 @@ export const NOSTR_TAG_TASK = "task" as const;
 export const NOSTR_TAG_AUTHOR_TYPE = "author_type" as const;
 /** Project resource link: `["resource", url, type, label]`, one tag per link, in order. */
 export const NOSTR_TAG_RESOURCE = "resource" as const;
+/** Archived project flag: `["archived", "true"]`. */
+export const NOSTR_TAG_ARCHIVED = "archived" as const;
 
 /**
  * Builds an address coordinate string `kind:pubkey:dTag`.

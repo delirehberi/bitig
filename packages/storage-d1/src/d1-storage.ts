@@ -78,6 +78,9 @@ function recordToProject(row: ProjectRecord): Project {
   if (row.key !== null) {
     project.key = row.key;
   }
+  if (row.archived === true) {
+    project.archived = true;
+  }
   return project;
 }
 
@@ -191,6 +194,7 @@ export class D1Storage implements StorageProvider {
       kind: project.kind,
       resources: project.resources ?? null,
       key: project.key ?? null,
+      archived: project.archived ?? null,
       createdAt: Date.parse(project.createdAt),
       updatedAt: Date.parse(project.updatedAt),
     });
@@ -216,6 +220,7 @@ export class D1Storage implements StorageProvider {
         kind: next.kind,
         resources: next.resources ?? null,
         key: next.key ?? null,
+        archived: next.archived ?? null,
         updatedAt: Date.parse(next.updatedAt),
       })
       .where(eq(projects.id, validId));
@@ -433,6 +438,7 @@ export class D1Storage implements StorageProvider {
       kind: validated.project.kind,
       resources: validated.project.resources ?? null,
       key: validated.project.key ?? null,
+      archived: validated.project.archived ?? null,
       createdAt: Date.parse(validated.project.createdAt),
       updatedAt: Date.parse(validated.project.updatedAt),
     };

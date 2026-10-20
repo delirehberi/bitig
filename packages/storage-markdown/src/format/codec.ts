@@ -38,7 +38,16 @@ type ProjectFileData = z.output<typeof ProjectFileSchema>;
 type TaskFileData = z.output<typeof TaskFileSchema>;
 
 /** Field order in written files; stable order keeps diffs minimal. */
-const PROJECT_KEY_ORDER = ["name", "key", "description", "kind", "resources", "createdAt", "updatedAt"] as const satisfies readonly (keyof ProjectFileData)[];
+const PROJECT_KEY_ORDER = [
+  "name",
+  "key",
+  "description",
+  "kind",
+  "archived",
+  "resources",
+  "createdAt",
+  "updatedAt",
+] as const satisfies readonly (keyof ProjectFileData)[];
 const TASK_KEY_ORDER = [
   "number",
   "title",

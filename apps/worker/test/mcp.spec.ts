@@ -18,6 +18,7 @@ const DB_SETUP_STATEMENTS = [
     \`kind\` text DEFAULT 'hobby' NOT NULL,
     \`resources\` text,
     \`key\` text,
+    \`archived\` integer,
     \`created_at\` integer NOT NULL,
     \`updated_at\` integer NOT NULL
   )`,

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { FolderPlus, Hand, Plus, Search } from "lucide-react";
+import { Archive, ArrowLeft, FolderPlus, Hand, Plus, Search } from "lucide-react";
 import {
   PROJECT_KINDS,
   type CreateProjectInput,
@@ -23,6 +23,8 @@ interface ProjectsViewProps {
   readonly onDeleteProject: (id: string) => Promise<void>;
   readonly onSelectProject: (projectId: string) => void;
   readonly searchQuery: string;
+  readonly archivedView?: boolean;
+  readonly onArchivedViewChange?: (archived: boolean) => void;
 }
 
 type ProjectTaskFilter = "" | "open" | "done" | "empty";
@@ -47,7 +49,20 @@ export function ProjectsView({
   onDeleteProject,
   onSelectProject,
   searchQuery,
+  archivedView,
+  onArchivedViewChange,
 }: ProjectsViewProps) {
+  const [localArchivedView, setLocalArchivedView] = useState(false);
+  const isArchivedView = archivedView ?? localArchivedView;
+
+  function setArchivedView(next: boolean) {
+    if (onArchivedViewChange) {
+      onArchivedViewChange(next);
+    } else {
+      setLocalArchivedView(next);
+    }
+  }
+
   const [kindFilter, setKindFilter] = useState<ProjectKind | "">("");
   const [taskFilter, setTaskFilter] = useState<ProjectTaskFilter>("");
   const [needsHumanOnly, setNeedsHumanOnly] = useState(false);
@@ -82,34 +97,41 @@ export function ProjectsView({
   const [viewProjectId, setViewProjectId] = useState<string | null>(null);
   const viewProject = projects.find((p) => p.id === viewProjectId) ?? null;
 
-  const needsHumanProjectCount = projects.filter((project) =>
+  const activeProjects = projects.filter((p) => !p.archived);
+  const archivedProjects = projects.filter((p) => p.archived === true);
+
+  const needsHumanProjectCount = activeProjects.filter((project) =>
     tasks.some((task) => task.projectId === project.id && task.needsHuman !== undefined),
   ).length;
 
-  const hasActiveFilters = Boolean(kindFilter || taskFilter || needsHumanOnly || searchQuery);
+  const hasActiveFilters = Boolean(
+    (!isArchivedView && (kindFilter || taskFilter || needsHumanOnly)) || searchQuery,
+  );
 
-  const filteredProjects = projects.filter((p) => {
-    if (kindFilter && p.kind !== kindFilter) {
-      return false;
-    }
-
-    const projectTasks = tasks.filter((t) => t.projectId === p.id);
-
-    if (needsHumanOnly && !projectTasks.some((t) => t.needsHuman !== undefined)) {
-      return false;
-    }
-
-    if (taskFilter === "open") {
-      if (!projectTasks.some((t) => t.status === "todo" || t.status === "in_progress")) {
+  const filteredProjects = (isArchivedView ? archivedProjects : activeProjects).filter((p) => {
+    if (!isArchivedView) {
+      if (kindFilter && p.kind !== kindFilter) {
         return false;
       }
-    } else if (taskFilter === "done") {
-      if (projectTasks.length === 0 || !projectTasks.every((t) => t.status === "done" || t.status === "archived")) {
+
+      const projectTasks = tasks.filter((t) => t.projectId === p.id);
+
+      if (needsHumanOnly && !projectTasks.some((t) => t.needsHuman !== undefined)) {
         return false;
       }
-    } else if (taskFilter === "empty") {
-      if (projectTasks.length > 0) {
-        return false;
+
+      if (taskFilter === "open") {
+        if (!projectTasks.some((t) => t.status === "todo" || t.status === "in_progress")) {
+          return false;
+        }
+      } else if (taskFilter === "done") {
+        if (projectTasks.length === 0 || !projectTasks.every((t) => t.status === "done" || t.status === "archived")) {
+          return false;
+        }
+      } else if (taskFilter === "empty") {
+        if (projectTasks.length > 0) {
+          return false;
+        }
       }
     }
 
@@ -139,23 +161,56 @@ export function ProjectsView({
     <div className="flex flex-col gap-6">
       <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
         <div>
-          <h1 className="m-0 font-display text-2xl font-bold tracking-tight text-ink">Projects</h1>
-          <p className="m-0 text-sm text-ink-2">Manage your workspaces and high-level goals</p>
+          <h1 className="m-0 font-display text-2xl font-bold tracking-tight text-ink">
+            {isArchivedView ? "Archived Projects" : "Projects"}
+          </h1>
+          <p className="m-0 text-sm text-ink-2">
+            {isArchivedView
+              ? "Recover archived workspaces or remove them permanently"
+              : "Manage your workspaces and high-level goals"}
+          </p>
         </div>
 
-        <button
-          type="button"
-          onClick={() => {
-            openProjectModal(null);
-          }}
-          className="inline-flex items-center gap-2 self-start rounded-md bg-accent px-4 py-2 text-sm font-semibold text-paper transition-opacity hover:opacity-90 focus-visible:outline-focus"
-        >
-          <Plus size={ICON_SIZE} />
-          New Project
-        </button>
+        <div className="flex flex-wrap items-center gap-2 self-start">
+          {isArchivedView ? (
+            <button
+              type="button"
+              onClick={() => {
+                setArchivedView(false);
+              }}
+              className="inline-flex items-center gap-2 rounded-md border border-rule bg-paper px-3 py-2 text-sm font-semibold text-ink-2 transition-colors hover:bg-paper-2 hover:text-ink focus-visible:outline-focus"
+            >
+              <ArrowLeft size={ICON_SIZE} />
+              Back to Projects
+            </button>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={() => {
+                  setArchivedView(true);
+                }}
+                className="inline-flex items-center gap-2 rounded-md border border-rule bg-paper px-3 py-2 text-sm font-semibold text-ink-2 transition-colors hover:bg-paper-2 hover:text-ink focus-visible:outline-focus"
+              >
+                <Archive size={ICON_SIZE} />
+                Archived ({archivedProjects.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  openProjectModal(null);
+                }}
+                className="inline-flex items-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-semibold text-paper transition-opacity hover:opacity-90 focus-visible:outline-focus"
+              >
+                <Plus size={ICON_SIZE} />
+                New Project
+              </button>
+            </>
+          )}
+        </div>
       </div>
 
-      {projects.length > 0 && (
+      {!isArchivedView && activeProjects.length > 0 && (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-rule bg-paper p-3 shadow-xs">
           <div className="flex flex-wrap items-center gap-3">
             <label className="flex items-center gap-2 text-xs font-semibold text-ink-2">
@@ -167,7 +222,7 @@ export function ProjectsView({
                 }}
                 className="rounded-md border border-rule bg-paper-2 px-3 py-1.5 text-xs text-ink focus-visible:outline-focus"
               >
-                <option value="">All Kinds ({projects.length})</option>
+                <option value="">All Kinds ({activeProjects.length})</option>
                 {PROJECT_KINDS.map((k) => (
                   <option key={k} value={k}>
                     {KIND_LABELS[k]}
@@ -233,19 +288,31 @@ export function ProjectsView({
       ) : filteredProjects.length === 0 ? (
         <div className="flex flex-col items-center justify-center rounded-lg border border-dashed border-rule bg-paper-2 p-12 text-center">
           <div className="flex size-12 items-center justify-center rounded-full bg-paper text-ink-3">
-            {hasActiveFilters ? <Search size={24} /> : <FolderPlus size={24} />}
+            {hasActiveFilters ? (
+              <Search size={24} />
+            ) : isArchivedView ? (
+              <Archive size={24} />
+            ) : (
+              <FolderPlus size={24} />
+            )}
           </div>
           <h3 className="m-0 mt-4 font-display text-base font-bold text-ink">
-            {hasActiveFilters ? "No matching projects found" : "No projects yet"}
+            {hasActiveFilters
+              ? "No matching projects found"
+              : isArchivedView
+                ? "No archived projects"
+                : "No projects yet"}
           </h3>
           <p className="m-0 mt-1 max-w-sm text-xs text-ink-2">
             {searchQuery
               ? `No projects matched "${searchQuery}". Try a different search term.`
               : hasActiveFilters
                 ? "No projects matched the selected filters."
-                : "Get started by creating your first project to organize your tasks."}
+                : isArchivedView
+                  ? "Archived projects will appear here so you can recover them anytime."
+                  : "Get started by creating your first project to organize your tasks."}
           </p>
-          {!hasActiveFilters && (
+          {!hasActiveFilters && !isArchivedView && (
             <button
               type="button"
               onClick={() => {
@@ -257,7 +324,7 @@ export function ProjectsView({
               Create your first project
             </button>
           )}
-          {(kindFilter || taskFilter || needsHumanOnly) && (
+          {!isArchivedView && (kindFilter || taskFilter || needsHumanOnly) && (
             <button
               type="button"
               onClick={clearFilters}
@@ -280,6 +347,12 @@ export function ProjectsView({
               onEdit={(p) => {
                 openProjectModal(p);
               }}
+              onArchive={(p) => {
+                void onUpdateProject(p.id, { archived: true });
+              }}
+              onRecover={(p) => {
+                void onUpdateProject(p.id, { archived: false });
+              }}
               onDelete={(p) => {
                 setDeleteTarget(p);
               }}
@@ -298,6 +371,12 @@ export function ProjectsView({
         onEdit={(p) => {
           setViewProjectId(null);
           openProjectModal(p);
+        }}
+        onArchive={(p) => {
+          void onUpdateProject(p.id, { archived: true });
+        }}
+        onRecover={(p) => {
+          void onUpdateProject(p.id, { archived: false });
         }}
         onDelete={(p) => {
           setViewProjectId(null);

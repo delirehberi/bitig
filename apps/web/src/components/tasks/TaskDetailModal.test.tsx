@@ -255,7 +255,7 @@ describe("opening the detail view", () => {
     expect(onView).toHaveBeenCalledWith(TASK);
   });
 
-  it("hides the description on done cards while keeping it on active cards", () => {
+  it("hides the description on done and archived cards and applies skinny hover-expanding layout to archived cards", () => {
     const { rerender } = render(
       <FeatureFlagsProvider mode="local">
         <TaskCard
@@ -285,6 +285,25 @@ describe("opening the detail view", () => {
       </FeatureFlagsProvider>,
     );
     expect(screen.queryByText("Cover the REST API")).not.toBeInTheDocument();
+
+    rerender(
+      <FeatureFlagsProvider mode="local">
+        <TaskCard
+          task={{ ...TASK, status: "archived" }}
+          projects={[PROJECT]}
+          onView={vi.fn()}
+          onEdit={vi.fn()}
+          onDelete={vi.fn()}
+          onComplete={vi.fn()}
+          onStatusChange={vi.fn()}
+        />
+      </FeatureFlagsProvider>,
+    );
+    expect(screen.queryByText("Cover the REST API")).not.toBeInTheDocument();
+    expect(screen.queryByText("#docs")).not.toBeInTheDocument();
+    const article = screen.getByRole("article");
+    expect(article.className).toContain("w-4/5");
+    expect(article.className).toContain("hover:w-full");
   });
 
   it("calls onView from the list row title", async () => {

@@ -58,14 +58,23 @@ export function registerBitigTools(server: McpServer, storage: StorageProvider):
   server.registerTool(
     "list_projects",
     {
-      description: "List all projects in Bitig storage",
-      inputSchema: {},
+      description: "List projects in Bitig storage, optionally filtered by archived status",
+      inputSchema: {
+        archived: z
+          .boolean()
+          .optional()
+          .describe("false lists only active projects, true lists only archived projects; omit for all"),
+      },
       annotations: { readOnlyHint: true },
     },
-    async (_args, extra) => {
+    async (args, extra) => {
       try {
         const projects = await storage.getProjects({ signal: extra.signal });
-        return formatSuccessResult(projects);
+        const matching =
+          args.archived === undefined
+            ? projects
+            : projects.filter((project) => (project.archived === true) === args.archived);
+        return formatSuccessResult(matching);
       } catch (err) {
         return formatErrorResult(err);
       }
@@ -106,7 +115,7 @@ export function registerBitigTools(server: McpServer, storage: StorageProvider):
   server.registerTool(
     "update_project",
     {
-      description: "Update project metadata (name, description, kind, resources, key)",
+      description: "Update project metadata (name, description, kind, resources, key, archived)",
       inputSchema: {
         id: IdSchema,
         name: ProjectNameSchema.optional(),
@@ -118,6 +127,11 @@ export function registerBitigTools(server: McpServer, storage: StorageProvider):
         key: ProjectKeySchema.optional().describe(
           `${KEY_DESCRIPTION} Changing it changes every task's code in the project.`,
         ),
+        archived: z
+          .boolean()
+          .nullable()
+          .optional()
+          .describe("true archives the project; false or null recovers/unarchives it."),
       },
     },
     async (args, extra) => {

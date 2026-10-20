@@ -10,12 +10,13 @@ import { useSyncExternalStore } from "react";
 export type Route =
   | { readonly name: "landing" }
   | { readonly name: "overview" }
-  | { readonly name: "projects" }
+  | { readonly name: "projects"; readonly archived?: true }
   | { readonly name: "tasks"; readonly projectId?: string; readonly needsHuman?: true }
   | { readonly name: "login"; readonly next?: string }
   | { readonly name: "not_found" };
 
 const NAVIGATE_EVENT = "bitig:navigate";
+const ARCHIVED_PARAM = "archived";
 const PROJECT_PARAM = "project";
 /** `?needs=human` shows only the tasks waiting on a person. */
 const NEEDS_PARAM = "needs";
@@ -47,7 +48,9 @@ export function parseRoute(pathname: string, search: string): Route {
     case APP_PATH:
       return { name: "overview" };
     case "/projects":
-      return { name: "projects" };
+      return params.get(ARCHIVED_PARAM) === "true"
+        ? { name: "projects", archived: true as const }
+        : { name: "projects" };
     case "/tasks": {
       const projectId = params.get(PROJECT_PARAM);
       return {
@@ -73,7 +76,7 @@ export function hrefFor(route: Route): string {
     case "not_found":
       return APP_PATH;
     case "projects":
-      return "/projects";
+      return route.archived ? `/projects?${ARCHIVED_PARAM}=true` : "/projects";
     case "tasks": {
       const params = new URLSearchParams();
       if (route.projectId) params.set(PROJECT_PARAM, route.projectId);

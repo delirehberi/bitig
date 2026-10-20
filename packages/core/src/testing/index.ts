@@ -142,6 +142,26 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
       it("creates a project without resources by default", async () => {
         const project = await createProject();
         expect(project).not.toHaveProperty("resources");
+        expect(project).not.toHaveProperty("archived");
+      });
+
+      it("archives and recovers a project", async () => {
+        const project = await createProject();
+        const archived = await storage.updateProject(project.id, { archived: true });
+        expect(archived.archived).toBe(true);
+        expect(await storage.getProject(project.id)).toEqual(archived);
+
+        const renamed = await storage.updateProject(project.id, { name: "Still Archived" });
+        expect(renamed.archived).toBe(true);
+
+        const recovered = await storage.updateProject(project.id, { archived: false });
+        expect(recovered).not.toHaveProperty("archived");
+        expect(await storage.getProject(project.id)).toEqual(recovered);
+
+        await storage.updateProject(project.id, { archived: true });
+        const clearedWithNull = await storage.updateProject(project.id, { archived: null });
+        expect(clearedWithNull).not.toHaveProperty("archived");
+        expect(await storage.getProject(project.id)).toEqual(clearedWithNull);
       });
 
       it("round-trips resources in order", async () => {

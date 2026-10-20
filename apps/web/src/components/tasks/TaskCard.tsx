@@ -59,11 +59,16 @@ export function TaskCard({
   const { taskVisibility } = useFeatureFlags();
   const project = projects.find((p) => p.id === task.projectId);
   const isDone = task.status === "done";
+  const isArchived = task.status === "archived";
 
   return (
     <article
-      className={`group relative flex flex-col justify-between rounded-lg border bg-paper p-4 transition-all hover:border-rule-strong hover:shadow-xs ${
-        isDone ? "border-rule/60 opacity-80" : "border-rule"
+      className={`group relative flex flex-col justify-between rounded-lg border bg-paper transition-all hover:border-rule-strong hover:shadow-xs ${
+        isArchived
+          ? "w-4/5 border-rule/60 px-3 py-2 opacity-75 hover:w-full hover:p-4 hover:opacity-100"
+          : isDone
+            ? "border-rule/60 p-4 opacity-80"
+            : "border-rule p-4"
       }`}
     >
       <div>
@@ -184,7 +189,7 @@ export function TaskCard({
                 {task.title}
               </button>
             </h4>
-            {!isDone && task.description && (
+            {!isDone && !isArchived && task.description && (
               <p className="m-0 mt-1 line-clamp-2 text-xs text-ink-2">{task.description}</p>
             )}
           </div>
@@ -196,7 +201,7 @@ export function TaskCard({
           </div>
         )}
 
-        {task.labels && task.labels.length > 0 && (
+        {!isArchived && task.labels && task.labels.length > 0 && (
           <div className="mt-3 flex flex-wrap items-center gap-1">
             <Tag size={12} className="text-ink-3" />
             {task.labels.map((label) => (
@@ -211,7 +216,11 @@ export function TaskCard({
         )}
       </div>
 
-      <div className="mt-4 flex items-center justify-between border-t border-rule pt-2.5 text-xs text-ink-3">
+      <div
+        className={`mt-4 items-center justify-between border-t border-rule pt-2.5 text-xs text-ink-3 ${
+          isArchived ? "hidden group-hover:flex" : "flex"
+        }`}
+      >
         <div className="flex items-center gap-2">
           {task.dueDate && (
             <div className="flex items-center gap-1 font-mono text-2xs">

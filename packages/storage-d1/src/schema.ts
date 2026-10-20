@@ -19,6 +19,7 @@ export const projects = sqliteTable("projects", {
   kind: text("kind").$type<ProjectKind>().notNull().default(DEFAULT_PROJECT_KIND),
   resources: text("resources", { mode: "json" }).$type<ProjectResource[]>(),
   key: text("key"),
+  archived: integer("archived", { mode: "boolean" }),
   createdAt: integer("created_at").notNull(),
   updatedAt: integer("updated_at").notNull(),
 });

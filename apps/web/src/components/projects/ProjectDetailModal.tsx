@@ -1,5 +1,7 @@
 import { useEffect, useRef } from "react";
 import {
+  Archive,
+  ArchiveRestore,
   Edit2,
   FolderKanban,
   Hand,
@@ -21,6 +23,8 @@ interface ProjectDetailModalProps {
   readonly onEdit: (project: Project) => void;
   readonly onDelete: (project: Project) => void;
   readonly onSelectTasks: (projectId: string) => void;
+  readonly onArchive?: (project: Project) => void;
+  readonly onRecover?: (project: Project) => void;
 }
 
 const ICON_SIZE = 16;
@@ -65,6 +69,8 @@ export function ProjectDetailModal({
   onEdit,
   onDelete,
   onSelectTasks,
+  onArchive,
+  onRecover,
 }: ProjectDetailModalProps) {
   const isOpen = project !== null;
   const panelRef = useRef<HTMLDivElement>(null);
@@ -189,6 +195,35 @@ export function ProjectDetailModal({
             <Trash2 size={14} aria-hidden="true" />
             Delete
           </button>
+          {project.archived ? (
+            onRecover && (
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  onRecover(project);
+                }}
+                className="inline-flex items-center gap-1.5 rounded-md border border-rule px-3 py-2 text-xs font-medium text-ink-2 transition-colors hover:bg-paper-2 hover:text-ink"
+              >
+                <ArchiveRestore size={14} aria-hidden="true" />
+                Recover
+              </button>
+            )
+          ) : (
+            onArchive && (
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  onArchive(project);
+                }}
+                className="inline-flex items-center gap-1.5 rounded-md border border-rule px-3 py-2 text-xs font-medium text-ink-2 transition-colors hover:bg-paper-2 hover:text-ink"
+              >
+                <Archive size={14} aria-hidden="true" />
+                Archive
+              </button>
+            )
+          )}
           <button
             type="button"
             onClick={() => {

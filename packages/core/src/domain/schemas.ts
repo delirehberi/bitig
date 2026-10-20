@@ -114,6 +114,8 @@ export const ProjectSchema = z.strictObject({
   resources: ProjectResourcesSchema.min(1).exactOptional(),
   /** Set on every new project; projects created before ticket codes may lack one until backfilled. */
   key: ProjectKeySchema.exactOptional(),
+  /** Set while the project is archived; omitted on active projects. */
+  archived: z.literal(true).exactOptional(),
 });
 
 export const TaskSchema = z.strictObject({
@@ -169,7 +171,7 @@ export const CreateProjectInputSchema = z.strictObject({
   key: ProjectKeySchema.optional(),
 });
 
-/** `undefined` leaves a field unchanged; only `resources` can be cleared, with `null` or `[]`. */
+/** `undefined` leaves a field unchanged; `resources` can be cleared with `null` or `[]`, and `archived` with `false` or `null`. */
 export const UpdateProjectInputSchema = z
   .strictObject({
     name: ProjectNameSchema.optional(),
@@ -179,6 +181,8 @@ export const UpdateProjectInputSchema = z
     resources: ProjectResourcesSchema.nullable().optional(),
     /** Changes the codes of every task in the project; numbers stay. */
     key: ProjectKeySchema.optional(),
+    /** `true` archives the project; `false` or `null` recovers it. */
+    archived: z.boolean().nullable().optional(),
   })
   .refine(hasAnyDefinedField, { message: EMPTY_PATCH_MESSAGE });
 

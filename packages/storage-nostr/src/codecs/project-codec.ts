@@ -3,6 +3,7 @@ import { ProjectSchema } from "@bitig/core";
 import {
   NOSTR_KIND_PROJECT,
   NOSTR_TAG_ALT,
+  NOSTR_TAG_ARCHIVED,
   NOSTR_TAG_D,
   NOSTR_TAG_KIND,
   NOSTR_TAG_NAME,
@@ -45,6 +46,9 @@ export function encodeProjectEvent(project: Project): {
   if (project.key !== undefined) {
     tags.push([NOSTR_TAG_PROJECT_KEY, project.key]);
   }
+  if (project.archived === true) {
+    tags.push([NOSTR_TAG_ARCHIVED, "true"]);
+  }
   for (const resource of project.resources ?? []) {
     tags.push([NOSTR_TAG_RESOURCE, resource.url, resource.type, resource.label]);
   }
@@ -72,6 +76,7 @@ export function decodeProjectEvent(event: NostrEventLike): Project {
   let createdAtIso: string | undefined;
   let updatedAtIso: string | undefined;
   let keyTag: string | undefined;
+  let archivedTag = false;
   const resources: { url: string; type: string | undefined; label: string | undefined }[] = [];
 
   for (const tag of event.tags) {
@@ -91,6 +96,8 @@ export function decodeProjectEvent(event: NostrEventLike): Project {
       updatedAtIso = val;
     } else if (key === NOSTR_TAG_PROJECT_KEY) {
       keyTag = val;
+    } else if (key === NOSTR_TAG_ARCHIVED) {
+      archivedTag = val === "true";
     } else if (key === NOSTR_TAG_RESOURCE) {
       resources.push({ url: val, type: tag[2], label: tag[3] });
     }
@@ -110,6 +117,7 @@ export function decodeProjectEvent(event: NostrEventLike): Project {
     updatedAt: updatedAtIso ?? fallbackIso,
     ...(resources.length > 0 ? { resources } : {}),
     ...(keyTag !== undefined ? { key: keyTag } : {}),
+    ...(archivedTag ? { archived: true as const } : {}),
   };
 
   return ProjectSchema.parse(rawProject);

@@ -31,6 +31,7 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
   const activeTab = route.name;
   const selectedProjectId = route.name === "tasks" ? route.projectId : undefined;
   const needsHumanOnly = route.name === "tasks" && route.needsHuman === true;
+  const archivedProjectsOnly = route.name === "projects" && route.archived === true;
 
   const storage = useStorage(mode);
 
@@ -92,7 +93,7 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
             <Overview
               mode={mode}
               health={health}
-              projectsCount={projects.length}
+              projectsCount={projects.filter((project) => !project.archived).length}
               tasksCount={tasks.length}
               needsHumanCount={tasks.filter((task) => task.needsHuman !== undefined).length}
               onNavigate={(tab) => {
@@ -112,6 +113,10 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
               onDeleteProject={deleteProject}
               onSelectProject={handleSelectProject}
               searchQuery={searchQuery}
+              archivedView={archivedProjectsOnly}
+              onArchivedViewChange={(archived) => {
+                navigate(hrefFor(archived ? { name: "projects", archived: true } : { name: "projects" }));
+              }}
             />
           )}
 

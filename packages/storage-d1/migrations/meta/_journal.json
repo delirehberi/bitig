@@ -43,6 +43,13 @@
       "when": 1792457317965,
       "tag": "0005_task_comments",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1792503780000,
+      "tag": "0006_project_archived",
+      "breakpoints": true
     }
   ]
 }

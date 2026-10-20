@@ -125,7 +125,9 @@ export function applyProjectPatch(
   if (parsed.key !== undefined && parsed.key !== project.key) {
     assertProjectKeyAvailable(parsed.key, otherKeys, "updateProject");
   }
-  const { resources, ...rest } = project;
+  const { resources, archived, ...rest } = project;
+  const nextArchived =
+    parsed.archived === undefined ? archived : parsed.archived === true ? (true as const) : undefined;
   return parseOrThrow(
     ProjectSchema,
     withResources(
@@ -136,6 +138,7 @@ export function applyProjectPatch(
         kind: parsed.kind ?? project.kind,
         updatedAt: nextUpdatedAt(project.updatedAt, now),
         ...(parsed.key !== undefined ? { key: parsed.key } : {}),
+        ...(nextArchived !== undefined ? { archived: nextArchived } : {}),
       },
       resolveClearable(resources, parsed.resources),
     ),
