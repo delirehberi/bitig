@@ -3,6 +3,9 @@
  */
 import {
   ChecklistSchema,
+  CommentAuthorSchema,
+  CommentAuthorTypeSchema,
+  CommentBodySchema,
   CreateProjectInputSchema,
   CreateTaskInputSchema,
   DueDateSchema,
@@ -184,7 +187,7 @@ export function registerBitigTools(server: McpServer, storage: StorageProvider):
   server.registerTool(
     "get_task",
     {
-      description: "Get a task by its ID or ticket code (e.g. BIT-12)",
+      description: "Get a task by its ID or ticket code (e.g. BIT-12), with its comments oldest first",
       annotations: { readOnlyHint: true },
       inputSchema: {
         id: TASK_REF,
@@ -196,7 +199,8 @@ export function registerBitigTools(server: McpServer, storage: StorageProvider):
         const id = await resolveTaskRef(storage, args.id, opts);
         const task = await storage.getTask(id, opts);
         if (task === null) throw new NotFoundError("task", args.id);
-        return formatSuccessResult(await withCode(task, opts));
+        const comments = await storage.getComments(id, opts);
+        return formatSuccessResult({ ...(await withCode(task, opts)), comments });
       } catch (err) {
         return formatErrorResult(err);
       }
@@ -331,6 +335,74 @@ export function registerBitigTools(server: McpServer, storage: StorageProvider):
       try {
         const result = await backfillTicketCodes(storage, { signal: extra.signal });
         return formatSuccessResult({ keyedProjects: result.projects, numberedTasks: result.tasks });
+      } catch (err) {
+        return formatErrorResult(err);
+      }
+    },
+  );
+
+  // 12. list_comments
+  server.registerTool(
+    "list_comments",
+    {
+      description: "List a task's comments, oldest first",
+      annotations: { readOnlyHint: true },
+      inputSchema: {
+        taskId: TASK_REF,
+      },
+    },
+    async (args, extra) => {
+      try {
+        const opts = { signal: extra.signal };
+        const taskId = await resolveTaskRef(storage, args.taskId, opts);
+        return formatSuccessResult(await storage.getComments(taskId, opts));
+      } catch (err) {
+        return formatErrorResult(err);
+      }
+    },
+  );
+
+  // 13. add_comment
+  server.registerTool(
+    "add_comment",
+    {
+      description:
+        "Add a Markdown comment to a task: context worth keeping for later, a decision, or a question for a person. People answer with comments too.",
+      inputSchema: {
+        taskId: TASK_REF,
+        body: CommentBodySchema,
+        author: CommentAuthorSchema.optional().describe("Your name, e.g. claude"),
+        authorType: CommentAuthorTypeSchema.optional().describe(
+          "agent (the default) or human, when relaying a person's own words",
+        ),
+      },
+    },
+    async (args, extra) => {
+      try {
+        const opts = { signal: extra.signal };
+        const taskId = await resolveTaskRef(storage, args.taskId, opts);
+        const comment = await storage.addComment({ ...args, taskId, authorType: args.authorType ?? "agent" }, opts);
+        return formatSuccessResult(comment);
+      } catch (err) {
+        return formatErrorResult(err);
+      }
+    },
+  );
+
+  // 14. delete_comment
+  server.registerTool(
+    "delete_comment",
+    {
+      description: "Permanently delete a comment by its ID",
+      annotations: { destructiveHint: true },
+      inputSchema: {
+        id: IdSchema,
+      },
+    },
+    async (args, extra) => {
+      try {
+        await storage.deleteComment(args.id, { signal: extra.signal });
+        return formatSuccessResult({ success: true, deletedCommentId: args.id });
       } catch (err) {
         return formatErrorResult(err);
       }

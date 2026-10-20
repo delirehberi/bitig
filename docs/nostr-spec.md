@@ -20,6 +20,7 @@ Bitig uses **parameterized replaceable events** (kinds `30000 <= kind < 40000`, 
 | :--- | :--- | :--- |
 | `30331` | **Bitig Project** | Parameterized replaceable event representing a project container. |
 | `30332` | **Bitig Task** | Parameterized replaceable event representing an individual task. |
+| `30333` | **Bitig Comment** | Parameterized replaceable event representing a comment on a task. |
 | `31989` | **App Handler (NIP-89)** | Metadata event declaring Bitig as a handler for kinds `30331` and `30332`. |
 | `5` | **Deletion (NIP-09)** | Standard deletion event referencing deleted project or task coordinates. |
 
@@ -102,6 +103,32 @@ The `content` field contains a cleartext JSON object:
 
 ---
 
+## 4a. Comment Event (`kind: 30333`)
+
+A comment on a task: context an agent keeps, or a person's answer. Comments are never edited, only added and deleted.
+
+### Tags
+
+| Tag | Required | Description | Example |
+| :--- | :--- | :--- | :--- |
+| `d` | **Yes** | Comment ID (UUIDv7) | `["d", "01944547-4c1a-7d20-8a11-2f6e1b0c9d33"]` |
+| `a` | **Yes** | Address coordinate of the task: `30332:<authorPubkey>:<taskId>` | `["a", "30332:fa56...:01944547-2b7e-7c15-992e-33633beba656"]` |
+| `task` | **Yes** | Task ID for direct query indexing (`#task`) | `["task", "01944547-2b7e-7c15-992e-33633beba656"]` |
+| `author_type` | **Yes** | Who wrote it: `human` or `agent` | `["author_type", "agent"]` |
+| `created_at_iso` | No | Millisecond-precision creation time | `["created_at_iso", "2026-10-20T00:30:00.000Z"]` |
+| `alt` | No | NIP-31 fallback description | `["alt", "Bitig Comment"]` |
+
+### Content
+Always NIP-44 self-encrypted, whatever the task's `is_public`: a task can be made private later, and relays keep old events. The plaintext is JSON:
+```json
+{ "body": "Use the staging key.", "author": "claude" }
+```
+`author` (a display name, up to 100 characters) is omitted when not set. `body` is Markdown, 1–20,000 characters.
+
+A comment stays with its task when the task moves to another project, since it references only the task.
+
+---
+
 ## 5. Deletion & Cascades (NIP-09)
 
 Entities are permanently deleted by publishing a **kind `5`** deletion event signed by the author.
@@ -110,6 +137,10 @@ Entities are permanently deleted by publishing a **kind `5`** deletion event sig
 Publish a kind `5` event with:
 - `["a", "30332:<authorPubkey>:<taskId>"]`
 - `["e", "<latestTaskEventId>"]` (optional but recommended)
+- `["a", "30333:<authorPubkey>:<commentId>"]` for each of the task's comments, with `["k", "30333"]`
+
+### Deleting a Comment
+Publish a kind `5` event with `["a", "30333:<authorPubkey>:<commentId>"]` and `["k", "30333"]`.
 
 ### Deleting a Project (Cascading Deletion)
 In Bitig, deleting a project cascades to delete all tasks belonging to it.
@@ -117,8 +148,10 @@ Publish a single kind `5` event containing:
 - `["a", "30331:<authorPubkey>:<projectId>"]`
 - `["a", "30332:<authorPubkey>:<taskId1>"]`
 - `["a", "30332:<authorPubkey>:<taskId2>"]`
+- `["a", "30333:<authorPubkey>:<commentId>"]` for each comment on those tasks
 - `["k", "30331"]`
 - `["k", "30332"]`
+- `["k", "30333"]` (when there are comments)
 
 When a client queries events from relays, it must fetch kind `5` events authored by the user and treat any referenced `d` or `a` coordinates as tombstones.
 
@@ -135,6 +168,7 @@ To let third-party Nostr clients know that Bitig handles project and task events
     ["d", "bitig"],
     ["k", "30331"],
     ["k", "30332"],
+    ["k", "30333"],
     ["name", "Bitig"],
     ["about", "Edge-ready, decentralized task and project manager."],
     ["web", "https://bitig.app/projects/<bech32>?mode=nostr", "project"],

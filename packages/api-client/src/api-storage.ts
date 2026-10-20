@@ -1,5 +1,7 @@
 import {
   BackupBundleSchema,
+  CommentSchema,
+  CreateCommentInputSchema,
   CreateProjectInputSchema,
   CreateTaskInputSchema,
   IdSchema,
@@ -14,6 +16,8 @@ import {
   parseOrThrow,
   throwIfAborted,
   type BackupBundle,
+  type Comment,
+  type CreateCommentInput,
   type CreateProjectInput,
   type CreateTaskInput,
   type OperationOptions,
@@ -392,6 +396,78 @@ export class ApiStorage implements StorageProvider {
     }
 
     return this.parseJsonResponse<Task>(res);
+  }
+
+  async getComments(taskId: string, opts?: OperationOptions): Promise<Comment[]> {
+    throwIfAborted(opts?.signal);
+    const validId = parseOrThrow(IdSchema, taskId, "getComments taskId");
+    const res = await this.request(
+      `/api/tasks/${encodeURIComponent(validId)}/comments`,
+      { method: "GET" },
+      opts,
+    );
+
+    if (res.status === HTTP_UNAUTHORIZED) {
+      throw new AuthError();
+    }
+    if (!res.ok) {
+      throw new StorageError("io", `Failed to get comments of task ${taskId}: HTTP ${res.status.toString()}`);
+    }
+
+    return this.parseJsonResponse<Comment[]>(res);
+  }
+
+  async addComment(input: CreateCommentInput, opts?: OperationOptions): Promise<Comment> {
+    throwIfAborted(opts?.signal);
+    const { taskId, ...validated } = parseOrThrow(CreateCommentInputSchema, input, "addComment");
+
+    const res = await this.request(
+      `/api/tasks/${encodeURIComponent(taskId)}/comments`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(validated),
+      },
+      opts,
+    );
+
+    if (res.status === HTTP_NOT_FOUND) {
+      throw new NotFoundError("task", taskId);
+    }
+    if (res.status === HTTP_BAD_REQUEST) {
+      const err = await this.parseJsonResponse<{ details?: readonly [] }>(res);
+      throw new ValidationError("addComment", err.details ?? []);
+    }
+    if (res.status === HTTP_UNAUTHORIZED) {
+      throw new AuthError();
+    }
+    if (res.status !== HTTP_CREATED && res.status !== HTTP_OK) {
+      throw new StorageError("io", `Failed to add comment: HTTP ${res.status.toString()}`);
+    }
+
+    const data = await this.parseJsonResponse<unknown>(res);
+    return parseOrThrow(CommentSchema, data, "addComment response");
+  }
+
+  async deleteComment(id: string, opts?: OperationOptions): Promise<void> {
+    throwIfAborted(opts?.signal);
+    const validId = parseOrThrow(IdSchema, id, "deleteComment id");
+
+    const res = await this.request(
+      `/api/comments/${encodeURIComponent(validId)}`,
+      { method: "DELETE" },
+      opts,
+    );
+
+    if (res.status === HTTP_NOT_FOUND) {
+      throw new NotFoundError("comment", id);
+    }
+    if (res.status === HTTP_UNAUTHORIZED) {
+      throw new AuthError();
+    }
+    if (res.status !== HTTP_NO_CONTENT && !res.ok) {
+      throw new StorageError("io", `Failed to delete comment ${id}: HTTP ${res.status.toString()}`);
+    }
   }
 
   async exportProject(id: string, opts?: OperationOptions): Promise<ProjectBundle> {

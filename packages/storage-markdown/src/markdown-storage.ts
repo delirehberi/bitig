@@ -12,10 +12,13 @@ import {
   TaskFilterSchema,
   applyProjectPatch,
   applyTaskPatch,
+  buildComment,
   buildProject,
   buildTask,
+  cloneComment,
   cloneProject,
   cloneTask,
+  compareComments,
   compareProjects,
   compareTasks,
   completeTaskEntity,
@@ -26,6 +29,8 @@ import {
   throwIfAborted,
   toTimestamp,
   type BackupBundle,
+  type Comment,
+  type CreateCommentInput,
   type CreateProjectInput,
   type CreateTaskInput,
   type OperationOptions,
@@ -38,14 +43,25 @@ import {
   type UpdateProjectInput,
   type UpdateTaskInput,
 } from "@bitig/core";
-import { decodeProject, decodeTask, encodeProject, encodeTask } from "./format/codec";
+import {
+  decodeComment,
+  decodeProject,
+  decodeTask,
+  encodeComment,
+  encodeProject,
+  encodeTask,
+} from "./format/codec";
 import type { FileSystemPort } from "./fs/port";
 import {
   ROOT_PATH,
+  commentFilePath,
+  commentIdFromFileName,
+  commentsDirPath,
   isEntityId,
   projectDirPath,
   projectFilePath,
   taskFilePath,
+  taskIdFromCommentsDirName,
   taskIdFromFileName,
 } from "./layout";
 import { AsyncMutex } from "./lock/mutex";
@@ -253,7 +269,11 @@ export class MarkdownStorage implements StorageProvider {
 
         const nextFilePath = taskFilePath(next.projectId, next.id);
         await this.#fs.writeTextAtomic(nextFilePath, encodeTask(next), { signal: opts?.signal });
+        // Copy the comments before removing anything, so a failure never loses one.
+        const comments = await this.#readTaskComments(existing.projectId, validId, opts?.signal);
+        await this.#writeComments(next.projectId, comments, opts?.signal);
         await this.#fs.removeFile(found.filePath, { signal: opts?.signal });
+        await this.#fs.removeDir(commentsDirPath(existing.projectId, validId), { signal: opts?.signal });
       } else {
         await this.#fs.writeTextAtomic(found.filePath, encodeTask(next), { signal: opts?.signal });
       }
@@ -272,6 +292,7 @@ export class MarkdownStorage implements StorageProvider {
       if (found === null) throw new NotFoundError("task", validId);
 
       await this.#fs.removeFile(found.filePath, { signal: opts?.signal });
+      await this.#fs.removeDir(commentsDirPath(found.projectId, validId), { signal: opts?.signal });
     }, { signal: opts?.signal });
   }
 
@@ -294,6 +315,44 @@ export class MarkdownStorage implements StorageProvider {
     }, { signal: opts?.signal });
   }
 
+  async getComments(taskId: string, opts?: OperationOptions): Promise<Comment[]> {
+    throwIfAborted(opts?.signal);
+    const validTaskId = parseOrThrow(IdSchema, taskId, "getComments");
+
+    return this.#lock.withLock(async () => {
+      throwIfAborted(opts?.signal);
+      const found = await this.#locateTask(validTaskId, opts?.signal);
+      if (found === null) return [];
+      const comments = await this.#readTaskComments(found.projectId, validTaskId, opts?.signal);
+      return comments.sort(compareComments).map(cloneComment);
+    }, { signal: opts?.signal });
+  }
+
+  async addComment(input: CreateCommentInput, opts?: OperationOptions): Promise<Comment> {
+    throwIfAborted(opts?.signal);
+    const comment = buildComment(input, this.#deps);
+
+    return this.#lock.withLock(async () => {
+      throwIfAborted(opts?.signal);
+      const found = await this.#locateTask(comment.taskId, opts?.signal);
+      if (found === null) throw new NotFoundError("task", comment.taskId);
+      await this.#writeComments(found.projectId, [comment], opts?.signal);
+      return cloneComment(comment);
+    }, { signal: opts?.signal });
+  }
+
+  async deleteComment(id: string, opts?: OperationOptions): Promise<void> {
+    throwIfAborted(opts?.signal);
+    const validId = parseOrThrow(IdSchema, id, "deleteComment");
+
+    return this.#lock.withLock(async () => {
+      throwIfAborted(opts?.signal);
+      const filePath = await this.#locateComment(validId, opts?.signal);
+      if (filePath === null) throw new NotFoundError("comment", validId);
+      await this.#fs.removeFile(filePath, { signal: opts?.signal });
+    }, { signal: opts?.signal });
+  }
+
   async exportProject(id: string, opts?: OperationOptions): Promise<ProjectBundle> {
     throwIfAborted(opts?.signal);
     const validId = parseOrThrow(IdSchema, id, "exportProject");
@@ -302,12 +361,17 @@ export class MarkdownStorage implements StorageProvider {
     if (project === null) throw new NotFoundError("project", validId);
 
     const tasks = await this.getTasks({ projectId: validId }, opts);
+    const comments = await this.#lock.withLock(
+      async () => this.#readProjectComments(validId, tasks, opts?.signal),
+      { signal: opts?.signal },
+    );
 
     const bundle: ProjectBundle = {
       version: BUNDLE_VERSION,
       exportedAt: toTimestamp(this.#deps.clock()),
       project,
       tasks,
+      comments,
     };
     return parseOrThrow(ProjectBundleSchema, bundle, "exportProject result");
   }
@@ -333,6 +397,7 @@ export class MarkdownStorage implements StorageProvider {
         const tPath = taskFilePath(validated.project.id, task.id);
         await this.#fs.writeTextAtomic(tPath, encodeTask(task), { signal: opts?.signal });
       }
+      await this.#writeComments(validated.project.id, validated.comments ?? [], opts?.signal);
 
       return copyProject(validated.project);
     }, { signal: opts?.signal });
@@ -402,6 +467,74 @@ export class MarkdownStorage implements StorageProvider {
       }
     }
     return tasks;
+  }
+
+  /** One task's comments, unsorted; call under the lock. */
+  async #readTaskComments(projectId: string, taskId: string, signal?: OperationOptions["signal"]): Promise<Comment[]> {
+    const entries = await this.#fs.listDir(commentsDirPath(projectId, taskId), { signal });
+    if (entries === null) return [];
+
+    const comments: Comment[] = [];
+    for (const entry of entries) {
+      throwIfAborted(signal);
+      if (entry.kind !== "file") continue;
+      const commentId = commentIdFromFileName(entry.name);
+      if (commentId === null) continue;
+      const filePath = commentFilePath(projectId, taskId, commentId);
+      const text = await this.#fs.readText(filePath, { signal });
+      if (text !== null) comments.push(decodeComment(taskId, commentId, text, filePath));
+    }
+    return comments;
+  }
+
+  /** Comments on `tasks` of one project, oldest first; call under the lock. */
+  async #readProjectComments(
+    projectId: string,
+    tasks: readonly Task[],
+    signal?: OperationOptions["signal"],
+  ): Promise<Comment[]> {
+    const comments: Comment[] = [];
+    for (const task of tasks) {
+      throwIfAborted(signal);
+      comments.push(...(await this.#readTaskComments(projectId, task.id, signal)));
+    }
+    return comments.sort(compareComments);
+  }
+
+  /** Writes comments into their tasks' comment directories in `projectId`; call under the lock. */
+  async #writeComments(projectId: string, comments: readonly Comment[], signal?: OperationOptions["signal"]): Promise<void> {
+    const readyDirs = new Set<string>();
+    for (const comment of comments) {
+      throwIfAborted(signal);
+      const dir = commentsDirPath(projectId, comment.taskId);
+      if (!readyDirs.has(dir)) {
+        if ((await this.#fs.listDir(dir, { signal })) === null) await this.#fs.makeDir(dir, { signal });
+        readyDirs.add(dir);
+      }
+      await this.#fs.writeTextAtomic(commentFilePath(projectId, comment.taskId, comment.id), encodeComment(comment), {
+        signal,
+      });
+    }
+  }
+
+  /** Path of the comment's file, or `null` if no task has it; call under the lock. */
+  async #locateComment(commentId: string, signal?: OperationOptions["signal"]): Promise<string | null> {
+    const rootEntries = await this.#fs.listDir(ROOT_PATH, { signal });
+    if (rootEntries === null) return null;
+
+    for (const rootEntry of rootEntries) {
+      if (rootEntry.kind !== "directory" || !isEntityId(rootEntry.name)) continue;
+      const entries = await this.#fs.listDir(projectDirPath(rootEntry.name), { signal });
+      for (const entry of entries ?? []) {
+        throwIfAborted(signal);
+        if (entry.kind !== "directory") continue;
+        const taskId = taskIdFromCommentsDirName(entry.name);
+        if (taskId === null) continue;
+        const filePath = commentFilePath(rootEntry.name, taskId, commentId);
+        if (await this.#fs.fileExists(filePath, { signal })) return filePath;
+      }
+    }
+    return null;
   }
 
   async #locateTask(taskId: string, signal?: OperationOptions["signal"]): Promise<{ projectId: string; filePath: string } | null> {

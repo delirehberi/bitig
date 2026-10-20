@@ -13,7 +13,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { NotFoundError, ValidationError } from "../domain/errors";
-import { ProjectSchema, TaskSchema } from "../domain/schemas";
+import { CommentSchema, ProjectSchema, TaskSchema } from "../domain/schemas";
 import type { Project, Task } from "../domain/types";
 import { PROJECT_KINDS } from "../domain/constants";
 import type { AbortSignalLike } from "../storage/abort";
@@ -533,10 +533,110 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
       });
     });
 
+    describe("comments", () => {
+      async function createTask(title = "t"): Promise<Task> {
+        const project = await createProject();
+        return storage.saveTask({ projectId: project.id, title });
+      }
+
+      it("starts with no comments, also for an unknown task", async () => {
+        const task = await createTask();
+        expect(await storage.getComments(task.id)).toEqual([]);
+        expect(await storage.getComments(UNKNOWN_ID)).toEqual([]);
+      });
+
+      it("adds comments with defaults, lists them oldest first and leaves the task unchanged", async () => {
+        const task = await createTask();
+        const first = await storage.addComment({ taskId: task.id, body: "  Which API key?  " });
+        const second = await storage.addComment({
+          taskId: task.id,
+          body: "Use the **staging** key.\n\n- one\n- two",
+          authorType: "agent",
+          author: " claude ",
+        });
+        expect(first).toMatchObject({ taskId: task.id, body: "Which API key?", authorType: "human" });
+        expect(first).not.toHaveProperty("author");
+        expect(second).toMatchObject({ authorType: "agent", author: "claude" });
+        expect(CommentSchema.parse(first)).toEqual(first);
+        expect(CommentSchema.parse(second)).toEqual(second);
+        expect(await storage.getComments(task.id)).toEqual([first, second]);
+        expect(await storage.getTask(task.id)).toEqual(task);
+      });
+
+      it("keeps each task's comments apart", async () => {
+        const a = await createTask("a");
+        const b = await createTask("b");
+        const onA = await storage.addComment({ taskId: a.id, body: "on a" });
+        const onB = await storage.addComment({ taskId: b.id, body: "on b" });
+        expect(await storage.getComments(a.id)).toEqual([onA]);
+        expect(await storage.getComments(b.id)).toEqual([onB]);
+      });
+
+      it("rejects invalid comments and comments on a missing task", async () => {
+        const task = await createTask();
+        await expect(storage.addComment({ taskId: task.id, body: "   " })).rejects.toBeInstanceOf(ValidationError);
+        await expect(
+          storage.addComment({ taskId: task.id, body: "x", authorType: "robot" } as never),
+        ).rejects.toBeInstanceOf(ValidationError);
+        await expect(storage.addComment({ taskId: MALFORMED_ID, body: "x" })).rejects.toBeInstanceOf(ValidationError);
+        await expect(storage.getComments(MALFORMED_ID)).rejects.toBeInstanceOf(ValidationError);
+        await expect(storage.addComment({ taskId: UNKNOWN_ID, body: "x" })).rejects.toBeInstanceOf(NotFoundError);
+        expect(await storage.getComments(task.id)).toEqual([]);
+      });
+
+      it("deletes one comment", async () => {
+        const task = await createTask();
+        const gone = await storage.addComment({ taskId: task.id, body: "gone" });
+        const kept = await storage.addComment({ taskId: task.id, body: "kept" });
+        await storage.deleteComment(gone.id);
+        expect(await storage.getComments(task.id)).toEqual([kept]);
+        await expect(storage.deleteComment(gone.id)).rejects.toBeInstanceOf(NotFoundError);
+        await expect(storage.deleteComment(UNKNOWN_ID)).rejects.toBeInstanceOf(NotFoundError);
+        await expect(storage.deleteComment(MALFORMED_ID)).rejects.toBeInstanceOf(ValidationError);
+      });
+
+      it("keeps comments on a task moved to another project", async () => {
+        const task = await createTask();
+        const comment = await storage.addComment({ taskId: task.id, body: "travels along" });
+        const target = await createProject("target");
+        await storage.updateTask(task.id, { projectId: target.id });
+        expect(await storage.getComments(task.id)).toEqual([comment]);
+      });
+
+      it("deletes a task's comments with the task and a project's with the project", async () => {
+        const project = await createProject("doomed");
+        const doomed = await storage.saveTask({ projectId: project.id, title: "doomed" });
+        const sibling = await storage.saveTask({ projectId: project.id, title: "sibling" });
+        const survivor = await createTask("survivor");
+        const doomedComment = await storage.addComment({ taskId: doomed.id, body: "gone with the task" });
+        await storage.addComment({ taskId: sibling.id, body: "gone with the project" });
+        const kept = await storage.addComment({ taskId: survivor.id, body: "kept" });
+
+        await storage.deleteTask(doomed.id);
+        expect(await storage.getComments(doomed.id)).toEqual([]);
+        await expect(storage.deleteComment(doomedComment.id)).rejects.toBeInstanceOf(NotFoundError);
+
+        await storage.deleteProject(project.id);
+        expect(await storage.getComments(sibling.id)).toEqual([]);
+        expect(await storage.getComments(survivor.id)).toEqual([kept]);
+      });
+
+      it("returns copies that cannot mutate stored state", async () => {
+        const task = await createTask();
+        const comment = await storage.addComment({ taskId: task.id, body: "original" });
+        const snapshot = { ...comment };
+        comment.body = "mutated";
+        const listed = await storage.getComments(task.id);
+        if (listed[0]) listed[0].body = "mutated";
+        expect(await storage.getComments(task.id)).toEqual([snapshot]);
+      });
+    });
+
     describe("abort", () => {
       it("rejects every method with the signal reason and changes nothing", async () => {
         const project = await createProject();
         const task = await storage.saveTask({ projectId: project.id, title: "t" });
+        const comment = await storage.addComment({ taskId: task.id, body: "c" });
         const { signal, reason } = abortedSignal();
         const opts = { signal };
 
@@ -552,6 +652,9 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
           () => storage.updateTask(task.id, { title: "changed" }, opts),
           () => storage.deleteTask(task.id, opts),
           () => storage.completeTask(task.id, opts),
+          () => storage.getComments(task.id, opts),
+          () => storage.addComment({ taskId: task.id, body: "new" }, opts),
+          () => storage.deleteComment(comment.id, opts),
           () => storage.exportProject(project.id, opts),
           () => storage.exportAll(opts),
         ];
@@ -561,6 +664,7 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
 
         expect(await storage.getProjects()).toEqual([project]);
         expect(await storage.getTasks()).toEqual([task]);
+        expect(await storage.getComments(task.id)).toEqual([comment]);
       });
     });
 
@@ -690,11 +794,14 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
           title: "Task 2",
           isPublic: true,
         });
+        const c1 = await storage.addComment({ taskId: t2.id, body: "On the public task" });
+        const c2 = await storage.addComment({ taskId: t1.id, body: "Context", authorType: "agent", author: "claude" });
 
         const bundle = await storage.exportProject(project.id);
         expect(bundle.version).toBe(1);
         expect(bundle.project).toEqual(project);
         expect(bundle.tasks).toEqual([t1, t2]);
+        expect(bundle.comments).toEqual([c1, c2]);
 
         // Delete project to test import restores it
         await storage.deleteProject(project.id);
@@ -706,6 +813,12 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
         expect(importedProject).toEqual(project);
         expect(await storage.getProject(project.id)).toEqual(project);
         expect(await storage.getTasks({ projectId: project.id })).toEqual([t1, t2]);
+        expect(await storage.getComments(t1.id)).toEqual([c2]);
+        expect(await storage.getComments(t2.id)).toEqual([c1]);
+
+        // Importing again changes nothing
+        await storage.importProject(bundle);
+        expect(await storage.getComments(t1.id)).toEqual([c2]);
       });
 
       it("exportProject throws NotFoundError on missing project", async () => {
@@ -717,6 +830,7 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
         const p2 = await storage.createProject({ name: "P2" });
         const t1 = await storage.saveTask({ projectId: p1.id, title: "T1" });
         const t2 = await storage.saveTask({ projectId: p2.id, title: "T2" });
+        const comment = await storage.addComment({ taskId: t2.id, body: "Backed up" });
 
         const backup = await storage.exportAll();
         expect(backup.version).toBe(1);
@@ -729,6 +843,7 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
         await storage.importBackup(backup);
         expect(await storage.getProjects()).toEqual([p1, p2]);
         expect(await storage.getTasks()).toEqual([t1, t2]);
+        expect(await storage.getComments(t2.id)).toEqual([comment]);
       });
     });
 

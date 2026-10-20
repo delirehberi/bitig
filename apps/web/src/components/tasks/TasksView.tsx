@@ -4,6 +4,7 @@ import {
   compareTasks,
   type CreateTaskInput,
   type Project,
+  type StorageProvider,
   type Task,
   type TaskPriority,
   type TaskStatus,
@@ -30,6 +31,8 @@ interface TasksViewProps {
   readonly onCompleteTask: (id: string) => Promise<Task>;
   readonly onDeleteTask: (id: string) => Promise<void>;
   readonly searchQuery: string;
+  /** Loads and saves comments in the task detail view; omit to hide them. */
+  readonly storage?: StorageProvider | undefined;
 }
 
 const ICON_SIZE = 16;
@@ -48,6 +51,7 @@ export function TasksView({
   onCompleteTask,
   onDeleteTask,
   searchQuery,
+  storage,
 }: TasksViewProps) {
   const [viewMode, setViewMode] = useState<"board" | "list">("board");
   const [priorityFilter, setPriorityFilter] = useState<TaskPriority | "">("");
@@ -312,6 +316,7 @@ export function TasksView({
         onNeedsHumanResolve={(t) => {
           void onUpdateTask(t.id, { needsHuman: null });
         }}
+        storage={storage}
       />
 
       {/* Keyed so each open remounts the form; its fields are seeded from `task` only on mount. */}

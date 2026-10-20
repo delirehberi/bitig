@@ -9,12 +9,14 @@
 
 export const NOSTR_KIND_PROJECT = 30331 as const;
 export const NOSTR_KIND_TASK = 30332 as const;
+export const NOSTR_KIND_COMMENT = 30333 as const;
 export const NOSTR_KIND_APP_HANDLER = 31989 as const;
 export const NOSTR_KIND_DELETE = 5 as const;
 
 export type BitigNostrKind =
   | typeof NOSTR_KIND_PROJECT
   | typeof NOSTR_KIND_TASK
+  | typeof NOSTR_KIND_COMMENT
   | typeof NOSTR_KIND_APP_HANDLER
   | typeof NOSTR_KIND_DELETE;
 
@@ -34,6 +36,10 @@ export const NOSTR_TAG_ALT = "alt" as const;
 export const NOSTR_TAG_PROJECT_KEY = "key" as const;
 /** Task number within its project: `["number", "12"]`. */
 export const NOSTR_TAG_NUMBER = "number" as const;
+/** The task a comment is on: `["task", taskId]`. */
+export const NOSTR_TAG_TASK = "task" as const;
+/** Who wrote a comment: `["author_type", "agent"]`. */
+export const NOSTR_TAG_AUTHOR_TYPE = "author_type" as const;
 /** Project resource link: `["resource", url, type, label]`, one tag per link, in order. */
 export const NOSTR_TAG_RESOURCE = "resource" as const;
 

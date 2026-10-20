@@ -6,6 +6,8 @@
 import { COMPLETED_TASK_STATUS } from "./constants";
 import { parseOrThrow } from "./errors";
 import {
+  CommentSchema,
+  CreateCommentInputSchema,
   CreateProjectInputSchema,
   CreateTaskInputSchema,
   ProjectSchema,
@@ -15,6 +17,8 @@ import {
 } from "./schemas";
 import type {
   ChecklistItem,
+  Comment,
+  CreateCommentInput,
   CreateProjectInput,
   CreateTaskInput,
   Project,
@@ -209,6 +213,31 @@ export function renumberTask(task: Task, number: number): Task {
 export function completeTaskEntity(task: Task, now: Date): Task {
   if (task.status === COMPLETED_TASK_STATUS) return task;
   return { ...task, status: COMPLETED_TASK_STATUS, updatedAt: nextUpdatedAt(task.updatedAt, now) };
+}
+
+export function buildComment(input: CreateCommentInput, deps: RuntimeDeps): Comment {
+  const parsed = parseOrThrow(CreateCommentInputSchema, input, "addComment");
+  const comment: Comment = {
+    id: deps.generateId(),
+    taskId: parsed.taskId,
+    body: parsed.body,
+    authorType: parsed.authorType,
+    createdAt: toTimestamp(deps.clock()),
+  };
+  if (parsed.author !== undefined) comment.author = parsed.author;
+  return parseOrThrow(CommentSchema, comment, "addComment result");
+}
+
+/** Comments carry no nested data, so a shallow copy is a full one. */
+export function cloneComment(comment: Comment): Comment {
+  return { ...comment };
+}
+
+/** Comments are listed oldest first, with `id` as a stable tiebreaker. */
+export function compareComments(a: Comment, b: Comment): number {
+  if (a.createdAt !== b.createdAt) return Date.parse(a.createdAt) - Date.parse(b.createdAt);
+  if (a.id === b.id) return 0;
+  return a.id < b.id ? -1 : 1;
 }
 
 /** A deep copy: callers that mutate it never touch stored state. */

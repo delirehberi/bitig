@@ -130,6 +130,7 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
               onCompleteTask={completeTask}
               onDeleteTask={deleteTask}
               searchQuery={searchQuery}
+              storage={storage}
             />
           )}
         </main>

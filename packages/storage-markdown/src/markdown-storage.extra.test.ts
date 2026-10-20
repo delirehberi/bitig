@@ -75,5 +75,26 @@ describe("MarkdownStorage extra tests", () => {
     await expect(storage.getTask(task.id)).rejects.toThrow(/Duplicate task ID/);
     await expect(storage.getTasks()).rejects.toThrow(/Duplicate task ID/);
   });
-});
 
+  it("stores each comment as a Markdown file next to its task and moves them with it", async () => {
+    const proj = await storage.createProject({ name: "Project" });
+    const other = await storage.createProject({ name: "Other" });
+    const task = await storage.saveTask({ projectId: proj.id, title: "Task" });
+    const comment = await storage.addComment({
+      taskId: task.id,
+      body: "Use the staging key.",
+      authorType: "agent",
+      author: "claude",
+    });
+
+    const commentFile = path.join(tempDir, proj.id, `${task.id}.comments`, `${comment.id}.md`);
+    expect(await fs.readFile(commentFile, "utf8")).toBe(
+      `---\nauthorType: agent\nauthor: claude\ncreatedAt: "${comment.createdAt}"\n---\nUse the staging key.\n`,
+    );
+    expect((await storage.getTasks()).map((t) => t.id)).toEqual([task.id]);
+
+    await storage.updateTask(task.id, { projectId: other.id });
+    await expect(fs.stat(path.join(tempDir, proj.id, `${task.id}.comments`))).rejects.toThrow();
+    expect(await storage.getComments(task.id)).toEqual([comment]);
+  });
+});

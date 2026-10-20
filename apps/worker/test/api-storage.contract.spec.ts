@@ -8,6 +8,7 @@ import { TEST_AUTH_HEADER } from "./constants";
 const BASE_URL = "https://bitig.test";
 
 const STATEMENTS = [
+  "DROP TABLE IF EXISTS `comments`",
   "DROP TABLE IF EXISTS `tasks`",
   "DROP TABLE IF EXISTS `projects`",
   `CREATE TABLE \`projects\` (
@@ -42,6 +43,16 @@ const STATEMENTS = [
   "CREATE INDEX `tasks_status_idx` ON `tasks` (`status`)",
   "CREATE INDEX `tasks_order_idx` ON `tasks` (`order`)",
   "CREATE INDEX `tasks_project_number_idx` ON `tasks` (`project_id`,`number`)",
+  `CREATE TABLE \`comments\` (
+    \`id\` text PRIMARY KEY NOT NULL,
+    \`task_id\` text NOT NULL,
+    \`body\` text NOT NULL,
+    \`author_type\` text NOT NULL,
+    \`author\` text,
+    \`created_at\` integer NOT NULL,
+    FOREIGN KEY (\`task_id\`) REFERENCES \`tasks\`(\`id\`) ON UPDATE no action ON DELETE cascade
+  )`,
+  "CREATE INDEX `comments_task_id_idx` ON `comments` (`task_id`)",
 ];
 
 async function resetDb(): Promise<void> {
@@ -64,6 +75,7 @@ runStorageContractSuite("ApiStorage", async (runtime: TestRuntime) => {
     storage,
     dispose: async () => {
       await env.DB.batch([
+        env.DB.prepare("DELETE FROM `comments`"),
         env.DB.prepare("DELETE FROM `tasks`"),
         env.DB.prepare("DELETE FROM `projects`"),
       ]);

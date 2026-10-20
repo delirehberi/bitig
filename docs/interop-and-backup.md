@@ -14,7 +14,7 @@ To enable seamless data portability, backup, and cross-mode synchronization, Bit
 All bundles are strictly validated at system boundaries with Zod.
 
 ### 1.1 ProjectBundle (`ProjectBundleSchema`)
-Encapsulates a single project entity alongside all associated tasks.
+Encapsulates a single project entity alongside all associated tasks and their comments. `comments` is optional on import, so bundles made before comments still load.
 
 ```json
 {
@@ -43,6 +43,16 @@ Encapsulates a single project entity alongside all associated tasks.
       "labels": ["k8s", "infra"],
       "order": 1
     }
+  ],
+  "comments": [
+    {
+      "id": "01940000-0000-7000-8000-000000000003",
+      "taskId": "01940000-0000-7000-8000-000000000002",
+      "body": "Waiting on the maintenance window. Which day works?",
+      "authorType": "agent",
+      "author": "claude",
+      "createdAt": "2026-10-12T11:00:00.000Z"
+    }
   ]
 }
 ```
@@ -59,7 +69,8 @@ Encapsulates all projects and their corresponding tasks across the entire storag
       "version": 1,
       "exportedAt": "2026-10-12T15:20:00.000Z",
       "project": { ... },
-      "tasks": [ ... ]
+      "tasks": [ ... ],
+      "comments": [ ... ]
     }
   ]
 }
@@ -130,5 +141,6 @@ Projects and tasks round-trip across **Markdown ↔ D1 ↔ Nostr** with 100% fid
 - **Project IDs & Task IDs:** Immutable UUIDv7 identifiers preserved across all storage media.
 - **Timestamps (`createdAt`, `updatedAt`):** Preserved exactly to the millisecond.
 - **Encrypted Privacy (`isPublic: false`):** Encrypted with NIP-44 under author key when exported/imported into Nostr, and restored into cleartext in local or D1 storage.
+- **Comments:** IDs, authors and timestamps are preserved; on Nostr their content is always NIP-44 encrypted.
 - **Optional Metadata:** `dueDate`, `priority`, `order`, and `labels` retain their exact types, values, and order.
 

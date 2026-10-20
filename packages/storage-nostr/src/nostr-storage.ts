@@ -7,10 +7,13 @@ import {
   TaskFilterSchema,
   applyProjectPatch,
   applyTaskPatch,
+  buildComment,
   buildProject,
   buildTask,
+  cloneComment,
   cloneProject,
   cloneTask,
+  compareComments,
   compareProjects,
   compareTasks,
   completeTaskEntity,
@@ -21,6 +24,8 @@ import {
   throwIfAborted,
   toTimestamp,
   type BackupBundle,
+  type Comment,
+  type CreateCommentInput,
   type CreateProjectInput,
   type CreateTaskInput,
   type OperationOptions,
@@ -33,10 +38,12 @@ import {
   type UpdateProjectInput,
   type UpdateTaskInput,
 } from "@bitig/core";
+import { decodeCommentEvent, encodeCommentEvent } from "./codecs/comment-codec";
 import { decodeProjectEvent, encodeProjectEvent } from "./codecs/project-codec";
 import { decodeTaskEvent, encodeTaskEvent } from "./codecs/task-codec";
 import {
   formatAddressCoordinate,
+  NOSTR_KIND_COMMENT,
   NOSTR_KIND_DELETE,
   NOSTR_KIND_PROJECT,
   NOSTR_KIND_TASK,
@@ -69,6 +76,7 @@ export class NostrStorage implements StorageProvider {
   // Local cache indexed by domain ID for quick access and deterministic testing
   private readonly projects = new Map<string, Project>();
   private readonly tasks = new Map<string, Task>();
+  private readonly comments = new Map<string, Comment>();
   private synced = false;
 
   constructor(options: NostrStorageOptions) {
@@ -92,9 +100,10 @@ export class NostrStorage implements StorageProvider {
     const pubkey = await this.signer.getPublicKey();
     throwIfAborted(opts?.signal);
 
-    const [projectEvents, taskEvents] = await Promise.all([
+    const [projectEvents, taskEvents, commentEvents] = await Promise.all([
       this.relayManager.queryReplaceable({ kinds: [NOSTR_KIND_PROJECT], authors: [pubkey] }, pubkey),
       this.relayManager.queryReplaceable({ kinds: [NOSTR_KIND_TASK], authors: [pubkey] }, pubkey),
+      this.relayManager.queryReplaceable({ kinds: [NOSTR_KIND_COMMENT], authors: [pubkey] }, pubkey),
     ]);
     throwIfAborted(opts?.signal);
 
@@ -113,6 +122,15 @@ export class NostrStorage implements StorageProvider {
         this.tasks.set(task.id, task);
       } catch {
         // Discard malformed or un-decryptable task events
+      }
+    }
+
+    for (const event of commentEvents) {
+      try {
+        const comment = await decodeCommentEvent(event, pubkey, this.signer);
+        this.comments.set(comment.id, comment);
+      } catch {
+        // Discard malformed or un-decryptable comment events
       }
     }
 
@@ -206,9 +224,16 @@ export class NostrStorage implements StorageProvider {
     for (const t of childTasks) {
       tags.push([NOSTR_TAG_A, formatAddressCoordinate(NOSTR_KIND_TASK, pubkey, t.id)]);
     }
+    const childComments = this.commentsOf(childTasks.map((t) => t.id));
+    for (const c of childComments) {
+      tags.push([NOSTR_TAG_A, formatAddressCoordinate(NOSTR_KIND_COMMENT, pubkey, c.id)]);
+    }
     tags.push(["k", String(NOSTR_KIND_PROJECT)]);
     if (childTasks.length > 0) {
       tags.push(["k", String(NOSTR_KIND_TASK)]);
+    }
+    if (childComments.length > 0) {
+      tags.push(["k", String(NOSTR_KIND_COMMENT)]);
     }
 
     const deleteTemplate = {
@@ -228,6 +253,9 @@ export class NostrStorage implements StorageProvider {
     this.projects.delete(id);
     for (const t of childTasks) {
       this.tasks.delete(t.id);
+    }
+    for (const c of childComments) {
+      this.comments.delete(c.id);
     }
   }
 
@@ -329,14 +357,22 @@ export class NostrStorage implements StorageProvider {
     const pubkey = await this.signer.getPublicKey();
     throwIfAborted(opts?.signal);
 
+    const childComments = this.commentsOf([id]);
+    const tags: string[][] = [
+      [NOSTR_TAG_A, formatAddressCoordinate(NOSTR_KIND_TASK, pubkey, id)],
+      [NOSTR_TAG_D, id],
+    ];
+    for (const c of childComments) {
+      tags.push([NOSTR_TAG_A, formatAddressCoordinate(NOSTR_KIND_COMMENT, pubkey, c.id)]);
+    }
+    tags.push(["k", String(NOSTR_KIND_TASK)]);
+    if (childComments.length > 0) {
+      tags.push(["k", String(NOSTR_KIND_COMMENT)]);
+    }
     const deleteTemplate = {
       kind: NOSTR_KIND_DELETE,
       created_at: Math.floor(Date.now() / 1000),
-      tags: [
-        [NOSTR_TAG_A, formatAddressCoordinate(NOSTR_KIND_TASK, pubkey, id)],
-        [NOSTR_TAG_D, id],
-        ["k", String(NOSTR_KIND_TASK)],
-      ],
+      tags,
       content: `Deleted task ${id}`,
     };
 
@@ -347,6 +383,9 @@ export class NostrStorage implements StorageProvider {
     await this.relayManager.publishEvent(signed);
 
     this.tasks.delete(id);
+    for (const c of childComments) {
+      this.comments.delete(c.id);
+    }
   }
 
   async completeTask(id: string, opts?: OperationOptions): Promise<Task> {
@@ -381,6 +420,61 @@ export class NostrStorage implements StorageProvider {
     return copyTask(completed);
   }
 
+  async getComments(taskId: string, opts?: OperationOptions): Promise<Comment[]> {
+    throwIfAborted(opts?.signal);
+    parseOrThrow(IdSchema, taskId, "getComments taskId");
+    await this.syncFromRelays(opts);
+    throwIfAborted(opts?.signal);
+
+    return this.commentsOf([taskId]).map(cloneComment);
+  }
+
+  async addComment(input: CreateCommentInput, opts?: OperationOptions): Promise<Comment> {
+    throwIfAborted(opts?.signal);
+    const comment = buildComment(input, this.deps);
+    await this.syncFromRelays(opts);
+    throwIfAborted(opts?.signal);
+    if (!this.tasks.has(comment.taskId)) {
+      throw new NotFoundError("task", comment.taskId);
+    }
+
+    await this.publishComment(comment, opts);
+    this.comments.set(comment.id, comment);
+    return cloneComment(comment);
+  }
+
+  async deleteComment(id: string, opts?: OperationOptions): Promise<void> {
+    throwIfAborted(opts?.signal);
+    parseOrThrow(IdSchema, id, "deleteComment id");
+    await this.syncFromRelays(opts);
+    throwIfAborted(opts?.signal);
+
+    if (!this.comments.has(id)) {
+      throw new NotFoundError("comment", id);
+    }
+
+    const pubkey = await this.signer.getPublicKey();
+    throwIfAborted(opts?.signal);
+
+    const deleteTemplate = {
+      kind: NOSTR_KIND_DELETE,
+      created_at: Math.floor(Date.now() / 1000),
+      tags: [
+        [NOSTR_TAG_A, formatAddressCoordinate(NOSTR_KIND_COMMENT, pubkey, id)],
+        ["k", String(NOSTR_KIND_COMMENT)],
+      ],
+      content: `Deleted comment ${id}`,
+    };
+
+    throwIfAborted(opts?.signal);
+    const signed = await this.signer.signEvent(deleteTemplate);
+
+    throwIfAborted(opts?.signal);
+    await this.relayManager.publishEvent(signed);
+
+    this.comments.delete(id);
+  }
+
   async exportProject(id: string, opts?: OperationOptions): Promise<ProjectBundle> {
     throwIfAborted(opts?.signal);
     parseOrThrow(IdSchema, id, "exportProject id");
@@ -398,6 +492,7 @@ export class NostrStorage implements StorageProvider {
       exportedAt: toTimestamp(this.deps.clock()),
       project: copyProject(project),
       tasks,
+      comments: this.commentsOf(tasks.map((t) => t.id)).map(cloneComment),
     };
     return parseOrThrow(ProjectBundleSchema, bundle, "exportProject result");
   }
@@ -425,6 +520,12 @@ export class NostrStorage implements StorageProvider {
       throwIfAborted(opts?.signal);
       await this.relayManager.publishEvent(signedTask);
       this.tasks.set(task.id, copyTask(task));
+    }
+
+    for (const comment of validated.comments ?? []) {
+      throwIfAborted(opts?.signal);
+      await this.publishComment(comment, opts);
+      this.comments.set(comment.id, cloneComment(comment));
     }
 
     return copyProject(validated.project);
@@ -460,6 +561,24 @@ export class NostrStorage implements StorageProvider {
     return Array.from(this.projects.values()).flatMap((p) =>
       p.key === undefined || p.id === exceptId ? [] : [p.key],
     );
+  }
+
+  private async publishComment(comment: Comment, opts?: OperationOptions): Promise<void> {
+    const pubkey = await this.signer.getPublicKey();
+    throwIfAborted(opts?.signal);
+    const template = await encodeCommentEvent(comment, pubkey, this.signer);
+    throwIfAborted(opts?.signal);
+    const signed = await this.signer.signEvent(template);
+    throwIfAborted(opts?.signal);
+    await this.relayManager.publishEvent(signed);
+  }
+
+  /** Cached comments on any of `taskIds`, oldest first. */
+  private commentsOf(taskIds: readonly string[]): Comment[] {
+    const ids = new Set(taskIds);
+    return Array.from(this.comments.values())
+      .filter((c) => ids.has(c.taskId))
+      .sort(compareComments);
   }
 
   private tasksOf(projectId: string): Task[] {
