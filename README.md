@@ -6,7 +6,7 @@ Bitig (Old Turkic for *record* or *document*) is a flexible, edge-ready task and
 
 - **Local Markdown Storage:** Plaintext `.md` files and YAML metadata on disk. Path-as-identity (`<projectId>/<taskId>.md`), no database required.
 - **Unix & XDG Base Directory Standard:** Clean separation of user data, configuration, and runtime locks following Unix best practices.
-- **Model Context Protocol (MCP):** First-class STDIO MCP server (`bitig mcp`) exposing 11 annotated tools for AI agents.
+- **Model Context Protocol (MCP):** First-class STDIO MCP server (`bitig mcp`) and remote HTTP MCP endpoint exposing 18 annotated tools for AI agents.
 - **Workspace Linking:** Automatic project binding via `.bitig` in workspace root directories.
 - **Ticket Codes:** Every task gets a short code like `BIT-12` (project key + number) that works wherever a task ID does.
 - **Strict & Type-Safe:** 100% strict TypeScript, comprehensive contract test suites, zero `any`.
@@ -67,8 +67,8 @@ Bitig follows the **XDG Base Directory Specification**:
 
 ### Prerequisites
 
-- Node.js >= 20
-- pnpm >= 9
+- Node.js >= 26
+- pnpm >= 11
 
 ### Build from Source
 
@@ -252,6 +252,26 @@ Or run against an explicit data directory:
 12. `list_comments` - List a task's comments, oldest first.
 13. `add_comment` - Comment on a task (marked as written by an agent unless `authorType` says `human`).
 14. `delete_comment` - Delete a comment.
+15. `list_webhooks` - List incoming webhooks configured for projects.
+16. `create_webhook` - Create an incoming webhook endpoint (`generic`, `sentry`, `github`, or `linear`) for a project.
+17. `update_webhook` - Update a webhook's name, provider, enabled state, field mapping, defaults, or rotate its secret token.
+18. `delete_webhook` - Delete an incoming webhook.
+
+### Bundled Agent Skill (`bitig-planning`)
+
+Bitig ships with an agent skill at [`skills/bitig-planning/SKILL.md`](./skills/bitig-planning/SKILL.md) that teaches AI coding assistants to record plans, roadmaps, and code-review findings directly in Bitig via MCP instead of scattering `TODO.md` or `ROADMAP.md` files across repositories.
+
+Symlink it into your agent's skills directory:
+
+```bash
+# Claude Code
+mkdir -p ~/.claude/skills
+ln -s "$(pwd)/skills/bitig-planning" ~/.claude/skills/bitig-planning
+
+# Shared agents directory (~/.agents/skills)
+mkdir -p ~/.agents/skills
+ln -s "$(pwd)/skills/bitig-planning" ~/.agents/skills/bitig-planning
+```
 
 ### Workspace Auto-Linking for Agents
 
@@ -268,7 +288,7 @@ You can configure default settings in `~/.config/bitig/config.yaml`:
 
 ```yaml
 # Override the data storage directory
-data_dir: /home/delirehberi/.local/share/bitig
+data_dir: ~/.local/share/bitig
 
 # Default project ID when not inside a linked workspace
 default_project: bitig

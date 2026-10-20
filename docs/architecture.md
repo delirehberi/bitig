@@ -64,6 +64,21 @@ export interface StorageProvider {
   deleteTask(id: string, opts?: OperationOptions): Promise<void>;
   completeTask(id: string, opts?: OperationOptions): Promise<Task>;
 
+  // Comments
+  getComments(taskId: string, opts?: OperationOptions): Promise<Comment[]>;
+  getComment?(id: string, opts?: OperationOptions): Promise<Comment | null>;
+  addComment(input: CreateCommentInput, opts?: OperationOptions): Promise<Comment>;
+  deleteComment(id: string, opts?: OperationOptions): Promise<void>;
+
+  // Webhooks
+  getWebhooks(filter?: WebhookFilter, opts?: OperationOptions): Promise<Webhook[]>;
+  getWebhook(id: string, opts?: OperationOptions): Promise<Webhook | null>;
+  getWebhookByToken(token: string, opts?: OperationOptions): Promise<Webhook | null>;
+  createWebhook(input: CreateWebhookInput, opts?: OperationOptions): Promise<Webhook>;
+  updateWebhook(id: string, patch: UpdateWebhookInput, opts?: OperationOptions): Promise<Webhook>;
+  deleteWebhook(id: string, opts?: OperationOptions): Promise<void>;
+  recordWebhookTrigger(id: string, opts?: OperationOptions): Promise<Webhook>;
+
   // Interoperability & Bundles
   exportProject(id: string, opts?: OperationOptions): Promise<ProjectBundle>;
   importProject(bundle: ProjectBundle, opts?: OperationOptions): Promise<Project>;
@@ -94,14 +109,11 @@ Bitig exposes unified MCP tools across two distribution channels:
    - Protected by Bearer token authentication and edge rate limiting.
    - Backed by Cloudflare D1 storage.
 
-### Unified Tool Suite:
-- `list_projects`: Lists all projects.
-- `create_project`: Creates a new project.
-- `list_tasks`: Lists tasks filtered optionally by `projectId`.
-- `add_task`: Adds a task to a project.
-- `complete_task`: Marks a task as completed.
-- `update_task`: Updates task attributes.
-- `delete_task`: Deletes a task.
+### Unified Tool Suite (18 tools):
+- **Projects:** `list_projects`, `create_project`, `update_project`, `delete_project`
+- **Tasks:** `list_tasks`, `get_task`, `add_task`, `update_task`, `complete_task`, `delete_task`, `backfill_ticket_codes`
+- **Comments:** `list_comments`, `add_comment`, `delete_comment`
+- **Webhooks:** `list_webhooks`, `create_webhook`, `update_webhook`, `delete_webhook`
 
 ---
 
@@ -123,9 +135,11 @@ MCP is available in every mode: STDIO (local CLI) and Streamable HTTP (Cloudflar
 
 ## 6. Domain Model
 
-- `Project`: `id`, `name`, `description`, `kind`, `createdAt`, `updatedAt`.
+- `Project`: `id`, `name`, `description`, `kind`, `createdAt`, `updatedAt`, plus optional `key` (2–10 uppercase characters for ticket codes), `resources` (`repository | issue_tracker | design | documentation | other`), and `archived`.
   - `kind`: `paid | hobby | open_source | personal | internal`; defaults to `hobby`, cannot be cleared.
-- `Task`: `id`, `projectId`, `title`, `description`, `status`, `createdAt`, `updatedAt`, `isPublic`, plus optional `dueDate`, `priority`, `labels`, `order`.
+- `Task`: `id`, `projectId`, `title`, `description`, `status`, `createdAt`, `updatedAt`, `isPublic`, plus optional `dueDate`, `priority`, `labels`, `order`, `number` (for ticket codes like `BIT-12`), `checklist` (`{ text, done, startedAt?, completedAt? }[]`), `needsHuman`, `startedAt`, `completedAt`, `createdBy`, `startedBy`, `completedBy`, `updatedBy`, `activity`, and `commentCount`.
+- `Comment`: `id`, `taskId`, `body`, `authorType` (`human | agent`), `createdAt`, plus optional `author`.
+- `Webhook`: `id`, `projectId`, `name`, `provider` (`generic | sentry | github | linear`), `token`, `enabled`, `triggerCount`, `createdAt`, `updatedAt`, plus optional `mapping`, `defaultPriority`, `defaultLabels`, and `lastTriggeredAt`.
 - `status`: `todo | in_progress | done | archived`.
 - `priority`: `trivial | low | medium | high | urgent` (lowest to highest).
 - `dueDate`: calendar date `YYYY-MM-DD` (no time or timezone).
@@ -135,7 +149,7 @@ MCP is available in every mode: STDIO (local CLI) and Streamable HTTP (Cloudflar
   - D1: ID is the primary key.
   - Nostr: ID is the `d` tag.
 - `isPublic` is meaningful only in Nostr mode (public vs encrypted). In other modes it is stored but has no effect and defaults to `false`.
-- `deleteProject` cascades to tasks (D1: FK `ON DELETE CASCADE`; Markdown: remove directory; Nostr: NIP-09 deletion of project and task events).
+- `deleteProject` cascades to tasks, comments, and webhooks (D1: FK `ON DELETE CASCADE`; Markdown: remove directory; Nostr: NIP-09 deletion of project and task events).
 
 ---
 
