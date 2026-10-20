@@ -685,7 +685,8 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
         expect(CommentSchema.parse(first)).toEqual(first);
         expect(CommentSchema.parse(second)).toEqual(second);
         expect(await storage.getComments(task.id)).toEqual([first, second]);
-        expect(await storage.getTask(task.id)).toEqual(task);
+        expect(await storage.getTask(task.id)).toEqual({ ...task, commentCount: 2 });
+        expect(await storage.getTasks({ projectId: task.projectId })).toEqual([{ ...task, commentCount: 2 }]);
       });
 
       it("keeps each task's comments apart", async () => {
@@ -715,6 +716,9 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
         const kept = await storage.addComment({ taskId: task.id, body: "kept" });
         await storage.deleteComment(gone.id);
         expect(await storage.getComments(task.id)).toEqual([kept]);
+        expect(await storage.getTask(task.id)).toEqual({ ...task, commentCount: 1 });
+        await storage.deleteComment(kept.id);
+        expect(await storage.getTask(task.id)).toEqual(task);
         await expect(storage.deleteComment(gone.id)).rejects.toBeInstanceOf(NotFoundError);
         await expect(storage.deleteComment(UNKNOWN_ID)).rejects.toBeInstanceOf(NotFoundError);
         await expect(storage.deleteComment(MALFORMED_ID)).rejects.toBeInstanceOf(ValidationError);
@@ -877,7 +881,7 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
         }
 
         expect(await storage.getProjects()).toEqual([project]);
-        expect(await storage.getTasks()).toEqual([task]);
+        expect(await storage.getTasks()).toEqual([{ ...task, commentCount: 1 }]);
         expect(await storage.getComments(task.id)).toEqual([comment]);
         expect(await storage.getWebhooks()).toEqual([webhook]);
       });
@@ -1015,7 +1019,10 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
         const bundle = await storage.exportProject(project.id);
         expect(bundle.version).toBe(1);
         expect(bundle.project).toEqual(project);
-        expect(bundle.tasks).toEqual([t1, t2]);
+        expect(bundle.tasks).toEqual([
+          { ...t1, commentCount: 1 },
+          { ...t2, commentCount: 1 },
+        ]);
         expect(bundle.comments).toEqual([c1, c2]);
 
         // Delete project to test import restores it
@@ -1027,7 +1034,10 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
         const importedProject = await storage.importProject(bundle);
         expect(importedProject).toEqual(project);
         expect(await storage.getProject(project.id)).toEqual(project);
-        expect(await storage.getTasks({ projectId: project.id })).toEqual([t1, t2]);
+        expect(await storage.getTasks({ projectId: project.id })).toEqual([
+          { ...t1, commentCount: 1 },
+          { ...t2, commentCount: 1 },
+        ]);
         expect(await storage.getComments(t1.id)).toEqual([c2]);
         expect(await storage.getComments(t2.id)).toEqual([c1]);
 
@@ -1057,7 +1067,7 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
 
         await storage.importBackup(backup);
         expect(await storage.getProjects()).toEqual([p1, p2]);
-        expect(await storage.getTasks()).toEqual([t1, t2]);
+        expect(await storage.getTasks()).toEqual([t1, { ...t2, commentCount: 1 }]);
         expect(await storage.getComments(t2.id)).toEqual([comment]);
       });
     });

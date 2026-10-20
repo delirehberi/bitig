@@ -198,6 +198,8 @@ export const TaskSchema = z.strictObject({
   needsHuman: NeedsHumanSchema.exactOptional(),
   /** Assigned by storage, never by callers; tasks created before ticket codes may lack one until backfilled. */
   number: TaskNumberSchema.exactOptional(),
+  /** Number of comments on the task; omitted when zero. */
+  commentCount: z.int().positive().exactOptional(),
 });
 
 /** A note on a task. Comments are never edited: they are added and deleted. */

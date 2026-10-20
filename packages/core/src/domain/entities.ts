@@ -56,6 +56,7 @@ type TaskRequiredFields = Omit<
   | "checklist"
   | "needsHuman"
   | "number"
+  | "commentCount"
 >;
 
 interface TaskOptionalValues {
@@ -73,6 +74,7 @@ interface TaskOptionalValues {
   readonly checklist: readonly ChecklistItem[] | undefined;
   readonly needsHuman: string | undefined;
   readonly number: number | undefined;
+  readonly commentCount?: number | undefined;
 }
 
 /** Builds a task that omits unset optional fields (exactOptionalPropertyTypes). */
@@ -97,6 +99,9 @@ function assembleTask(base: TaskRequiredFields, optional: TaskOptionalValues): T
   }
   if (optional.needsHuman !== undefined) task.needsHuman = optional.needsHuman;
   if (optional.number !== undefined) task.number = optional.number;
+  if (optional.commentCount !== undefined && optional.commentCount > 0) {
+    task.commentCount = optional.commentCount;
+  }
   return task;
 }
 
@@ -419,6 +424,7 @@ export function applyTaskPatch(
       checklist: stampChecklistOnUpdate(task.checklist, parsed.checklist, updatedAt),
       needsHuman: resolveClearable(task.needsHuman, parsed.needsHuman),
       number: task.number,
+      commentCount: task.commentCount,
     },
   );
   return parseOrThrow(TaskSchema, next, "updateTask result");
@@ -471,6 +477,7 @@ export function completeTaskEntity(task: Task, now: Date, actor?: string): Task 
       checklist: task.checklist,
       needsHuman: task.needsHuman,
       number: task.number,
+      commentCount: task.commentCount,
     },
   );
   return parseOrThrow(TaskSchema, next, "completeTask result");
@@ -516,6 +523,17 @@ export function cloneTask(task: Task): Task {
   if (task.labels !== undefined) copy.labels = [...task.labels];
   if (task.checklist !== undefined) copy.checklist = task.checklist.map((item) => ({ ...item }));
   if (task.activity !== undefined) copy.activity = task.activity.map((entry) => ({ ...entry }));
+  return copy;
+}
+
+/** Returns a deep copy of `task` with `commentCount` set when `count > 0` and omitted otherwise. */
+export function withTaskCommentCount(task: Task, count: number): Task {
+  const copy = cloneTask(task);
+  if (count > 0) {
+    copy.commentCount = count;
+  } else {
+    delete copy.commentCount;
+  }
   return copy;
 }
 

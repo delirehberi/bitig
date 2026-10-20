@@ -75,8 +75,13 @@ export function withRealtimeBroadcast(
       return comment;
     },
     deleteComment: async (id, opts) => {
+      const comment = await storage.getComment?.(id, opts);
       await storage.deleteComment(id, opts);
-      await notify({ type: "comment.deleted", id });
+      await notify({
+        type: "comment.deleted",
+        id,
+        ...(comment !== null && comment !== undefined ? { taskId: comment.taskId } : {}),
+      });
     },
 
     getWebhooks: (filter, opts) => storage.getWebhooks(filter, opts),

@@ -30,6 +30,7 @@ import {
   renumberTask,
   throwIfAborted,
   toTimestamp,
+  withTaskCommentCount,
   type BackupBundle,
   type Comment,
   type CreateCommentInput,
@@ -304,7 +305,7 @@ export class NostrStorage implements StorageProvider {
       list = list.filter((t) => t.projectId === parsedFilter.projectId);
     }
 
-    return list.sort(compareTasks).map(copyTask);
+    return list.sort(compareTasks).map((t) => this.withCommentCount(t));
   }
 
   async getTask(id: string, opts?: OperationOptions): Promise<Task | null> {
@@ -314,7 +315,7 @@ export class NostrStorage implements StorageProvider {
     throwIfAborted(opts?.signal);
 
     const task = this.tasks.get(id);
-    return task ? copyTask(task) : null;
+    return task ? this.withCommentCount(task) : null;
   }
 
   async saveTask(input: CreateTaskInput, opts?: OperationOptions): Promise<Task> {
@@ -374,7 +375,7 @@ export class NostrStorage implements StorageProvider {
     await this.relayManager.publishEvent(signed);
 
     this.tasks.set(id, updated);
-    return copyTask(updated);
+    return this.withCommentCount(updated);
   }
 
   async deleteTask(id: string, opts?: OperationOptions): Promise<void> {
@@ -436,7 +437,7 @@ export class NostrStorage implements StorageProvider {
     const completed = completeTaskEntity(existing, this.deps.clock(), opts?.actor);
     // Idempotent: if already done, return unchanged without publishing
     if (completed === existing) {
-      return copyTask(existing);
+      return this.withCommentCount(existing);
     }
     const pubkey = await this.signer.getPublicKey();
     throwIfAborted(opts?.signal);
@@ -450,7 +451,7 @@ export class NostrStorage implements StorageProvider {
     await this.relayManager.publishEvent(signed);
 
     this.tasks.set(id, completed);
-    return copyTask(completed);
+    return this.withCommentCount(completed);
   }
 
   async getComments(taskId: string, opts?: OperationOptions): Promise<Comment[]> {
@@ -666,12 +667,13 @@ export class NostrStorage implements StorageProvider {
     const pubkey = await this.signer.getPublicKey();
     for (const task of validated.tasks) {
       throwIfAborted(opts?.signal);
-      const taskTemplate = await encodeTaskEvent(task, pubkey, this.signer);
+      const cleanTask = withTaskCommentCount(task, 0);
+      const taskTemplate = await encodeTaskEvent(cleanTask, pubkey, this.signer);
       throwIfAborted(opts?.signal);
       const signedTask = await this.signer.signEvent(taskTemplate);
       throwIfAborted(opts?.signal);
       await this.relayManager.publishEvent(signedTask);
-      this.tasks.set(task.id, copyTask(task));
+      this.tasks.set(task.id, cleanTask);
     }
 
     for (const comment of validated.comments ?? []) {
@@ -751,5 +753,13 @@ export class NostrStorage implements StorageProvider {
 
   private tasksOf(projectId: string): Task[] {
     return Array.from(this.tasks.values()).filter((t) => t.projectId === projectId);
+  }
+
+  private withCommentCount(task: Task): Task {
+    let count = 0;
+    for (const comment of this.comments.values()) {
+      if (comment.taskId === task.id) count++;
+    }
+    return withTaskCommentCount(task, count);
   }
 }

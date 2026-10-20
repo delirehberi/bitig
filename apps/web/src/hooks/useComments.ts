@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { compareComments, type Comment, type StorageProvider } from "@bitig/core";
-import { useRealtimeEvent } from "./useRealtime";
+import { dispatchRealtimeEvent, useRealtimeEvent } from "./useRealtime";
 
 function upsertComment(comments: readonly Comment[], incoming: Comment): Comment[] {
   const exists = comments.some((c) => c.id === incoming.id);
@@ -64,6 +64,7 @@ export function useComments(storage: StorageProvider, taskId: string) {
     async (body: string): Promise<Comment> => {
       const added = await storage.addComment({ taskId, body, authorType: "human" });
       setComments((prev) => upsertComment(prev, added));
+      dispatchRealtimeEvent({ type: "comment.created", comment: added });
       return added;
     },
     [storage, taskId],
@@ -73,8 +74,9 @@ export function useComments(storage: StorageProvider, taskId: string) {
     async (id: string): Promise<void> => {
       await storage.deleteComment(id);
       setComments((prev) => prev.filter((c) => c.id !== id));
+      dispatchRealtimeEvent({ type: "comment.deleted", id, taskId });
     },
-    [storage],
+    [storage, taskId],
   );
 
   return { comments, isLoading, error, addComment, deleteComment };

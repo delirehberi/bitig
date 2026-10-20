@@ -62,6 +62,8 @@ export interface StorageProvider {
   /** A task's comments, oldest first (`compareComments`). An unknown task yields an empty list.
    * Comments stay with their task when it moves to another project. */
   getComments(taskId: string, opts?: OperationOptions): Promise<Comment[]>;
+  /** Optional single-comment lookup by ID; resolves to `null` when missing or invalid. */
+  getComment?(id: string, opts?: OperationOptions): Promise<Comment | null>;
   /** Adds a comment. Rejects with `NotFoundError` if the task does not exist. Leaves the task,
    * including its `updatedAt`, unchanged. */
   addComment(input: CreateCommentInput, opts?: OperationOptions): Promise<Comment>;

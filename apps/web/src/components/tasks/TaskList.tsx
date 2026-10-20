@@ -8,6 +8,7 @@ import {
   Circle,
   Clock,
   Edit2,
+  MessageSquare,
   Trash2,
 } from "lucide-react";
 import {
@@ -262,6 +263,15 @@ export function TaskList({
                         {task.title}
                       </button>
                       <ChecklistProgressBadge checklist={task.checklist} />
+                      {task.commentCount !== undefined && task.commentCount > 0 && (
+                        <span
+                          className="inline-flex items-center gap-1 rounded-pill bg-paper-2 px-2 py-0.5 font-mono text-2xs font-medium text-ink-2"
+                          title={`${String(task.commentCount)} ${task.commentCount === 1 ? "comment" : "comments"}`}
+                        >
+                          <MessageSquare size={11} aria-hidden="true" />
+                          <span>{task.commentCount}</span>
+                        </span>
+                      )}
                       {spentMs !== undefined && (
                         <span
                           className="inline-flex items-center gap-1 rounded-pill bg-paper-2 px-2 py-0.5 font-mono text-2xs font-medium text-ink-2"

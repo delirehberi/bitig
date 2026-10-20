@@ -133,4 +133,29 @@ describe("TaskBoard reordering", () => {
     expect(onStatusChange).toHaveBeenNthCalledWith(1, doneA, "archived");
     expect(onStatusChange).toHaveBeenNthCalledWith(2, doneB, "archived");
   });
+
+  it("displays the comment count badge in the card bottom bar only when commentCount > 0", () => {
+    const withOneComment: Task = { ...FIRST, commentCount: 1 };
+    const withThreeComments: Task = { ...SECOND, commentCount: 3 };
+    render(
+      <FeatureFlagsProvider mode="cloudflare">
+        <TaskBoard
+          tasks={[withOneComment, withThreeComments, THIRD]}
+          projects={[PROJECT]}
+          onView={vi.fn()}
+          onEdit={vi.fn()}
+          onDelete={vi.fn()}
+          onComplete={vi.fn()}
+          onStatusChange={vi.fn()}
+          onMove={vi.fn()}
+        />
+      </FeatureFlagsProvider>,
+    );
+
+    expect(screen.getByTitle("1 comment")).toHaveTextContent("1");
+    expect(screen.getByTitle("3 comments")).toHaveTextContent("3");
+    const thirdCard = screen.getByText("Task 3").closest("article");
+    if (!thirdCard) throw new Error("expected Task 3 card");
+    expect(thirdCard.querySelector('[title*="comment"]')).toBeNull();
+  });
 });

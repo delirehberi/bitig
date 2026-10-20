@@ -847,8 +847,19 @@ describe("Dashboard routing", () => {
     expect(await within(dialog).findByText("Finished implementation")).toBeInTheDocument();
     expect(within(dialog).getByText("Done")).toBeInTheDocument();
     expect(within(doneColumn).getByText("Alpha task")).toBeInTheDocument();
+    expect(within(doneColumn).getByTitle("1 comment")).toHaveTextContent("1");
 
-    // 4. MCP deletes the second task
+    // 4. MCP deletes the comment and the badge disappears from the card
+    act(() => {
+      ws?.receiveMessage({
+        type: "comment.deleted",
+        id: "01940000-0000-7000-8000-0000000000c1",
+        taskId: TASK_A.id,
+      });
+    });
+    expect(within(doneColumn).queryByTitle("1 comment")).not.toBeInTheDocument();
+
+    // 5. MCP deletes the second task
     act(() => {
       ws?.receiveMessage({
         type: "task.deleted",

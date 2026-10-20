@@ -37,6 +37,7 @@ export const RealtimeEventSchema = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("comment.deleted"),
     id: IdSchema,
+    taskId: IdSchema.exactOptional(),
   }),
   z.strictObject({
     type: z.literal("webhook.created"),

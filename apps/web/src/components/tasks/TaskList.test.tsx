@@ -194,5 +194,25 @@ describe("TaskList sorting and project column visibility", () => {
 
     expect(screen.getByText("Needs you: Which region should we deploy to?")).toBeInTheDocument();
   });
+
+  it("renders the comment count badge in task rows when commentCount > 0", () => {
+    const firstTask = TASKS[0];
+    const secondTask = TASKS[1];
+    if (!firstTask || !secondTask) throw new Error("expected tasks");
+    render(
+      <TaskList
+        tasks={[{ ...firstTask, commentCount: 2 }, secondTask]}
+        projects={[PROJECT_ALPHA, PROJECT_ZETA]}
+        onView={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onComplete={vi.fn()}
+        onStatusChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTitle("2 comments")).toHaveTextContent("2");
+    expect(screen.queryByTitle(/1 comment/)).not.toBeInTheDocument();
+  });
 });
 

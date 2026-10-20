@@ -17,6 +17,7 @@ import {
   completeTaskEntity,
   recordWebhookTriggerEntity,
   renumberTask,
+  withTaskCommentCount,
 } from "../domain/entities";
 import { nextTaskNumber } from "../domain/ticket-codes";
 import { NotFoundError, parseOrThrow } from "../domain/errors";
@@ -132,14 +133,14 @@ export class InMemoryStorage implements StorageProvider {
       return [...this.#tasks.values()]
         .filter((task) => projectId === undefined || task.projectId === projectId)
         .sort(compareTasks)
-        .map(copyTask);
+        .map((task) => this.#withCommentCount(task));
     });
   }
 
   getTask(id: string, opts?: OperationOptions): Promise<Task | null> {
     return run(opts?.signal, () => {
       const task = this.#tasks.get(parseId(id, "getTask"));
-      return task === undefined ? null : copyTask(task);
+      return task === undefined ? null : this.#withCommentCount(task);
     });
   }
 
@@ -162,7 +163,7 @@ export class InMemoryStorage implements StorageProvider {
         next = renumberTask(next, nextTaskNumber(this.#tasksOf(next.projectId)));
       }
       this.#tasks.set(next.id, next);
-      return copyTask(next);
+      return this.#withCommentCount(next);
     });
   }
 
@@ -178,7 +179,7 @@ export class InMemoryStorage implements StorageProvider {
       const existing = this.#requireTask(parseId(id, "completeTask"));
       const next = completeTaskEntity(existing, this.#deps.clock(), opts?.actor);
       this.#tasks.set(next.id, next);
-      return copyTask(next);
+      return this.#withCommentCount(next);
     });
   }
 
@@ -186,6 +187,15 @@ export class InMemoryStorage implements StorageProvider {
     return run(opts?.signal, () => {
       const validTaskId = parseId(taskId, "getComments");
       return this.#commentsOf([validTaskId]).map(cloneComment);
+    });
+  }
+
+  getComment(id: string, opts?: OperationOptions): Promise<Comment | null> {
+    return run(opts?.signal, () => {
+      const parsed = IdSchema.safeParse(id);
+      if (!parsed.success) return null;
+      const comment = this.#comments.get(parsed.data);
+      return comment === undefined ? null : cloneComment(comment);
     });
   }
 
@@ -275,7 +285,7 @@ export class InMemoryStorage implements StorageProvider {
       const tasks = [...this.#tasks.values()]
         .filter((t) => t.projectId === project.id)
         .sort(compareTasks)
-        .map(copyTask);
+        .map((t) => this.#withCommentCount(t));
       const webhooks = [...this.#webhooks.values()]
         .filter((w) => w.projectId === project.id)
         .sort(compareWebhooks)
@@ -297,7 +307,7 @@ export class InMemoryStorage implements StorageProvider {
       const validated = parseOrThrow(ProjectBundleSchema, bundle, "importProject");
       this.#projects.set(validated.project.id, copyProject(validated.project));
       for (const task of validated.tasks) {
-        this.#tasks.set(task.id, copyTask(task));
+        this.#tasks.set(task.id, withTaskCommentCount(task, 0));
       }
       for (const comment of validated.comments ?? []) {
         this.#comments.set(comment.id, cloneComment(comment));
@@ -345,6 +355,14 @@ export class InMemoryStorage implements StorageProvider {
   #commentsOf(taskIds: readonly string[]): Comment[] {
     const ids = new Set(taskIds);
     return [...this.#comments.values()].filter((c) => ids.has(c.taskId)).sort(compareComments);
+  }
+
+  #withCommentCount(task: Task): Task {
+    let count = 0;
+    for (const comment of this.#comments.values()) {
+      if (comment.taskId === task.id) count++;
+    }
+    return withTaskCommentCount(task, count);
   }
 
   #deleteTaskAndComments(taskId: string): void {

@@ -1,4 +1,4 @@
-import { eq, inArray, max, ne } from "drizzle-orm";
+import { count, eq, inArray, max, ne } from "drizzle-orm";
 import { drizzle, type DrizzleD1Database } from "drizzle-orm/d1";
 import {
   BUNDLE_VERSION,
@@ -31,6 +31,7 @@ import {
   renumberTask,
   throwIfAborted,
   toTimestamp,
+  withTaskCommentCount,
   type BackupBundle,
   type Comment,
   type CreateCommentInput,
@@ -329,15 +330,44 @@ export class D1Storage implements StorageProvider {
     const parsedFilter = filter === undefined ? undefined : parseOrThrow(TaskFilterSchema, filter, "getTasks");
 
     let rows: TaskRecord[];
+    let commentCountRows: { taskId: string; total: number }[];
     if (parsedFilter?.projectId !== undefined) {
       rows = await this.#db.select().from(tasks).where(eq(tasks.projectId, parsedFilter.projectId)).all();
+      throwIfAborted(opts?.signal);
+      commentCountRows =
+        rows.length === 0
+          ? []
+          : await this.#db
+              .select({ taskId: comments.taskId, total: count() })
+              .from(comments)
+              .where(
+                inArray(
+                  comments.taskId,
+                  this.#db.select({ id: tasks.id }).from(tasks).where(eq(tasks.projectId, parsedFilter.projectId)),
+                ),
+              )
+              .groupBy(comments.taskId)
+              .all();
     } else {
       rows = await this.#db.select().from(tasks).all();
+      throwIfAborted(opts?.signal);
+      commentCountRows =
+        rows.length === 0
+          ? []
+          : await this.#db
+              .select({ taskId: comments.taskId, total: count() })
+              .from(comments)
+              .groupBy(comments.taskId)
+              .all();
     }
     throwIfAborted(opts?.signal);
-    const result = rows.map(recordToTask);
+    const countsByTaskId = new Map<string, number>();
+    for (const entry of commentCountRows) {
+      countsByTaskId.set(entry.taskId, entry.total);
+    }
+    const result = rows.map((row) => withTaskCommentCount(recordToTask(row), countsByTaskId.get(row.id) ?? 0));
     result.sort(compareTasks);
-    return result.map(copyTask);
+    return result;
   }
 
   async getTask(id: string, opts?: OperationOptions): Promise<Task | null> {
@@ -346,7 +376,9 @@ export class D1Storage implements StorageProvider {
     const row = await this.#db.select().from(tasks).where(eq(tasks.id, validId)).get();
     throwIfAborted(opts?.signal);
     if (!row) return null;
-    return copyTask(recordToTask(row));
+    const total = await this.#commentCount(validId);
+    throwIfAborted(opts?.signal);
+    return withTaskCommentCount(recordToTask(row), total);
   }
 
   async saveTask(input: CreateTaskInput, opts?: OperationOptions): Promise<Task> {
@@ -430,7 +462,9 @@ export class D1Storage implements StorageProvider {
       })
       .where(eq(tasks.id, validId));
     throwIfAborted(opts?.signal);
-    return copyTask(next);
+    const total = await this.#commentCount(validId);
+    throwIfAborted(opts?.signal);
+    return withTaskCommentCount(next, total);
   }
 
   async deleteTask(id: string, opts?: OperationOptions): Promise<void> {
@@ -469,7 +503,9 @@ export class D1Storage implements StorageProvider {
         .where(eq(tasks.id, validId));
     }
     throwIfAborted(opts?.signal);
-    return copyTask(next);
+    const total = await this.#commentCount(validId);
+    throwIfAborted(opts?.signal);
+    return withTaskCommentCount(next, total);
   }
 
   async getComments(taskId: string, opts?: OperationOptions): Promise<Comment[]> {
@@ -478,6 +514,16 @@ export class D1Storage implements StorageProvider {
     const rows = await this.#db.select().from(comments).where(eq(comments.taskId, validTaskId)).all();
     throwIfAborted(opts?.signal);
     return rows.map(recordToComment).sort(compareComments).map(cloneComment);
+  }
+
+  async getComment(id: string, opts?: OperationOptions): Promise<Comment | null> {
+    throwIfAborted(opts?.signal);
+    const parsed = IdSchema.safeParse(id);
+    if (!parsed.success) return null;
+    const row = await this.#db.select().from(comments).where(eq(comments.id, parsed.data)).get();
+    throwIfAborted(opts?.signal);
+    if (!row) return null;
+    return cloneComment(recordToComment(row));
   }
 
   async addComment(input: CreateCommentInput, opts?: OperationOptions): Promise<Comment> {
@@ -730,5 +776,14 @@ export class D1Storage implements StorageProvider {
       .where(eq(tasks.projectId, projectId))
       .get();
     return (row?.highest ?? 0) + 1;
+  }
+
+  async #commentCount(taskId: string): Promise<number> {
+    const row = await this.#db
+      .select({ total: count() })
+      .from(comments)
+      .where(eq(comments.taskId, taskId))
+      .get();
+    return row?.total ?? 0;
   }
 }

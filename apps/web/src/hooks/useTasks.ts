@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useState } from "react";
-import type {
-  CreateTaskInput,
-  OperationOptions,
-  StorageProvider,
-  Task,
-  UpdateTaskInput,
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  withTaskCommentCount,
+  type CreateTaskInput,
+  type OperationOptions,
+  type StorageProvider,
+  type Task,
+  type UpdateTaskInput,
 } from "@bitig/core";
 import { useRealtimeEvent } from "./useRealtime";
 
@@ -13,7 +14,13 @@ function upsertTask(tasks: readonly Task[], incoming: Task, projectId?: string):
     return tasks.filter((t) => t.id !== incoming.id);
   }
   if (tasks.some((t) => t.id === incoming.id)) {
-    return tasks.map((t) => (t.id === incoming.id ? incoming : t));
+    return tasks.map((t) => {
+      if (t.id !== incoming.id) return t;
+      if (incoming.commentCount === undefined && t.commentCount !== undefined) {
+        return { ...incoming, commentCount: t.commentCount };
+      }
+      return incoming;
+    });
   }
   return [...tasks, incoming];
 }
@@ -22,6 +29,8 @@ export function useTasks(storage: StorageProvider, projectId?: string) {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const createdCommentIdsRef = useRef(new Set<string>());
+  const deletedCommentIdsRef = useRef(new Set<string>());
 
   useEffect(() => {
     const controller = new AbortController();
@@ -56,6 +65,43 @@ export function useTasks(storage: StorageProvider, projectId?: string) {
       case "project.deleted":
         setTasks((prev) => prev.filter((t) => t.projectId !== event.id));
         break;
+      case "comment.created": {
+        if (createdCommentIdsRef.current.has(event.comment.id)) break;
+        createdCommentIdsRef.current.add(event.comment.id);
+        setTasks((prev) =>
+          prev.map((t) =>
+            t.id === event.comment.taskId
+              ? withTaskCommentCount(t, (t.commentCount ?? 0) + 1)
+              : t,
+          ),
+        );
+        break;
+      }
+      case "comment.deleted": {
+        if (deletedCommentIdsRef.current.has(event.id)) break;
+        deletedCommentIdsRef.current.add(event.id);
+        if (event.taskId !== undefined) {
+          const targetTaskId = event.taskId;
+          setTasks((prev) =>
+            prev.map((t) =>
+              t.id === targetTaskId
+                ? withTaskCommentCount(t, Math.max(0, (t.commentCount ?? 0) - 1))
+                : t,
+            ),
+          );
+        } else {
+          const filter = projectId ? { projectId } : undefined;
+          void storage
+            .getTasks(filter)
+            .then((result) => {
+              setTasks(result);
+            })
+            .catch((err: unknown) => {
+              console.warn("failed to resync tasks", err);
+            });
+        }
+        break;
+      }
       case "sync": {
         const filter = projectId ? { projectId } : undefined;
         void storage

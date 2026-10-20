@@ -35,6 +35,7 @@ import {
   renumberTask,
   throwIfAborted,
   toTimestamp,
+  withTaskCommentCount,
   type BackupBundle,
   type Comment,
   type CreateCommentInput,
@@ -215,7 +216,9 @@ export class MarkdownStorage implements StorageProvider {
                     seenTaskIds.set(taskId, filePath);
                     const text = await this.#fs.readText(filePath, { signal: opts?.signal });
                     if (text !== null) {
-                      tasks.push(decodeTask(pId, taskId, text, filePath));
+                      const decoded = decodeTask(pId, taskId, text, filePath);
+                      const count = await this.#countTaskComments(pId, taskId, opts?.signal);
+                      tasks.push(withTaskCommentCount(decoded, count));
                     }
                   }
                 }
@@ -240,7 +243,9 @@ export class MarkdownStorage implements StorageProvider {
       if (found === null) return null;
       const text = await this.#fs.readText(found.filePath, { signal: opts?.signal });
       if (text === null) return null;
-      return copyTask(decodeTask(found.projectId, validId, text, found.filePath));
+      const decoded = decodeTask(found.projectId, validId, text, found.filePath);
+      const count = await this.#countTaskComments(found.projectId, validId, opts?.signal);
+      return withTaskCommentCount(decoded, count);
     }, { signal: opts?.signal });
   }
 
@@ -290,11 +295,12 @@ export class MarkdownStorage implements StorageProvider {
         await this.#writeComments(next.projectId, comments, opts?.signal);
         await this.#fs.removeFile(found.filePath, { signal: opts?.signal });
         await this.#fs.removeDir(commentsDirPath(existing.projectId, validId), { signal: opts?.signal });
+        return withTaskCommentCount(next, comments.length);
       } else {
         await this.#fs.writeTextAtomic(found.filePath, encodeTask(next), { signal: opts?.signal });
+        const count = await this.#countTaskComments(existing.projectId, validId, opts?.signal);
+        return withTaskCommentCount(next, count);
       }
-
-      return copyTask(next);
     }, { signal: opts?.signal });
   }
 
@@ -327,7 +333,8 @@ export class MarkdownStorage implements StorageProvider {
       const existing = decodeTask(found.projectId, validId, text, found.filePath);
       const next = completeTaskEntity(existing, this.#deps.clock(), opts?.actor);
       await this.#fs.writeTextAtomic(found.filePath, encodeTask(next), { signal: opts?.signal });
-      return copyTask(next);
+      const count = await this.#countTaskComments(found.projectId, validId, opts?.signal);
+      return withTaskCommentCount(next, count);
     }, { signal: opts?.signal });
   }
 
@@ -612,12 +619,29 @@ export class MarkdownStorage implements StorageProvider {
           const filePath = taskFilePath(projectId, taskId);
           const text = await this.#fs.readText(filePath, { signal });
           if (text !== null) {
-            tasks.push(decodeTask(projectId, taskId, text, filePath));
+            const decoded = decodeTask(projectId, taskId, text, filePath);
+            const count = await this.#countTaskComments(projectId, taskId, signal);
+            tasks.push(withTaskCommentCount(decoded, count));
           }
         }
       }
     }
     return tasks;
+  }
+
+  /** Number of comment files stored for a task; call under the lock. */
+  async #countTaskComments(projectId: string, taskId: string, signal?: OperationOptions["signal"]): Promise<number> {
+    const entries = await this.#fs.listDir(commentsDirPath(projectId, taskId), { signal });
+    if (entries === null) return 0;
+
+    let count = 0;
+    for (const entry of entries) {
+      throwIfAborted(signal);
+      if (entry.kind === "file" && commentIdFromFileName(entry.name) !== null) {
+        count++;
+      }
+    }
+    return count;
   }
 
   /** One task's comments, unsorted; call under the lock. */

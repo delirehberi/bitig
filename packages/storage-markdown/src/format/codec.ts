@@ -31,7 +31,9 @@ import {
 
 /** `z.object` (not `strictObject`) strips unknown keys instead of rejecting them. */
 const ProjectFileSchema = z.object(ProjectSchema.shape).omit({ id: true });
-const TaskFileSchema = z.object(TaskSchema.shape).omit({ id: true, projectId: true, description: true });
+const TaskFileSchema = z
+  .object(TaskSchema.shape)
+  .omit({ id: true, projectId: true, description: true, commentCount: true });
 
 const CommentFileSchema = z.object(CommentSchema.shape).omit({ id: true, taskId: true, body: true });
 const WebhookFileSchema = z.object(WebhookSchema.shape).omit({ id: true, projectId: true });

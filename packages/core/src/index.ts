@@ -55,6 +55,7 @@ export {
   recordWebhookTriggerEntity,
   renumberTask,
   sortProjectsByActivity,
+  withTaskCommentCount,
 } from "./domain/entities";
 export {
   extractTaskFromWebhookPayload,

@@ -8,6 +8,7 @@ import {
   Globe,
   GripVertical,
   Lock,
+  MessageSquare,
   Tag,
   Trash2,
 } from "lucide-react";
@@ -259,6 +260,15 @@ export function TaskCard({
             </div>
           )}
           <ChecklistProgressBadge checklist={task.checklist} />
+          {task.commentCount !== undefined && task.commentCount > 0 && (
+            <div
+              className="flex items-center gap-1 font-mono text-2xs"
+              title={`${String(task.commentCount)} ${task.commentCount === 1 ? "comment" : "comments"}`}
+            >
+              <MessageSquare size={12} aria-hidden="true" />
+              <span>{task.commentCount}</span>
+            </div>
+          )}
         </div>
 
         <select
