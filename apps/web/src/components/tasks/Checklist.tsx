@@ -36,35 +36,78 @@ interface ChecklistViewProps {
   readonly onToggle?: ((next: ChecklistItem[]) => void) | undefined;
 }
 
-/** Checkable list for the task detail view. */
+/** Checkable list for the task detail view, with an inline input to add subtasks when editable. */
 export function ChecklistView({ checklist, onToggle }: ChecklistViewProps) {
+  const [draft, setDraft] = useState("");
   const items = checklist ?? [];
-  if (items.length === 0) return <span className="text-ink-3">No subtasks</span>;
+
+  function addDraft() {
+    const text = draft.trim();
+    if (!text || !onToggle) return;
+    onToggle(addChecklistItem(items, text));
+    setDraft("");
+  }
 
   return (
-    <ul className="m-0 flex list-none flex-col gap-1.5 p-0">
-      {items.map((item, index) => (
-        // Items have no identity beyond their position, which is also their order.
-        <li key={index} className="flex items-start gap-2">
+    <div className="flex flex-col gap-2">
+      {items.length === 0 ? (
+        <span className="text-sm text-ink-3">No subtasks</span>
+      ) : (
+        <ul className="m-0 flex list-none flex-col gap-1.5 p-0">
+          {items.map((item, index) => (
+            // Items have no identity beyond their position, which is also their order.
+            <li key={index} className="flex items-start gap-2">
+              <input
+                type="checkbox"
+                id={`checklist-view-${String(index)}`}
+                checked={item.done}
+                disabled={!onToggle}
+                onChange={(e) => {
+                  onToggle?.(setChecklistItemDone(items, index, e.target.checked));
+                }}
+                className="mt-0.5 rounded border-rule text-accent focus-visible:outline-focus"
+              />
+              <label
+                htmlFor={`checklist-view-${String(index)}`}
+                className={`text-sm ${item.done ? "text-ink-3 line-through" : "text-ink"}`}
+              >
+                {item.text}
+              </label>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {onToggle && (
+        <div className="flex items-center gap-2">
           <input
-            type="checkbox"
-            id={`checklist-view-${String(index)}`}
-            checked={item.done}
-            disabled={!onToggle}
+            type="text"
+            value={draft}
+            aria-label="New subtask"
+            placeholder="Add a subtask"
             onChange={(e) => {
-              onToggle?.(setChecklistItemDone(items, index, e.target.checked));
+              setDraft(e.target.value);
             }}
-            className="mt-0.5 rounded border-rule text-accent focus-visible:outline-focus"
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                addDraft();
+              }
+            }}
+            className="min-w-0 flex-1 rounded-md border border-rule bg-paper-2 px-2 py-1 text-sm text-ink placeholder:text-ink-3 focus-visible:outline-focus"
           />
-          <label
-            htmlFor={`checklist-view-${String(index)}`}
-            className={`text-sm ${item.done ? "text-ink-3 line-through" : "text-ink"}`}
+          <button
+            type="button"
+            onClick={addDraft}
+            disabled={!draft.trim()}
+            className="inline-flex items-center gap-1 rounded-md border border-rule px-2 py-1 text-xs font-medium text-ink-2 transition-colors hover:bg-paper-2 hover:text-ink disabled:opacity-50"
           >
-            {item.text}
-          </label>
-        </li>
-      ))}
-    </ul>
+            <Plus size={ICON_SIZE} aria-hidden="true" />
+            Add
+          </button>
+        </div>
+      )}
+    </div>
   );
 }
 

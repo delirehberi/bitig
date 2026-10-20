@@ -13,6 +13,7 @@ import {
 import type { ChecklistItem, Project, StorageProvider, Task, TaskPriority, TaskStatus } from "@bitig/core";
 import { useFeatureFlags } from "../../hooks/useFeatureFlags";
 import { useFocusTrap } from "../../hooks/useFocusTrap";
+import { Markdown } from "../Markdown";
 import { ChecklistProgressBadge, ChecklistView } from "./Checklist";
 import { NeedsHumanNote } from "./NeedsHuman";
 import { TaskCode } from "./TaskCode";
@@ -197,11 +198,15 @@ export function TaskDetailModal({
           </div>
         )}
 
-        <p className="m-0 mb-5 whitespace-pre-wrap text-sm text-ink-2">
-          {task.description || <span className="text-ink-3">No description</span>}
-        </p>
+        <div className="mb-5">
+          {task.description ? (
+            <Markdown content={task.description} />
+          ) : (
+            <p className="m-0 text-sm text-ink-3">No description</p>
+          )}
+        </div>
 
-        {checklist && (
+        {(Boolean(checklist && checklist.length > 0) || Boolean(onChecklistChange)) && (
           <section aria-labelledby="task-detail-checklist" className="mb-5">
             <h3
               id="task-detail-checklist"
@@ -256,7 +261,20 @@ export function TaskDetailModal({
         </dl>
 
         {/* Keyed so a draft never carries over to another task. */}
-        {storage && <TaskComments key={task.id} storage={storage} taskId={task.id} />}
+        {storage && (
+          <TaskComments
+            key={task.id}
+            storage={storage}
+            taskId={task.id}
+            onResolve={
+              task.needsHuman !== undefined && onNeedsHumanResolve
+                ? () => {
+                    onNeedsHumanResolve(task);
+                  }
+                : undefined
+            }
+          />
+        )}
 
         <div className="flex flex-wrap items-center justify-end gap-2 border-t border-rule pt-4">
           <button

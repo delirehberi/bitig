@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Bot, MessageSquare, Trash2, User } from "lucide-react";
 import type { Comment, StorageProvider } from "@bitig/core";
 import { useComments } from "../../hooks/useComments";
+import { Markdown } from "../Markdown";
 
 const ICON_SIZE = 12;
 
@@ -30,7 +31,7 @@ function CommentItem({ comment, onDelete }: { readonly comment: Comment; readonl
           <Trash2 size={ICON_SIZE} aria-hidden="true" />
         </button>
       </div>
-      <p className="m-0 whitespace-pre-wrap text-sm text-ink">{comment.body}</p>
+      <Markdown content={comment.body} className="text-sm text-ink" />
     </li>
   );
 }
@@ -38,22 +39,27 @@ function CommentItem({ comment, onDelete }: { readonly comment: Comment; readonl
 interface TaskCommentsProps {
   readonly storage: StorageProvider;
   readonly taskId: string;
+  /** Provided when the task has needsHuman set; lets the user explicitly resolve while commenting. */
+  readonly onResolve?: (() => void) | undefined;
 }
 
 /** A task's comments, oldest first, with a box to add one. */
-export function TaskComments({ storage, taskId }: TaskCommentsProps) {
+export function TaskComments({ storage, taskId, onResolve }: TaskCommentsProps) {
   const { comments, isLoading, error, addComment, deleteComment } = useComments(storage, taskId);
   const [draft, setDraft] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
-  async function submit() {
+  async function submit(resolveNeedsHuman = false) {
     if (draft.trim() === "" || isSaving) return;
     setIsSaving(true);
     setSaveError(null);
     try {
       await addComment(draft);
       setDraft("");
+      if (resolveNeedsHuman) {
+        onResolve?.();
+      }
     } catch (err: unknown) {
       setSaveError(err instanceof Error ? err.message : "Failed to add comment");
     } finally {
@@ -133,7 +139,19 @@ export function TaskComments({ storage, taskId }: TaskCommentsProps) {
             {saveError}
           </p>
         )}
-        <div className="mt-2 flex justify-end">
+        <div className="mt-2 flex justify-end gap-2">
+          {onResolve && (
+            <button
+              type="button"
+              disabled={draft.trim() === "" || isSaving}
+              onClick={() => {
+                void submit(true);
+              }}
+              className="rounded-md border border-accent/30 bg-accent-soft px-3 py-1.5 text-xs font-semibold text-accent-ink transition-colors hover:opacity-90 disabled:opacity-50"
+            >
+              Comment & resolve
+            </button>
+          )}
           <button
             type="submit"
             disabled={draft.trim() === "" || isSaving}

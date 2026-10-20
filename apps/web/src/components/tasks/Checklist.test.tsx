@@ -101,6 +101,44 @@ describe("task checklist", () => {
     });
   });
 
+  it("shows subtasks section and allows adding subtasks in the detail view even when starting empty", async () => {
+    const user = userEvent.setup();
+    const taskWithoutChecklist: Task = {
+      id: TASK.id,
+      projectId: TASK.projectId,
+      title: TASK.title,
+      description: TASK.description,
+      status: TASK.status,
+      isPublic: TASK.isPublic,
+      createdAt: TASK.createdAt,
+      updatedAt: TASK.updatedAt,
+    };
+    const onChecklistChange = vi.fn(() => new Promise<never>(() => undefined));
+    render(
+      <FeatureFlagsProvider mode="local">
+        <TaskDetailModal
+          task={taskWithoutChecklist}
+          projects={[PROJECT]}
+          onClose={vi.fn()}
+          onEdit={vi.fn()}
+          onDelete={vi.fn()}
+          onComplete={vi.fn()}
+          onChecklistChange={onChecklistChange}
+        />
+      </FeatureFlagsProvider>,
+    );
+
+    expect(screen.getByText("No subtasks")).toBeInTheDocument();
+    await user.type(screen.getByLabelText("New subtask"), "Publish package");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+
+    expect(onChecklistChange).toHaveBeenCalledWith(taskWithoutChecklist, [
+      { text: "Publish package", done: false },
+    ]);
+    expect(screen.getByLabelText("Publish package")).not.toBeChecked();
+    expect(screen.getByLabelText("New subtask")).toHaveValue("");
+  });
+
   it("adds, checks, renames, reorders and removes items in the form", async () => {
     const user = userEvent.setup();
     const onSubmit = renderTaskModal(TASK);

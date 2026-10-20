@@ -255,6 +255,38 @@ describe("opening the detail view", () => {
     expect(onView).toHaveBeenCalledWith(TASK);
   });
 
+  it("hides the description on done cards while keeping it on active cards", () => {
+    const { rerender } = render(
+      <FeatureFlagsProvider mode="local">
+        <TaskCard
+          task={TASK}
+          projects={[PROJECT]}
+          onView={vi.fn()}
+          onEdit={vi.fn()}
+          onDelete={vi.fn()}
+          onComplete={vi.fn()}
+          onStatusChange={vi.fn()}
+        />
+      </FeatureFlagsProvider>,
+    );
+    expect(screen.getByText("Cover the REST API")).toBeInTheDocument();
+
+    rerender(
+      <FeatureFlagsProvider mode="local">
+        <TaskCard
+          task={{ ...TASK, status: "done" }}
+          projects={[PROJECT]}
+          onView={vi.fn()}
+          onEdit={vi.fn()}
+          onDelete={vi.fn()}
+          onComplete={vi.fn()}
+          onStatusChange={vi.fn()}
+        />
+      </FeatureFlagsProvider>,
+    );
+    expect(screen.queryByText("Cover the REST API")).not.toBeInTheDocument();
+  });
+
   it("calls onView from the list row title", async () => {
     const user = userEvent.setup();
     const onView = vi.fn();

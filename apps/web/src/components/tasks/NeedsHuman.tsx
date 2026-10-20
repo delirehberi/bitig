@@ -5,16 +5,16 @@ import { Hand } from "lucide-react";
  * text says what for. Agents set it over MCP; a person clears it once answered.
  */
 
-/** Small pill for list rows; renders nothing when the task needs nobody. */
+/** Pill for list rows showing the flag and the agent's question; renders nothing when the task needs nobody. */
 export function NeedsHumanBadge({ reason }: { readonly reason: string | undefined }) {
   if (reason === undefined) return null;
   return (
     <span
       title={`Needs you: ${reason}`}
-      className="inline-flex shrink-0 items-center gap-1 rounded-pill border border-accent/30 bg-accent-soft px-2 py-0.5 text-2xs font-semibold text-accent-ink"
+      className="inline-flex max-w-xs shrink-0 items-center gap-1 rounded-pill border border-accent/30 bg-accent-soft px-2 py-0.5 text-2xs font-semibold text-accent-ink"
     >
-      <Hand size={12} aria-hidden="true" />
-      Needs you
+      <Hand size={12} aria-hidden="true" className="shrink-0" />
+      <span className="truncate">Needs you: {reason}</span>
     </span>
   );
 }

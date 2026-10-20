@@ -8,6 +8,7 @@ interface ProjectCardProps {
   readonly onEdit: (project: Project) => void;
   readonly onDelete: (project: Project) => void;
   readonly onSelect: (projectId: string) => void;
+  readonly onView?: (project: Project) => void;
 }
 
 const KIND_COLORS: Record<ProjectKind, string> = {
@@ -20,7 +21,7 @@ const KIND_COLORS: Record<ProjectKind, string> = {
 
 const ICON_SIZE = 14;
 
-export function ProjectCard({ project, tasks, onEdit, onDelete, onSelect }: ProjectCardProps) {
+export function ProjectCard({ project, tasks, onEdit, onDelete, onSelect, onView }: ProjectCardProps) {
   const projectTasks = tasks.filter((t) => t.projectId === project.id);
   const doneTasks = projectTasks.filter((t) => t.status === "done");
 
@@ -68,7 +69,18 @@ export function ProjectCard({ project, tasks, onEdit, onDelete, onSelect }: Proj
           </div>
         </div>
 
-        <h3 className="m-0 mt-3 font-display text-base font-bold text-ink">{project.name}</h3>
+        <h3 className="m-0 mt-3 font-display text-base font-bold text-ink">
+          <button
+            type="button"
+            onClick={() => {
+              onView?.(project);
+            }}
+            title="View project details"
+            className="cursor-pointer text-left font-[inherit] text-[inherit] hover:underline focus-visible:outline-focus"
+          >
+            {project.name}
+          </button>
+        </h3>
         {project.description ? (
           <p className="m-0 mt-1 line-clamp-2 text-xs text-ink-2">{project.description}</p>
         ) : (

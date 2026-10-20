@@ -261,7 +261,9 @@ export function registerBitigTools(server: McpServer, storage: StorageProvider):
           .describe(`${CHECKLIST_DESCRIPTION} Replaces the whole list; null or [] removes it.`),
         needsHuman: NeedsHumanSchema.nullable()
           .optional()
-          .describe(`${NEEDS_HUMAN_DESCRIPTION} null clears it once the person has answered.`),
+          .describe(
+            `${NEEDS_HUMAN_DESCRIPTION} null clears it when resolved manually or when a person's comment explicitly states it is resolved.`,
+          ),
       },
     },
     async (args, extra) => {

@@ -176,5 +176,23 @@ describe("TaskList sorting and project column visibility", () => {
     expect(screen.queryByText("Alpha")).not.toBeInTheDocument();
     expect(screen.queryByText("Zeta")).not.toBeInTheDocument();
   });
+
+  it("shows the agent's question next to the Needs you flag in list rows", () => {
+    const firstTask = TASKS[0];
+    if (!firstTask) throw new Error("expected first task");
+    render(
+      <TaskList
+        tasks={[{ ...firstTask, needsHuman: "Which region should we deploy to?" }]}
+        projects={[PROJECT_ALPHA, PROJECT_ZETA]}
+        onView={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onComplete={vi.fn()}
+        onStatusChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("Needs you: Which region should we deploy to?")).toBeInTheDocument();
+  });
 });
 

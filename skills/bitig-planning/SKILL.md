@@ -51,7 +51,7 @@ Call `list_tasks` with the `projectId` (or project `key`) before adding anything
 
 Tasks have a chronological comment thread (`get_task` returns `comments` oldest first, or call `list_comments`).
 - Use `add_comment` (`taskId` accepts ID or ticket code like `BIT-12`, `body` in Markdown, `author` set to your agent name e.g. `"claude"` or `"antigravity"`, `authorType: "agent"`) to record investigation notes, architectural context, blockers, or questions for the user without overwriting the task description.
-- When a task has `needsHuman` set, check its comments via `get_task` or `list_comments` to read the person's answer, then clear `needsHuman: null` with `update_task`.
+- When a task has `needsHuman` set, check its comments via `get_task` or `list_comments` to read the person's response. A comment does not clear `needsHuman` automatically: only clear `needsHuman: null` with `update_task` if the person's comment explicitly states the question or blocker is resolved (otherwise leave it for the person's manual resolve action).
 - Use `delete_comment` with a comment `id` only when removing an erroneous or duplicate comment.
 
 ## 5. By request type

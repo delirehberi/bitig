@@ -89,4 +89,48 @@ describe("TaskBoard reordering", () => {
     fireEvent.drop(column, { dataTransfer });
     expect(summary(onMove)).toEqual([["Task 2", { status: "in_progress", order: 1 }]]);
   });
+
+  it("shows Archive all only when the Done column has tasks and archives every Done task", async () => {
+    const user = userEvent.setup();
+    const onStatusChange = vi.fn();
+    const doneA = task(5, 0, "done");
+    const doneB = task(6, 1, "done");
+
+    const { rerender } = render(
+      <FeatureFlagsProvider mode="cloudflare">
+        <TaskBoard
+          tasks={[FIRST, STARTED]}
+          projects={[PROJECT]}
+          onView={vi.fn()}
+          onEdit={vi.fn()}
+          onDelete={vi.fn()}
+          onComplete={vi.fn()}
+          onStatusChange={onStatusChange}
+          onMove={vi.fn()}
+        />
+      </FeatureFlagsProvider>,
+    );
+
+    expect(screen.queryByRole("button", { name: "Archive all" })).not.toBeInTheDocument();
+
+    rerender(
+      <FeatureFlagsProvider mode="cloudflare">
+        <TaskBoard
+          tasks={[FIRST, STARTED, doneA, doneB]}
+          projects={[PROJECT]}
+          onView={vi.fn()}
+          onEdit={vi.fn()}
+          onDelete={vi.fn()}
+          onComplete={vi.fn()}
+          onStatusChange={onStatusChange}
+          onMove={vi.fn()}
+        />
+      </FeatureFlagsProvider>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Archive all" }));
+    expect(onStatusChange).toHaveBeenCalledTimes(2);
+    expect(onStatusChange).toHaveBeenNthCalledWith(1, doneA, "archived");
+    expect(onStatusChange).toHaveBeenNthCalledWith(2, doneB, "archived");
+  });
 });

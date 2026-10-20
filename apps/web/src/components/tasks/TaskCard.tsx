@@ -184,7 +184,7 @@ export function TaskCard({
                 {task.title}
               </button>
             </h4>
-            {task.description && (
+            {!isDone && task.description && (
               <p className="m-0 mt-1 line-clamp-2 text-xs text-ink-2">{task.description}</p>
             )}
           </div>

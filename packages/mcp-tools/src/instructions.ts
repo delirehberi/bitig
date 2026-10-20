@@ -16,6 +16,8 @@ Ticket codes: every task has a code like BIT-12 (project key + number). Use it w
 every tool that takes a task 'id' also accepts its code, and 'projectId' also accepts the project key.
 
 Comments: use 'add_comment' to keep context on a task (findings, decisions, what is left) and to ask a person
-something. 'get_task' returns the task's comments, so read them before picking a task up again.
+something. 'get_task' returns the task's comments, so read them before picking a task up again. When a task has
+'needsHuman' set, it is cleared by a person's manual resolve action in the UI, or by calling 'update_task' with
+'needsHuman: null' only if a person's comment explicitly states that the question or blocker is resolved.
 `;
 

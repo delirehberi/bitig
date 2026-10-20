@@ -1,7 +1,7 @@
 import { InMemoryStorage, type Task } from "@bitig/core";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TaskComments } from "./TaskComments";
 
 describe("TaskComments", () => {
@@ -46,5 +46,22 @@ describe("TaskComments", () => {
     await user.click(screen.getByRole("button", { name: "Delete comment by You" }));
     expect(await screen.findByText("No comments yet")).toBeInTheDocument();
     expect(await storage.getComments(task.id)).toEqual([]);
+  });
+
+  it("only calls onResolve when Comment & resolve is clicked, not on a regular Comment", async () => {
+    const user = userEvent.setup();
+    const onResolve = vi.fn();
+    render(<TaskComments storage={storage} taskId={task.id} onResolve={onResolve} />);
+    expect(await screen.findByText("No comments yet")).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("Add a comment"), "Still checking");
+    await user.click(screen.getByRole("button", { name: "Comment" }));
+    expect(await screen.findByText("Still checking")).toBeInTheDocument();
+    expect(onResolve).not.toHaveBeenCalled();
+
+    await user.type(screen.getByLabelText("Add a comment"), "Resolved: use the staging key");
+    await user.click(screen.getByRole("button", { name: "Comment & resolve" }));
+    expect(await screen.findByText("Resolved: use the staging key")).toBeInTheDocument();
+    expect(onResolve).toHaveBeenCalledTimes(1);
   });
 });
