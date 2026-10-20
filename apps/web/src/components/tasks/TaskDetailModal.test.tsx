@@ -406,9 +406,26 @@ describe("opening the detail view", () => {
     );
     expect(screen.queryByText("Cover the REST API")).not.toBeInTheDocument();
     expect(screen.queryByText("#docs")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Mark as To Do" })).toBeInTheDocument();
     const article = screen.getByRole("article");
     expect(article.className).toContain("w-4/5");
     expect(article.className).toContain("hover:w-full");
+  });
+
+  it("hides the Complete button in TaskDetailModal when a task is archived", () => {
+    render(
+      <FeatureFlagsProvider mode="local">
+        <TaskDetailModal
+          task={{ ...TASK, status: "archived" }}
+          projects={[PROJECT]}
+          onClose={vi.fn()}
+          onEdit={vi.fn()}
+          onDelete={vi.fn()}
+          onComplete={vi.fn()}
+        />
+      </FeatureFlagsProvider>,
+    );
+    expect(screen.queryByRole("button", { name: "Complete" })).not.toBeInTheDocument();
   });
 
   it("calls onView from the list row title", async () => {

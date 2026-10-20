@@ -107,7 +107,7 @@ export function getTaskTiming(task: Task, nowMs?: number): TaskTiming {
   if (startedMs !== undefined && Number.isFinite(startedMs)) {
     if (completedMs !== undefined && Number.isFinite(completedMs)) {
       spentMs = clampNonNegative(completedMs - startedMs);
-    } else if (task.status === "done") {
+    } else if (task.status === "done" || task.status === "archived") {
       const updatedMs = Date.parse(task.updatedAt);
       if (Number.isFinite(updatedMs)) {
         spentMs = clampNonNegative(updatedMs - startedMs);
@@ -244,7 +244,7 @@ export function isoWeekKey(isoTimestamp: string): string {
 }
 
 function isCompletedTaskStatus(task: Task): boolean {
-  return task.status === "done" || (task.status === "archived" && task.completedAt !== undefined);
+  return task.status === "done" || task.status === "archived";
 }
 
 /**

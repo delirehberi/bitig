@@ -144,7 +144,7 @@ export function TaskDetailModal({
   if (!task) return null;
 
   const project = projects.find((p) => p.id === task.projectId);
-  const isDone = task.status === "done";
+  const isDone = task.status === "done" || task.status === "archived";
   const checklist = pendingChecklist?.taskId === task.id ? pendingChecklist.items : task.checklist;
   const timing = getTaskTiming(task);
   const spentMs =

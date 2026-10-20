@@ -34,7 +34,7 @@ export function ProjectCard({
   onRecover,
 }: ProjectCardProps) {
   const projectTasks = tasks.filter((t) => t.projectId === project.id);
-  const doneTasks = projectTasks.filter((t) => t.status === "done");
+  const doneTasks = projectTasks.filter((t) => t.status === "done" || t.status === "archived");
   const isArchived = project.archived === true;
 
   if (isArchived) {

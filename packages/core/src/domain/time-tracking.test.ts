@@ -196,12 +196,24 @@ describe("time-tracking domain helpers", () => {
         completedAt: "2026-10-13T11:30:00.000Z",
         updatedAt: "2026-10-13T11:30:00.000Z",
       },
+      {
+        id: "01940000-0000-7000-8000-000000000022",
+        projectId: PROJECT_A.id,
+        title: "Archived Legacy",
+        description: "",
+        status: "archived",
+        isPublic: false,
+        number: 3,
+        createdAt: "2026-10-20T09:00:00.000Z",
+        updatedAt: "2026-10-20T13:00:00.000Z",
+      },
     ];
 
     const byProject = aggregateTimeByProject([PROJECT_A, PROJECT_B], tasks);
     expect(byProject[0]?.projectId).toBe(PROJECT_B.id);
     expect(byProject[0]?.totalSpentMs).toBe(90 * 60 * 1000);
     expect(byProject[1]?.projectId).toBe(PROJECT_A.id);
+    expect(byProject[1]?.completedTasks).toBe(2);
     expect(byProject[1]?.totalSpentMs).toBe(20 * 60 * 1000);
 
     const byWeek = aggregateTimeByProjectAndWeek([PROJECT_A, PROJECT_B], tasks);
@@ -211,7 +223,7 @@ describe("time-tracking domain helpers", () => {
         projectId: PROJECT_A.id,
         projectName: "Bitig Core",
         projectKey: "BIT",
-        completedTasks: 1,
+        completedTasks: 2,
         totalSpentMs: 20 * 60 * 1000,
       },
       {
@@ -226,14 +238,15 @@ describe("time-tracking domain helpers", () => {
 
     const weeklyCsv = exportTimeSpentCsv([PROJECT_A, PROJECT_B], tasks, "by_week");
     expect(weeklyCsv).toContain("Week,Project Key,Project Name,Completed Tasks");
-    expect(weeklyCsv).toContain("2026-W43,BIT,Bitig Core,1,20,0.33,20m");
+    expect(weeklyCsv).toContain("2026-W43,BIT,Bitig Core,2,20,0.33,20m");
     // Formula prefix `=` is neutralized with a leading apostrophe and comma is quoted
     expect(weeklyCsv).toContain('2026-W42,EVL,"\'=Evil, Project",1,90,1.5,1h 30m');
 
     const taskRows = listTaskTimeRows([PROJECT_A, PROJECT_B], tasks);
-    expect(taskRows).toHaveLength(2);
+    expect(taskRows).toHaveLength(3);
     expect(taskRows[0]?.taskCode).toBe("EVL-2");
     expect(taskRows[1]?.taskCode).toBe("BIT-1");
+    expect(taskRows[2]?.taskCode).toBe("BIT-3");
 
     const projectCsv = exportTimeSpentCsv([PROJECT_A, PROJECT_B], tasks, "by_project");
     expect(projectCsv).toContain(

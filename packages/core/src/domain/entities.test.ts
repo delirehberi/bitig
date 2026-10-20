@@ -167,7 +167,9 @@ describe("completeTaskEntity", () => {
 
   it("completes archived tasks", () => {
     const { task, runtime } = setup();
-    const archived = applyTaskPatch(task, { status: "archived" }, runtime.clock());
+    const archived = applyTaskPatch(task, { status: "archived" }, runtime.clock(), "claude");
+    expect(archived.completedAt).toBe(archived.updatedAt);
+    expect(archived.completedBy).toBe("claude");
     expect(completeTaskEntity(archived, runtime.clock()).status).toBe("done");
   });
 });

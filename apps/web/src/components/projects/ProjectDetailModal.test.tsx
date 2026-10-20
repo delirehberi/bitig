@@ -106,6 +106,53 @@ describe("ProjectDetailModal", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it("counts archived tasks as completed in ProjectCard and ProjectDetailModal", () => {
+    const tasksWithArchived: Task[] = [
+      ...TASKS,
+      {
+        id: "01940000-0000-7000-8000-000000000013",
+        projectId: PROJECT.id,
+        title: "Archived v0",
+        description: "",
+        status: "archived",
+        isPublic: false,
+        createdAt: TIMESTAMP,
+        updatedAt: TIMESTAMP,
+      },
+    ];
+
+    render(
+      <>
+        <ProjectCard
+          project={PROJECT}
+          tasks={tasksWithArchived}
+          onEdit={vi.fn()}
+          onDelete={vi.fn()}
+          onSelect={vi.fn()}
+        />
+        <ProjectDetailModal
+          project={PROJECT}
+          tasks={tasksWithArchived}
+          onClose={vi.fn()}
+          onEdit={vi.fn()}
+          onDelete={vi.fn()}
+          onSelectTasks={vi.fn()}
+        />
+      </>,
+    );
+
+    expect(
+      screen.getByText(
+        (_, node) => node?.tagName === "SPAN" && node.textContent === "2 / 3 tasks",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        (_, node) => node?.tagName === "SPAN" && node.textContent === "2 / 3 done (1 open)",
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("opens from the ProjectCard title button", async () => {
     const user = userEvent.setup();
     const onView = vi.fn();

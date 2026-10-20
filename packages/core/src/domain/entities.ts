@@ -180,7 +180,7 @@ function resolveTaskLifecycleTimestamps(
     case "archived":
       return {
         startedAt: task.startedAt,
-        completedAt: task.completedAt,
+        completedAt: task.completedAt ?? updatedAt,
       };
   }
 }
@@ -206,7 +206,7 @@ function resolveTaskLifecycleActors(
     case "archived":
       return {
         startedBy: task.startedBy,
-        completedBy: task.completedBy,
+        completedBy: task.completedBy ?? actor,
       };
   }
 }

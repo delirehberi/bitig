@@ -65,6 +65,7 @@ export function TaskCard({
   const project = projects.find((p) => p.id === task.projectId);
   const isDone = task.status === "done";
   const isArchived = task.status === "archived";
+  const isCompleted = isDone || isArchived;
   const hasRecordedTime = task.startedAt !== undefined || task.completedAt !== undefined;
   const spentMs = hasRecordedTime ? getTaskTiming(task).spentMs : undefined;
   const actor =
@@ -168,17 +169,17 @@ export function TaskCard({
           <button
             type="button"
             onClick={() => {
-              if (task.status !== "done") {
+              if (!isCompleted) {
                 onComplete(task);
               } else {
                 onStatusChange(task, "todo");
               }
             }}
-            title={isDone ? "Mark as To Do" : "Mark as Done"}
-            aria-label={isDone ? "Mark as To Do" : "Mark as Done"}
+            title={isCompleted ? "Mark as To Do" : "Mark as Done"}
+            aria-label={isCompleted ? "Mark as To Do" : "Mark as Done"}
             className="mt-0.5 text-ink-3 transition-colors hover:text-ok focus-visible:outline-focus"
           >
-            {isDone ? (
+            {isCompleted ? (
               <CheckCircle2 size={18} className="text-ok" />
             ) : (
               <Circle size={18} className="text-ink-3 hover:text-ok" />
@@ -188,7 +189,7 @@ export function TaskCard({
           <div className="min-w-0 flex-1">
             <h4
               className={`m-0 font-display text-sm font-semibold text-ink ${
-                isDone ? "line-through text-ink-3" : ""
+                isCompleted ? "line-through text-ink-3" : ""
               }`}
             >
               <button

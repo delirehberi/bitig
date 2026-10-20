@@ -90,7 +90,7 @@ export function ProjectDetailModal({
   if (!project) return null;
 
   const projectTasks = tasks.filter((t) => t.projectId === project.id);
-  const doneTasks = projectTasks.filter((t) => t.status === "done");
+  const doneTasks = projectTasks.filter((t) => t.status === "done" || t.status === "archived");
   const openTasks = projectTasks.filter((t) => t.status === "todo" || t.status === "in_progress");
   const needsHumanTasks = projectTasks.filter((t) => t.needsHuman !== undefined);
 
