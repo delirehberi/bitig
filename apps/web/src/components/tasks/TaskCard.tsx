@@ -31,6 +31,8 @@ interface TaskCardProps {
   readonly onStatusChange: (task: Task, status: TaskStatus) => void;
   /** Shows a reorder handle; arrow keys on it move the card up (-1) or down (1). */
   readonly onReorder?: (direction: -1 | 1) => void;
+  /** Whether to show the project name badge; defaults to true. */
+  readonly showProject?: boolean;
 }
 
 const PRIORITY_BADGES: Record<TaskPriority, string> = {
@@ -52,6 +54,7 @@ export function TaskCard({
   onComplete,
   onStatusChange,
   onReorder,
+  showProject = true,
 }: TaskCardProps) {
   const { taskVisibility } = useFeatureFlags();
   const project = projects.find((p) => p.id === task.projectId);
@@ -67,7 +70,7 @@ export function TaskCard({
         <div className="flex items-start justify-between gap-2">
           <div className="flex flex-wrap items-center gap-1.5">
             <TaskCode task={task} project={project} />
-            {project && (
+            {showProject && project && (
               <span className="rounded-md bg-paper-2 px-2 py-0.5 text-2xs font-semibold text-ink-2">
                 {project.name}
               </span>

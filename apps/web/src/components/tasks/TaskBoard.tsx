@@ -25,6 +25,8 @@ interface TaskBoardProps {
   readonly onStatusChange: (task: Task, status: TaskStatus) => void;
   /** Writes for a drag-and-drop or keyboard move; the moved task comes first. */
   readonly onMove: (moves: readonly TaskMove[]) => void;
+  /** Whether to show the project name badge on each card; defaults to true. */
+  readonly showProject?: boolean;
 }
 
 const COLUMN_CONFIG: Record<
@@ -52,6 +54,7 @@ export function TaskBoard({
   onComplete,
   onStatusChange,
   onMove,
+  showProject = true,
 }: TaskBoardProps) {
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
@@ -175,6 +178,7 @@ export function TaskBoard({
                       <TaskCard
                         task={task}
                         projects={projects}
+                        showProject={showProject}
                         onView={onView}
                         onEdit={onEdit}
                         onDelete={onDelete}

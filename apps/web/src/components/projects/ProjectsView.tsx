@@ -33,10 +33,28 @@ export function ProjectsView({
   const [modalState, setModalState] = useState<{
     isOpen: boolean;
     project: Project | null;
+    openKey: number;
   }>({
     isOpen: false,
     project: null,
+    openKey: 0,
   });
+
+  function openProjectModal(project: Project | null) {
+    setModalState((prev) => ({
+      isOpen: true,
+      project,
+      openKey: prev.openKey + 1,
+    }));
+  }
+
+  function closeProjectModal() {
+    setModalState((prev) => ({
+      ...prev,
+      isOpen: false,
+      project: null,
+    }));
+  }
 
   const [deleteTarget, setDeleteTarget] = useState<Project | null>(null);
 
@@ -65,7 +83,7 @@ export function ProjectsView({
         <button
           type="button"
           onClick={() => {
-            setModalState({ isOpen: true, project: null });
+            openProjectModal(null);
           }}
           className="inline-flex items-center gap-2 self-start rounded-md bg-accent px-4 py-2 text-sm font-semibold text-paper transition-opacity hover:opacity-90 focus-visible:outline-focus"
         >
@@ -109,7 +127,7 @@ export function ProjectsView({
             <button
               type="button"
               onClick={() => {
-                setModalState({ isOpen: true, project: null });
+                openProjectModal(null);
               }}
               className="mt-5 inline-flex items-center gap-2 rounded-md bg-accent px-4 py-2 text-xs font-semibold text-paper hover:opacity-90 focus-visible:outline-focus"
             >
@@ -126,7 +144,7 @@ export function ProjectsView({
               project={project}
               tasks={tasks}
               onEdit={(p) => {
-                setModalState({ isOpen: true, project: p });
+                openProjectModal(p);
               }}
               onDelete={(p) => {
                 setDeleteTarget(p);
@@ -139,12 +157,10 @@ export function ProjectsView({
 
       {/* Keyed so each open remounts the form; its fields are seeded from `project` only on mount. */}
       <ProjectModal
-        key={modalState.project?.id ?? "new"}
+        key={`${modalState.project?.id ?? "new"}-${String(modalState.openKey)}`}
         isOpen={modalState.isOpen}
         project={modalState.project}
-        onClose={() => {
-          setModalState({ isOpen: false, project: null });
-        }}
+        onClose={closeProjectModal}
         onSubmit={handleModalSubmit}
       />
 

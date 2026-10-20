@@ -1,8 +1,25 @@
-import { CheckCircle2, Circle, Edit2, Trash2 } from "lucide-react";
-import type { Project, Task, TaskPriority, TaskStatus } from "@bitig/core";
+import { useState } from "react";
+import { ArrowDown, ArrowUp, ArrowUpDown, CheckCircle2, Circle, Edit2, Trash2 } from "lucide-react";
+import {
+  TASK_PRIORITIES,
+  TASK_STATUSES,
+  compareTasks,
+  type Project,
+  type Task,
+  type TaskPriority,
+  type TaskStatus,
+} from "@bitig/core";
 import { ChecklistProgressBadge } from "./Checklist";
 import { NeedsHumanBadge } from "./NeedsHuman";
 import { TaskCode } from "./TaskCode";
+
+export type SortColumn = "title" | "project" | "status" | "priority" | "dueDate";
+export type SortDirection = "asc" | "desc";
+
+interface SortState {
+  readonly column: SortColumn;
+  readonly direction: SortDirection;
+}
 
 interface TaskListProps {
   readonly tasks: Task[];
@@ -12,6 +29,8 @@ interface TaskListProps {
   readonly onDelete: (task: Task) => void;
   readonly onComplete: (task: Task) => void;
   readonly onStatusChange: (task: Task, status: TaskStatus) => void;
+  /** Whether to show the Project column; defaults to true. */
+  readonly showProject?: boolean;
 }
 
 const PRIORITY_BADGES: Record<TaskPriority, string> = {
@@ -23,6 +42,76 @@ const PRIORITY_BADGES: Record<TaskPriority, string> = {
 };
 
 const ICON_SIZE = 14;
+const SORT_ICON_SIZE = 12;
+
+function compareOptionalStrings(
+  a: string | undefined,
+  b: string | undefined,
+  direction: SortDirection,
+): number {
+  if (a === b) return 0;
+  if (a === undefined) return 1;
+  if (b === undefined) return -1;
+  const cmp = a.localeCompare(b, undefined, { sensitivity: "base" });
+  return direction === "asc" ? cmp : -cmp;
+}
+
+function compareOptionalNumbers(
+  a: number | undefined,
+  b: number | undefined,
+  direction: SortDirection,
+): number {
+  if (a === b) return 0;
+  if (a === undefined) return 1;
+  if (b === undefined) return -1;
+  const cmp = a - b;
+  return direction === "asc" ? cmp : -cmp;
+}
+
+function sortTasksByColumn(
+  tasks: readonly Task[],
+  projectsById: ReadonlyMap<string, Project>,
+  sort: SortState | null,
+  showProject: boolean,
+): Task[] {
+  if (!sort || (sort.column === "project" && !showProject)) {
+    return [...tasks];
+  }
+
+  const { column, direction } = sort;
+  const mult = direction === "asc" ? 1 : -1;
+
+  return [...tasks].sort((a, b) => {
+    let cmp = 0;
+    switch (column) {
+      case "title":
+        cmp = a.title.localeCompare(b.title, undefined, { sensitivity: "base" }) * mult;
+        break;
+      case "project": {
+        const nameA = projectsById.get(a.projectId)?.name;
+        const nameB = projectsById.get(b.projectId)?.name;
+        cmp = compareOptionalStrings(nameA, nameB, direction);
+        break;
+      }
+      case "status": {
+        const idxA = TASK_STATUSES.indexOf(a.status);
+        const idxB = TASK_STATUSES.indexOf(b.status);
+        cmp = (idxA - idxB) * mult;
+        break;
+      }
+      case "priority": {
+        const idxA = a.priority !== undefined ? TASK_PRIORITIES.indexOf(a.priority) : undefined;
+        const idxB = b.priority !== undefined ? TASK_PRIORITIES.indexOf(b.priority) : undefined;
+        cmp = compareOptionalNumbers(idxA, idxB, direction);
+        break;
+      }
+      case "dueDate":
+        cmp = compareOptionalStrings(a.dueDate, b.dueDate, direction);
+        break;
+    }
+    return cmp !== 0 ? cmp : compareTasks(a, b);
+  });
+}
 
 export function TaskList({
   tasks,
@@ -32,7 +121,10 @@ export function TaskList({
   onDelete,
   onComplete,
   onStatusChange,
+  showProject = true,
 }: TaskListProps) {
+  const [sort, setSort] = useState<SortState | null>(null);
+
   if (tasks.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center rounded-lg border border-dashed border-rule bg-paper-2 p-12 text-center text-xs text-ink-3">
@@ -41,23 +133,67 @@ export function TaskList({
     );
   }
 
+  const projectsById = new Map(projects.map((p) => [p.id, p]));
+  const sortedTasks = sortTasksByColumn(tasks, projectsById, sort, showProject);
+
+  function handleSort(column: SortColumn) {
+    setSort((prev) => {
+      if (prev?.column === column) {
+        return { column, direction: prev.direction === "asc" ? "desc" : "asc" };
+      }
+      return { column, direction: "asc" };
+    });
+  }
+
+  function ariaSortFor(column: SortColumn): "ascending" | "descending" | "none" {
+    if (sort?.column !== column) return "none";
+    return sort.direction === "asc" ? "ascending" : "descending";
+  }
+
+  function renderSortHeader(column: SortColumn, label: string) {
+    const active = sort?.column === column;
+    const direction = active ? sort.direction : null;
+    return (
+      <th scope="col" aria-sort={ariaSortFor(column)} className="py-3 px-3">
+        <button
+          type="button"
+          onClick={() => {
+            handleSort(column);
+          }}
+          className="inline-flex cursor-pointer items-center gap-1 font-[inherit] text-[inherit] transition-colors hover:text-ink focus-visible:outline-focus"
+        >
+          <span>{label}</span>
+          {direction === "asc" ? (
+            <ArrowUp size={SORT_ICON_SIZE} aria-hidden="true" className="text-ink" />
+          ) : direction === "desc" ? (
+            <ArrowDown size={SORT_ICON_SIZE} aria-hidden="true" className="text-ink" />
+          ) : (
+            <ArrowUpDown size={SORT_ICON_SIZE} aria-hidden="true" className="text-ink-3 opacity-60" />
+          )}
+        </button>
+      </th>
+    );
+  }
+
   return (
     <div className="overflow-x-auto rounded-lg border border-rule bg-paper shadow-xs">
       <table className="w-full text-left text-xs">
         <thead className="border-b border-rule bg-paper-2 font-display text-ink-2">
           <tr>
-            <th className="w-10 py-3 pl-4"></th>
-            <th className="py-3 px-3">Title</th>
-            <th className="py-3 px-3">Project</th>
-            <th className="py-3 px-3">Status</th>
-            <th className="py-3 px-3">Priority</th>
-            <th className="py-3 px-3">Due Date</th>
-            <th className="py-3 pr-4 text-right">Actions</th>
+            <th scope="col" className="w-10 py-3 pl-4"></th>
+            {renderSortHeader("title", "Title")}
+            {showProject && renderSortHeader("project", "Project")}
+            {renderSortHeader("status", "Status")}
+            {renderSortHeader("priority", "Priority")}
+            {renderSortHeader("dueDate", "Due Date")}
+            <th scope="col" className="py-3 pr-4 text-right">
+              Actions
+            </th>
           </tr>
         </thead>
         <tbody className="divide-y divide-rule font-body">
-          {tasks.map((task) => {
-            const project = projects.find((p) => p.id === task.projectId);
+          {sortedTasks.map((task) => {
+            const project = projectsById.get(task.projectId);
             const isDone = task.status === "done";
 
             return (
@@ -114,9 +250,11 @@ export function TaskList({
                     )}
                   </div>
                 </td>
-                <td className="py-3 px-3 whitespace-nowrap text-ink-2">
-                  {project?.name ?? "—"}
-                </td>
+                {showProject && (
+                  <td className="py-3 px-3 whitespace-nowrap text-ink-2">
+                    {project?.name ?? "—"}
+                  </td>
+                )}
                 <td className="py-3 px-3 whitespace-nowrap">
                   <select
                     value={task.status}
@@ -182,4 +320,3 @@ export function TaskList({
     </div>
   );
 }
-

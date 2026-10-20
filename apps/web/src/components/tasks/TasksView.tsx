@@ -59,10 +59,28 @@ export function TasksView({
   const [modalState, setModalState] = useState<{
     isOpen: boolean;
     task: Task | null;
+    openKey: number;
   }>({
     isOpen: false,
     task: null,
+    openKey: 0,
   });
+
+  function openTaskModal(task: Task | null) {
+    setModalState((prev) => ({
+      isOpen: true,
+      task,
+      openKey: prev.openKey + 1,
+    }));
+  }
+
+  function closeTaskModal() {
+    setModalState((prev) => ({
+      ...prev,
+      isOpen: false,
+      task: null,
+    }));
+  }
 
   const [deleteTarget, setDeleteTarget] = useState<Task | null>(null);
   // Stored by id so the detail modal follows updates and closes when the task is deleted.
@@ -124,7 +142,7 @@ export function TasksView({
         <button
           type="button"
           onClick={() => {
-            setModalState({ isOpen: true, task: null });
+            openTaskModal(null);
           }}
           disabled={projects.length === 0}
           title={projects.length === 0 ? "Create a project first" : undefined}
@@ -254,11 +272,12 @@ export function TasksView({
         <TaskBoard
           tasks={filteredTasks}
           projects={projects}
+          showProject={!selectedProjectId}
           onView={(t) => {
             setViewTaskId(t.id);
           }}
           onEdit={(t) => {
-            setModalState({ isOpen: true, task: t });
+            openTaskModal(t);
           }}
           onDelete={(t) => {
             setDeleteTarget(t);
@@ -277,11 +296,12 @@ export function TasksView({
         <TaskList
           tasks={filteredTasks}
           projects={projects}
+          showProject={!selectedProjectId}
           onView={(t) => {
             setViewTaskId(t.id);
           }}
           onEdit={(t) => {
-            setModalState({ isOpen: true, task: t });
+            openTaskModal(t);
           }}
           onDelete={(t) => {
             setDeleteTarget(t);
@@ -303,7 +323,7 @@ export function TasksView({
         }}
         onEdit={(t) => {
           setViewTaskId(null);
-          setModalState({ isOpen: true, task: t });
+          openTaskModal(t);
         }}
         onDelete={(t) => {
           setViewTaskId(null);
@@ -321,14 +341,12 @@ export function TasksView({
 
       {/* Keyed so each open remounts the form; its fields are seeded from `task` only on mount. */}
       <TaskModal
-        key={modalState.task?.id ?? "new"}
+        key={`${modalState.task?.id ?? "new"}-${String(modalState.openKey)}`}
         isOpen={modalState.isOpen}
         task={modalState.task}
         projects={projects}
         defaultProjectId={selectedProjectId}
-        onClose={() => {
-          setModalState({ isOpen: false, task: null });
-        }}
+        onClose={closeTaskModal}
         onSubmit={handleModalSubmit}
       />
 

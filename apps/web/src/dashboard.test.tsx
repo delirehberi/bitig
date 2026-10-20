@@ -319,6 +319,12 @@ describe("Dashboard Phase 4 Integration", () => {
     await waitFor(() => {
       expect(screen.getByTitle("Mark as To Do")).toBeInTheDocument();
     });
+
+    // Reopening "New Task" resets form fields to clean defaults
+    await user.click(screen.getByRole("button", { name: /new task/i }));
+    const freshDialog = await screen.findByRole("dialog");
+    expect(within(freshDialog).getByLabelText(/title/i)).toHaveValue("");
+    expect(within(freshDialog).getByLabelText(/description/i)).toHaveValue("");
   });
 
   it("supports editing a project", async () => {
@@ -534,10 +540,20 @@ describe("Dashboard routing", () => {
 
     expect(await screen.findByText("Alpha task")).toBeInTheDocument();
     expect(screen.queryByText("Beta task")).not.toBeInTheDocument();
+    // Filtered to a single project: the card does not repeat the project name badge
+    const card = screen.getByText("Alpha task").closest("article");
+    if (!card) throw new Error("expected task card article");
+    expect(within(card).queryByText("Alpha")).not.toBeInTheDocument();
 
     await user.selectOptions(screen.getByLabelText(/project:/i), PROJECT_B.id);
     expect(await screen.findByText("Beta task")).toBeInTheDocument();
     expect(new URLSearchParams(window.location.search).get("project")).toBe(PROJECT_B.id);
+
+    // Selecting "All Projects" shows the project name badge on cards again
+    await user.selectOptions(screen.getByLabelText(/project:/i), "");
+    const allCard = screen.getByText("Alpha task").closest("article");
+    if (!allCard) throw new Error("expected task card article");
+    expect(within(allCard).getByText("Alpha")).toBeInTheDocument();
   });
 
   it("filters to tasks that need a human, from the URL and the toggle", async () => {
