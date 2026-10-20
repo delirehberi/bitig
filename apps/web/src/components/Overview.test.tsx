@@ -63,6 +63,9 @@ describe("Overview time analytics and CSV export", () => {
       />,
     );
 
+    const chartsGrid = screen.getByTestId("time-charts-grid");
+    expect(chartsGrid).toHaveClass("lg:grid-cols-2");
+
     const byProjectChart = screen.getByTestId("chart-by-project");
     expect(within(byProjectChart).getByText("Alpha")).toBeInTheDocument();
     expect(within(byProjectChart).getByText("2h 30m")).toBeInTheDocument();
@@ -100,7 +103,19 @@ describe("Overview time analytics and CSV export", () => {
     await user.click(screen.getByRole("button", { name: /export by project \(csv\)/i }));
     expect(onExportCsv).toHaveBeenCalledWith(
       "bitig-time-by-project.csv",
-      expect.stringContaining("Project Key,Project Name,Completed Tasks"),
+      expect.stringContaining(
+        "Project Key,Project Name,Task Code,Task Title,Status,Priority,Created At,Started At,Completed At,Lead Time (Minutes),Spent (Minutes),Spent (Hours),Formatted Duration,Subtasks",
+      ),
+      "by_project",
+    );
+    expect(onExportCsv).toHaveBeenCalledWith(
+      "bitig-time-by-project.csv",
+      expect.stringContaining("Build API"),
+      "by_project",
+    );
+    expect(onExportCsv).toHaveBeenCalledWith(
+      "bitig-time-by-project.csv",
+      expect.stringContaining("Write docs"),
       "by_project",
     );
 

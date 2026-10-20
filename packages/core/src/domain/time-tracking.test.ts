@@ -7,6 +7,7 @@ import {
   getSubtaskTimings,
   getTaskTiming,
   isoWeekKey,
+  listTaskTimeRows,
 } from "./time-tracking";
 import type { Project, Task } from "./types";
 
@@ -98,6 +99,59 @@ describe("time-tracking domain helpers", () => {
     expect(timings[1]?.spentMs).toBe(12 * 60 * 1000);
   });
 
+  it("does not count todo backlog wait time as spentMs when startedAt was never recorded", () => {
+    // Task created on Oct 18 in todo and marked done on Oct 20 without ever entering in_progress
+    const untimedDoneTask: Task = {
+      id: "01940000-0000-7000-8000-000000000013",
+      projectId: PROJECT_A.id,
+      title: "Legacy or direct-done task",
+      description: "",
+      status: "done",
+      isPublic: false,
+      createdAt: "2026-10-18T12:35:14.157Z",
+      completedAt: "2026-10-20T13:15:09.263Z",
+      updatedAt: "2026-10-20T13:15:09.263Z",
+    };
+
+    const timing = getTaskTiming(untimedDoneTask);
+    expect(timing.spentMs).toBeUndefined();
+    expect(timing.totalTurnaroundMs).toBe(
+      Date.parse("2026-10-20T13:15:09.263Z") - Date.parse("2026-10-18T12:35:14.157Z"),
+    );
+
+    const legacyDoneWithoutCompletedAt: Task = {
+      id: "01940000-0000-7000-8000-000000000014",
+      projectId: PROJECT_A.id,
+      title: "Old done task before BIT-56",
+      description: "",
+      status: "done",
+      isPublic: false,
+      createdAt: "2026-10-18T12:35:14.157Z",
+      updatedAt: "2026-10-19T20:34:48.631Z",
+    };
+    expect(getTaskTiming(legacyDoneWithoutCompletedAt).spentMs).toBeUndefined();
+
+    // Subtasks on a task without startedAt do not anchor subtask #1 to task.createdAt
+    const taskWithSubtasksOnly: Task = {
+      id: "01940000-0000-7000-8000-000000000015",
+      projectId: PROJECT_A.id,
+      title: "Subtask-timed task",
+      description: "",
+      status: "done",
+      isPublic: false,
+      createdAt: "2026-10-18T12:00:00.000Z",
+      updatedAt: "2026-10-20T12:20:00.000Z",
+      checklist: [
+        { text: "Step 1", done: true, completedAt: "2026-10-20T12:05:00.000Z" },
+        { text: "Step 2", done: true, completedAt: "2026-10-20T12:20:00.000Z" },
+      ],
+    };
+    const subTimings = getSubtaskTimings(taskWithSubtasksOnly);
+    expect(subTimings[0]?.spentMs).toBeUndefined();
+    expect(subTimings[1]?.spentMs).toBe(15 * 60 * 1000);
+    expect(getTaskTiming(taskWithSubtasksOnly).spentMs).toBe(15 * 60 * 1000);
+  });
+
   it("formats durations across seconds, minutes, hours, and days", () => {
     expect(formatDuration(0)).toBe("0m");
     expect(formatDuration(30_000)).toBe("< 1m");
@@ -118,10 +172,16 @@ describe("time-tracking domain helpers", () => {
         description: "",
         status: "done",
         isPublic: false,
+        number: 1,
+        priority: "high",
         createdAt: "2026-10-20T09:00:00.000Z",
         startedAt: "2026-10-20T12:00:00.000Z",
         completedAt: "2026-10-20T12:20:00.000Z",
         updatedAt: "2026-10-20T12:20:00.000Z",
+        checklist: [
+          { text: "Part A", done: true, completedAt: "2026-10-20T12:10:00.000Z" },
+          { text: "Part B", done: true, completedAt: "2026-10-20T12:20:00.000Z" },
+        ],
       },
       {
         id: "01940000-0000-7000-8000-000000000021",
@@ -130,6 +190,7 @@ describe("time-tracking domain helpers", () => {
         description: "",
         status: "done",
         isPublic: false,
+        number: 2,
         createdAt: "2026-10-13T09:00:00.000Z",
         startedAt: "2026-10-13T10:00:00.000Z",
         completedAt: "2026-10-13T11:30:00.000Z",
@@ -169,9 +230,21 @@ describe("time-tracking domain helpers", () => {
     // Formula prefix `=` is neutralized with a leading apostrophe and comma is quoted
     expect(weeklyCsv).toContain('2026-W42,EVL,"\'=Evil, Project",1,90,1.5,1h 30m');
 
+    const taskRows = listTaskTimeRows([PROJECT_A, PROJECT_B], tasks);
+    expect(taskRows).toHaveLength(2);
+    expect(taskRows[0]?.taskCode).toBe("EVL-2");
+    expect(taskRows[1]?.taskCode).toBe("BIT-1");
+
     const projectCsv = exportTimeSpentCsv([PROJECT_A, PROJECT_B], tasks, "by_project");
-    expect(projectCsv).toContain("Project Key,Project Name,Completed Tasks");
-    expect(projectCsv).toContain("BIT,Bitig Core,1,0,1,20,0.33,20,20m");
+    expect(projectCsv).toContain(
+      "Project Key,Project Name,Task Code,Task Title,Status,Priority,Created At,Started At,Completed At,Lead Time (Minutes),Spent (Minutes),Spent (Hours),Formatted Duration,Subtasks",
+    );
+    expect(projectCsv).toContain(
+      "BIT,Bitig Core,BIT-1,T1,done,high,2026-10-20T09:00:00.000Z,2026-10-20T12:00:00.000Z,2026-10-20T12:20:00.000Z,180,20,0.33,20m,2/2",
+    );
+    expect(projectCsv).toContain(
+      'EVL,"\'=Evil, Project",EVL-2,T2,done,,2026-10-13T09:00:00.000Z,2026-10-13T10:00:00.000Z,2026-10-13T11:30:00.000Z,60,90,1.5,1h 30m,',
+    );
   });
 });
 

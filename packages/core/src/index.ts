@@ -95,10 +95,12 @@ export {
   getSubtaskTimings,
   getTaskTiming,
   isoWeekKey,
+  listTaskTimeRows,
 } from "./domain/time-tracking";
 export type {
   ProjectTimeSummary,
   SubtaskTiming,
+  TaskTimeRow,
   TaskTiming,
   TimeCsvExportMode,
   WeeklyProjectTimeRow,

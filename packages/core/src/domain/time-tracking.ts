@@ -1,6 +1,9 @@
 /**
  * Pure time-tracking, aggregation, and CSV export helpers for tasks and subtasks.
  */
+import { checklistProgress } from "./checklist";
+import { compareTasks } from "./entities";
+import { taskCode } from "./ticket-codes";
 import type { Project, Task } from "./types";
 
 const MS_PER_SECOND = 1_000;
@@ -60,6 +63,24 @@ export interface WeeklyProjectTimeRow {
   readonly totalSpentMs: number;
 }
 
+export interface TaskTimeRow {
+  readonly projectId: string;
+  readonly projectName: string;
+  readonly projectKey: string | undefined;
+  readonly taskId: string;
+  readonly taskCode: string | undefined;
+  readonly taskTitle: string;
+  readonly status: Task["status"];
+  readonly priority: Task["priority"];
+  readonly createdAt: string;
+  readonly startedAt: string | undefined;
+  readonly completedAt: string | undefined;
+  readonly leadTimeMs: number | undefined;
+  readonly spentMs: number;
+  readonly subtasksDone: number;
+  readonly subtasksTotal: number;
+}
+
 export type TimeCsvExportMode = "by_week" | "by_project";
 
 function clampNonNegative(value: number): number {
@@ -68,6 +89,8 @@ function clampNonNegative(value: number): number {
 
 /**
  * Computes lifecycle timestamps and durations for a task.
+ * Active `spentMs` is measured from `startedAt` (or from recorded subtask timings when
+ * `startedAt` is absent), never from `createdAt` backlog wait time.
  * Pass `nowMs` when you want live elapsed time for an `in_progress` task.
  */
 export function getTaskTiming(task: Task, nowMs?: number): TaskTiming {
@@ -81,19 +104,32 @@ export function getTaskTiming(task: Task, nowMs?: number): TaskTiming {
       : undefined;
 
   let spentMs: number | undefined;
-  if (completedMs !== undefined && Number.isFinite(completedMs)) {
-    const anchorMs = startedMs !== undefined && Number.isFinite(startedMs) ? startedMs : createdMs;
-    spentMs = clampNonNegative(completedMs - anchorMs);
-  } else if (task.status === "done") {
-    const updatedMs = Date.parse(task.updatedAt);
-    const anchorMs = startedMs !== undefined && Number.isFinite(startedMs) ? startedMs : createdMs;
-    if (Number.isFinite(updatedMs) && Number.isFinite(anchorMs)) {
-      spentMs = clampNonNegative(updatedMs - anchorMs);
+  if (startedMs !== undefined && Number.isFinite(startedMs)) {
+    if (completedMs !== undefined && Number.isFinite(completedMs)) {
+      spentMs = clampNonNegative(completedMs - startedMs);
+    } else if (task.status === "done") {
+      const updatedMs = Date.parse(task.updatedAt);
+      if (Number.isFinite(updatedMs)) {
+        spentMs = clampNonNegative(updatedMs - startedMs);
+      }
+    } else if (task.status === "in_progress") {
+      const endMs = nowMs ?? Date.parse(task.updatedAt);
+      if (Number.isFinite(endMs)) {
+        spentMs = clampNonNegative(endMs - startedMs);
+      }
     }
-  } else if (task.status === "in_progress" && startedMs !== undefined) {
-    const endMs = nowMs ?? Date.parse(task.updatedAt);
-    if (Number.isFinite(endMs) && Number.isFinite(startedMs)) {
-      spentMs = clampNonNegative(endMs - startedMs);
+  } else if (task.checklist !== undefined && task.checklist.length > 0) {
+    const subtaskTimings = getSubtaskTimings(task, nowMs);
+    let subtaskTotalMs = 0;
+    let hasSubtaskDuration = false;
+    for (const sub of subtaskTimings) {
+      if (sub.spentMs !== undefined) {
+        subtaskTotalMs += sub.spentMs;
+        hasSubtaskDuration = true;
+      }
+    }
+    if (hasSubtaskDuration) {
+      spentMs = subtaskTotalMs;
     }
   }
 
@@ -115,12 +151,12 @@ export function getTaskTiming(task: Task, nowMs?: number): TaskTiming {
 /**
  * Computes timestamps and durations for each subtask in `task.checklist`.
  * When a completed subtask has no explicit `startedAt`, its duration is anchored
- * to the previous completed subtask's `completedAt` (or `task.startedAt ?? task.createdAt`).
+ * to the previous completed subtask's `completedAt` (or `task.startedAt` when recorded).
  */
 export function getSubtaskTimings(task: Task, nowMs?: number): SubtaskTiming[] {
   const items = task.checklist ?? [];
-  const taskAnchorIso = task.startedAt ?? task.createdAt;
-  let previousCompletedMs = Date.parse(taskAnchorIso);
+  let previousCompletedMs =
+    task.startedAt !== undefined ? Date.parse(task.startedAt) : undefined;
 
   return items.map((item, index) => {
     const explicitStartMs = item.startedAt !== undefined ? Date.parse(item.startedAt) : undefined;
@@ -131,14 +167,28 @@ export function getSubtaskTimings(task: Task, nowMs?: number): SubtaskTiming[] {
       const anchorMs =
         explicitStartMs !== undefined && Number.isFinite(explicitStartMs)
           ? explicitStartMs
-          : previousCompletedMs <= completedMs
+          : previousCompletedMs !== undefined &&
+              Number.isFinite(previousCompletedMs) &&
+              previousCompletedMs <= completedMs
             ? previousCompletedMs
-            : Date.parse(taskAnchorIso);
-      spentMs = clampNonNegative(completedMs - anchorMs);
-      if (completedMs >= previousCompletedMs) {
+            : undefined;
+      if (anchorMs !== undefined) {
+        spentMs = clampNonNegative(completedMs - anchorMs);
+      }
+      if (
+        previousCompletedMs === undefined ||
+        !Number.isFinite(previousCompletedMs) ||
+        completedMs >= previousCompletedMs
+      ) {
         previousCompletedMs = completedMs;
       }
-    } else if (!item.done && explicitStartMs !== undefined && nowMs !== undefined) {
+    } else if (
+      !item.done &&
+      explicitStartMs !== undefined &&
+      Number.isFinite(explicitStartMs) &&
+      nowMs !== undefined &&
+      Number.isFinite(nowMs)
+    ) {
       spentMs = clampNonNegative(nowMs - explicitStartMs);
     }
 
@@ -218,13 +268,20 @@ export function aggregateTimeByProject(
   const summaries: ProjectTimeSummary[] = projects.map((project) => {
     const projectTasks = tasksByProject.get(project.id) ?? [];
     let completedTasks = 0;
+    let timedCompletedTasks = 0;
+    let completedSpentMs = 0;
     let inProgressTasks = 0;
     let totalSpentMs = 0;
 
     for (const task of projectTasks) {
       const timing = getTaskTiming(task, nowMs);
-      if (isCompletedTaskStatus(task)) {
+      const isCompleted = isCompletedTaskStatus(task);
+      if (isCompleted) {
         completedTasks += 1;
+        if (timing.spentMs !== undefined) {
+          timedCompletedTasks += 1;
+          completedSpentMs += timing.spentMs;
+        }
       } else if (task.status === "in_progress") {
         inProgressTasks += 1;
       }
@@ -233,7 +290,8 @@ export function aggregateTimeByProject(
       }
     }
 
-    const averageSpentMs = completedTasks > 0 ? Math.round(totalSpentMs / completedTasks) : 0;
+    const averageSpentMs =
+      timedCompletedTasks > 0 ? Math.round(completedSpentMs / timedCompletedTasks) : 0;
 
     return {
       projectId: project.id,
@@ -253,6 +311,70 @@ export function aggregateTimeByProject(
       b.completedTasks - a.completedTasks ||
       a.projectName.localeCompare(b.projectName),
   );
+}
+
+/**
+ * Lists task-by-task time and lifecycle rows across `projects`, ordered by project summary
+ * rank and within each project by spent time descending (falling back to canonical task order).
+ */
+export function listTaskTimeRows(
+  projects: readonly Project[],
+  tasks: readonly Task[],
+  nowMs?: number,
+): TaskTimeRow[] {
+  const orderedProjects = aggregateTimeByProject(projects, tasks, nowMs);
+  const projectMap = new Map(projects.map((project) => [project.id, project]));
+  const tasksByProject = new Map<string, Task[]>();
+
+  for (const task of tasks) {
+    if (!projectMap.has(task.projectId)) continue;
+    const list = tasksByProject.get(task.projectId);
+    if (list) {
+      list.push(task);
+    } else {
+      tasksByProject.set(task.projectId, [task]);
+    }
+  }
+
+  const rows: TaskTimeRow[] = [];
+  for (const summary of orderedProjects) {
+    const project = projectMap.get(summary.projectId);
+    if (!project) continue;
+    const projectTasks = tasksByProject.get(project.id) ?? [];
+
+    const withTiming = projectTasks.map((task) => ({
+      task,
+      timing: getTaskTiming(task, nowMs),
+    }));
+
+    withTiming.sort(
+      (a, b) =>
+        (b.timing.spentMs ?? 0) - (a.timing.spentMs ?? 0) || compareTasks(a.task, b.task),
+    );
+
+    for (const { task, timing } of withTiming) {
+      const progress = checklistProgress(task.checklist);
+      rows.push({
+        projectId: project.id,
+        projectName: project.name,
+        projectKey: project.key,
+        taskId: task.id,
+        taskCode: taskCode(task, project),
+        taskTitle: task.title,
+        status: task.status,
+        priority: task.priority,
+        createdAt: task.createdAt,
+        startedAt: task.startedAt,
+        completedAt: task.completedAt,
+        leadTimeMs: timing.leadTimeMs,
+        spentMs: timing.spentMs ?? 0,
+        subtasksDone: progress.done,
+        subtasksTotal: progress.total,
+      });
+    }
+  }
+
+  return rows;
 }
 
 /**
@@ -328,7 +450,7 @@ function escapeCsvCell(raw: string | number): string {
 
 /**
  * Exports spent time as an RFC 4180 CSV string, either grouped by project & ISO week (`by_week`)
- * or summarized by project (`by_project`).
+ * or as task-by-task detail rows per project (`by_project`).
  */
 export function exportTimeSpentCsv(
   projects: readonly Project[],
@@ -364,30 +486,40 @@ export function exportTimeSpentCsv(
     return [header, ...lines].join("\n");
   }
 
-  const summaries = aggregateTimeByProject(projects, tasks, nowMs);
+  const taskRows = listTaskTimeRows(projects, tasks, nowMs);
   const header = [
     "Project Key",
     "Project Name",
-    "Completed Tasks",
-    "In Progress Tasks",
-    "Total Tasks",
-    "Total Spent (Minutes)",
-    "Total Spent (Hours)",
-    "Average per Completed Task (Minutes)",
+    "Task Code",
+    "Task Title",
+    "Status",
+    "Priority",
+    "Created At",
+    "Started At",
+    "Completed At",
+    "Lead Time (Minutes)",
+    "Spent (Minutes)",
+    "Spent (Hours)",
     "Formatted Duration",
+    "Subtasks",
   ].join(",");
 
-  const lines = summaries.map((summary) =>
+  const lines = taskRows.map((row) =>
     [
-      summary.projectKey ?? "",
-      summary.projectName,
-      summary.completedTasks,
-      summary.inProgressTasks,
-      summary.totalTasks,
-      roundToTwoDecimals(summary.totalSpentMs / MS_PER_MINUTE),
-      roundToTwoDecimals(summary.totalSpentMs / MS_PER_HOUR),
-      roundToTwoDecimals(summary.averageSpentMs / MS_PER_MINUTE),
-      formatDuration(summary.totalSpentMs),
+      row.projectKey ?? "",
+      row.projectName,
+      row.taskCode ?? "",
+      row.taskTitle,
+      row.status,
+      row.priority ?? "",
+      row.createdAt,
+      row.startedAt ?? "",
+      row.completedAt ?? "",
+      row.leadTimeMs !== undefined ? roundToTwoDecimals(row.leadTimeMs / MS_PER_MINUTE) : "",
+      roundToTwoDecimals(row.spentMs / MS_PER_MINUTE),
+      roundToTwoDecimals(row.spentMs / MS_PER_HOUR),
+      formatDuration(row.spentMs),
+      row.subtasksTotal > 0 ? `${String(row.subtasksDone)}/${String(row.subtasksTotal)}` : "",
     ]
       .map(escapeCsvCell)
       .join(","),
