@@ -30,6 +30,7 @@ const STATEMENTS = [
     \`labels\` text,
     \`order\` real,
     \`checklist\` text,
+    \`needs_human\` text,
     \`number\` integer,
     \`created_at\` integer NOT NULL,
     \`updated_at\` integer NOT NULL,

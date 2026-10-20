@@ -18,6 +18,7 @@ import {
 } from "@bitig/core";
 import { useFeatureFlags } from "../../hooks/useFeatureFlags";
 import { ChecklistProgressBadge } from "./Checklist";
+import { NeedsHumanNote } from "./NeedsHuman";
 import { TaskCode } from "./TaskCode";
 
 interface TaskCardProps {
@@ -185,6 +186,12 @@ export function TaskCard({
             )}
           </div>
         </div>
+
+        {task.needsHuman !== undefined && (
+          <div className="mt-3">
+            <NeedsHumanNote reason={task.needsHuman} compact />
+          </div>
+        )}
 
         {task.labels && task.labels.length > 0 && (
           <div className="mt-3 flex flex-wrap items-center gap-1">

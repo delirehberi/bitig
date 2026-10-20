@@ -27,7 +27,7 @@ import type {
 import { toTimestamp, type RuntimeDeps } from "../runtime/ids";
 import { assertProjectKeyAvailable, deriveProjectKey } from "./ticket-codes";
 
-type TaskRequiredFields = Omit<Task, "dueDate" | "priority" | "labels" | "order" | "checklist" | "number">;
+type TaskRequiredFields = Omit<Task, "dueDate" | "priority" | "labels" | "order" | "checklist" | "needsHuman" | "number">;
 
 interface TaskOptionalValues {
   readonly dueDate: string | undefined;
@@ -35,6 +35,7 @@ interface TaskOptionalValues {
   readonly labels: readonly string[] | undefined;
   readonly order: number | undefined;
   readonly checklist: readonly ChecklistItem[] | undefined;
+  readonly needsHuman: string | undefined;
   readonly number: number | undefined;
 }
 
@@ -49,6 +50,7 @@ function assembleTask(base: TaskRequiredFields, optional: TaskOptionalValues): T
   if (optional.checklist !== undefined && optional.checklist.length > 0) {
     task.checklist = optional.checklist.map((item) => ({ ...item }));
   }
+  if (optional.needsHuman !== undefined) task.needsHuman = optional.needsHuman;
   if (optional.number !== undefined) task.number = optional.number;
   return task;
 }
@@ -158,6 +160,7 @@ export function buildTask(input: CreateTaskInput, deps: RuntimeDeps, number: num
       labels: parsed.labels,
       order: parsed.order,
       checklist: parsed.checklist,
+      needsHuman: parsed.needsHuman,
       number,
     },
   );
@@ -187,6 +190,7 @@ export function applyTaskPatch(task: Task, patch: UpdateTaskInput, now: Date): T
       labels: resolveClearable(task.labels, parsed.labels),
       order: resolveClearable(task.order, parsed.order),
       checklist: resolveClearable(task.checklist, parsed.checklist),
+      needsHuman: resolveClearable(task.needsHuman, parsed.needsHuman),
       number: task.number,
     },
   );

@@ -540,6 +540,37 @@ describe("Dashboard routing", () => {
     expect(new URLSearchParams(window.location.search).get("project")).toBe(PROJECT_B.id);
   });
 
+  it("filters to tasks that need a human, from the URL and the toggle", async () => {
+    const flagged = { ...TASK_B, needsHuman: "Pick a launch date" };
+    window.history.replaceState(null, "", "/tasks?needs=human");
+    stubApi({ projects: [PROJECT_A, PROJECT_B], tasks: [TASK_A, flagged] });
+    const user = userEvent.setup();
+    render(<App />);
+
+    expect(await screen.findByText("Beta task")).toBeInTheDocument();
+    expect(screen.queryByText("Alpha task")).not.toBeInTheDocument();
+    expect(screen.getByText("Pick a launch date")).toBeInTheDocument();
+
+    const toggle = screen.getByRole("button", { name: /needs you \(1\)/i });
+    expect(toggle).toHaveAttribute("aria-pressed", "true");
+    await user.click(toggle);
+    expect(await screen.findByText("Alpha task")).toBeInTheDocument();
+    expect(new URLSearchParams(window.location.search).get("needs")).toBeNull();
+  });
+
+  it("counts tasks that need a human on the overview and opens them", async () => {
+    stubApi({ projects: [PROJECT_A], tasks: [TASK_A, { ...TASK_A, id: "01940000-0000-7000-8000-0000000000a2", title: "Blocked task", needsHuman: "Approve" }] });
+    const user = userEvent.setup();
+    render(<App />);
+
+    const tile = await screen.findByRole("button", { name: /needs you\s*1/i });
+    await user.click(tile);
+    expect(window.location.pathname).toBe("/tasks");
+    expect(new URLSearchParams(window.location.search).get("needs")).toBe("human");
+    expect(await screen.findByText("Blocked task")).toBeInTheDocument();
+    expect(screen.queryByText("Alpha task")).not.toBeInTheDocument();
+  });
+
   it("opens a project's tasks from the Projects page", async () => {
     window.history.replaceState(null, "", "/projects");
     stubApi({ projects: [PROJECT_A, PROJECT_B], tasks: [TASK_A, TASK_B] });

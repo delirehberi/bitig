@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Kanban, List, Plus } from "lucide-react";
+import { Hand, Kanban, List, Plus } from "lucide-react";
 import {
   compareTasks,
   type CreateTaskInput,
@@ -22,6 +22,9 @@ interface TasksViewProps {
   readonly error: string | null;
   readonly selectedProjectId?: string | undefined;
   readonly onSelectProject: (id: string | undefined) => void;
+  /** Shows only the tasks waiting on a person. */
+  readonly needsHumanOnly?: boolean;
+  readonly onNeedsHumanOnlyChange?: (only: boolean) => void;
   readonly onSaveTask: (input: CreateTaskInput) => Promise<Task>;
   readonly onUpdateTask: (id: string, patch: UpdateTaskInput) => Promise<Task>;
   readonly onCompleteTask: (id: string) => Promise<Task>;
@@ -38,6 +41,8 @@ export function TasksView({
   error,
   selectedProjectId,
   onSelectProject,
+  needsHumanOnly = false,
+  onNeedsHumanOnlyChange,
   onSaveTask,
   onUpdateTask,
   onCompleteTask,
@@ -60,9 +65,16 @@ export function TasksView({
   const [viewTaskId, setViewTaskId] = useState<string | null>(null);
   const viewTask = tasks.find((t) => t.id === viewTaskId) ?? null;
 
+  const needsHumanCount = tasks.filter(
+    (task) => task.needsHuman !== undefined && (!selectedProjectId || task.projectId === selectedProjectId),
+  ).length;
+
   // Sorted here because local updates (a status or order change) don't re-sort `tasks`.
   const filteredTasks = tasks.filter((task) => {
     if (selectedProjectId && task.projectId !== selectedProjectId) {
+      return false;
+    }
+    if (needsHumanOnly && task.needsHuman === undefined) {
       return false;
     }
     if (priorityFilter && task.priority !== priorityFilter) {
@@ -82,7 +94,8 @@ export function TasksView({
 
   async function handleModalSubmit(input: CreateTaskInput) {
     if (modalState.task) {
-      await onUpdateTask(modalState.task.id, input);
+      // The form leaves needsHuman out when its field is empty; null clears a flag the task had.
+      await onUpdateTask(modalState.task.id, { ...input, needsHuman: input.needsHuman ?? null });
     } else {
       await onSaveTask(input);
     }
@@ -155,6 +168,23 @@ export function TasksView({
               <option value="trivial">Trivial</option>
             </select>
           </label>
+
+          <button
+            type="button"
+            aria-pressed={needsHumanOnly}
+            onClick={() => {
+              onNeedsHumanOnlyChange?.(!needsHumanOnly);
+            }}
+            title="Show only tasks waiting on a person"
+            className={`inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-semibold transition-colors focus-visible:outline-focus ${
+              needsHumanOnly
+                ? "border-accent/30 bg-accent-soft text-accent-ink"
+                : "border-rule bg-paper-2 text-ink-2 hover:text-ink"
+            }`}
+          >
+            <Hand size={14} aria-hidden="true" />
+            Needs you ({needsHumanCount})
+          </button>
         </div>
 
         <div className="flex items-center gap-1 border-l border-rule pl-3">
@@ -279,6 +309,9 @@ export function TasksView({
           void onCompleteTask(t.id);
         }}
         onChecklistChange={(t, checklist) => onUpdateTask(t.id, { checklist })}
+        onNeedsHumanResolve={(t) => {
+          void onUpdateTask(t.id, { needsHuman: null });
+        }}
       />
 
       {/* Keyed so each open remounts the form; its fields are seeded from `task` only on mount. */}

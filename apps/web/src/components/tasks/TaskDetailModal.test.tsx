@@ -67,6 +67,32 @@ describe("TaskDetailModal", () => {
     expect(screen.getByText("#api")).toBeInTheDocument();
   });
 
+  it("shows what the task needs from a human and clears it", async () => {
+    const onNeedsHumanResolve = vi.fn();
+    render(
+      <FeatureFlagsProvider mode="local">
+        <TaskDetailModal
+          task={{ ...TASK, needsHuman: "Choose the API style" }}
+          projects={[PROJECT]}
+          onClose={vi.fn()}
+          onEdit={vi.fn()}
+          onDelete={vi.fn()}
+          onComplete={vi.fn()}
+          onNeedsHumanResolve={onNeedsHumanResolve}
+        />
+      </FeatureFlagsProvider>,
+    );
+
+    expect(screen.getByRole("note", { name: "Needs you" })).toHaveTextContent("Choose the API style");
+    await userEvent.setup().click(screen.getByRole("button", { name: "Mark answered" }));
+    expect(onNeedsHumanResolve).toHaveBeenCalledWith(expect.objectContaining({ id: TASK.id }));
+  });
+
+  it("shows no needs-human note for a task that needs nobody", () => {
+    renderModal();
+    expect(screen.queryByRole("note", { name: "Needs you" })).not.toBeInTheDocument();
+  });
+
   it("shows visibility only in nostr mode", () => {
     renderModal(TASK, "nostr");
     expect(screen.getByText(/private \(nip-44 encrypted\)/i)).toBeInTheDocument();

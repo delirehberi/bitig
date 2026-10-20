@@ -40,6 +40,7 @@ export const tasks = sqliteTable(
     labels: text("labels", { mode: "json" }).$type<string[]>(),
     order: real("order"),
     checklist: text("checklist", { mode: "json" }).$type<ChecklistItem[]>(),
+    needsHuman: text("needs_human"),
     number: integer("number"),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),

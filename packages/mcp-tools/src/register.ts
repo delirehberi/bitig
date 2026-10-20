@@ -7,6 +7,7 @@ import {
   CreateTaskInputSchema,
   DueDateSchema,
   IdSchema,
+  NeedsHumanSchema,
   NotFoundError,
   ProjectKeySchema,
   ProjectKindSchema,
@@ -34,6 +35,9 @@ const RESOURCES_DESCRIPTION =
 
 const CHECKLIST_DESCRIPTION =
   "Subtasks in order, each { text, done }. To check, rename, reorder, add or remove an item, send the full edited list.";
+
+const NEEDS_HUMAN_DESCRIPTION =
+  "Set when the task is blocked on a person: say what you need from them (a decision, an approval, access, an answer). The task then shows as needing a human until it is cleared.";
 
 const TASK_REF = z.string().min(1).describe("Task ID or ticket code, e.g. BIT-12");
 const PROJECT_REF = z.string().min(1).describe("Project ID or project key, e.g. BIT");
@@ -148,10 +152,15 @@ export function registerBitigTools(server: McpServer, storage: StorageProvider):
   server.registerTool(
     "list_tasks",
     {
-      description: "List tasks with their ticket codes, optionally filtered by project ID or key",
+      description:
+        "List tasks with their ticket codes, optionally filtered by project ID or key, or to the tasks that need a human",
       annotations: { readOnlyHint: true },
       inputSchema: {
         projectId: PROJECT_REF.optional(),
+        needsHuman: z
+          .boolean()
+          .optional()
+          .describe("true lists only tasks waiting on a person, false only tasks that are not"),
       },
     },
     async (args, extra) => {
@@ -160,7 +169,11 @@ export function registerBitigTools(server: McpServer, storage: StorageProvider):
         const projectId =
           args.projectId === undefined ? undefined : await resolveProjectRef(storage, args.projectId, opts);
         const tasks = await storage.getTasks(projectId === undefined ? undefined : { projectId }, opts);
-        return formatSuccessResult(withTaskCodes(tasks, await storage.getProjects(opts)));
+        const matching =
+          args.needsHuman === undefined
+            ? tasks
+            : tasks.filter((task) => (task.needsHuman !== undefined) === args.needsHuman);
+        return formatSuccessResult(withTaskCodes(matching, await storage.getProjects(opts)));
       } catch (err) {
         return formatErrorResult(err);
       }
@@ -206,6 +219,7 @@ export function registerBitigTools(server: McpServer, storage: StorageProvider):
         labels: z.array(z.string()).optional(),
         order: TaskOrderSchema.optional(),
         checklist: ChecklistSchema.optional().describe(CHECKLIST_DESCRIPTION),
+        needsHuman: NeedsHumanSchema.optional().describe(NEEDS_HUMAN_DESCRIPTION),
       },
     },
     async (args, extra) => {
@@ -241,6 +255,9 @@ export function registerBitigTools(server: McpServer, storage: StorageProvider):
         checklist: ChecklistSchema.nullable()
           .optional()
           .describe(`${CHECKLIST_DESCRIPTION} Replaces the whole list; null or [] removes it.`),
+        needsHuman: NeedsHumanSchema.nullable()
+          .optional()
+          .describe(`${NEEDS_HUMAN_DESCRIPTION} null clears it once the person has answered.`),
       },
     },
     async (args, extra) => {

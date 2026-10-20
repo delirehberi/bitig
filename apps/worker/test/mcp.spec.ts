@@ -32,6 +32,7 @@ const DB_SETUP_STATEMENTS = [
     \`labels\` text,
     \`order\` real,
     \`checklist\` text,
+    \`needs_human\` text,
     \`number\` integer,
     \`created_at\` integer NOT NULL,
     \`updated_at\` integer NOT NULL,
@@ -308,13 +309,16 @@ describe("Remote MCP Protocol & Tool Execution", () => {
       arguments: {
         id: task.id,
         title: "Updated Remote Task Title",
+        needsHuman: "Confirm the deploy window",
       },
     });
     expect(updateTaskRes.isError).toBeFalsy();
     const updatedTask = JSON.parse((updateTaskRes.content as { text: string }[])[0]?.text ?? "{}") as {
       title: string;
+      needsHuman?: string;
     };
     expect(updatedTask.title).toBe("Updated Remote Task Title");
+    expect(updatedTask.needsHuman).toBe("Confirm the deploy window");
 
     // 8. Delete task
     const deleteTaskRes = await client.callTool({

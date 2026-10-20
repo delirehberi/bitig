@@ -148,6 +148,11 @@ bitig tasks item add 019253ec-5a1e-7230-a89e-0123456789ab "Write release notes"
 bitig tasks item check 019253ec-5a1e-7230-a89e-0123456789ab 1
 bitig tasks item move 019253ec-5a1e-7230-a89e-0123456789ab 3 1
 
+# Needs a human: flag what the task waits on a person for, list those tasks, clear once answered
+bitig tasks update BIT-12 --needs-human "Approve the schema change"
+bitig tasks list --needs-human
+bitig tasks update BIT-12 --clear-needs-human
+
 # Mark task as completed
 bitig tasks complete 019253ec-5a1e-7230-a89e-0123456789ab
 
@@ -230,10 +235,10 @@ Or run against an explicit data directory:
 2. `create_project` - Create a project (optionally with a `key` for ticket codes).
 3. `update_project` - Update a project's name, description, kind, links or key.
 4. `delete_project` - Delete a project and its tasks.
-5. `list_tasks` - List tasks with their codes, optionally for one project (ID or key).
+5. `list_tasks` - List tasks with their codes, optionally for one project (ID or key) or only those that need a human (`needsHuman: true`).
 6. `get_task` - Retrieve a task by ID or code (`BIT-12`).
 7. `add_task` - Add a task to a project (ID or key).
-8. `update_task` - Update a task's fields, or move it to another project.
+8. `update_task` - Update a task's fields, or move it to another project. Agents set `needsHuman` to what they need from a person (a decision, an approval, access); `null` clears it.
 9. `complete_task` - Mark a task done.
 10. `delete_task` - Delete a task.
 11. `backfill_ticket_codes` - Key older projects and number their tasks.

@@ -108,6 +108,14 @@ describe("CLI main commands", () => {
     // A position past the end fails without changing anything
     expect(await exec(["tasks", "item", "check", taskId, "9"])).not.toBe(0);
 
+    // 7b. Flag the task as needing a human, then clear it
+    expect(await exec(["tasks", "update", taskId, "--needs-human", "Approve the budget"])).toBe(0);
+    expect((await reader.getTask(taskId))?.needsHuman).toBe("Approve the budget");
+    expect(await exec(["tasks", "list", "-p", projectId, "--needs-human"])).toBe(0);
+    expect(await exec(["tasks", "update", taskId, "--needs-human", "x", "--clear-needs-human"])).not.toBe(0);
+    expect(await exec(["tasks", "update", taskId, "--clear-needs-human"])).toBe(0);
+    expect(await reader.getTask(taskId)).not.toHaveProperty("needsHuman");
+
     // 8. Link outside resources to the project
     for (const args of [
       ["projects", "link", "add", projectId, "https://github.com/acme/work", "-t", "repository"],

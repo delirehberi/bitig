@@ -1,6 +1,7 @@
 import { CheckCircle2, Circle, Edit2, Trash2 } from "lucide-react";
 import type { Project, Task, TaskPriority, TaskStatus } from "@bitig/core";
 import { ChecklistProgressBadge } from "./Checklist";
+import { NeedsHumanBadge } from "./NeedsHuman";
 import { TaskCode } from "./TaskCode";
 
 interface TaskListProps {
@@ -104,6 +105,7 @@ export function TaskList({
                         {task.title}
                       </button>
                       <ChecklistProgressBadge checklist={task.checklist} />
+                      <NeedsHumanBadge reason={task.needsHuman} />
                     </span>
                     {task.description && (
                       <span className="line-clamp-1 text-2xs text-ink-3">

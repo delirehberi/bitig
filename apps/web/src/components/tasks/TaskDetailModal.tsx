@@ -14,6 +14,7 @@ import type { ChecklistItem, Project, Task, TaskPriority, TaskStatus } from "@bi
 import { useFeatureFlags } from "../../hooks/useFeatureFlags";
 import { useFocusTrap } from "../../hooks/useFocusTrap";
 import { ChecklistProgressBadge, ChecklistView } from "./Checklist";
+import { NeedsHumanNote } from "./NeedsHuman";
 import { TaskCode } from "./TaskCode";
 
 interface TaskDetailModalProps {
@@ -25,6 +26,8 @@ interface TaskDetailModalProps {
   readonly onComplete: (task: Task) => void;
   /** Saves a checked or unchecked subtask; omit to show the checklist read-only. */
   readonly onChecklistChange?: ((task: Task, checklist: ChecklistItem[]) => Promise<unknown>) | undefined;
+  /** Clears the needs-human flag once a person has answered; omit to show it read-only. */
+  readonly onNeedsHumanResolve?: ((task: Task) => void) | undefined;
 }
 
 const ICON_SIZE = 16;
@@ -77,6 +80,7 @@ export function TaskDetailModal({
   onDelete,
   onComplete,
   onChecklistChange,
+  onNeedsHumanResolve,
 }: TaskDetailModalProps) {
   const { taskVisibility } = useFeatureFlags();
   const isOpen = task !== null;
@@ -173,6 +177,21 @@ export function TaskDetailModal({
             {task.title}
           </h2>
         </div>
+
+        {task.needsHuman !== undefined && (
+          <div className="mb-5">
+            <NeedsHumanNote
+              reason={task.needsHuman}
+              onResolve={
+                onNeedsHumanResolve
+                  ? () => {
+                      onNeedsHumanResolve(task);
+                    }
+                  : undefined
+              }
+            />
+          </div>
+        )}
 
         <p className="m-0 mb-5 whitespace-pre-wrap text-sm text-ink-2">
           {task.description || <span className="text-ink-3">No description</span>}

@@ -237,6 +237,7 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
         expect(task).not.toHaveProperty("labels");
         expect(task).not.toHaveProperty("order");
         expect(task).not.toHaveProperty("checklist");
+        expect(task).not.toHaveProperty("needsHuman");
         expect(TaskSchema.parse(task)).toEqual(task);
         expect(await storage.getTask(task.id)).toEqual(task);
       });
@@ -257,6 +258,7 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
             { text: "First", done: true },
             { text: "Second", done: false },
           ],
+          needsHuman: "Pick a pricing tier",
         });
         expect(await storage.getTask(task.id)).toEqual(task);
         expect(task).toMatchObject({
@@ -268,6 +270,7 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
             { text: "First", done: true },
             { text: "Second", done: false },
           ],
+          needsHuman: "Pick a pricing tier",
           isPublic: true,
           status: "in_progress",
         });
@@ -388,6 +391,31 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
             title: "t",
             checklist: [{ text: "x" }] as never,
           }),
+        ).rejects.toBeInstanceOf(ValidationError);
+        expect(await storage.getTasks()).toEqual([]);
+      });
+
+      it("flags a task as needing a human and clears the flag", async () => {
+        const project = await createProject();
+        const task = await storage.saveTask({ projectId: project.id, title: "t" });
+
+        const flagged = await storage.updateTask(task.id, { needsHuman: "  Approve the schema change  " });
+        expect(flagged.needsHuman).toBe("Approve the schema change");
+        expect(await storage.getTask(task.id)).toEqual(flagged);
+
+        // Other edits keep the flag
+        const retitled = await storage.updateTask(task.id, { title: "renamed" });
+        expect(retitled.needsHuman).toBe("Approve the schema change");
+
+        const cleared = await storage.updateTask(task.id, { needsHuman: null });
+        expect(cleared).not.toHaveProperty("needsHuman");
+        expect(await storage.getTask(task.id)).toEqual(cleared);
+      });
+
+      it("rejects a blank needs-human reason", async () => {
+        const project = await createProject();
+        await expect(
+          storage.saveTask({ projectId: project.id, title: "t", needsHuman: "   " }),
         ).rejects.toBeInstanceOf(ValidationError);
         expect(await storage.getTasks()).toEqual([]);
       });
@@ -655,6 +683,7 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
           labels: ["bug", "core"],
           order: 10,
           checklist: [{ text: "Sub", done: true }],
+          needsHuman: "Review the export",
         });
         const t2 = await storage.saveTask({
           projectId: project.id,
