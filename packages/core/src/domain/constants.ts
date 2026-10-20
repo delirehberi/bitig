@@ -52,3 +52,12 @@ export const RESOURCE_TYPES = [
 export const RESOURCE_LABEL_MAX = 200;
 export const RESOURCE_URL_MAX = 2048;
 export const RESOURCES_MAX_COUNT = 50;
+
+/**
+ * Comments on a task: notes people and agents leave over time, oldest first. Agents use them to
+ * keep context on a task; a person answers a question an agent asked by commenting.
+ */
+export const COMMENT_AUTHOR_TYPES = ["human", "agent"] as const;
+export const DEFAULT_COMMENT_AUTHOR_TYPE = "human" satisfies (typeof COMMENT_AUTHOR_TYPES)[number];
+export const COMMENT_BODY_MAX = 20_000;
+export const COMMENT_AUTHOR_MAX = 100;

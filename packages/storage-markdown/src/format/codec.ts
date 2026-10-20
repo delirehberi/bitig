@@ -1,18 +1,20 @@
 /**
  * Converts between domain entities and their file representations.
  *
- * Files never contain `id` or `projectId`: both come from the path (see
- * `layout.ts`). Known keys are validated against the core schemas; unknown
+ * Files never contain `id`, `projectId` or `taskId`: they come from the path
+ * (see `layout.ts`). Known keys are validated against the core schemas; unknown
  * keys a user added by hand are stripped on read and therefore disappear on
  * the next write. Anything unparseable surfaces as a `StorageError` with
  * reason `corrupt` naming the file; nothing is skipped silently.
  */
 import {
+  CommentSchema,
   ProjectSchema,
   StorageError,
   TaskSchema,
   ValidationError,
   parseOrThrow,
+  type Comment,
   type Project,
   type Task,
 } from "@bitig/core";
@@ -29,6 +31,9 @@ import {
 const ProjectFileSchema = z.object(ProjectSchema.shape).omit({ id: true });
 const TaskFileSchema = z.object(TaskSchema.shape).omit({ id: true, projectId: true, description: true });
 
+const CommentFileSchema = z.object(CommentSchema.shape).omit({ id: true, taskId: true, body: true });
+
+type CommentFileData = z.output<typeof CommentFileSchema>;
 type ProjectFileData = z.output<typeof ProjectFileSchema>;
 type TaskFileData = z.output<typeof TaskFileSchema>;
 
@@ -48,6 +53,8 @@ const TASK_KEY_ORDER = [
   "createdAt",
   "updatedAt",
 ] as const satisfies readonly (keyof TaskFileData)[];
+
+const COMMENT_KEY_ORDER = ["authorType", "author", "createdAt"] as const satisfies readonly (keyof CommentFileData)[];
 
 /** Date-like strings and project keys (`NO`, `ON`) are quoted so YAML 1.1 readers never coerce them. */
 const QUOTED_KEYS: ReadonlySet<string> = new Set(["createdAt", "updatedAt", "dueDate", "key"]);
@@ -102,6 +109,22 @@ export function decodeTask(projectId: string, id: string, text: string, location
     const { data, body } = parseFrontmatter(text);
     const fields = parseOrThrow(TaskFileSchema, data, "task file");
     return parseOrThrow(TaskSchema, { ...fields, id, projectId, description: body }, "task file");
+  } catch (error) {
+    throw corrupt(location, error);
+  }
+}
+
+/** A comment is a Markdown file: who wrote it and when in the frontmatter, the comment as the body. */
+export function encodeComment(comment: Comment): string {
+  return stringifyFrontmatter(ordered(comment, COMMENT_KEY_ORDER), comment.body, QUOTED_KEYS);
+}
+
+export function decodeComment(taskId: string, id: string, text: string, location: string): Comment {
+  assertSize(text, location);
+  try {
+    const { data, body } = parseFrontmatter(text);
+    const fields = parseOrThrow(CommentFileSchema, data, "comment file");
+    return parseOrThrow(CommentSchema, { ...fields, id, taskId, body }, "comment file");
   } catch (error) {
     throw corrupt(location, error);
   }

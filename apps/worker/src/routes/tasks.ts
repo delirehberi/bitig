@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
-import { CreateTaskInputSchema, UpdateTaskInputSchema } from "@bitig/core";
+import { CreateCommentInputSchema, CreateTaskInputSchema, UpdateTaskInputSchema } from "@bitig/core";
 import type { AppEnv } from "../index";
 
 const HTTP_CREATED = 201;
@@ -66,4 +66,23 @@ export const tasksRouter = new Hono<AppEnv>()
     const id = c.req.param("id");
     const completed = await storage.completeTask(id);
     return c.json(completed);
-  });
+  })
+  .get("/:id/comments", async (c) => {
+    const storage = c.get("storage");
+    const comments = await storage.getComments(c.req.param("id"));
+    return c.json(comments);
+  })
+  .post(
+    "/:id/comments",
+    zValidator("json", CreateCommentInputSchema.omit({ taskId: true }), (result, c) => {
+      if (!result.success) {
+        return c.json({ error: "validation_error", details: result.error.issues }, HTTP_BAD_REQUEST);
+      }
+      return undefined;
+    }),
+    async (c) => {
+      const storage = c.get("storage");
+      const comment = await storage.addComment({ ...c.req.valid("json"), taskId: c.req.param("id") });
+      return c.json(comment, HTTP_CREATED);
+    },
+  );

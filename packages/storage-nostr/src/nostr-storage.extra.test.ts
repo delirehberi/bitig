@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { NOSTR_KIND_DELETE, NOSTR_KIND_PROJECT, NOSTR_KIND_TASK, NOSTR_TAG_A, NOSTR_TAG_D } from "./kinds";
+import {
+  NOSTR_KIND_COMMENT,
+  NOSTR_KIND_DELETE,
+  NOSTR_KIND_PROJECT,
+  NOSTR_KIND_TASK,
+  NOSTR_TAG_A,
+  NOSTR_TAG_D,
+} from "./kinds";
 import { NostrStorage } from "./nostr-storage";
 import { PrivateKeySigner } from "./signer/private-key-signer";
 import { startMockRelay, type MockRelay } from "./testing/mock-relay";
@@ -52,6 +59,35 @@ describe("NostrStorage extra & wire-level verification", () => {
     const readBack = await storage.getTask(task.id);
     expect(readBack?.title).toBe("Classified Mission Alpha");
     expect(readBack?.description).toBe("Extremely confidential blueprint");
+  });
+
+  it("encrypts comments, even on public tasks, and reads them back from relays", async () => {
+    const project = await storage.createProject({ name: "Open" });
+    const task = await storage.saveTask({ projectId: project.id, title: "Public", isPublic: true });
+    const comment = await storage.addComment({
+      taskId: task.id,
+      body: "The staging key is in the vault",
+      authorType: "agent",
+      author: "claude",
+    });
+
+    const event = relay.getEvents().find((e) => e.kind === NOSTR_KIND_COMMENT);
+    expect(event?.tags).toContainEqual(["task", task.id]);
+    expect(event?.tags).toContainEqual(["author_type", "agent"]);
+    expect(JSON.stringify(event)).not.toContain("staging key");
+    expect(JSON.stringify(event)).not.toContain("claude");
+
+    const fresh = new NostrStorage({ signer, relays: [relay.url] });
+    try {
+      expect(await fresh.getComments(task.id)).toEqual([comment]);
+      await fresh.deleteTask(task.id);
+    } finally {
+      fresh.getRelayManager().close();
+    }
+
+    const deletion = relay.getEvents().find((e) => e.kind === NOSTR_KIND_DELETE);
+    const pubkey = await signer.getPublicKey();
+    expect(deletion?.tags).toContainEqual([NOSTR_TAG_A, `${String(NOSTR_KIND_COMMENT)}:${pubkey}:${comment.id}`]);
   });
 
   it("publishes cleartext JSON for public tasks", async () => {

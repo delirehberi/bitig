@@ -1,6 +1,9 @@
 import type { z } from "zod";
 import type {
   ChecklistItemSchema,
+  CommentAuthorTypeSchema,
+  CommentSchema,
+  CreateCommentInputSchema,
   CreateProjectInputSchema,
   CreateTaskInputSchema,
   ProjectKindSchema,
@@ -25,6 +28,8 @@ export type ProjectKind = z.output<typeof ProjectKindSchema>;
 export type ChecklistItem = z.output<typeof ChecklistItemSchema>;
 export type ProjectResource = z.output<typeof ProjectResourceSchema>;
 export type ResourceType = z.output<typeof ResourceTypeSchema>;
+export type Comment = z.output<typeof CommentSchema>;
+export type CommentAuthorType = z.output<typeof CommentAuthorTypeSchema>;
 
 export type ProjectBundle = z.output<typeof ProjectBundleSchema>;
 export type BackupBundle = z.output<typeof BackupBundleSchema>;
@@ -35,10 +40,12 @@ export type UpdateProjectInput = z.input<typeof UpdateProjectInputSchema>;
 export type CreateTaskInput = z.input<typeof CreateTaskInputSchema>;
 export type UpdateTaskInput = z.input<typeof UpdateTaskInputSchema>;
 export type TaskFilter = z.input<typeof TaskFilterSchema>;
+export type CreateCommentInput = z.input<typeof CreateCommentInputSchema>;
 
 /** Inputs after validation and defaulting. */
 export type ParsedCreateProjectInput = z.output<typeof CreateProjectInputSchema>;
 export type ParsedUpdateProjectInput = z.output<typeof UpdateProjectInputSchema>;
 export type ParsedCreateTaskInput = z.output<typeof CreateTaskInputSchema>;
 export type ParsedUpdateTaskInput = z.output<typeof UpdateTaskInputSchema>;
+export type ParsedCreateCommentInput = z.output<typeof CreateCommentInputSchema>;
 

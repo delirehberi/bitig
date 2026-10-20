@@ -8,6 +8,7 @@ import { TEST_AUTH_HEADER, TEST_MCP_TOKEN } from "./constants";
 const BASE_URL = "https://bitig.test";
 
 const DB_SETUP_STATEMENTS = [
+  "DROP TABLE IF EXISTS `comments`",
   "DROP TABLE IF EXISTS `tasks`",
   "DROP TABLE IF EXISTS `projects`",
   `CREATE TABLE \`projects\` (
@@ -42,6 +43,16 @@ const DB_SETUP_STATEMENTS = [
   "CREATE INDEX `tasks_status_idx` ON `tasks` (`status`)",
   "CREATE INDEX `tasks_order_idx` ON `tasks` (`order`)",
   "CREATE INDEX `tasks_project_number_idx` ON `tasks` (`project_id`,`number`)",
+  `CREATE TABLE \`comments\` (
+    \`id\` text PRIMARY KEY NOT NULL,
+    \`task_id\` text NOT NULL,
+    \`body\` text NOT NULL,
+    \`author_type\` text NOT NULL,
+    \`author\` text,
+    \`created_at\` integer NOT NULL,
+    FOREIGN KEY (\`task_id\`) REFERENCES \`tasks\`(\`id\`) ON UPDATE no action ON DELETE cascade
+  )`,
+  "CREATE INDEX `comments_task_id_idx` ON `comments` (`task_id`)",
 ];
 
 class WebStreamableTransport implements Transport {
@@ -170,13 +181,16 @@ describe("Remote MCP Protocol & Tool Execution", () => {
     const toolNames = tools.map((t) => t.name).sort();
 
     expect(toolNames).toEqual([
+      "add_comment",
       "add_task",
       "backfill_ticket_codes",
       "complete_task",
       "create_project",
+      "delete_comment",
       "delete_project",
       "delete_task",
       "get_task",
+      "list_comments",
       "list_projects",
       "list_tasks",
       "update_project",

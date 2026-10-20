@@ -1,10 +1,13 @@
 import {
   applyProjectPatch,
   applyTaskPatch,
+  buildComment,
   buildProject,
   buildTask,
+  cloneComment,
   cloneProject,
   cloneTask,
+  compareComments,
   compareProjects,
   compareTasks,
   completeTaskEntity,
@@ -21,6 +24,8 @@ import {
 } from "../domain/schemas";
 import type {
   BackupBundle,
+  Comment,
+  CreateCommentInput,
   CreateProjectInput,
   CreateTaskInput,
   Project,
@@ -61,6 +66,7 @@ function parseId(id: string, context: string): string {
 export class InMemoryStorage implements StorageProvider {
   readonly #projects = new Map<string, Project>();
   readonly #tasks = new Map<string, Task>();
+  readonly #comments = new Map<string, Comment>();
   readonly #deps: RuntimeDeps;
 
   constructor(deps: RuntimeDeps = defaultRuntimeDeps) {
@@ -99,7 +105,7 @@ export class InMemoryStorage implements StorageProvider {
     return run(opts?.signal, () => {
       const project = this.#requireProject(parseId(id, "deleteProject"));
       for (const task of [...this.#tasks.values()]) {
-        if (task.projectId === project.id) this.#tasks.delete(task.id);
+        if (task.projectId === project.id) this.#deleteTaskAndComments(task.id);
       }
       this.#projects.delete(project.id);
     });
@@ -148,7 +154,7 @@ export class InMemoryStorage implements StorageProvider {
   deleteTask(id: string, opts?: OperationOptions): Promise<void> {
     return run(opts?.signal, () => {
       const task = this.#requireTask(parseId(id, "deleteTask"));
-      this.#tasks.delete(task.id);
+      this.#deleteTaskAndComments(task.id);
     });
   }
 
@@ -158,6 +164,29 @@ export class InMemoryStorage implements StorageProvider {
       const next = completeTaskEntity(existing, this.#deps.clock());
       this.#tasks.set(next.id, next);
       return copyTask(next);
+    });
+  }
+
+  getComments(taskId: string, opts?: OperationOptions): Promise<Comment[]> {
+    return run(opts?.signal, () => {
+      const validTaskId = parseId(taskId, "getComments");
+      return this.#commentsOf([validTaskId]).map(cloneComment);
+    });
+  }
+
+  addComment(input: CreateCommentInput, opts?: OperationOptions): Promise<Comment> {
+    return run(opts?.signal, () => {
+      const comment = buildComment(input, this.#deps);
+      this.#requireTask(comment.taskId);
+      this.#comments.set(comment.id, comment);
+      return cloneComment(comment);
+    });
+  }
+
+  deleteComment(id: string, opts?: OperationOptions): Promise<void> {
+    return run(opts?.signal, () => {
+      const validId = parseId(id, "deleteComment");
+      if (!this.#comments.delete(validId)) throw new NotFoundError("comment", validId);
     });
   }
 
@@ -173,6 +202,7 @@ export class InMemoryStorage implements StorageProvider {
         exportedAt: toTimestamp(this.#deps.clock()),
         project: copyProject(project),
         tasks,
+        comments: this.#commentsOf(tasks.map((t) => t.id)).map(cloneComment),
       };
       return parseOrThrow(ProjectBundleSchema, bundle, "exportProject result");
     });
@@ -184,6 +214,9 @@ export class InMemoryStorage implements StorageProvider {
       this.#projects.set(validated.project.id, copyProject(validated.project));
       for (const task of validated.tasks) {
         this.#tasks.set(task.id, copyTask(task));
+      }
+      for (const comment of validated.comments ?? []) {
+        this.#comments.set(comment.id, cloneComment(comment));
       }
       return copyProject(validated.project);
     });
@@ -219,6 +252,19 @@ export class InMemoryStorage implements StorageProvider {
 
   #tasksOf(projectId: string): Task[] {
     return [...this.#tasks.values()].filter((t) => t.projectId === projectId);
+  }
+
+  /** Comments on any of `taskIds`, oldest first. */
+  #commentsOf(taskIds: readonly string[]): Comment[] {
+    const ids = new Set(taskIds);
+    return [...this.#comments.values()].filter((c) => ids.has(c.taskId)).sort(compareComments);
+  }
+
+  #deleteTaskAndComments(taskId: string): void {
+    this.#tasks.delete(taskId);
+    for (const comment of [...this.#comments.values()]) {
+      if (comment.taskId === taskId) this.#comments.delete(comment.id);
+    }
   }
 
   #requireProject(id: string): Project {

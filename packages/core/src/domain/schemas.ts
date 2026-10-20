@@ -2,6 +2,10 @@ import { z } from "zod";
 import {
   CHECKLIST_ITEM_TEXT_MAX,
   CHECKLIST_MAX_ITEMS,
+  COMMENT_AUTHOR_MAX,
+  COMMENT_AUTHOR_TYPES,
+  COMMENT_BODY_MAX,
+  DEFAULT_COMMENT_AUTHOR_TYPE,
   DEFAULT_DESCRIPTION,
   DEFAULT_IS_PUBLIC,
   DEFAULT_PROJECT_KIND,
@@ -89,6 +93,12 @@ export const ProjectResourceSchema = z.strictObject({
 
 export const ProjectResourcesSchema = z.array(ProjectResourceSchema).max(RESOURCES_MAX_COUNT);
 
+export const CommentAuthorTypeSchema = z.enum(COMMENT_AUTHOR_TYPES);
+/** Markdown text. Whitespace around it is trimmed; a blank comment is rejected. */
+export const CommentBodySchema = z.string().trim().min(1).max(COMMENT_BODY_MAX);
+/** A display name such as `Emre` or `claude`; never used for access control. */
+export const CommentAuthorSchema = z.string().trim().min(1).max(COMMENT_AUTHOR_MAX);
+
 // ---------------------------------------------------------------------------
 // Entities
 // ---------------------------------------------------------------------------
@@ -126,6 +136,17 @@ export const TaskSchema = z.strictObject({
   needsHuman: NeedsHumanSchema.exactOptional(),
   /** Assigned by storage, never by callers; tasks created before ticket codes may lack one until backfilled. */
   number: TaskNumberSchema.exactOptional(),
+});
+
+/** A note on a task. Comments are never edited: they are added and deleted. */
+export const CommentSchema = z.strictObject({
+  id: IdSchema,
+  taskId: IdSchema,
+  body: CommentBodySchema,
+  /** Whether a person or an agent wrote it. */
+  authorType: CommentAuthorTypeSchema,
+  createdAt: TimestampSchema,
+  author: CommentAuthorSchema.exactOptional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -195,6 +216,13 @@ export const UpdateTaskInputSchema = z
   })
   .refine(hasAnyDefinedField, { message: EMPTY_PATCH_MESSAGE });
 
+export const CreateCommentInputSchema = z.strictObject({
+  taskId: IdSchema,
+  body: CommentBodySchema,
+  authorType: CommentAuthorTypeSchema.default(DEFAULT_COMMENT_AUTHOR_TYPE),
+  author: CommentAuthorSchema.optional(),
+});
+
 export const TaskFilterSchema = z.strictObject({
   projectId: IdSchema.optional(),
 });
@@ -211,10 +239,19 @@ export const ProjectBundleSchema = z
     exportedAt: TimestampSchema,
     project: ProjectSchema,
     tasks: z.array(TaskSchema),
+    /** Comments on the bundled tasks, oldest first. Bundles made before comments have none. */
+    comments: z.array(CommentSchema).exactOptional(),
   })
   .refine((bundle) => bundle.tasks.every((task) => task.projectId === bundle.project.id), {
     message: "All tasks in bundle must belong to the bundled project",
   })
+  .refine(
+    (bundle) => {
+      const taskIds = new Set(bundle.tasks.map((task) => task.id));
+      return (bundle.comments ?? []).every((comment) => taskIds.has(comment.taskId));
+    },
+    { message: "All comments in bundle must belong to a bundled task" },
+  )
   .refine(
     (bundle) => {
       const numbers = bundle.tasks.flatMap((task) => (task.number === undefined ? [] : [task.number]));

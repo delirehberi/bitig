@@ -8,6 +8,7 @@ import { parseConfig, type AppConfig } from "./config";
 import { apiAuth, bearerAuth } from "./auth";
 import { projectsRouter } from "./routes/projects";
 import { tasksRouter } from "./routes/tasks";
+import { commentsRouter } from "./routes/comments";
 import { backupRouter } from "./routes/backup";
 import { mcpRouter } from "./routes/mcp";
 import { sessionRouter } from "./routes/session";
@@ -100,6 +101,7 @@ export function createApp(options?: CreateAppOptions): Hono<AppEnv> {
   // REST API routes
   app.route("/api/projects", projectsRouter);
   app.route("/api/tasks", tasksRouter);
+  app.route("/api/comments", commentsRouter);
   app.route("/api/backup", backupRouter);
 
   // Remote MCP endpoint guarded by Bearer token authentication and rate limiting

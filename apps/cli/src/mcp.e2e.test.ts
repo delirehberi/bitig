@@ -79,7 +79,7 @@ describe("Bitig CLI STDIO MCP Server E2E", () => {
 
   it("completes full MCP project and task lifecycle over STDIO", async () => {
     const { tools } = await client.listTools();
-    expect(tools.length).toBe(11);
+    expect(tools.length).toBe(14);
 
     // 1. Create project
     const proj = await callToolJson<ProjectResult & { bitig_file_content: string }>("create_project", {
@@ -105,13 +105,16 @@ describe("Bitig CLI STDIO MCP Server E2E", () => {
   it("exercises every registered tool over STDIO", async () => {
     const { tools } = await client.listTools();
     expect(tools.map((tool) => tool.name).sort()).toEqual([
+      "add_comment",
       "add_task",
       "backfill_ticket_codes",
       "complete_task",
       "create_project",
+      "delete_comment",
       "delete_project",
       "delete_task",
       "get_task",
+      "list_comments",
       "list_projects",
       "list_tasks",
       "update_project",
@@ -185,6 +188,17 @@ describe("Bitig CLI STDIO MCP Server E2E", () => {
     const completed = await callToolJson<TaskResult>("complete_task", { id: "all-1" });
     expect(completed).toMatchObject({ id: task.id, status: "done", code: "ALL-1" });
     expect(await callToolJson("backfill_ticket_codes")).toEqual({ keyedProjects: 0, numberedTasks: 0 });
+
+    // Comments: add, list, read with the task, delete
+    const comment = await callToolJson<{ id: string }>("add_comment", { taskId: "ALL-1", body: "Context for later" });
+    expect(comment).toMatchObject({ taskId: task.id, body: "Context for later", authorType: "agent" });
+    expect(await callToolJson("list_comments", { taskId: task.id })).toEqual([comment]);
+    expect(await callToolJson("get_task", { id: "ALL-1" })).toMatchObject({ comments: [comment] });
+    expect(await callToolJson("delete_comment", { id: comment.id })).toEqual({
+      success: true,
+      deletedCommentId: comment.id,
+    });
+    expect(await callToolJson("list_comments", { taskId: task.id })).toEqual([]);
 
     // Deletion: task, then project with its remaining tasks
     expect(await callToolJson("delete_task", { id: task.id })).toEqual({ success: true, deletedTaskId: task.id });

@@ -37,10 +37,13 @@ export type {
 export {
   applyProjectPatch,
   applyTaskPatch,
+  buildComment,
   buildProject,
   buildTask,
+  cloneComment,
   cloneProject,
   cloneTask,
+  compareComments,
   compareProjects,
   compareTasks,
   completeTaskEntity,

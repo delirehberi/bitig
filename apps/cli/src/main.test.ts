@@ -48,6 +48,22 @@ describe("CLI main commands", () => {
         ["BT-2", "Second", "done"],
       ]);
 
+      expect(await exec(["tasks", "comment", "add", "BT-1", "Which key?", "--agent", "--author", "claude"])).toBe(0);
+      expect(await exec(["tasks", "comment", "add", "BT-1", "The staging one."])).toBe(0);
+      expect(await exec(["tasks", "comment", "add", "BT-1", "   "])).not.toBe(0);
+      log.mockClear();
+      expect(await exec(["tasks", "comment", "list", "bt-1", "--json"])).toBe(0);
+      const comments = JSON.parse(String(log.mock.calls[0]?.[0])) as { id: string; body: string; authorType: string }[];
+      expect(comments.map((c) => [c.body, c.authorType])).toEqual([
+        ["Which key?", "agent"],
+        ["The staging one.", "human"],
+      ]);
+      expect(await exec(["tasks", "comment", "delete", comments[0]?.id ?? ""])).toBe(0);
+      log.mockClear();
+      expect(await exec(["tasks", "show", "BT-1", "--json"])).toBe(0);
+      const shown = JSON.parse(String(log.mock.calls[0]?.[0])) as { comments: { body: string }[] };
+      expect(shown.comments.map((c) => c.body)).toEqual(["The staging one."]);
+
       expect(await exec(["tasks", "delete", "BT-1"])).toBe(0);
       expect(await exec(["tasks", "show", "BT-1"])).not.toBe(0);
       expect(await exec(["tasks", "backfill-codes"])).toBe(0);

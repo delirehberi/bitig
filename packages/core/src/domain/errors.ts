@@ -19,7 +19,7 @@ export class BitigError extends Error {
   }
 }
 
-export type EntityKind = "project" | "task";
+export type EntityKind = "project" | "task" | "comment";
 
 export class NotFoundError extends BitigError {
   readonly entity: EntityKind;

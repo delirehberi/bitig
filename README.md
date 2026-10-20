@@ -58,6 +58,7 @@ Bitig follows the **XDG Base Directory Specification**:
 - Each directory name is the `projectId`.
 - `_project.yaml` contains project metadata (`name`, `description`, `kind`, `createdAt`, `updatedAt`).
 - `<taskId>.md` contains YAML frontmatter (`title`, `status`, `priority`, `dueDate`, `labels`, `createdAt`, `updatedAt`) and Markdown body description.
+- `<taskId>.comments/<commentId>.md` holds one comment each: frontmatter (`authorType`, `author`, `createdAt`) and the comment as the Markdown body.
 - Redundant IDs are not stored inside file contents; paths are identity.
 
 ---
@@ -153,6 +154,12 @@ bitig tasks update BIT-12 --needs-human "Approve the schema change"
 bitig tasks list --needs-human
 bitig tasks update BIT-12 --clear-needs-human
 
+# Comments: context agents keep on a task, and answers people give (oldest first, Markdown)
+bitig tasks comment add BIT-12 "Use the staging key"     # no text opens $EDITOR, '-' reads stdin
+bitig tasks comment add BIT-12 - --agent --author claude < notes.md
+bitig tasks comment list BIT-12
+bitig tasks comment delete 019253ec-7b2f-7a10-9c3d-0123456789ab
+
 # Mark task as completed
 bitig tasks complete 019253ec-5a1e-7230-a89e-0123456789ab
 
@@ -236,12 +243,15 @@ Or run against an explicit data directory:
 3. `update_project` - Update a project's name, description, kind, links or key.
 4. `delete_project` - Delete a project and its tasks.
 5. `list_tasks` - List tasks with their codes, optionally for one project (ID or key) or only those that need a human (`needsHuman: true`).
-6. `get_task` - Retrieve a task by ID or code (`BIT-12`).
+6. `get_task` - Retrieve a task by ID or code (`BIT-12`), with its comments.
 7. `add_task` - Add a task to a project (ID or key).
 8. `update_task` - Update a task's fields, or move it to another project. Agents set `needsHuman` to what they need from a person (a decision, an approval, access); `null` clears it.
 9. `complete_task` - Mark a task done.
 10. `delete_task` - Delete a task.
 11. `backfill_ticket_codes` - Key older projects and number their tasks.
+12. `list_comments` - List a task's comments, oldest first.
+13. `add_comment` - Comment on a task (marked as written by an agent unless `authorType` says `human`).
+14. `delete_comment` - Delete a comment.
 
 ### Workspace Auto-Linking for Agents
 

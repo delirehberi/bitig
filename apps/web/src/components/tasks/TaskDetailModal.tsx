@@ -10,12 +10,13 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
-import type { ChecklistItem, Project, Task, TaskPriority, TaskStatus } from "@bitig/core";
+import type { ChecklistItem, Project, StorageProvider, Task, TaskPriority, TaskStatus } from "@bitig/core";
 import { useFeatureFlags } from "../../hooks/useFeatureFlags";
 import { useFocusTrap } from "../../hooks/useFocusTrap";
 import { ChecklistProgressBadge, ChecklistView } from "./Checklist";
 import { NeedsHumanNote } from "./NeedsHuman";
 import { TaskCode } from "./TaskCode";
+import { TaskComments } from "./TaskComments";
 
 interface TaskDetailModalProps {
   readonly task: Task | null;
@@ -28,6 +29,8 @@ interface TaskDetailModalProps {
   readonly onChecklistChange?: ((task: Task, checklist: ChecklistItem[]) => Promise<unknown>) | undefined;
   /** Clears the needs-human flag once a person has answered; omit to show it read-only. */
   readonly onNeedsHumanResolve?: ((task: Task) => void) | undefined;
+  /** Loads and saves the task's comments; omit to hide them. */
+  readonly storage?: StorageProvider | undefined;
 }
 
 const ICON_SIZE = 16;
@@ -81,6 +84,7 @@ export function TaskDetailModal({
   onComplete,
   onChecklistChange,
   onNeedsHumanResolve,
+  storage,
 }: TaskDetailModalProps) {
   const { taskVisibility } = useFeatureFlags();
   const isOpen = task !== null;
@@ -250,6 +254,9 @@ export function TaskDetailModal({
             <span className="text-xs">{formatTimestamp(task.updatedAt)}</span>
           </Field>
         </dl>
+
+        {/* Keyed so a draft never carries over to another task. */}
+        {storage && <TaskComments key={task.id} storage={storage} taskId={task.id} />}
 
         <div className="flex flex-wrap items-center justify-end gap-2 border-t border-rule pt-4">
           <button

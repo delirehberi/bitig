@@ -5,6 +5,7 @@ import {
   DEFAULT_PROJECT_KIND,
   DEFAULT_TASK_STATUS,
   type ChecklistItem,
+  type CommentAuthorType,
   type ProjectKind,
   type ProjectResource,
   type TaskPriority,
@@ -53,8 +54,25 @@ export const tasks = sqliteTable(
   ],
 );
 
+export const comments = sqliteTable(
+  "comments",
+  {
+    id: text("id").primaryKey(),
+    taskId: text("task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    body: text("body").notNull(),
+    authorType: text("author_type").$type<CommentAuthorType>().notNull(),
+    author: text("author"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [index("comments_task_id_idx").on(table.taskId)],
+);
+
 export type ProjectRecord = typeof projects.$inferSelect;
 export type InsertProjectRecord = typeof projects.$inferInsert;
 export type TaskRecord = typeof tasks.$inferSelect;
 export type InsertTaskRecord = typeof tasks.$inferInsert;
 
+export type CommentRecord = typeof comments.$inferSelect;
+export type InsertCommentRecord = typeof comments.$inferInsert;

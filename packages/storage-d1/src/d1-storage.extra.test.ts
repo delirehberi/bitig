@@ -5,6 +5,7 @@ import { D1Storage } from "./d1-storage";
 import * as schema from "./schema";
 
 const STATEMENTS = [
+  "DROP TABLE IF EXISTS `comments`",
   "DROP TABLE IF EXISTS `tasks`",
   "DROP TABLE IF EXISTS `projects`",
   `CREATE TABLE \`projects\` (
@@ -39,6 +40,16 @@ const STATEMENTS = [
   "CREATE INDEX `tasks_status_idx` ON `tasks` (`status`)",
   "CREATE INDEX `tasks_order_idx` ON `tasks` (`order`)",
   "CREATE INDEX `tasks_project_number_idx` ON `tasks` (`project_id`,`number`)",
+  `CREATE TABLE \`comments\` (
+    \`id\` text PRIMARY KEY NOT NULL,
+    \`task_id\` text NOT NULL,
+    \`body\` text NOT NULL,
+    \`author_type\` text NOT NULL,
+    \`author\` text,
+    \`created_at\` integer NOT NULL,
+    FOREIGN KEY (\`task_id\`) REFERENCES \`tasks\`(\`id\`) ON UPDATE no action ON DELETE cascade
+  )`,
+  "CREATE INDEX `comments_task_id_idx` ON `comments` (`task_id`)",
 ];
 
 describe("D1Storage extra tests", () => {

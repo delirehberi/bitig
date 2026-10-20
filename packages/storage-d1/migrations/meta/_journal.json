@@ -36,6 +36,13 @@
       "when": 1792455836420,
       "tag": "0004_task_needs_human",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1792457317965,
+      "tag": "0005_task_comments",
+      "breakpoints": true
     }
   ]
 }

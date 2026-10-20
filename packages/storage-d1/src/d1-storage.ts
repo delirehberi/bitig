@@ -1,4 +1,4 @@
-import { eq, max, ne } from "drizzle-orm";
+import { eq, inArray, max, ne } from "drizzle-orm";
 import { drizzle, type DrizzleD1Database } from "drizzle-orm/d1";
 import {
   BUNDLE_VERSION,
@@ -9,10 +9,13 @@ import {
   TaskFilterSchema,
   applyProjectPatch,
   applyTaskPatch,
+  buildComment,
   buildProject,
   buildTask,
+  cloneComment,
   cloneProject,
   cloneTask,
+  compareComments,
   compareProjects,
   compareTasks,
   completeTaskEntity,
@@ -22,6 +25,8 @@ import {
   throwIfAborted,
   toTimestamp,
   type BackupBundle,
+  type Comment,
+  type CreateCommentInput,
   type CreateProjectInput,
   type CreateTaskInput,
   type OperationOptions,
@@ -35,7 +40,15 @@ import {
   type UpdateTaskInput,
 } from "@bitig/core";
 import * as schema from "./schema";
-import { projects, tasks, type ProjectRecord, type TaskRecord } from "./schema";
+import {
+  comments,
+  projects,
+  tasks,
+  type CommentRecord,
+  type InsertCommentRecord,
+  type ProjectRecord,
+  type TaskRecord,
+} from "./schema";
 
 export interface D1StorageOptions {
   readonly db: D1Database | DrizzleD1Database<typeof schema>;
@@ -101,6 +114,31 @@ function recordToTask(row: TaskRecord): Task {
     task.number = row.number;
   }
   return task;
+}
+
+function recordToComment(row: CommentRecord): Comment {
+  const comment: Comment = {
+    id: row.id,
+    taskId: row.taskId,
+    body: row.body,
+    authorType: row.authorType,
+    createdAt: new Date(row.createdAt).toISOString(),
+  };
+  if (row.author !== null) {
+    comment.author = row.author;
+  }
+  return comment;
+}
+
+function commentToRecord(comment: Comment): InsertCommentRecord {
+  return {
+    id: comment.id,
+    taskId: comment.taskId,
+    body: comment.body,
+    authorType: comment.authorType,
+    author: comment.author ?? null,
+    createdAt: Date.parse(comment.createdAt),
+  };
 }
 
 function isD1Database(db: unknown): db is D1Database {
@@ -193,6 +231,8 @@ export class D1Storage implements StorageProvider {
     if (!existingRow) throw new NotFoundError("project", validId);
 
     // Explicitly delete cascade to guarantee consistency across all SQLite configurations
+    const projectTaskIds = this.#db.select({ id: tasks.id }).from(tasks).where(eq(tasks.projectId, validId));
+    await this.#db.delete(comments).where(inArray(comments.taskId, projectTaskIds));
     await this.#db.delete(tasks).where(eq(tasks.projectId, validId));
     await this.#db.delete(projects).where(eq(projects.id, validId));
     throwIfAborted(opts?.signal);
@@ -300,6 +340,7 @@ export class D1Storage implements StorageProvider {
     throwIfAborted(opts?.signal);
     if (!existingRow) throw new NotFoundError("task", validId);
 
+    await this.#db.delete(comments).where(eq(comments.taskId, validId));
     await this.#db.delete(tasks).where(eq(tasks.id, validId));
     throwIfAborted(opts?.signal);
   }
@@ -327,6 +368,34 @@ export class D1Storage implements StorageProvider {
     return copyTask(next);
   }
 
+  async getComments(taskId: string, opts?: OperationOptions): Promise<Comment[]> {
+    throwIfAborted(opts?.signal);
+    const validTaskId = parseOrThrow(IdSchema, taskId, "getComments");
+    const rows = await this.#db.select().from(comments).where(eq(comments.taskId, validTaskId)).all();
+    throwIfAborted(opts?.signal);
+    return rows.map(recordToComment).sort(compareComments).map(cloneComment);
+  }
+
+  async addComment(input: CreateCommentInput, opts?: OperationOptions): Promise<Comment> {
+    throwIfAborted(opts?.signal);
+    const comment = buildComment(input, this.#deps);
+    const taskRow = await this.#db.select({ id: tasks.id }).from(tasks).where(eq(tasks.id, comment.taskId)).get();
+    throwIfAborted(opts?.signal);
+    if (!taskRow) throw new NotFoundError("task", comment.taskId);
+
+    await this.#db.insert(comments).values(commentToRecord(comment));
+    throwIfAborted(opts?.signal);
+    return cloneComment(comment);
+  }
+
+  async deleteComment(id: string, opts?: OperationOptions): Promise<void> {
+    throwIfAborted(opts?.signal);
+    const validId = parseOrThrow(IdSchema, id, "deleteComment");
+    const deleted = await this.#db.delete(comments).where(eq(comments.id, validId)).returning({ id: comments.id });
+    throwIfAborted(opts?.signal);
+    if (deleted.length === 0) throw new NotFoundError("comment", validId);
+  }
+
   async exportProject(id: string, opts?: OperationOptions): Promise<ProjectBundle> {
     throwIfAborted(opts?.signal);
     const validId = parseOrThrow(IdSchema, id, "exportProject");
@@ -334,11 +403,18 @@ export class D1Storage implements StorageProvider {
     if (project === null) throw new NotFoundError("project", validId);
 
     const projectTasks = await this.getTasks({ projectId: validId }, opts);
+    const commentRows = await this.#db
+      .select()
+      .from(comments)
+      .where(inArray(comments.taskId, this.#db.select({ id: tasks.id }).from(tasks).where(eq(tasks.projectId, validId))))
+      .all();
+    throwIfAborted(opts?.signal);
     const bundle: ProjectBundle = {
       version: BUNDLE_VERSION,
       exportedAt: toTimestamp(this.#deps.clock()),
       project,
       tasks: projectTasks,
+      comments: commentRows.map(recordToComment).sort(compareComments),
     };
     return parseOrThrow(ProjectBundleSchema, bundle, "exportProject result");
   }
@@ -395,6 +471,12 @@ export class D1Storage implements StorageProvider {
       } else {
         await this.#db.insert(tasks).values(taskValues);
       }
+    }
+
+    for (const comment of validated.comments ?? []) {
+      throwIfAborted(opts?.signal);
+      const values = commentToRecord(comment);
+      await this.#db.insert(comments).values(values).onConflictDoUpdate({ target: comments.id, set: values });
     }
 
     return copyProject(validated.project);

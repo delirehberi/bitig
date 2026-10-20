@@ -3,9 +3,11 @@
  *
  *   <root>/<projectId>/_project.yaml
  *   <root>/<projectId>/<taskId>.md
+ *   <root>/<projectId>/<taskId>.comments/<commentId>.md
  *
  * IDs are never stored inside files. Only names that are valid UUIDv7 (plus
- * the `.md` suffix for tasks) are treated as entities; everything else in the
+ * the `.md` suffix for tasks and comments, `.comments` for a task's comment
+ * directory) are treated as entities; everything else in the
  * data directory (dotfiles, `.git`, notes) is ignored.
  *
  * Paths handed to `FileSystemPort` are relative, `/`-separated and built
@@ -16,6 +18,9 @@ import { IdSchema } from "@bitig/core";
 
 export const PROJECT_FILE_NAME = "_project.yaml";
 export const TASK_FILE_EXTENSION = ".md";
+export const COMMENT_FILE_EXTENSION = ".md";
+/** A task's comments live in a directory next to its file, one file per comment. */
+export const COMMENTS_DIR_SUFFIX = ".comments";
 export const PATH_SEPARATOR = "/";
 
 /** Relative path of the data directory itself. */
@@ -29,6 +34,20 @@ export function isEntityId(name: string): boolean {
 export function taskIdFromFileName(fileName: string): string | null {
   if (!fileName.endsWith(TASK_FILE_EXTENSION)) return null;
   const id = fileName.slice(0, -TASK_FILE_EXTENSION.length);
+  return isEntityId(id) ? id : null;
+}
+
+/** Returns the comment ID encoded in a file name, or `null` if the name is not a comment file. */
+export function commentIdFromFileName(fileName: string): string | null {
+  if (!fileName.endsWith(COMMENT_FILE_EXTENSION)) return null;
+  const id = fileName.slice(0, -COMMENT_FILE_EXTENSION.length);
+  return isEntityId(id) ? id : null;
+}
+
+/** Returns the task ID encoded in a directory name, or `null` if it is not a comments directory. */
+export function taskIdFromCommentsDirName(dirName: string): string | null {
+  if (!dirName.endsWith(COMMENTS_DIR_SUFFIX)) return null;
+  const id = dirName.slice(0, -COMMENTS_DIR_SUFFIX.length);
   return isEntityId(id) ? id : null;
 }
 
@@ -52,3 +71,13 @@ export function taskFilePath(projectId: string, taskId: string): string {
   return `${projectDirPath(projectId)}${PATH_SEPARATOR}${taskId}${TASK_FILE_EXTENSION}`;
 }
 
+
+export function commentsDirPath(projectId: string, taskId: string): string {
+  assertEntityId(taskId);
+  return `${projectDirPath(projectId)}${PATH_SEPARATOR}${taskId}${COMMENTS_DIR_SUFFIX}`;
+}
+
+export function commentFilePath(projectId: string, taskId: string, commentId: string): string {
+  assertEntityId(commentId);
+  return `${commentsDirPath(projectId, taskId)}${PATH_SEPARATOR}${commentId}${COMMENT_FILE_EXTENSION}`;
+}

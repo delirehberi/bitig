@@ -15,6 +15,7 @@ import {
   setChecklistItemDone,
   withTaskCodes,
   type ChecklistItem,
+  type Comment,
   type StorageProvider,
   type Task,
   type TaskPriority,
@@ -44,6 +45,13 @@ function progressLabel(task: Task): string {
 function formatChecklist(checklist: readonly ChecklistItem[] | undefined): string {
   if (checklist === undefined) return "(none)";
   return checklist.map((item, i) => `${item.done ? "[x]" : "[ ]"} ${String(i + 1)}. ${item.text}`).join("\n");
+}
+
+function formatComments(comments: readonly Comment[]): string {
+  if (comments.length === 0) return "(none)";
+  return comments
+    .map((c) => `${c.createdAt}  ${c.author ?? c.authorType}${c.author === undefined ? "" : ` (${c.authorType})`}  ${c.id}\n${c.body}`)
+    .join("\n\n");
 }
 
 /** Parses a 1-based position as typed on the command line into a 0-based index. */
@@ -117,9 +125,10 @@ export function registerTasksCommands(
         throw new Error(`Task ${ref} not found`);
       }
       const task = await withCode(storage, found);
+      const comments = await storage.getComments(task.id);
 
       const output = formatOutput(
-        task,
+        { ...task, comments },
         () =>
           [
             `Code:        ${task.code ?? "-"}`,
@@ -139,6 +148,9 @@ export function registerTasksCommands(
             "",
             `Checklist:${task.checklist ? ` ${progressLabel(task)}` : ""}`,
             formatChecklist(task.checklist),
+            "",
+            `Comments:${comments.length > 0 ? ` ${String(comments.length)}` : ""}`,
+            formatComments(comments),
           ].join("\n"),
         undefined,
         options,
@@ -378,6 +390,73 @@ export function registerTasksCommands(
     .option("--json", "Output JSON")
     .action(async (taskId: string, position: string, options: { json?: boolean }) => {
       await editChecklist(taskId, options, (list) => removeChecklistItem(list, parsePosition(position)));
+    });
+
+  // comment: notes on a task, oldest first. Agents keep context here; people answer questions here.
+  const comment = tasks.command("comment").description("Comment on a task");
+
+  comment
+    .command("list <taskId>")
+    .description("List a task's comments, oldest first")
+    .option("--json", "Output JSON")
+    .action(async (taskRef: string, options: { json?: boolean }) => {
+      const storage = await getStorage();
+      const comments = await storage.getComments(await resolveTaskRef(storage, taskRef));
+      const output = formatOutput(
+        comments,
+        () => comments.map((c) => `${c.id}\t${c.createdAt}\t${c.authorType}\t${c.author ?? ""}\t${JSON.stringify(c.body)}`).join("\n"),
+        () => formatComments(comments),
+        options,
+      );
+      if (output !== "") console.log(output);
+    });
+
+  comment
+    .command("add <taskId> [text]")
+    .description("Add a Markdown comment (use '-' for stdin, or --edit)")
+    .option("-e, --edit", "Open editor to compose the comment")
+    .option("--author <name>", "Name to show as the comment's author")
+    .option("--agent", "Mark the comment as written by an agent rather than a person")
+    .option("--json", "Output JSON")
+    .action(
+      async (
+        taskRef: string,
+        text: string | undefined,
+        options: { edit?: boolean; author?: string; agent?: boolean; json?: boolean },
+      ) => {
+        let body = text ?? "";
+        if (text === "-") {
+          body = await readStdin();
+        } else if (options.edit === true || text === undefined) {
+          body = await readFromEditor(body);
+        }
+
+        const storage = await getStorage();
+        const added = await storage.addComment({
+          taskId: await resolveTaskRef(storage, taskRef),
+          body,
+          authorType: options.agent === true ? "agent" : "human",
+          author: options.author,
+        });
+        const output = formatOutput(
+          added,
+          () => added.id,
+          () => `Added comment ${added.id} to ${taskRef}`,
+          options,
+        );
+        console.log(output);
+      },
+    );
+
+  comment
+    .command("delete <commentId>")
+    .description("Permanently delete a comment by its ID")
+    .option("--json", "Output JSON")
+    .action(async (id: string, options: { json?: boolean }) => {
+      const storage = await getStorage();
+      await storage.deleteComment(id);
+      const output = formatOutput({ deletedCommentId: id }, () => `Deleted comment ${id}`, undefined, options);
+      console.log(output);
     });
 
   // delete

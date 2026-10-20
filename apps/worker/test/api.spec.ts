@@ -1,11 +1,12 @@
 import { env, exports } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
-import type { Project, Task } from "@bitig/core";
+import type { Comment, Project, Task } from "@bitig/core";
 import { TEST_AUTH_HEADER } from "./constants";
 
 const BASE_URL = "https://bitig.test";
 
 const STATEMENTS = [
+  "DROP TABLE IF EXISTS `comments`",
   "DROP TABLE IF EXISTS `tasks`",
   "DROP TABLE IF EXISTS `projects`",
   `CREATE TABLE \`projects\` (
@@ -40,6 +41,16 @@ const STATEMENTS = [
   "CREATE INDEX `tasks_status_idx` ON `tasks` (`status`)",
   "CREATE INDEX `tasks_order_idx` ON `tasks` (`order`)",
   "CREATE INDEX `tasks_project_number_idx` ON `tasks` (`project_id`,`number`)",
+  `CREATE TABLE \`comments\` (
+    \`id\` text PRIMARY KEY NOT NULL,
+    \`task_id\` text NOT NULL,
+    \`body\` text NOT NULL,
+    \`author_type\` text NOT NULL,
+    \`author\` text,
+    \`created_at\` integer NOT NULL,
+    FOREIGN KEY (\`task_id\`) REFERENCES \`tasks\`(\`id\`) ON UPDATE no action ON DELETE cascade
+  )`,
+  "CREATE INDEX `comments_task_id_idx` ON `comments` (`task_id`)",
 ];
 
 function apiRequest(path: string, init?: RequestInit): Promise<Response> {
@@ -243,3 +254,41 @@ describe("REST API: Tasks", () => {
   });
 });
 
+describe("REST API: Comments", () => {
+  beforeEach(async () => {
+    await env.DB.batch(STATEMENTS.map((sql) => env.DB.prepare(sql)));
+  });
+
+  async function postJson(path: string, body: unknown): Promise<Response> {
+    return apiRequest(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it("adds, lists and deletes a task's comments", async () => {
+    const project = await (await postJson("/api/projects", { name: "Work" })).json<Project>();
+    const task = await (await postJson("/api/tasks", { projectId: project.id, title: "Needs a key" })).json<Task>();
+
+    const addRes = await postJson(`/api/tasks/${task.id}/comments`, {
+      body: "Which key?",
+      authorType: "agent",
+      author: "claude",
+    });
+    expect(addRes.status).toBe(201);
+    const comment = await addRes.json<Comment>();
+    expect(comment).toMatchObject({ taskId: task.id, body: "Which key?", authorType: "agent", author: "claude" });
+
+    expect((await postJson(`/api/tasks/${task.id}/comments`, { body: " " })).status).toBe(400);
+    expect((await postJson(`/api/tasks/${task.id}/comments`, { body: "x", taskId: task.id })).status).toBe(400);
+    expect((await postJson("/api/tasks/01940000-0000-7000-8fff-ffffffffffff/comments", { body: "x" })).status).toBe(404);
+
+    const listRes = await apiRequest(`/api/tasks/${task.id}/comments`);
+    expect(await listRes.json<Comment[]>()).toEqual([comment]);
+
+    expect((await apiRequest(`/api/comments/${comment.id}`, { method: "DELETE" })).status).toBe(204);
+    expect((await apiRequest(`/api/comments/${comment.id}`, { method: "DELETE" })).status).toBe(404);
+    expect(await (await apiRequest(`/api/tasks/${task.id}/comments`)).json<Comment[]>()).toEqual([]);
+  });
+});

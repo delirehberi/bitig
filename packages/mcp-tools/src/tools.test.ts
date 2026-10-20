@@ -41,6 +41,9 @@ describe("MCP Tools integration", () => {
       "complete_task",
       "delete_task",
       "backfill_ticket_codes",
+      "list_comments",
+      "add_comment",
+      "delete_comment",
     ]);
 
     // Create project
@@ -188,5 +191,33 @@ describe("MCP Tools integration", () => {
     expect((await call("backfill_ticket_codes", {})).data).toEqual({ keyedProjects: 1, numberedTasks: 1 });
     expect(((await call("list_tasks", {})).data as TaskResult[]).map((t) => t.code)).toEqual(["LEG-1"]);
     expect((await call("backfill_ticket_codes", {})).data).toEqual({ keyedProjects: 0, numberedTasks: 0 });
+  });
+
+  it("adds, lists and deletes comments by ticket code, and returns them with the task", async () => {
+    const project = await storage.createProject({ name: "Bitig" });
+    const task = await storage.saveTask({ projectId: project.id, title: "Needs a key" });
+    const call = async (name: string, args: Record<string, unknown>) => {
+      const result = await client.callTool({ name, arguments: args });
+      expect(result.isError).toBeFalsy();
+      return JSON.parse((result.content as { text: string }[])[0]?.text ?? "null") as unknown;
+    };
+
+    const asked = (await call("add_comment", { taskId: "BIT-1", body: "Which key?", author: "claude" })) as {
+      id: string;
+    };
+    expect(asked).toMatchObject({ taskId: task.id, body: "Which key?", authorType: "agent", author: "claude" });
+    await storage.addComment({ taskId: task.id, body: "The staging one." });
+
+    expect(await call("list_comments", { taskId: "BIT-1" })).toMatchObject([
+      { authorType: "agent" },
+      { authorType: "human", body: "The staging one." },
+    ]);
+    expect(await call("get_task", { id: "BIT-1" })).toMatchObject({
+      code: "BIT-1",
+      comments: [{ id: asked.id }, { body: "The staging one." }],
+    });
+
+    await call("delete_comment", { id: asked.id });
+    expect(await storage.getComments(task.id)).toMatchObject([{ body: "The staging one." }]);
   });
 });

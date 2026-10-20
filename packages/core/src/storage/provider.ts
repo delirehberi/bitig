@@ -1,5 +1,7 @@
 import type {
   BackupBundle,
+  Comment,
+  CreateCommentInput,
   CreateProjectInput,
   CreateTaskInput,
   Project,
@@ -35,7 +37,7 @@ export interface StorageProvider {
   getProject(id: string, opts?: OperationOptions): Promise<Project | null>;
   createProject(input: CreateProjectInput, opts?: OperationOptions): Promise<Project>;
   updateProject(id: string, patch: UpdateProjectInput, opts?: OperationOptions): Promise<Project>;
-  /** Deletes the project and every task that belongs to it. */
+  /** Deletes the project and every task (and comment) that belongs to it. */
   deleteProject(id: string, opts?: OperationOptions): Promise<void>;
 
   /** Tasks, optionally limited to one project, in `compareTasks` order. An
@@ -46,13 +48,23 @@ export interface StorageProvider {
   saveTask(input: CreateTaskInput, opts?: OperationOptions): Promise<Task>;
   /** Patches a task. Moving it to another project requires that project to exist. */
   updateTask(id: string, patch: UpdateTaskInput, opts?: OperationOptions): Promise<Task>;
+  /** Deletes the task and its comments. */
   deleteTask(id: string, opts?: OperationOptions): Promise<void>;
   /** Sets `status` to `done`. Idempotent: an already-done task is returned unchanged. */
   completeTask(id: string, opts?: OperationOptions): Promise<Task>;
 
-  /** Exports a project and all its tasks as a validated bundle. */
+  /** A task's comments, oldest first (`compareComments`). An unknown task yields an empty list.
+   * Comments stay with their task when it moves to another project. */
+  getComments(taskId: string, opts?: OperationOptions): Promise<Comment[]>;
+  /** Adds a comment. Rejects with `NotFoundError` if the task does not exist. Leaves the task,
+   * including its `updatedAt`, unchanged. */
+  addComment(input: CreateCommentInput, opts?: OperationOptions): Promise<Comment>;
+  /** Rejects with `NotFoundError` if no comment has this ID. */
+  deleteComment(id: string, opts?: OperationOptions): Promise<void>;
+
+  /** Exports a project with all its tasks and their comments as a validated bundle. */
   exportProject(id: string, opts?: OperationOptions): Promise<ProjectBundle>;
-  /** Imports a project and its tasks, restoring exact fields and timestamps idempotently. */
+  /** Imports a project, its tasks and their comments, restoring exact fields and timestamps idempotently. */
   importProject(bundle: ProjectBundle, opts?: OperationOptions): Promise<Project>;
   /** Exports all projects and tasks as a backup bundle. */
   exportAll(opts?: OperationOptions): Promise<BackupBundle>;
