@@ -1,4 +1,4 @@
-import type { Project, Task } from "@bitig/core";
+import type { ChecklistItem, Project, Task } from "@bitig/core";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
@@ -89,6 +89,46 @@ describe("task checklist", () => {
     ]);
     expect(screen.getByLabelText("Tag")).toBeChecked();
     expect(screen.getByTitle("2 of 2 subtasks done")).toBeInTheDocument();
+  });
+
+  it("starts a subtask and displays subtask timing durations", async () => {
+    const user = userEvent.setup();
+    const taskWithTimedSubtasks: Task = {
+      ...TASK,
+      checklist: [
+        {
+          text: "Write notes",
+          done: true,
+          startedAt: "2026-01-01T10:00:00.000Z",
+          completedAt: "2026-01-01T10:45:00.000Z",
+        },
+        { text: "Tag", done: false },
+      ],
+    };
+    const onChecklistChange = vi.fn<(_task: Task, _checklist: ChecklistItem[]) => Promise<void>>(() =>
+      Promise.resolve(),
+    );
+    render(
+      <FeatureFlagsProvider mode="local">
+        <TaskDetailModal
+          task={taskWithTimedSubtasks}
+          projects={[PROJECT]}
+          onClose={vi.fn()}
+          onEdit={vi.fn()}
+          onDelete={vi.fn()}
+          onComplete={vi.fn()}
+          onChecklistChange={onChecklistChange}
+        />
+      </FeatureFlagsProvider>,
+    );
+
+    expect(screen.getByTitle("Time spent on subtask")).toHaveTextContent("45m");
+
+    await user.click(screen.getByRole("button", { name: "Start subtask: Tag" }));
+    expect(onChecklistChange).toHaveBeenCalledTimes(1);
+    const updatedChecklist = onChecklistChange.mock.calls[0]?.[1];
+    expect(updatedChecklist?.[1]?.text).toBe("Tag");
+    expect(typeof updatedChecklist?.[1]?.startedAt).toBe("string");
   });
 
   it("reverts a toggle whose save fails", async () => {

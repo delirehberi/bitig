@@ -59,6 +59,8 @@ const TASK_KEY_ORDER = [
   "order",
   "checklist",
   "needsHuman",
+  "startedAt",
+  "completedAt",
   "createdAt",
   "updatedAt",
 ] as const satisfies readonly (keyof TaskFileData)[];
@@ -66,7 +68,14 @@ const TASK_KEY_ORDER = [
 const COMMENT_KEY_ORDER = ["authorType", "author", "createdAt"] as const satisfies readonly (keyof CommentFileData)[];
 
 /** Date-like strings and project keys (`NO`, `ON`) are quoted so YAML 1.1 readers never coerce them. */
-const QUOTED_KEYS: ReadonlySet<string> = new Set(["createdAt", "updatedAt", "dueDate", "key"]);
+const QUOTED_KEYS: ReadonlySet<string> = new Set([
+  "startedAt",
+  "completedAt",
+  "createdAt",
+  "updatedAt",
+  "dueDate",
+  "key",
+]);
 
 /** Upper bound on a single file in UTF-16 code units, well above the largest valid entity. */
 export const MAX_FILE_CHARS = 1024 * 1024;

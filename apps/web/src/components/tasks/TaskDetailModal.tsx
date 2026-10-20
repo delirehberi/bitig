@@ -2,15 +2,26 @@ import { useEffect, useRef, useState } from "react";
 import {
   Calendar,
   CheckCircle2,
+  Clock,
   Edit2,
   Globe,
   Lock,
+  PlayCircle,
   Tag,
   Trash2,
   X,
   type LucideIcon,
 } from "lucide-react";
-import type { ChecklistItem, Project, StorageProvider, Task, TaskPriority, TaskStatus } from "@bitig/core";
+import {
+  formatDuration,
+  getTaskTiming,
+  type ChecklistItem,
+  type Project,
+  type StorageProvider,
+  type Task,
+  type TaskPriority,
+  type TaskStatus,
+} from "@bitig/core";
 import { useFeatureFlags } from "../../hooks/useFeatureFlags";
 import { useFocusTrap } from "../../hooks/useFocusTrap";
 import { Markdown } from "../Markdown";
@@ -115,6 +126,9 @@ export function TaskDetailModal({
   const project = projects.find((p) => p.id === task.projectId);
   const isDone = task.status === "done";
   const checklist = pendingChecklist?.taskId === task.id ? pendingChecklist.items : task.checklist;
+  const timing = getTaskTiming(task);
+  const spentMs =
+    task.startedAt !== undefined || task.completedAt !== undefined ? timing.spentMs : undefined;
 
   function toggleChecklist(current: Task, next: ChecklistItem[]) {
     if (!onChecklistChange) return;
@@ -172,6 +186,15 @@ export function TaskDetailModal({
                 {task.priority}
               </span>
             )}
+            {spentMs !== undefined && (
+              <span
+                title="Active time spent on this task"
+                className="inline-flex items-center gap-1 rounded-pill border border-accent/30 bg-accent-soft px-2 py-0.5 font-mono text-2xs font-semibold text-accent-ink"
+              >
+                <Clock size={11} aria-hidden="true" />
+                {formatDuration(spentMs)}
+              </span>
+            )}
           </div>
           <h2
             id="task-detail-title"
@@ -216,6 +239,7 @@ export function TaskDetailModal({
             </h3>
             <ChecklistView
               checklist={checklist}
+              task={task}
               onToggle={
                 onChecklistChange
                   ? (next) => {
@@ -252,8 +276,46 @@ export function TaskDetailModal({
               "—"
             )}
           </Field>
+          <Field label="Time spent" icon={Clock}>
+            {spentMs !== undefined ? (
+              <span className="font-mono text-xs font-semibold text-ink">
+                {formatDuration(spentMs)}
+                {task.status === "in_progress" ? " (in progress)" : ""}
+              </span>
+            ) : (
+              "—"
+            )}
+          </Field>
           <Field label="Created">
             <span className="text-xs">{formatTimestamp(task.createdAt)}</span>
+          </Field>
+          <Field label="Started" icon={PlayCircle}>
+            {task.startedAt ? (
+              <div className="flex flex-col gap-0.5">
+                <span className="text-xs">{formatTimestamp(task.startedAt)}</span>
+                {timing.leadTimeMs !== undefined && timing.leadTimeMs > 0 && (
+                  <span className="text-2xs text-ink-3">
+                    Started {formatDuration(timing.leadTimeMs)} after creation
+                  </span>
+                )}
+              </div>
+            ) : (
+              "—"
+            )}
+          </Field>
+          <Field label="Completed" icon={CheckCircle2}>
+            {task.completedAt ? (
+              <div className="flex flex-col gap-0.5">
+                <span className="text-xs">{formatTimestamp(task.completedAt)}</span>
+                {timing.spentMs !== undefined && (
+                  <span className="text-2xs text-ink-3">
+                    Completed in {formatDuration(timing.spentMs)}
+                  </span>
+                )}
+              </div>
+            ) : (
+              "—"
+            )}
           </Field>
           <Field label="Updated">
             <span className="text-xs">{formatTimestamp(task.updatedAt)}</span>

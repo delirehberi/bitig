@@ -119,7 +119,7 @@ describe("CLI main commands", () => {
     const reader = new MarkdownStorage({ fs: new NodeFileSystem({ rootDir: dataDir }) });
     expect((await reader.getTask(taskId))?.checklist).toEqual([
       { text: "Ship", done: false },
-      { text: "Write", done: true },
+      { text: "Write", done: true, completedAt: expect.any(String) as unknown as string },
     ]);
     // A position past the end fails without changing anything
     expect(await exec(["tasks", "item", "check", taskId, "9"])).not.toBe(0);

@@ -73,8 +73,25 @@ export {
   removeChecklistItem,
   renameChecklistItem,
   setChecklistItemDone,
+  startChecklistItem,
 } from "./domain/checklist";
 export type { ChecklistProgress } from "./domain/checklist";
+export {
+  aggregateTimeByProject,
+  aggregateTimeByProjectAndWeek,
+  exportTimeSpentCsv,
+  formatDuration,
+  getSubtaskTimings,
+  getTaskTiming,
+  isoWeekKey,
+} from "./domain/time-tracking";
+export type {
+  ProjectTimeSummary,
+  SubtaskTiming,
+  TaskTiming,
+  TimeCsvExportMode,
+  WeeklyProjectTimeRow,
+} from "./domain/time-tracking";
 export {
   defaultIdGenerator,
   defaultRuntimeDeps,

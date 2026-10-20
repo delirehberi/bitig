@@ -72,6 +72,10 @@ export const TaskOrderSchema = z.number();
 export const ChecklistItemSchema = z.strictObject({
   text: z.string().trim().min(1).max(CHECKLIST_ITEM_TEXT_MAX),
   done: z.boolean(),
+  /** Set when work on this subtask explicitly started. */
+  startedAt: TimestampSchema.exactOptional(),
+  /** Set when this subtask was marked done; omitted while unchecked. */
+  completedAt: TimestampSchema.exactOptional(),
 });
 
 export const ChecklistSchema = z.array(ChecklistItemSchema).max(CHECKLIST_MAX_ITEMS);
@@ -128,6 +132,10 @@ export const TaskSchema = z.strictObject({
   createdAt: TimestampSchema,
   updatedAt: TimestampSchema,
   // Unset optional fields are omitted entirely (exactOptionalPropertyTypes).
+  /** Set when the task first enters `in_progress` (or is created already active/done); cleared if reset to `todo`. */
+  startedAt: TimestampSchema.exactOptional(),
+  /** Set when the task enters `done`; cleared if reopened to `todo` or `in_progress`. */
+  completedAt: TimestampSchema.exactOptional(),
   dueDate: DueDateSchema.exactOptional(),
   priority: TaskPrioritySchema.exactOptional(),
   labels: LabelsSchema.exactOptional(),

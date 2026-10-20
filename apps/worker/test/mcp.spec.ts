@@ -36,6 +36,8 @@ const DB_SETUP_STATEMENTS = [
     \`checklist\` text,
     \`needs_human\` text,
     \`number\` integer,
+    \`started_at\` integer,
+    \`completed_at\` integer,
     \`created_at\` integer NOT NULL,
     \`updated_at\` integer NOT NULL,
     FOREIGN KEY (\`project_id\`) REFERENCES \`projects\`(\`id\`) ON UPDATE no action ON DELETE cascade

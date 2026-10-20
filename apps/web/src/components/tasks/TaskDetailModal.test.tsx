@@ -67,6 +67,23 @@ describe("TaskDetailModal", () => {
     expect(screen.getByText("#api")).toBeInTheDocument();
   });
 
+  it("displays startedAt, completedAt, lead time, and active time spent", () => {
+    renderModal({
+      ...TASK,
+      status: "done",
+      createdAt: "2026-01-01T10:00:00.000Z",
+      startedAt: "2026-01-01T10:30:00.000Z",
+      completedAt: "2026-01-01T12:00:00.000Z",
+      updatedAt: "2026-01-01T12:00:00.000Z",
+    });
+
+    expect(screen.getByText("Time spent")).toBeInTheDocument();
+    expect(screen.getByText("Started")).toBeInTheDocument();
+    expect(screen.getByText("Completed")).toBeInTheDocument();
+    expect(screen.getByText("Started 30m after creation")).toBeInTheDocument();
+    expect(screen.getByText("Completed in 1h 30m")).toBeInTheDocument();
+  });
+
   it("shows what the task needs from a human and clears it", async () => {
     const onNeedsHumanResolve = vi.fn();
     render(

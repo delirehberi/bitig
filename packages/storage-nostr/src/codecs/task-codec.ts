@@ -6,6 +6,7 @@ import {
   NOSTR_KIND_TASK,
   NOSTR_TAG_A,
   NOSTR_TAG_ALT,
+  NOSTR_TAG_COMPLETED_AT_ISO,
   NOSTR_TAG_D,
   NOSTR_TAG_DUE,
   NOSTR_TAG_IS_PUBLIC,
@@ -14,6 +15,7 @@ import {
   NOSTR_TAG_ORDER,
   NOSTR_TAG_PRIORITY,
   NOSTR_TAG_PROJECT,
+  NOSTR_TAG_STARTED_AT_ISO,
   NOSTR_TAG_STATUS,
 } from "../kinds";
 import { NOSTR_TAG_CREATED_AT_ISO, NOSTR_TAG_UPDATED_AT_ISO, type NostrEventLike } from "./project-codec";
@@ -74,6 +76,12 @@ export async function encodeTaskEvent(
   if (task.number !== undefined) {
     tags.push([NOSTR_TAG_NUMBER, String(task.number)]);
   }
+  if (task.startedAt !== undefined) {
+    tags.push([NOSTR_TAG_STARTED_AT_ISO, task.startedAt]);
+  }
+  if (task.completedAt !== undefined) {
+    tags.push([NOSTR_TAG_COMPLETED_AT_ISO, task.completedAt]);
+  }
   if (task.labels !== undefined) {
     for (const label of task.labels) {
       tags.push([NOSTR_TAG_LABEL, label]);
@@ -133,6 +141,8 @@ export async function decodeTaskEvent(
   let dueTag: string | undefined;
   let orderTag: string | undefined;
   let numberTag: string | undefined;
+  let startedAtIso: string | undefined;
+  let completedAtIso: string | undefined;
   let createdAtIso: string | undefined;
   let updatedAtIso: string | undefined;
   const labels: string[] = [];
@@ -158,6 +168,10 @@ export async function decodeTaskEvent(
       orderTag = val;
     } else if (key === NOSTR_TAG_NUMBER) {
       numberTag = val;
+    } else if (key === NOSTR_TAG_STARTED_AT_ISO) {
+      startedAtIso = val;
+    } else if (key === NOSTR_TAG_COMPLETED_AT_ISO) {
+      completedAtIso = val;
     } else if (key === NOSTR_TAG_LABEL) {
       labels.push(val);
     } else if (key === NOSTR_TAG_CREATED_AT_ISO) {
@@ -219,6 +233,12 @@ export async function decodeTaskEvent(
   }
   if (numberTag !== undefined) {
     rawTask.number = Number(numberTag);
+  }
+  if (startedAtIso !== undefined) {
+    rawTask.startedAt = startedAtIso;
+  }
+  if (completedAtIso !== undefined) {
+    rawTask.completedAt = completedAtIso;
   }
   if (labels.length > 0) {
     rawTask.labels = labels;

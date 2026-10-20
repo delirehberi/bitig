@@ -44,6 +44,10 @@ export const NOSTR_TAG_AUTHOR_TYPE = "author_type" as const;
 export const NOSTR_TAG_RESOURCE = "resource" as const;
 /** Archived project flag: `["archived", "true"]`. */
 export const NOSTR_TAG_ARCHIVED = "archived" as const;
+/** Task start timestamp: `["started_at_iso", "2026-10-20T12:00:00.000Z"]`. */
+export const NOSTR_TAG_STARTED_AT_ISO = "started_at_iso" as const;
+/** Task completion timestamp: `["completed_at_iso", "2026-10-20T12:20:00.000Z"]`. */
+export const NOSTR_TAG_COMPLETED_AT_ISO = "completed_at_iso" as const;
 
 /**
  * Builds an address coordinate string `kind:pubkey:dTag`.

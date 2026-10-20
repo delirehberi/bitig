@@ -2,15 +2,30 @@ import { useState } from "react";
 import {
   addChecklistItem,
   checklistProgress,
+  formatDuration,
+  getSubtaskTimings,
   moveChecklistItem,
   removeChecklistItem,
   renameChecklistItem,
   setChecklistItemDone,
+  startChecklistItem,
   type ChecklistItem,
+  type Task,
 } from "@bitig/core";
-import { ArrowDown, ArrowUp, ListChecks, Plus, X } from "lucide-react";
+import { ArrowDown, ArrowUp, Clock, ListChecks, Play, Plus, X } from "lucide-react";
 
 const ICON_SIZE = 14;
+
+function formatShortTimestamp(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return date.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
 
 /** `2/5` badge for cards and rows; renders nothing for a task without a checklist. */
 export function ChecklistProgressBadge({ checklist }: { readonly checklist: readonly ChecklistItem[] | undefined }) {
@@ -34,12 +49,20 @@ interface ChecklistViewProps {
   readonly checklist: readonly ChecklistItem[] | undefined;
   /** Called with the whole next list; omit for a read-only view. */
   readonly onToggle?: ((next: ChecklistItem[]) => void) | undefined;
+  /** Optional parent task used to compute subtask spent durations. */
+  readonly task?: Task | undefined;
 }
 
 /** Checkable list for the task detail view, with an inline input to add subtasks when editable. */
-export function ChecklistView({ checklist, onToggle }: ChecklistViewProps) {
+export function ChecklistView({ checklist, onToggle, task }: ChecklistViewProps) {
   const [draft, setDraft] = useState("");
   const items = checklist ?? [];
+  const timings = task
+    ? getSubtaskTimings({
+        ...task,
+        ...(items.length > 0 ? { checklist: [...items] } : {}),
+      })
+    : undefined;
 
   function addDraft() {
     const text = draft.trim();
@@ -54,27 +77,74 @@ export function ChecklistView({ checklist, onToggle }: ChecklistViewProps) {
         <span className="text-sm text-ink-3">No subtasks</span>
       ) : (
         <ul className="m-0 flex list-none flex-col gap-1.5 p-0">
-          {items.map((item, index) => (
-            // Items have no identity beyond their position, which is also their order.
-            <li key={index} className="flex items-start gap-2">
-              <input
-                type="checkbox"
-                id={`checklist-view-${String(index)}`}
-                checked={item.done}
-                disabled={!onToggle}
-                onChange={(e) => {
-                  onToggle?.(setChecklistItemDone(items, index, e.target.checked));
-                }}
-                className="mt-0.5 rounded border-rule text-accent focus-visible:outline-focus"
-              />
-              <label
-                htmlFor={`checklist-view-${String(index)}`}
-                className={`text-sm ${item.done ? "text-ink-3 line-through" : "text-ink"}`}
-              >
-                {item.text}
-              </label>
-            </li>
-          ))}
+          {items.map((item, index) => {
+            const timing = timings?.[index];
+            const spentMs = timing?.spentMs;
+
+            return (
+              // Items have no identity beyond their position, which is also their order.
+              <li key={index} className="flex flex-wrap items-start justify-between gap-2">
+                <div className="flex min-w-0 flex-1 items-start gap-2">
+                  <input
+                    type="checkbox"
+                    id={`checklist-view-${String(index)}`}
+                    checked={item.done}
+                    disabled={!onToggle}
+                    onChange={(e) => {
+                      onToggle?.(setChecklistItemDone(items, index, e.target.checked));
+                    }}
+                    className="mt-0.5 rounded border-rule text-accent focus-visible:outline-focus"
+                  />
+                  <label
+                    htmlFor={`checklist-view-${String(index)}`}
+                    className={`text-sm ${item.done ? "text-ink-3 line-through" : "text-ink"}`}
+                  >
+                    {item.text}
+                  </label>
+                </div>
+
+                <div className="flex items-center gap-1.5 text-2xs text-ink-3">
+                  {item.done && spentMs !== undefined && (
+                    <span
+                      title="Time spent on subtask"
+                      className="inline-flex items-center gap-1 rounded-pill bg-paper-2 px-2 py-0.5 font-mono font-semibold text-ink-2"
+                    >
+                      <Clock size={10} aria-hidden="true" />
+                      {formatDuration(spentMs)}
+                    </span>
+                  )}
+                  {item.done && item.completedAt && (
+                    <span title={`Completed at ${item.completedAt}`}>
+                      {formatShortTimestamp(item.completedAt)}
+                    </span>
+                  )}
+                  {!item.done && item.startedAt && (
+                    <span
+                      title={`Started at ${item.startedAt}`}
+                      className="inline-flex items-center gap-1 rounded-pill bg-accent-soft px-2 py-0.5 font-medium text-accent-ink"
+                    >
+                      <Clock size={10} aria-hidden="true" />
+                      Started {formatShortTimestamp(item.startedAt)}
+                    </span>
+                  )}
+                  {!item.done && !item.startedAt && onToggle && (
+                    <button
+                      type="button"
+                      aria-label={`Start subtask: ${item.text}`}
+                      title="Record start time for this subtask"
+                      onClick={() => {
+                        onToggle(startChecklistItem(items, index, new Date().toISOString()));
+                      }}
+                      className="inline-flex items-center gap-1 rounded-md border border-rule bg-paper-2 px-1.5 py-0.5 text-2xs font-medium text-ink-2 transition-colors hover:text-ink focus-visible:outline-focus"
+                    >
+                      <Play size={10} aria-hidden="true" />
+                      Start
+                    </button>
+                  )}
+                </div>
+              </li>
+            );
+          })}
         </ul>
       )}
 

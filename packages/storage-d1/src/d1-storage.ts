@@ -116,6 +116,12 @@ function recordToTask(row: TaskRecord): Task {
   if (row.number !== null) {
     task.number = row.number;
   }
+  if (row.startedAt !== null) {
+    task.startedAt = new Date(row.startedAt).toISOString();
+  }
+  if (row.completedAt !== null) {
+    task.completedAt = new Date(row.completedAt).toISOString();
+  }
   return task;
 }
 
@@ -291,6 +297,8 @@ export class D1Storage implements StorageProvider {
       checklist: task.checklist ?? null,
       needsHuman: task.needsHuman ?? null,
       number: task.number ?? null,
+      startedAt: task.startedAt !== undefined ? Date.parse(task.startedAt) : null,
+      completedAt: task.completedAt !== undefined ? Date.parse(task.completedAt) : null,
       createdAt: Date.parse(task.createdAt),
       updatedAt: Date.parse(task.updatedAt),
     });
@@ -331,6 +339,8 @@ export class D1Storage implements StorageProvider {
         checklist: next.checklist ?? null,
         needsHuman: next.needsHuman ?? null,
         number: next.number ?? null,
+        startedAt: next.startedAt !== undefined ? Date.parse(next.startedAt) : null,
+        completedAt: next.completedAt !== undefined ? Date.parse(next.completedAt) : null,
         updatedAt: Date.parse(next.updatedAt),
       })
       .where(eq(tasks.id, validId));
@@ -365,6 +375,7 @@ export class D1Storage implements StorageProvider {
         .update(tasks)
         .set({
           status: next.status,
+          completedAt: next.completedAt !== undefined ? Date.parse(next.completedAt) : null,
           updatedAt: Date.parse(next.updatedAt),
         })
         .where(eq(tasks.id, validId));
@@ -468,6 +479,8 @@ export class D1Storage implements StorageProvider {
         checklist: task.checklist ?? null,
         needsHuman: task.needsHuman ?? null,
         number: task.number ?? null,
+        startedAt: task.startedAt !== undefined ? Date.parse(task.startedAt) : null,
+        completedAt: task.completedAt !== undefined ? Date.parse(task.completedAt) : null,
         createdAt: Date.parse(task.createdAt),
         updatedAt: Date.parse(task.updatedAt),
       };

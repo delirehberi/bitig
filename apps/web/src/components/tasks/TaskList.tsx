@@ -1,9 +1,20 @@
 import { useState } from "react";
-import { ArrowDown, ArrowUp, ArrowUpDown, CheckCircle2, Circle, Edit2, Trash2 } from "lucide-react";
+import {
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
+  CheckCircle2,
+  Circle,
+  Clock,
+  Edit2,
+  Trash2,
+} from "lucide-react";
 import {
   TASK_PRIORITIES,
   TASK_STATUSES,
   compareTasks,
+  formatDuration,
+  getTaskTiming,
   type Project,
   type Task,
   type TaskPriority,
@@ -195,6 +206,9 @@ export function TaskList({
           {sortedTasks.map((task) => {
             const project = projectsById.get(task.projectId);
             const isDone = task.status === "done";
+            const hasRecordedTime =
+              task.startedAt !== undefined || task.completedAt !== undefined;
+            const spentMs = hasRecordedTime ? getTaskTiming(task).spentMs : undefined;
 
             return (
               <tr
@@ -241,6 +255,15 @@ export function TaskList({
                         {task.title}
                       </button>
                       <ChecklistProgressBadge checklist={task.checklist} />
+                      {spentMs !== undefined && (
+                        <span
+                          className="inline-flex items-center gap-1 rounded-pill bg-paper-2 px-2 py-0.5 font-mono text-2xs font-medium text-ink-2"
+                          title="Time spent"
+                        >
+                          <Clock size={11} aria-hidden="true" />
+                          <span>{formatDuration(spentMs)}</span>
+                        </span>
+                      )}
                       <NeedsHumanBadge reason={task.needsHuman} />
                     </span>
                     {task.description && (

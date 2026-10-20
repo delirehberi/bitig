@@ -32,7 +32,22 @@ export function setChecklistItemDone(
   done: boolean,
 ): ChecklistItem[] {
   assertIndex(checklist, index);
-  return checklist.map((item, i) => (i === index ? { ...item, done } : { ...item }));
+  return checklist.map((item, i) => {
+    if (i !== index) return { ...item };
+    const next: ChecklistItem = { text: item.text, done };
+    if (item.startedAt !== undefined) next.startedAt = item.startedAt;
+    if (done && item.completedAt !== undefined) next.completedAt = item.completedAt;
+    return next;
+  });
+}
+
+export function startChecklistItem(
+  checklist: readonly ChecklistItem[],
+  index: number,
+  startedAt: string,
+): ChecklistItem[] {
+  assertIndex(checklist, index);
+  return checklist.map((item, i) => (i === index ? { ...item, startedAt } : { ...item }));
 }
 
 export function renameChecklistItem(checklist: readonly ChecklistItem[], index: number, text: string): ChecklistItem[] {

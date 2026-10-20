@@ -97,6 +97,8 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
             <Overview
               mode={mode}
               health={health}
+              projects={projects.filter((project) => !project.archived)}
+              tasks={tasks}
               projectsCount={projects.filter((project) => !project.archived).length}
               tasksCount={tasks.length}
               needsHumanCount={tasks.filter((task) => task.needsHuman !== undefined).length}

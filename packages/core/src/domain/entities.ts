@@ -31,9 +31,14 @@ import type {
 import { toTimestamp, type RuntimeDeps } from "../runtime/ids";
 import { assertProjectKeyAvailable, deriveProjectKey } from "./ticket-codes";
 
-type TaskRequiredFields = Omit<Task, "dueDate" | "priority" | "labels" | "order" | "checklist" | "needsHuman" | "number">;
+type TaskRequiredFields = Omit<
+  Task,
+  "startedAt" | "completedAt" | "dueDate" | "priority" | "labels" | "order" | "checklist" | "needsHuman" | "number"
+>;
 
 interface TaskOptionalValues {
+  readonly startedAt: string | undefined;
+  readonly completedAt: string | undefined;
   readonly dueDate: string | undefined;
   readonly priority: TaskPriority | undefined;
   readonly labels: readonly string[] | undefined;
@@ -46,6 +51,8 @@ interface TaskOptionalValues {
 /** Builds a task that omits unset optional fields (exactOptionalPropertyTypes). */
 function assembleTask(base: TaskRequiredFields, optional: TaskOptionalValues): Task {
   const task: Task = { ...base };
+  if (optional.startedAt !== undefined) task.startedAt = optional.startedAt;
+  if (optional.completedAt !== undefined) task.completedAt = optional.completedAt;
   if (optional.dueDate !== undefined) task.dueDate = optional.dueDate;
   if (optional.priority !== undefined) task.priority = optional.priority;
   if (optional.labels !== undefined) task.labels = [...optional.labels];
@@ -57,6 +64,86 @@ function assembleTask(base: TaskRequiredFields, optional: TaskOptionalValues): T
   if (optional.needsHuman !== undefined) task.needsHuman = optional.needsHuman;
   if (optional.number !== undefined) task.number = optional.number;
   return task;
+}
+
+function stampChecklistOnCreate(
+  checklist: readonly ChecklistItem[] | undefined,
+  now: string,
+): ChecklistItem[] | undefined {
+  if (checklist === undefined || checklist.length === 0) return undefined;
+  return checklist.map((item) => {
+    const next: ChecklistItem = { text: item.text, done: item.done };
+    if (item.startedAt !== undefined) next.startedAt = item.startedAt;
+    if (item.done) next.completedAt = item.completedAt ?? now;
+    return next;
+  });
+}
+
+function stampChecklistOnUpdate(
+  previous: readonly ChecklistItem[] | undefined,
+  patch: readonly ChecklistItem[] | null | undefined,
+  now: string,
+): ChecklistItem[] | undefined {
+  if (patch === undefined) return previous?.map((item) => ({ ...item }));
+  if (patch === null || patch.length === 0) return undefined;
+
+  const prevItems = previous ?? [];
+  const usedPrev = new Set<number>();
+
+  return patch.map((item, index) => {
+    let matchedIndex: number | undefined;
+    const sameSlot = prevItems[index];
+    if (sameSlot !== undefined && !usedPrev.has(index) && sameSlot.text === item.text) {
+      matchedIndex = index;
+    } else {
+      for (let j = 0; j < prevItems.length; j++) {
+        if (!usedPrev.has(j) && prevItems[j]?.text === item.text) {
+          matchedIndex = j;
+          break;
+        }
+      }
+      if (matchedIndex === undefined && prevItems.length === patch.length && !usedPrev.has(index)) {
+        matchedIndex = index;
+      }
+    }
+
+    if (matchedIndex !== undefined) usedPrev.add(matchedIndex);
+    const matched = matchedIndex !== undefined ? prevItems[matchedIndex] : undefined;
+
+    const next: ChecklistItem = { text: item.text, done: item.done };
+    const startedAt = item.startedAt ?? matched?.startedAt;
+    if (startedAt !== undefined) next.startedAt = startedAt;
+    if (item.done) {
+      next.completedAt = item.completedAt ?? (matched?.done ? matched.completedAt : undefined) ?? now;
+    }
+    return next;
+  });
+}
+
+function resolveTaskLifecycleTimestamps(
+  task: Task,
+  nextStatus: Task["status"],
+  updatedAt: string,
+): { readonly startedAt: string | undefined; readonly completedAt: string | undefined } {
+  switch (nextStatus) {
+    case "todo":
+      return { startedAt: undefined, completedAt: undefined };
+    case "in_progress":
+      return {
+        startedAt: task.startedAt ?? updatedAt,
+        completedAt: undefined,
+      };
+    case "done":
+      return {
+        startedAt: task.startedAt,
+        completedAt: task.status === "done" ? (task.completedAt ?? updatedAt) : updatedAt,
+      };
+    case "archived":
+      return {
+        startedAt: task.startedAt,
+        completedAt: task.completedAt,
+      };
+  }
 }
 
 /** `undefined` keeps the current value, `null` clears it, anything else replaces it. */
@@ -150,6 +237,8 @@ export function applyProjectPatch(
 export function buildTask(input: CreateTaskInput, deps: RuntimeDeps, number: number): Task {
   const parsed = parseOrThrow(CreateTaskInputSchema, input, "saveTask");
   const now = toTimestamp(deps.clock());
+  const startedAt = parsed.status === "in_progress" || parsed.status === "done" ? now : undefined;
+  const completedAt = parsed.status === "done" ? now : undefined;
   const task = assembleTask(
     {
       id: deps.generateId(),
@@ -162,11 +251,13 @@ export function buildTask(input: CreateTaskInput, deps: RuntimeDeps, number: num
       updatedAt: now,
     },
     {
+      startedAt,
+      completedAt,
       dueDate: parsed.dueDate,
       priority: parsed.priority,
       labels: parsed.labels,
       order: parsed.order,
-      checklist: parsed.checklist,
+      checklist: stampChecklistOnCreate(parsed.checklist, now),
       needsHuman: parsed.needsHuman,
       number,
     },
@@ -180,23 +271,28 @@ export function buildTask(input: CreateTaskInput, deps: RuntimeDeps, number: num
  */
 export function applyTaskPatch(task: Task, patch: UpdateTaskInput, now: Date): Task {
   const parsed = parseOrThrow(UpdateTaskInputSchema, patch, "updateTask");
+  const updatedAt = nextUpdatedAt(task.updatedAt, now);
+  const nextStatus = parsed.status ?? task.status;
+  const { startedAt, completedAt } = resolveTaskLifecycleTimestamps(task, nextStatus, updatedAt);
   const next = assembleTask(
     {
       id: task.id,
       projectId: parsed.projectId ?? task.projectId,
       title: parsed.title ?? task.title,
       description: parsed.description ?? task.description,
-      status: parsed.status ?? task.status,
+      status: nextStatus,
       isPublic: parsed.isPublic ?? task.isPublic,
       createdAt: task.createdAt,
-      updatedAt: nextUpdatedAt(task.updatedAt, now),
+      updatedAt,
     },
     {
+      startedAt,
+      completedAt,
       dueDate: resolveClearable(task.dueDate, parsed.dueDate),
       priority: resolveClearable(task.priority, parsed.priority),
       labels: resolveClearable(task.labels, parsed.labels),
       order: resolveClearable(task.order, parsed.order),
-      checklist: resolveClearable(task.checklist, parsed.checklist),
+      checklist: stampChecklistOnUpdate(task.checklist, parsed.checklist, updatedAt),
       needsHuman: resolveClearable(task.needsHuman, parsed.needsHuman),
       number: task.number,
     },
@@ -215,7 +311,13 @@ export function renumberTask(task: Task, number: number): Task {
  */
 export function completeTaskEntity(task: Task, now: Date): Task {
   if (task.status === COMPLETED_TASK_STATUS) return task;
-  return { ...task, status: COMPLETED_TASK_STATUS, updatedAt: nextUpdatedAt(task.updatedAt, now) };
+  const updatedAt = nextUpdatedAt(task.updatedAt, now);
+  return {
+    ...task,
+    status: COMPLETED_TASK_STATUS,
+    completedAt: updatedAt,
+    updatedAt,
+  };
 }
 
 export function buildComment(input: CreateCommentInput, deps: RuntimeDeps): Comment {

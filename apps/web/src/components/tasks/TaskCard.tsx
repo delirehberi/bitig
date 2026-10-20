@@ -2,6 +2,7 @@ import {
   Calendar,
   CheckCircle2,
   Circle,
+  Clock,
   Edit2,
   Globe,
   GripVertical,
@@ -11,6 +12,8 @@ import {
 } from "lucide-react";
 import {
   TASK_STATUSES,
+  formatDuration,
+  getTaskTiming,
   type Project,
   type Task,
   type TaskPriority,
@@ -60,6 +63,8 @@ export function TaskCard({
   const project = projects.find((p) => p.id === task.projectId);
   const isDone = task.status === "done";
   const isArchived = task.status === "archived";
+  const hasRecordedTime = task.startedAt !== undefined || task.completedAt !== undefined;
+  const spentMs = hasRecordedTime ? getTaskTiming(task).spentMs : undefined;
 
   return (
     <article
@@ -226,6 +231,15 @@ export function TaskCard({
             <div className="flex items-center gap-1 font-mono text-2xs">
               <Calendar size={12} />
               <span>{task.dueDate}</span>
+            </div>
+          )}
+          {spentMs !== undefined && (
+            <div
+              className="flex items-center gap-1 font-mono text-2xs"
+              title="Time spent"
+            >
+              <Clock size={12} aria-hidden="true" />
+              <span>{formatDuration(spentMs)}</span>
             </div>
           )}
           <ChecklistProgressBadge checklist={task.checklist} />

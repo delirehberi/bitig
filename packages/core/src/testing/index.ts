@@ -373,7 +373,7 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
         });
         expect(edited.checklist).toEqual([
           { text: "c", done: false },
-          { text: "b renamed", done: true },
+          { text: "b renamed", done: true, completedAt: edited.updatedAt },
           { text: "a", done: false },
         ]);
         expect(await storage.getTask(task.id)).toEqual(edited);
@@ -532,6 +532,44 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
           status: "archived",
         });
         expect((await storage.completeTask(task.id)).status).toBe("done");
+      });
+
+      it("tracks startedAt, completedAt, and subtask timestamps across status transitions", async () => {
+        const project = await createProject();
+        const created = await storage.saveTask({
+          projectId: project.id,
+          title: "Timed task",
+          checklist: [
+            { text: "Step 1", done: false },
+            { text: "Step 2", done: false },
+          ],
+        });
+        expect(created).not.toHaveProperty("startedAt");
+        expect(created).not.toHaveProperty("completedAt");
+
+        const started = await storage.updateTask(created.id, { status: "in_progress" });
+        expect(started.startedAt).toBe(started.updatedAt);
+        expect(started).not.toHaveProperty("completedAt");
+        expect(await storage.getTask(created.id)).toEqual(started);
+
+        const step1Done = await storage.updateTask(created.id, {
+          checklist: [
+            { text: "Step 1", done: true },
+            { text: "Step 2", done: false },
+          ],
+        });
+        expect(step1Done.checklist?.[0]?.completedAt).toBe(step1Done.updatedAt);
+        expect(step1Done.checklist?.[1]).not.toHaveProperty("completedAt");
+
+        const completed = await storage.completeTask(created.id);
+        expect(completed.startedAt).toBe(started.startedAt);
+        expect(completed.completedAt).toBe(completed.updatedAt);
+        expect(await storage.getTask(created.id)).toEqual(completed);
+
+        const archived = await storage.updateTask(created.id, { status: "archived" });
+        expect(archived.startedAt).toBe(started.startedAt);
+        expect(archived.completedAt).toBe(completed.completedAt);
+        expect(await storage.getTask(created.id)).toEqual(archived);
       });
 
       it("throws NotFoundError for a missing task", async () => {
