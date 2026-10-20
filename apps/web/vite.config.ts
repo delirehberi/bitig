@@ -26,6 +26,7 @@ export default defineConfig({
     sourcemap: false,
   },
   test: {
+    css: true,
     environment: "jsdom",
     setupFiles: ["./src/test/setup.ts"],
     restoreMocks: true,
