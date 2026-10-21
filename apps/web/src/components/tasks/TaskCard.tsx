@@ -24,6 +24,7 @@ import {
 import { useFeatureFlags } from "../../hooks/useFeatureFlags";
 import { ChecklistProgressBadge } from "./Checklist";
 import { ApprovalNote } from "./Approval";
+import { BlockedBadge } from "./Blocked";
 import { NeedsHumanNote } from "./NeedsHuman";
 import { TaskCode } from "./TaskCode";
 
@@ -284,6 +285,7 @@ export function TaskCard({
             </div>
           )}
           <ChecklistProgressBadge checklist={task.checklist} />
+          <BlockedBadge task={task} />
           {task.commentCount !== undefined && task.commentCount > 0 && (
             <div
               className="flex items-center gap-1 font-mono text-2xs"

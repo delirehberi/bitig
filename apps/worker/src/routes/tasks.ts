@@ -5,6 +5,7 @@ import {
   CreateTaskInputSchema,
   UpdateTaskInputSchema,
   buildMentionIndex,
+  checkNewTaskStatus,
   checkStatusChange,
   type OperationOptions,
 } from "@bitig/core";
@@ -61,6 +62,7 @@ export const tasksRouter = new Hono<AppEnv>()
       const storage = c.get("storage");
       const input = c.req.valid("json");
       const actor = c.req.header("X-Bitig-Actor") ?? c.req.header("X-Bitig-Agent");
+      await checkNewTaskStatus(storage, input, "saveTask");
       const task = await storage.saveTask(input, actor ? { actor } : undefined);
       return c.json(task, HTTP_CREATED);
     },

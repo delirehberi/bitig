@@ -22,6 +22,7 @@ import {
   type Task,
   type TaskActivityEntry,
   type TaskPriority,
+  type DependencyLinks,
   type TaskLinks,
   type TaskStatus,
 } from "@bitig/core";
@@ -33,7 +34,7 @@ import { ApprovalNote } from "./Approval";
 import { NeedsHumanNote } from "./NeedsHuman";
 import { TaskCode } from "./TaskCode";
 import { TaskComments } from "./TaskComments";
-import { LinkedTasks } from "./LinkedTasks";
+import { LinkedTasks, TaskDependencies } from "./LinkedTasks";
 
 interface TaskDetailModalProps {
   readonly task: Task | null;
@@ -52,6 +53,8 @@ interface TaskDetailModalProps {
   readonly storage?: StorageProvider | undefined;
   /** The tasks this task mentions and the tasks that mention it; omit to hide them. */
   readonly links?: TaskLinks | undefined;
+  /** The tasks this task depends on and the tasks waiting on it; omit to hide them. */
+  readonly dependencies?: DependencyLinks | undefined;
 }
 
 const ICON_SIZE = 16;
@@ -130,6 +133,7 @@ export function TaskDetailModal({
   onApprove,
   storage,
   links,
+  dependencies,
 }: TaskDetailModalProps) {
   const { taskVisibility } = useFeatureFlags();
   const isOpen = task !== null;
@@ -302,6 +306,7 @@ export function TaskDetailModal({
           </section>
         )}
 
+        {dependencies && <TaskDependencies dependencies={dependencies} />}
         {links && <LinkedTasks links={links} />}
 
         <dl className="m-0 mb-5 grid grid-cols-1 gap-4 sm:grid-cols-2">

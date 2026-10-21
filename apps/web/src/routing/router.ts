@@ -16,6 +16,8 @@ export type Route =
       readonly projectId?: string;
       readonly needsHuman?: true;
       readonly awaitingApproval?: true;
+      /** Shows only the tasks waiting on unfinished dependencies. */
+      readonly blocked?: true;
       /** The task open in the detail view: its ticket code (`BIT-64`), or its ID while it has none. */
       readonly taskRef?: string;
     }
@@ -32,6 +34,8 @@ const NEEDS_HUMAN_VALUE = "human";
 /** `?awaiting=approval` shows only the tasks an agent or webhook created that wait for approval. */
 const AWAITING_PARAM = "awaiting";
 const AWAITING_APPROVAL_VALUE = "approval";
+/** `?blocked=true` shows only the tasks waiting on unfinished dependencies. */
+const BLOCKED_PARAM = "blocked";
 /** `?task=BIT-64` opens that task's detail view. */
 const TASK_PARAM = "task";
 const NEXT_PARAM = "next";
@@ -72,6 +76,7 @@ export function parseRoute(pathname: string, search: string): Route {
         ...(projectId ? { projectId } : {}),
         ...(params.get(NEEDS_PARAM) === NEEDS_HUMAN_VALUE ? { needsHuman: true as const } : {}),
         ...(params.get(AWAITING_PARAM) === AWAITING_APPROVAL_VALUE ? { awaitingApproval: true as const } : {}),
+        ...(params.get(BLOCKED_PARAM) === "true" ? { blocked: true as const } : {}),
         ...(taskRef ? { taskRef } : {}),
       };
     }
@@ -105,6 +110,7 @@ export function hrefFor(route: Route): string {
       if (route.projectId) params.set(PROJECT_PARAM, route.projectId);
       if (route.needsHuman) params.set(NEEDS_PARAM, NEEDS_HUMAN_VALUE);
       if (route.awaitingApproval) params.set(AWAITING_PARAM, AWAITING_APPROVAL_VALUE);
+      if (route.blocked) params.set(BLOCKED_PARAM, "true");
       if (route.taskRef) params.set(TASK_PARAM, route.taskRef);
       const query = params.toString();
       return query ? `/tasks?${query}` : "/tasks";

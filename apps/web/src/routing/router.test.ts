@@ -24,4 +24,10 @@ describe("task links", () => {
     const url = new URL(hrefFor(route), "https://bitig.test");
     expect(parseRoute(url.pathname, url.search)).toEqual(route);
   });
+
+  it("round-trips the blocked filter", () => {
+    expect(parseRoute("/tasks", "?blocked=true")).toEqual({ name: "tasks", blocked: true });
+    expect(parseRoute("/tasks", "?blocked=yes")).toEqual({ name: "tasks" });
+    expect(hrefFor({ name: "tasks", projectId: "p1", blocked: true })).toBe("/tasks?project=p1&blocked=true");
+  });
 });

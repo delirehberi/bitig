@@ -26,6 +26,7 @@ import {
 import { ChecklistProgressBadge } from "./Checklist";
 import { ApprovalBadge } from "./Approval";
 import { NeedsHumanBadge } from "./NeedsHuman";
+import { BlockedBadge } from "./Blocked";
 import { TaskCode } from "./TaskCode";
 
 export type SortColumn = "title" | "project" | "status" | "priority" | "dueDate";
@@ -298,6 +299,7 @@ export function TaskList({
                       )}
                       <ApprovalBadge pending={task.pendingApproval === true} />
                       <NeedsHumanBadge reason={task.needsHuman} />
+                      <BlockedBadge task={task} />
                     </span>
                     {task.description && (
                       <span className="line-clamp-1 text-2xs text-ink-3">

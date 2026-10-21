@@ -1,5 +1,5 @@
 import { createContext } from "react";
-import { withTaskCodes, type Project, type Task, type TaskStatus } from "@bitig/core";
+import { blockingTasks, withTaskCodes, type Project, type Task, type TaskStatus } from "@bitig/core";
 
 /** What a `#BIT-64` mention shows about the task it names. */
 export interface MentionTarget {
@@ -22,3 +22,15 @@ export function buildMentionResolver(projects: readonly Project[], tasks: readon
 
 /** Without a provider, Markdown renders mentions as plain text. */
 export const TaskMentionsContext = createContext<MentionResolver | undefined>(undefined);
+
+/** The codes (or IDs) of the unfinished tasks a task waits on; empty when it is free to start. */
+export type BlockersResolver = (task: Pick<Task, "dependsOn">) => string[];
+
+/** Resolves blockers among the loaded tasks, so cards and rows need no requests. */
+export function buildBlockersResolver(projects: readonly Project[], tasks: readonly Task[]): BlockersResolver {
+  const byId = new Map(withTaskCodes(tasks, projects).map((t) => [t.id, t]));
+  return (task) => blockingTasks(task, byId).map((t) => t.code ?? t.id);
+}
+
+/** Without a provider, cards and rows show no blocked badge. */
+export const TaskBlockersContext = createContext<BlockersResolver | undefined>(undefined);
