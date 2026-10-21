@@ -160,6 +160,8 @@ bitig tasks approve BIT-12
 
 # Dependencies: a task waiting on unfinished tasks cannot be started or completed until they are done or archived.
 # You can override it; the override is recorded in the task's activity. Agents (MCP) cannot.
+bitig tasks add "Signup" --depends-on BIT-12,BIT-13   # by code or ID; update replaces the list
+bitig tasks update BIT-14 --clear-depends-on
 bitig tasks done BIT-14 --override-blocked
 
 # Comments: context agents keep on a task, and answers people give (oldest first, Markdown)
@@ -251,9 +253,9 @@ Or run against an explicit data directory:
 3. `update_project` - Update a project's name, description, kind, links or key.
 4. `delete_project` - Delete a project and its tasks.
 5. `list_tasks` - List tasks with their codes, optionally for one project (ID or key) only those that need a human (`needsHuman: true`), only those awaiting approval (`pendingApproval: true`), or only blocked ones (`blocked: true`). A task waiting on unfinished dependencies carries their codes in `blockedBy`.
-6. `get_task` - Retrieve a task by ID or code (`BIT-12`), with its comments.
-7. `add_task` - Add a task to a project (ID or key). The task awaits a person's approval (`pendingApproval: true`): agents cannot move it to `in_progress` or `done`, or approve it, until a person approves it in the web dashboard, with `bitig tasks approve`, or via REST `PATCH /api/tasks/:id` with `{ "pendingApproval": null }`.
-8. `update_task` - Update a task's fields, or move it to another project. Agents set `needsHuman` to what they need from a person (a decision, an approval, access); `null` clears it. Moving a task to `in_progress` or `done` is refused while it awaits approval or a task it depends on is unfinished.
+6. `get_task` - Retrieve a task by ID or code (`BIT-12`), with its comments, the tasks it mentions (`#BIT-12` in its text or comments) and the tasks that mention it (`mentions`, `mentionedIn`), and the tasks it depends on and that depend on it (`dependsOn`, `dependents`), each as `{ id, code, title, status }`. REST: `GET /api/tasks/:id/links` gives the mention links.
+7. `add_task` - Add a task to a project (ID or key), optionally with `dependsOn` (task IDs or codes). The task awaits a person's approval (`pendingApproval: true`): agents cannot move it to `in_progress` or `done`, or approve it, until a person approves it in the web dashboard, with `bitig tasks approve`, or via REST `PATCH /api/tasks/:id` with `{ "pendingApproval": null }`.
+8. `update_task` - Update a task's fields, or move it to another project. `dependsOn` (IDs or codes) replaces the dependency list; `null` or `[]` clears it. Agents set `needsHuman` to what they need from a person (a decision, an approval, access); `null` clears it. Moving a task to `in_progress` or `done` is refused while it awaits approval or a task it depends on is unfinished.
 9. `complete_task` - Mark a task done (refused while the task awaits approval or a task it depends on is unfinished). People can override the dependency block from the web dashboard, the CLI (`--override-blocked`) or REST (`?overrideBlocked=true` on `PATCH /api/tasks/:id` and `POST /api/tasks/:id/complete`); agents cannot.
 10. `delete_task` - Delete a task.
 11. `backfill_ticket_codes` - Key older projects and number their tasks.

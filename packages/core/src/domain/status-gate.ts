@@ -24,6 +24,8 @@ export interface StatusChangeOptions {
   readonly requireApproval?: boolean;
   /** A person confirmed the change despite unfinished dependencies. Never set for agents. */
   readonly overrideBlocked?: boolean;
+  /** Dependencies the same change sets, checked in place of the stored ones; `null` clears them. */
+  readonly dependsOn?: readonly string[] | null | undefined;
 }
 
 /** How a blocker is named to people: its ticket code, or its ID when it has none. */
@@ -95,7 +97,24 @@ export async function checkStatusChange(
   if (opts?.requireApproval === true && task.pendingApproval === true) {
     throw new ValidationError(context, [{ code: "custom", path: ["status"], message: AWAITING_APPROVAL_MESSAGE }]);
   }
-  const blockedBy = (await findBlockingTasks(storage, task, readOpts)).map(blockerLabel);
+  const dependencies = opts?.dependsOn === undefined ? task : { dependsOn: [...(opts.dependsOn ?? [])] };
+  const blockedBy = (await findBlockingTasks(storage, dependencies, readOpts)).map(blockerLabel);
   if (blockedBy.length > 0 && opts?.overrideBlocked !== true) throw blockedTaskError(context, blockedBy, status);
   return blockedBy;
+}
+
+/**
+ * Checks creating a task straight into `status` with `dependsOn`: refused while any dependency
+ * is unfinished. There is no override at creation; create the task, then start it with one.
+ */
+export async function checkNewTaskStatus(
+  storage: StorageProvider,
+  input: { readonly status?: TaskStatus | undefined; readonly dependsOn?: readonly string[] | undefined },
+  context: string,
+  opts?: Pick<StatusChangeOptions, "signal">,
+): Promise<void> {
+  if (input.status === undefined || !GATED_STATUSES.has(input.status) || input.dependsOn === undefined) return;
+  const readOpts = opts?.signal === undefined ? undefined : { signal: opts.signal };
+  const blockedBy = (await findBlockingTasks(storage, { dependsOn: [...input.dependsOn] }, readOpts)).map(blockerLabel);
+  if (blockedBy.length > 0) throw blockedTaskError(context, blockedBy, input.status);
 }

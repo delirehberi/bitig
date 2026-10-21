@@ -73,12 +73,13 @@ export {
   parseTaskCode,
   resolveProjectRef,
   resolveTaskRef,
+  resolveTaskRefs,
   taskCode,
   withTaskCodes,
 } from "./domain/ticket-codes";
 export type { ParsedTaskCode, TaskWithCode, TicketCodeBackfillResult } from "./domain/ticket-codes";
 export { extractTaskMentions, taskMentions } from "./domain/mentions";
-export { buildMentionIndex } from "./domain/task-links";
+export { buildMentionIndex, dependencyLinks } from "./domain/task-links";
 export {
   assertTaskDependencies,
   blockingTasks,
@@ -92,13 +93,14 @@ export {
   GATED_STATUSES,
   blockedByFromError,
   blockedTaskError,
+  checkNewTaskStatus,
   checkStatusChange,
   findBlockingTasks,
 } from "./domain/status-gate";
 export type { StatusChangeOptions } from "./domain/status-gate";
 export type { DependencyNode } from "./domain/dependencies";
 export type { MentionRange, TaskMention } from "./domain/mentions";
-export type { MentionIndex, TaskLinks, TaskLinkSummary } from "./domain/task-links";
+export type { DependencyLinks, MentionIndex, TaskLinks, TaskLinkSummary } from "./domain/task-links";
 export {
   addChecklistItem,
   checklistProgress,

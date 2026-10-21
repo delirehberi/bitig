@@ -24,8 +24,13 @@ Approval: every task created with 'add_task' starts with 'pendingApproval: true'
 it in Bitig. Until then it cannot be moved to 'in_progress' or 'done', and agents cannot approve it. Tell the person
 which tasks you created; 'list_tasks' with 'pendingApproval: true' lists the ones still waiting.
 
-Dependencies: a task that depends on unfinished tasks is blocked. Its 'blockedBy' lists their codes, and it cannot be
-moved to 'in_progress' or 'done' until every one of them is done or archived. Agents cannot override this; work on the
-blocking tasks first, or ask a person. 'list_tasks' with 'blocked: false' lists the tasks that are free to start.
+Dependencies: when you break work into ordered tasks, set 'dependsOn' on 'add_task' or 'update_task' with the codes of
+the tasks that must finish first (e.g. dependsOn: ['BIT-63']). A task that depends on unfinished tasks is blocked. Its
+'blockedBy' lists their codes, and it cannot be moved to 'in_progress' or 'done' until every one of them is done or
+archived. Agents cannot override this; work on the blocking tasks first, or ask a person. 'get_task' lists 'dependsOn'
+and 'dependents'; 'list_tasks' with 'blocked: false' lists the tasks that are free to start.
+
+Mentions: '#BIT-12' in a description, subtask or comment links that task. 'get_task' returns 'mentions' (what the task
+mentions) and 'mentionedIn' (the tasks that mention it).
 `;
 

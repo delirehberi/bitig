@@ -44,6 +44,8 @@ Call `list_tasks` with the `projectId` (or project `key`) before adding anything
   - phase: `P0`, `P1`, … when the task belongs to a roadmap phase.
   - source: `roadmap`, `code-review`, `audit`, `tech-debt`.
 - **order**: for a roadmap, set `order` so tasks sort in execution order (10, 20, 30, … leaves room to insert).
+- **dependsOn**: when a task cannot start before others finish (an ordered breakdown such as schema → API → UI), pass `dependsOn` with their ticket codes or IDs on `add_task` or `update_task`, e.g. `dependsOn: ["BIT-63"]`. Add the tasks in order so earlier codes exist. The task is then blocked: `get_task` shows `blockedBy`, and it cannot be started or completed until those are done or archived. `update_task` replaces the whole list; `null` or `[]` removes it. `get_task` also lists `dependents`, the tasks waiting on it.
+- **Mentions**: write `#BIT-12` in a description, subtask or comment to link another task. `get_task` returns what a task mentions (`mentions`) and which tasks mention it (`mentionedIn`). Use mentions for "see also"; use `dependsOn` when one must finish first.
 - **status**: `todo` for new work. Use `done` only when importing work that is already finished.
 - **dueDate**: only when the user gives a date (`YYYY-MM-DD`).
 
@@ -62,7 +64,7 @@ Tasks have a chronological comment thread (`get_task` returns `comments` oldest 
 
 ## 6. Keep status current
 
-- When starting a task, call `update_task` with `status: "in_progress"`.
+- When starting a task, call `update_task` with `status: "in_progress"`. If it is refused because of `blockedBy`, work on those tasks first or ask the user; agents cannot override.
 - As you complete subtasks within a task, update its `checklist` items (`done: true`) via `update_task`.
 - When it is finished and verified, call `complete_task`.
 - If the plan changes, update or archive the task (`status: "archived"`) instead of leaving it stale.

@@ -7,6 +7,7 @@ import {
   AWAITING_APPROVAL_MESSAGE,
   blockedByFromError,
   blockedTaskError,
+  checkNewTaskStatus,
   checkStatusChange,
   findBlockingTasks,
 } from "./status-gate";
@@ -120,5 +121,25 @@ describe("blockedByFromError", () => {
     expect(blockedByFromError(new ValidationError("x", []))).toBeUndefined();
     expect(blockedByFromError(new NotFoundError("task", "x"))).toBeUndefined();
     expect(blockedByFromError("nope")).toBeUndefined();
+  });
+});
+
+describe("dependencies set by the same change", () => {
+  it("checks the new dependencies in place of the stored ones", async () => {
+    const { storage, a, b, c } = await setup();
+    await expect(checkStatusChange(storage, c.id, "in_progress", "update", { dependsOn: null })).resolves.toEqual([]);
+    await expect(checkStatusChange(storage, c.id, "in_progress", "update", { dependsOn: [b.id] })).rejects.toThrow(
+      "blocked by unfinished dependencies: OTH-1",
+    );
+    await expect(checkStatusChange(storage, a.id, "done", "update", { dependsOn: [b.id] })).rejects.toThrow("OTH-1");
+  });
+
+  it("refuses to create a task started or done behind unfinished dependencies, with no override", async () => {
+    const { storage, a, b } = await setup();
+    await storage.completeTask(a.id);
+    await expect(checkNewTaskStatus(storage, { status: "todo", dependsOn: [b.id] }, "add")).resolves.toBeUndefined();
+    await expect(checkNewTaskStatus(storage, { status: "done", dependsOn: [a.id] }, "add")).resolves.toBeUndefined();
+    const refused = checkNewTaskStatus(storage, { status: "in_progress", dependsOn: [a.id, b.id] }, "add");
+    await expect(refused).rejects.toThrow("blocked by unfinished dependencies: OTH-1");
   });
 });

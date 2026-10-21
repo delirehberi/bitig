@@ -72,6 +72,51 @@ describe("CLI main commands", () => {
     }
   });
 
+  it("sets dependencies by ticket code and shows the task as blocked", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      expect(await exec(["projects", "create", "Bitig", "--key", "BIT"])).toBe(0);
+      expect(await exec(["tasks", "add", "Schema", "-p", "BIT"])).toBe(0);
+      expect(await exec(["tasks", "add", "API", "-p", "BIT"])).toBe(0);
+      expect(await exec(["tasks", "add", "Signup", "-p", "BIT", "--depends-on", "BIT-1, bit-2"])).toBe(0);
+      expect(await exec(["tasks", "add", "Docs", "-p", "BIT", "-s", "done", "--depends-on", "BIT-1"])).not.toBe(0);
+
+      log.mockClear();
+      expect(await exec(["tasks", "show", "BIT-3", "--json"])).toBe(0);
+      const shown = JSON.parse(String(log.mock.calls[0]?.[0])) as {
+        dependsOn: { code: string }[];
+        blockedBy: string[];
+      };
+      expect(shown.dependsOn.map((t) => t.code)).toEqual(["BIT-1", "BIT-2"]);
+      expect(shown.blockedBy).toEqual(["BIT-1", "BIT-2"]);
+
+      log.mockClear();
+      expect(await exec(["tasks", "show", "BIT-1"])).toBe(0);
+      expect(String(log.mock.calls[0]?.[0])).toContain("Blocks:\nBIT-3 Signup (todo)");
+      log.mockClear();
+      expect(await exec(["tasks", "list", "-p", "BIT", "--json"])).toBe(0);
+      const listed = JSON.parse(String(log.mock.calls[0]?.[0])) as { code: string; blockedBy?: string[] }[];
+      expect(listed.map((t) => [t.code, t.blockedBy])).toEqual([
+        ["BIT-1", undefined],
+        ["BIT-2", undefined],
+        ["BIT-3", ["BIT-1", "BIT-2"]],
+      ]);
+
+      expect(await exec(["tasks", "update", "BIT-3", "-s", "in_progress"])).not.toBe(0);
+      expect(await exec(["tasks", "update", "BIT-3", "--depends-on", "BIT-2", "--clear-depends-on"])).not.toBe(0);
+      expect(await exec(["tasks", "done", "BIT-1"])).toBe(0);
+      expect(await exec(["tasks", "update", "BIT-3", "--depends-on", "BIT-1", "-s", "in_progress"])).toBe(0);
+      expect(await exec(["tasks", "update", "BIT-3", "--clear-depends-on"])).toBe(0);
+      log.mockClear();
+      expect(await exec(["tasks", "show", "BIT-3", "--json"])).toBe(0);
+      expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toMatchObject({ status: "in_progress", dependsOn: [] });
+    } finally {
+      log.mockRestore();
+      error.mockRestore();
+    }
+  });
+
   it("runs project creation, listing and task lifecycle", async () => {
     // 1. Create project
     let code = await exec(["projects", "create", "Work Project", "-k", "paid"]);

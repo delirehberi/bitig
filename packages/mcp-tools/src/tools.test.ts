@@ -226,6 +226,40 @@ describe("MCP Tools integration", () => {
     expect((await task("complete_task", { id: "BIT-2" })).status).toBe("done");
   });
 
+  it("sets dependencies by ticket code and reports the task as blocked", async () => {
+    await call("create_project", { name: "Bitig" });
+    const schema = await task("add_task", { projectId: "BIT", title: "Schema" });
+    const signup = await task("add_task", { projectId: "BIT", title: "Signup", dependsOn: ["bit-1", schema.id] });
+    expect(signup).toMatchObject({ dependsOn: [schema.id], blockedBy: ["BIT-1"] });
+    await approve(signup.id);
+
+    expect(await task("get_task", { id: "BIT-2" })).toMatchObject({
+      dependsOn: [{ id: schema.id, code: "BIT-1", title: "Schema", status: "todo" }],
+      dependents: [],
+      blockedBy: ["BIT-1"],
+    });
+    expect(await task("get_task", { id: "BIT-1" })).toMatchObject({ dependents: [{ code: "BIT-2" }] });
+    const refused = await call("update_task", { id: "BIT-2", status: "in_progress" });
+    expect(refused.data).toContain("blocked by unfinished dependencies: BIT-1");
+
+    // Clearing the dependencies in the same call lets the task start
+    expect(await task("update_task", { id: "BIT-2", status: "in_progress", dependsOn: [] })).not.toHaveProperty(
+      "dependsOn",
+    );
+    // and setting an unfinished one in the same call is refused
+    const third = await task("add_task", { projectId: "BIT", title: "Launch" });
+    await approve(third.id);
+    const blockedStart = await call("update_task", { id: "BIT-3", status: "in_progress", dependsOn: ["BIT-1"] });
+    expect(blockedStart.data).toContain("blocked by unfinished dependencies: BIT-1");
+    expect(await task("update_task", { id: "BIT-3", dependsOn: null })).not.toHaveProperty("dependsOn");
+
+    // Creating a task already started or done behind an unfinished dependency is refused
+    const created = await call("add_task", { projectId: "BIT", title: "Docs", status: "done", dependsOn: ["BIT-1"] });
+    expect(created.isError).toBe(true);
+    expect(created.data).toContain("BIT-1");
+    expect((await call("add_task", { projectId: "BIT", title: "Docs", dependsOn: ["BIT-99"] })).isError).toBe(true);
+  });
+
   it("names tasks by ticket code and accepts codes and keys in place of IDs", async () => {
     const project = (await call("create_project", { name: "Bitig" })).data as { id: string; key: string };
     expect(project.key).toBe("BIT");

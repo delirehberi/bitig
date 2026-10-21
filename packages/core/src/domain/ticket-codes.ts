@@ -183,6 +183,17 @@ export async function resolveTaskRef(storage: StorageProvider, ref: string, opts
   return task.id;
 }
 
+/** Resolves task IDs or ticket codes in order, dropping repeats (`BIT-1` and its ID are one task). */
+export async function resolveTaskRefs(
+  storage: StorageProvider,
+  refs: readonly string[],
+  opts?: OperationOptions,
+): Promise<string[]> {
+  const ids: string[] = [];
+  for (const ref of refs) ids.push(await resolveTaskRef(storage, ref, opts));
+  return [...new Set(ids)];
+}
+
 /** Resolves a project ID or a project key (`BIT`) to the project's ID. */
 export async function resolveProjectRef(
   storage: StorageProvider,

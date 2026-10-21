@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildMentionIndex } from "./task-links";
+import { buildMentionIndex, dependencyLinks } from "./task-links";
 import type { Project, Task } from "./types";
 
 const NOW = "2026-10-21T12:00:00.000Z";
@@ -54,5 +54,24 @@ describe("buildMentionIndex", () => {
       mentions: [{ id: "a", code: "BIT-64", title: "Task a", status: "todo" }],
       mentionedIn: [],
     });
+  });
+});
+
+describe("dependencyLinks", () => {
+  it("lists dependencies in order and the tasks that depend on a task", () => {
+    const a = task("a", BIT, 1, { status: "done" });
+    const b = task("b", OPS, undefined);
+    const c = task("c", BIT, 2, { dependsOn: ["b", "gone", "a"] });
+    const tasks = [a, b, c];
+    expect(dependencyLinks(c, tasks, [BIT, OPS])).toEqual({
+      dependsOn: [
+        { id: "b", title: "Task b", status: "todo" },
+        { id: "a", code: "BIT-1", title: "Task a", status: "done" },
+      ],
+      dependents: [],
+    });
+    expect(dependencyLinks(a, tasks, [BIT, OPS]).dependents).toEqual([
+      { id: "c", code: "BIT-2", title: "Task c", status: "todo" },
+    ]);
   });
 });
