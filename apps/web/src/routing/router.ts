@@ -16,6 +16,8 @@ export type Route =
       readonly projectId?: string;
       readonly needsHuman?: true;
       readonly awaitingApproval?: true;
+      /** The task open in the detail view: its ticket code (`BIT-64`), or its ID while it has none. */
+      readonly taskRef?: string;
     }
   | { readonly name: "webhooks"; readonly projectId?: string }
   | { readonly name: "login"; readonly next?: string }
@@ -30,6 +32,8 @@ const NEEDS_HUMAN_VALUE = "human";
 /** `?awaiting=approval` shows only the tasks an agent or webhook created that wait for approval. */
 const AWAITING_PARAM = "awaiting";
 const AWAITING_APPROVAL_VALUE = "approval";
+/** `?task=BIT-64` opens that task's detail view. */
+const TASK_PARAM = "task";
 const NEXT_PARAM = "next";
 
 export const LOGIN_PATH = "/login";
@@ -62,11 +66,13 @@ export function parseRoute(pathname: string, search: string): Route {
         : { name: "projects" };
     case "/tasks": {
       const projectId = params.get(PROJECT_PARAM);
+      const taskRef = params.get(TASK_PARAM)?.trim();
       return {
         name: "tasks",
         ...(projectId ? { projectId } : {}),
         ...(params.get(NEEDS_PARAM) === NEEDS_HUMAN_VALUE ? { needsHuman: true as const } : {}),
         ...(params.get(AWAITING_PARAM) === AWAITING_APPROVAL_VALUE ? { awaitingApproval: true as const } : {}),
+        ...(taskRef ? { taskRef } : {}),
       };
     }
     case "/webhooks": {
@@ -99,6 +105,7 @@ export function hrefFor(route: Route): string {
       if (route.projectId) params.set(PROJECT_PARAM, route.projectId);
       if (route.needsHuman) params.set(NEEDS_PARAM, NEEDS_HUMAN_VALUE);
       if (route.awaitingApproval) params.set(AWAITING_PARAM, AWAITING_APPROVAL_VALUE);
+      if (route.taskRef) params.set(TASK_PARAM, route.taskRef);
       const query = params.toString();
       return query ? `/tasks?${query}` : "/tasks";
     }

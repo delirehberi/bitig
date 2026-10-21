@@ -793,6 +793,57 @@ describe("Dashboard routing", () => {
     expect(new URLSearchParams(window.location.search).get("project")).toBe(PROJECT_B.id);
   });
 
+  it("opens a task from its code in the URL and keeps the URL in sync", async () => {
+    const coded = { ...PROJECT_B, key: "BET" };
+    window.history.replaceState(null, "", "/tasks?task=bet-7");
+    stubApi({ projects: [PROJECT_A, coded], tasks: [TASK_A, { ...TASK_B, number: 7, description: "Beta details" }] });
+    const user = userEvent.setup();
+    render(<App />);
+
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Beta details")).toBeInTheDocument();
+    // The list behind it is the task's own project.
+    expect(screen.queryByText("Alpha task")).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/project:/i)).toHaveValue(coded.id);
+
+    await user.click(within(dialog).getByRole("button", { name: /close/i }));
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
+    const params = new URLSearchParams(window.location.search);
+    expect(params.get("task")).toBeNull();
+    expect(params.get("project")).toBe(coded.id);
+
+    await user.click(screen.getByText("Beta task"));
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    expect(new URLSearchParams(window.location.search).get("task")).toBe("BET-7");
+  });
+
+  it("links a task without a code by its ID", async () => {
+    window.history.replaceState(null, "", "/tasks");
+    stubApi({ projects: [PROJECT_A], tasks: [TASK_A] });
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByText("Alpha task"));
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    expect(new URLSearchParams(window.location.search).get("task")).toBe(TASK_A.id);
+  });
+
+  it("says when a linked task does not exist", async () => {
+    window.history.replaceState(null, "", "/tasks?task=BIT-999");
+    stubApi({ projects: [PROJECT_A], tasks: [TASK_A] });
+    const user = userEvent.setup();
+    render(<App />);
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("No task BIT-999 was found");
+    expect(screen.getByText("Alpha task")).toBeInTheDocument();
+    await user.click(within(alert).getByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(new URLSearchParams(window.location.search).get("task")).toBeNull();
+  });
+
   it("follows the browser back button", async () => {
     stubApi({});
     const user = userEvent.setup();

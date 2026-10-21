@@ -19,6 +19,7 @@ import { useStorage } from "./hooks/useStorage";
 import { useTasks } from "./hooks/useTasks";
 import { useWebhooks } from "./hooks/useWebhooks";
 import { LandingPage } from "./landing/LandingPage";
+import { findTaskByRef } from "./domain/task-ref";
 import { hrefFor, navigate, useLocationHref, useRoute, type Route } from "./routing/router";
 
 type WorkspaceRoute = Extract<Route, { name: NavigationTab }>;
@@ -32,8 +33,8 @@ interface WorkspaceProps {
 function Workspace({ mode, health, route }: WorkspaceProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const activeTab = route.name;
-  const selectedProjectId =
-    route.name === "tasks" || route.name === "webhooks" ? route.projectId : undefined;
+  const routeProjectId = route.name === "tasks" || route.name === "webhooks" ? route.projectId : undefined;
+  const viewTaskRef = route.name === "tasks" ? route.taskRef : undefined;
   const needsHumanOnly = route.name === "tasks" && route.needsHuman === true;
   const awaitingApprovalOnly = route.name === "tasks" && route.awaitingApproval === true;
   const archivedProjectsOnly = route.name === "projects" && route.archived === true;
@@ -74,16 +75,27 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
   // Most recently worked on first, wherever projects are listed.
   const recentProjects = useMemo(() => sortProjectsByActivity(projects, tasks), [projects, tasks]);
 
+  // A shared task link without a project opens the task over its own project's list.
+  const selectedProjectId =
+    routeProjectId ??
+    (viewTaskRef === undefined ? undefined : findTaskByRef(viewTaskRef, projects, tasks)?.projectId);
+
   function handleSelectProject(projectId: string | undefined) {
     navigate(hrefFor(projectId ? { name: "tasks", projectId } : { name: "tasks" }));
   }
 
-  function tasksHref(projectId: string | undefined, needsHuman: boolean, awaitingApproval: boolean): string {
+  function tasksHref(
+    projectId: string | undefined,
+    needsHuman: boolean,
+    awaitingApproval: boolean,
+    taskRef?: string,
+  ): string {
     return hrefFor({
       name: "tasks",
       ...(projectId ? { projectId } : {}),
       ...(needsHuman ? { needsHuman: true as const } : {}),
       ...(awaitingApproval ? { awaitingApproval: true as const } : {}),
+      ...(taskRef ? { taskRef } : {}),
     });
   }
 
@@ -98,6 +110,11 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
 
   function handleFilterAwaitingApproval(only: boolean) {
     navigate(tasksHref(selectedProjectId, needsHumanOnly, only), { replace: true });
+  }
+
+  // Opening or closing a task keeps the list's filters, so the URL can be copied either way.
+  function handleViewTask(taskRef: string | undefined) {
+    navigate(tasksHref(selectedProjectId, needsHumanOnly, awaitingApprovalOnly, taskRef), { replace: true });
   }
 
   function handleFilterWebhooksProject(projectId: string | undefined) {
@@ -166,6 +183,8 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
               onNeedsHumanOnlyChange={handleFilterNeedsHuman}
               awaitingApprovalOnly={awaitingApprovalOnly}
               onAwaitingApprovalOnlyChange={handleFilterAwaitingApproval}
+              viewTaskRef={viewTaskRef}
+              onViewTaskChange={handleViewTask}
               onSaveTask={saveTask}
               onUpdateTask={updateTask}
               onCompleteTask={completeTask}
