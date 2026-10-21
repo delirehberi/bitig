@@ -1,4 +1,4 @@
-import { count, eq, inArray, max, ne } from "drizzle-orm";
+import { count, eq, inArray, isNotNull, max, ne } from "drizzle-orm";
 import { drizzle, type DrizzleD1Database } from "drizzle-orm/d1";
 import {
   BUNDLE_VERSION,
@@ -12,6 +12,7 @@ import {
   applyProjectPatch,
   applyTaskPatch,
   applyWebhookPatch,
+  assertTaskDependencies,
   buildComment,
   buildProject,
   buildTask,
@@ -26,6 +27,7 @@ import {
   compareWebhooks,
   completeTaskEntity,
   defaultRuntimeDeps,
+  hasNewDependencies,
   parseOrThrow,
   recordWebhookTriggerEntity,
   renumberTask,
@@ -38,6 +40,7 @@ import {
   type CreateProjectInput,
   type CreateTaskInput,
   type CreateWebhookInput,
+  type DependencyNode,
   type OperationOptions,
   type Project,
   type ProjectBundle,
@@ -130,6 +133,9 @@ function recordToTask(row: TaskRecord): Task {
   }
   if (row.pendingApproval === true) {
     task.pendingApproval = true;
+  }
+  if (row.dependsOn !== null && row.dependsOn.length > 0) {
+    task.dependsOn = [...row.dependsOn];
   }
   if (row.number !== null) {
     task.number = row.number;
@@ -321,8 +327,10 @@ export class D1Storage implements StorageProvider {
 
     // Explicitly delete cascade to guarantee consistency across all SQLite configurations
     const projectTaskIds = this.#db.select({ id: tasks.id }).from(tasks).where(eq(tasks.projectId, validId));
+    const removed = new Set((await projectTaskIds.all()).map((row) => row.id));
     await this.#db.delete(comments).where(inArray(comments.taskId, projectTaskIds));
     await this.#db.delete(tasks).where(eq(tasks.projectId, validId));
+    if (removed.size > 0) await this.#dropDependencies(removed);
     await this.#db.delete(webhooks).where(eq(webhooks.projectId, validId));
     await this.#db.delete(projects).where(eq(projects.id, validId));
     throwIfAborted(opts?.signal);
@@ -392,6 +400,10 @@ export class D1Storage implements StorageProvider {
     const projectRow = await this.#db.select().from(projects).where(eq(projects.id, task.projectId)).get();
     throwIfAborted(opts?.signal);
     if (!projectRow) throw new NotFoundError("project", task.projectId);
+    if (hasNewDependencies(undefined, task)) {
+      assertTaskDependencies(task, await this.#dependencyGraph(), "saveTask");
+      throwIfAborted(opts?.signal);
+    }
 
     await this.#db.insert(tasks).values({
       id: task.id,
@@ -407,6 +419,7 @@ export class D1Storage implements StorageProvider {
       checklist: task.checklist ?? null,
       needsHuman: task.needsHuman ?? null,
       pendingApproval: task.pendingApproval ?? null,
+      dependsOn: task.dependsOn ? [...task.dependsOn] : null,
       number: task.number ?? null,
       startedAt: task.startedAt !== undefined ? Date.parse(task.startedAt) : null,
       completedAt: task.completedAt !== undefined ? Date.parse(task.completedAt) : null,
@@ -439,6 +452,10 @@ export class D1Storage implements StorageProvider {
       next = renumberTask(next, await this.#nextTaskNumber(next.projectId));
       throwIfAborted(opts?.signal);
     }
+    if (hasNewDependencies(existing, next)) {
+      assertTaskDependencies(next, await this.#dependencyGraph(), "updateTask");
+      throwIfAborted(opts?.signal);
+    }
 
     await this.#db
       .update(tasks)
@@ -455,6 +472,7 @@ export class D1Storage implements StorageProvider {
         checklist: next.checklist ?? null,
         needsHuman: next.needsHuman ?? null,
         pendingApproval: next.pendingApproval ?? null,
+        dependsOn: next.dependsOn ? [...next.dependsOn] : null,
         number: next.number ?? null,
         startedAt: next.startedAt !== undefined ? Date.parse(next.startedAt) : null,
         completedAt: next.completedAt !== undefined ? Date.parse(next.completedAt) : null,
@@ -481,6 +499,7 @@ export class D1Storage implements StorageProvider {
 
     await this.#db.delete(comments).where(eq(comments.taskId, validId));
     await this.#db.delete(tasks).where(eq(tasks.id, validId));
+    await this.#dropDependencies(new Set([validId]));
     throwIfAborted(opts?.signal);
   }
 
@@ -706,6 +725,7 @@ export class D1Storage implements StorageProvider {
         checklist: task.checklist ?? null,
         needsHuman: task.needsHuman ?? null,
         pendingApproval: task.pendingApproval ?? null,
+        dependsOn: task.dependsOn ? [...task.dependsOn] : null,
         number: task.number ?? null,
         startedAt: task.startedAt !== undefined ? Date.parse(task.startedAt) : null,
         completedAt: task.completedAt !== undefined ? Date.parse(task.completedAt) : null,
@@ -773,6 +793,30 @@ export class D1Storage implements StorageProvider {
       .where(exceptId === undefined ? undefined : ne(projects.id, exceptId))
       .all();
     return rows.flatMap((row) => (row.key === null ? [] : [row.key]));
+  }
+
+  /** Every task's ID and dependencies, for `assertTaskDependencies`. */
+  async #dependencyGraph(): Promise<DependencyNode[]> {
+    const rows = await this.#db.select({ id: tasks.id, dependsOn: tasks.dependsOn }).from(tasks).all();
+    return rows.map((row) => (row.dependsOn === null ? { id: row.id } : { id: row.id, dependsOn: row.dependsOn }));
+  }
+
+  /** Removes `removedIds` from every remaining task's `dependsOn`, leaving `updated_at` as it is. */
+  async #dropDependencies(removedIds: ReadonlySet<string>): Promise<void> {
+    const rows = await this.#db
+      .select({ id: tasks.id, dependsOn: tasks.dependsOn })
+      .from(tasks)
+      .where(isNotNull(tasks.dependsOn))
+      .all();
+    for (const row of rows) {
+      const dependsOn = row.dependsOn ?? [];
+      if (!dependsOn.some((id) => removedIds.has(id))) continue;
+      const kept = dependsOn.filter((id) => !removedIds.has(id));
+      await this.#db
+        .update(tasks)
+        .set({ dependsOn: kept.length > 0 ? kept : null })
+        .where(eq(tasks.id, row.id));
+    }
   }
 
   async #nextTaskNumber(projectId: string): Promise<number> {

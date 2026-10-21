@@ -85,13 +85,14 @@ The `content` field contains a cleartext JSON object:
     { "text": "Run the contract suite", "done": false }
   ],
   "needsHuman": "Choose which relays to publish to",
-  "pendingApproval": true
+  "pendingApproval": true,
+  "dependsOn": ["01940000-0000-7000-8000-000000000001"]
 }
 ```
-`checklist` (the task's subtasks, in order) is omitted when the task has none. `needsHuman` (what the task waits on a person for) is omitted when it needs nobody. `pendingApproval` is `true` while a task an agent or webhook created waits for a person to approve it, and is omitted once it is approved.
+`checklist` (the task's subtasks, in order) is omitted when the task has none. `needsHuman` (what the task waits on a person for) is omitted when it needs nobody. `pendingApproval` is `true` while a task an agent or webhook created waits for a person to approve it, and is omitted once it is approved. `dependsOn` lists the IDs (the `d` tags) of the tasks this task waits on, and is omitted when it waits on none. It lives in the content rather than in tags so a private task's dependencies stay encrypted.
 
 #### Private Task (`is_public: "false"`)
-- The `title`, `description`, `checklist`, `needsHuman` and `pendingApproval` (when present) are packaged into the JSON object:
+- The `title`, `description`, `checklist`, `needsHuman`, `pendingApproval` and `dependsOn` (when present) are packaged into the JSON object:
   ```json
   {
     "title": "Private confidential task",
@@ -100,7 +101,7 @@ The `content` field contains a cleartext JSON object:
   ```
 - The JSON string is encrypted using **NIP-44 v2** encryption with the user's own keypair (self-encryption: `senderPrivateKey = userPrivateKey`, `recipientPublicKey = userPublicKey`).
 - The resulting ciphertext (base64 string starting with version byte) is stored in `content`.
-- **Privacy Guarantee:** Relays, indexers, and third parties only see the kind, task ID, parent project coordinate, status, priority, and due date. The task title, description, checklist and needs-human reason remain strictly confidential.
+- **Privacy Guarantee:** Relays, indexers, and third parties only see the kind, task ID, parent project coordinate, status, priority, and due date. The task title, description, checklist, needs-human reason and dependencies remain strictly confidential.
 
 ---
 

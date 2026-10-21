@@ -128,5 +128,31 @@ describe("NostrStorage extra & wire-level verification", () => {
     expect(aTags).toContain(`${String(NOSTR_KIND_TASK)}:${pubkey}:${task1.id}`);
     expect(aTags).toContain(`${String(NOSTR_KIND_TASK)}:${pubkey}:${task2.id}`);
   });
-});
 
+  it("keeps a private task's dependencies encrypted and drops a deleted dependency on relays", async () => {
+    const project = await storage.createProject({ name: "Deps" });
+    const blocker = await storage.saveTask({ projectId: project.id, title: "Blocker", isPublic: true });
+    const waiting = await storage.saveTask({
+      projectId: project.id,
+      title: "Waiting",
+      isPublic: false,
+      dependsOn: [blocker.id],
+    });
+
+    const waitingEvent = relay
+      .getEvents()
+      .find((e) => e.kind === NOSTR_KIND_TASK && e.tags.some((t) => t[0] === NOSTR_TAG_D && t[1] === waiting.id));
+    expect(JSON.stringify(waitingEvent)).not.toContain(blocker.id);
+
+    // The cleanup keeps updatedAt, so it must still win over the original event on a fresh read.
+    await storage.deleteTask(blocker.id);
+    const fresh = new NostrStorage({ signer, relays: [relay.url] });
+    try {
+      const read = await fresh.getTask(waiting.id);
+      expect(read).not.toHaveProperty("dependsOn");
+      expect(read).toEqual({ ...waiting, dependsOn: undefined });
+    } finally {
+      fresh.getRelayManager().close();
+    }
+  });
+});

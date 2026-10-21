@@ -34,6 +34,8 @@ export interface TaskPayload {
   needsHuman?: string;
   /** Set while the task waits for a person to approve it; omitted once approved. */
   pendingApproval?: true;
+  /** IDs of the tasks this one waits on; omitted when none. */
+  dependsOn?: string[];
   /** Ordered LLM/actor activity entries; omitted when none. */
   activity?: TaskActivityEntry[];
 }
@@ -122,6 +124,9 @@ export async function encodeTaskEvent(
   }
   if (task.pendingApproval !== undefined) {
     payload.pendingApproval = task.pendingApproval;
+  }
+  if (task.dependsOn !== undefined) {
+    payload.dependsOn = task.dependsOn;
   }
   if (task.activity !== undefined) {
     payload.activity = task.activity;
@@ -301,6 +306,9 @@ export async function decodeTaskEvent(
   }
   if (parsedPayload.pendingApproval !== undefined) {
     rawTask.pendingApproval = parsedPayload.pendingApproval;
+  }
+  if (parsedPayload.dependsOn !== undefined && parsedPayload.dependsOn.length > 0) {
+    rawTask.dependsOn = parsedPayload.dependsOn;
   }
   if (parsedPayload.activity !== undefined) {
     rawTask.activity = parsedPayload.activity;

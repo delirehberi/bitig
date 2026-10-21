@@ -259,6 +259,7 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
         expect(task).not.toHaveProperty("checklist");
         expect(task).not.toHaveProperty("needsHuman");
         expect(task).not.toHaveProperty("pendingApproval");
+        expect(task).not.toHaveProperty("dependsOn");
         expect(TaskSchema.parse(task)).toEqual(task);
         expect(await storage.getTask(task.id)).toEqual(task);
       });
@@ -687,6 +688,113 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
       });
     });
 
+    describe("dependencies", () => {
+      it("round-trips dependsOn in order, edits it as a whole and clears it with null or []", async () => {
+        const project = await createProject();
+        const other = await createProject("Other");
+        const a = await storage.saveTask({ projectId: project.id, title: "a" });
+        const b = await storage.saveTask({ projectId: other.id, title: "b" });
+        const c = await storage.saveTask({ projectId: project.id, title: "c", dependsOn: [b.id, a.id] });
+        expect(c.dependsOn).toEqual([b.id, a.id]);
+        expect(await storage.getTask(c.id)).toEqual(c);
+
+        const edited = await storage.updateTask(c.id, { dependsOn: [a.id] });
+        expect(edited.dependsOn).toEqual([a.id]);
+        expect(await storage.getTask(c.id)).toEqual(edited);
+
+        // Other edits, completion and a move keep the list
+        const renamed = await storage.updateTask(c.id, { title: "renamed" });
+        expect(renamed.dependsOn).toEqual([a.id]);
+        const moved = await storage.updateTask(c.id, { projectId: other.id });
+        expect(moved.dependsOn).toEqual([a.id]);
+        const completed = await storage.completeTask(c.id);
+        expect(completed.dependsOn).toEqual([a.id]);
+
+        const cleared = await storage.updateTask(c.id, { dependsOn: null });
+        expect(cleared).not.toHaveProperty("dependsOn");
+        expect(await storage.getTask(c.id)).toEqual(cleared);
+
+        await storage.updateTask(c.id, { dependsOn: [a.id] });
+        const emptied = await storage.updateTask(c.id, { dependsOn: [] });
+        expect(emptied).not.toHaveProperty("dependsOn");
+        expect(await storage.getTask(c.id)).toEqual(emptied);
+
+        const none = await storage.saveTask({ projectId: project.id, title: "d", dependsOn: [] });
+        expect(none).not.toHaveProperty("dependsOn");
+      });
+
+      it("rejects duplicates, malformed IDs and unknown tasks", async () => {
+        const project = await createProject();
+        const a = await storage.saveTask({ projectId: project.id, title: "a" });
+        const b = await storage.saveTask({ projectId: project.id, title: "b" });
+        await expect(
+          storage.saveTask({ projectId: project.id, title: "t", dependsOn: [a.id, a.id] }),
+        ).rejects.toBeInstanceOf(ValidationError);
+        await expect(
+          storage.saveTask({ projectId: project.id, title: "t", dependsOn: [MALFORMED_ID] }),
+        ).rejects.toBeInstanceOf(ValidationError);
+        await expect(
+          storage.saveTask({ projectId: project.id, title: "t", dependsOn: [UNKNOWN_ID] }),
+        ).rejects.toBeInstanceOf(ValidationError);
+        await expect(storage.updateTask(b.id, { dependsOn: [a.id, UNKNOWN_ID] })).rejects.toBeInstanceOf(
+          ValidationError,
+        );
+        expect(await storage.getTasks()).toEqual([a, b]);
+      });
+
+      it("rejects a dependency on the task itself", async () => {
+        const project = await createProject();
+        const a = await storage.saveTask({ projectId: project.id, title: "a" });
+        await expect(storage.updateTask(a.id, { dependsOn: [a.id] })).rejects.toBeInstanceOf(ValidationError);
+        expect(await storage.getTask(a.id)).toEqual(a);
+      });
+
+      it("rejects a dependency that closes a cycle and names it", async () => {
+        const project = await createProject();
+        const a = await storage.saveTask({ projectId: project.id, title: "a" });
+        const b = await storage.saveTask({ projectId: project.id, title: "b", dependsOn: [a.id] });
+        const c = await storage.saveTask({ projectId: project.id, title: "c", dependsOn: [b.id] });
+
+        await expect(storage.updateTask(a.id, { dependsOn: [b.id] })).rejects.toBeInstanceOf(ValidationError);
+        const error: unknown = await storage.updateTask(a.id, { dependsOn: [c.id] }).catch((e: unknown) => e);
+        expect(error).toBeInstanceOf(ValidationError);
+        expect((error as ValidationError).message).toContain(`${a.id} → ${c.id} → ${b.id} → ${a.id}`);
+        expect(await storage.getTask(a.id)).toEqual(a);
+
+        // A diamond is not a cycle
+        const d = await storage.saveTask({ projectId: project.id, title: "d", dependsOn: [b.id, c.id] });
+        expect(d.dependsOn).toEqual([b.id, c.id]);
+      });
+
+      it("removes a deleted task from other tasks' dependsOn without touching updatedAt", async () => {
+        const project = await createProject();
+        const a = await storage.saveTask({ projectId: project.id, title: "a" });
+        const b = await storage.saveTask({ projectId: project.id, title: "b" });
+        const c = await storage.saveTask({ projectId: project.id, title: "c", dependsOn: [a.id, b.id] });
+        const d = await storage.saveTask({ projectId: project.id, title: "d", dependsOn: [a.id] });
+
+        await storage.deleteTask(a.id);
+
+        expect(await storage.getTask(c.id)).toEqual({ ...c, dependsOn: [b.id] });
+        const after = await storage.getTask(d.id);
+        expect(after).not.toHaveProperty("dependsOn");
+        // toEqual ignores the undefined key, so this checks every other field, updatedAt included
+        expect(after).toEqual({ ...d, dependsOn: undefined });
+      });
+
+      it("removes a deleted project's tasks from dependencies in other projects", async () => {
+        const doomed = await createProject("Doomed");
+        const kept = await createProject("Kept");
+        const a = await storage.saveTask({ projectId: doomed.id, title: "a" });
+        const b = await storage.saveTask({ projectId: kept.id, title: "b" });
+        const c = await storage.saveTask({ projectId: kept.id, title: "c", dependsOn: [a.id, b.id] });
+
+        await storage.deleteProject(doomed.id);
+
+        expect(await storage.getTask(c.id)).toEqual({ ...c, dependsOn: [b.id] });
+      });
+    });
+
     describe("comments", () => {
       async function createTask(title = "t"): Promise<Task> {
         const project = await createProject();
@@ -1041,6 +1149,7 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
           projectId: project.id,
           title: "Task 2",
           isPublic: true,
+          dependsOn: [t1.id],
         });
         const c1 = await storage.addComment({ taskId: t2.id, body: "On the public task" });
         const c2 = await storage.addComment({ taskId: t1.id, body: "Context", authorType: "agent", author: "claude" });

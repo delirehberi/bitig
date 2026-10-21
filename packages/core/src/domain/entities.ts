@@ -56,6 +56,7 @@ type TaskRequiredFields = Omit<
   | "checklist"
   | "needsHuman"
   | "pendingApproval"
+  | "dependsOn"
   | "number"
   | "commentCount"
 >;
@@ -75,6 +76,7 @@ interface TaskOptionalValues {
   readonly checklist: readonly ChecklistItem[] | undefined;
   readonly needsHuman: string | undefined;
   readonly pendingApproval: true | undefined;
+  readonly dependsOn: readonly string[] | undefined;
   readonly number: number | undefined;
   readonly commentCount?: number | undefined;
 }
@@ -101,6 +103,10 @@ function assembleTask(base: TaskRequiredFields, optional: TaskOptionalValues): T
   }
   if (optional.needsHuman !== undefined) task.needsHuman = optional.needsHuman;
   if (optional.pendingApproval !== undefined) task.pendingApproval = optional.pendingApproval;
+  // An empty list is the same as none, like the checklist.
+  if (optional.dependsOn !== undefined && optional.dependsOn.length > 0) {
+    task.dependsOn = [...optional.dependsOn];
+  }
   if (optional.number !== undefined) task.number = optional.number;
   if (optional.commentCount !== undefined && optional.commentCount > 0) {
     task.commentCount = optional.commentCount;
@@ -375,6 +381,7 @@ export function buildTask(
       checklist: stampChecklistOnCreate(parsed.checklist, now),
       needsHuman: parsed.needsHuman,
       pendingApproval: parsed.pendingApproval,
+      dependsOn: parsed.dependsOn,
       number,
     },
   );
@@ -428,6 +435,7 @@ export function applyTaskPatch(
       checklist: stampChecklistOnUpdate(task.checklist, parsed.checklist, updatedAt),
       needsHuman: resolveClearable(task.needsHuman, parsed.needsHuman),
       pendingApproval: resolveClearable(task.pendingApproval, parsed.pendingApproval),
+      dependsOn: resolveClearable(task.dependsOn, parsed.dependsOn),
       number: task.number,
       commentCount: task.commentCount,
     },
@@ -482,6 +490,7 @@ export function completeTaskEntity(task: Task, now: Date, actor?: string): Task 
       checklist: task.checklist,
       needsHuman: task.needsHuman,
       pendingApproval: task.pendingApproval,
+      dependsOn: task.dependsOn,
       number: task.number,
       commentCount: task.commentCount,
     },
@@ -527,6 +536,7 @@ export function cloneProject(project: Project): Project {
 export function cloneTask(task: Task): Task {
   const copy = { ...task };
   if (task.labels !== undefined) copy.labels = [...task.labels];
+  if (task.dependsOn !== undefined) copy.dependsOn = [...task.dependsOn];
   if (task.checklist !== undefined) copy.checklist = task.checklist.map((item) => ({ ...item }));
   if (task.activity !== undefined) copy.activity = task.activity.map((entry) => ({ ...entry }));
   return copy;

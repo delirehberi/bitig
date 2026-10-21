@@ -32,6 +32,8 @@ export const TASK_TITLE_MAX = 500;
 export const DESCRIPTION_MAX = 50_000;
 export const LABEL_MAX = 64;
 export const LABELS_MAX_COUNT = 32;
+/** How many other tasks one task can wait on. */
+export const DEPENDS_ON_MAX_COUNT = 100;
 
 
 /** Subtasks: a task's checklist. Items are ordered by position; an empty list is stored as no list. */
