@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
@@ -8,6 +9,7 @@ import { TasksView } from "./TasksView";
 
 function Harness({ storage, projects }: { readonly storage: StorageProvider; readonly projects: Project[] }) {
   const { tasks, isLoading, error, saveTask, updateTask, completeTask, deleteTask } = useTasks(storage);
+  const [viewTaskRef, setViewTaskRef] = useState<string | undefined>();
   return (
     <TasksView
       tasks={tasks}
@@ -15,6 +17,8 @@ function Harness({ storage, projects }: { readonly storage: StorageProvider; rea
       isLoading={isLoading}
       error={error}
       onSelectProject={() => undefined}
+      viewTaskRef={viewTaskRef}
+      onViewTaskChange={setViewTaskRef}
       onSaveTask={saveTask}
       onUpdateTask={updateTask}
       onCompleteTask={completeTask}

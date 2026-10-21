@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Hand, Kanban, List, Plus, ShieldQuestionMark } from "lucide-react";
+import { Hand, Kanban, List, Plus, ShieldQuestionMark, X } from "lucide-react";
 import {
   blockedByFromError,
   compareTasks,
@@ -18,6 +18,7 @@ import { TaskModal } from "./TaskModal";
 import { DeleteTaskDialog } from "./DeleteTaskDialog";
 import { BlockedTaskDialog, type BlockedStatusChange } from "./BlockedTaskDialog";
 import type { StatusChangeChoice } from "../../hooks/useTasks";
+import { findTaskByRef, taskRef } from "../../domain/task-ref";
 
 interface TasksViewProps {
   readonly tasks: Task[];
@@ -32,6 +33,10 @@ interface TasksViewProps {
   /** Shows only the tasks an agent or webhook created that wait for approval. */
   readonly awaitingApprovalOnly?: boolean;
   readonly onAwaitingApprovalOnlyChange?: (only: boolean) => void;
+  /** The task shown in the detail view, by ticket code or ID; it lives in the URL so it can be shared. */
+  readonly viewTaskRef?: string | undefined;
+  /** Opens a task's detail view (its code, or ID while it has none), or closes it with `undefined`. */
+  readonly onViewTaskChange: (ref: string | undefined) => void;
   readonly onSaveTask: (input: CreateTaskInput) => Promise<Task>;
   /** A change to in_progress or done is refused while dependencies are unfinished, unless `choice` overrides. */
   readonly onUpdateTask: (id: string, patch: UpdateTaskInput, choice?: StatusChangeChoice) => Promise<Task>;
@@ -55,6 +60,8 @@ export function TasksView({
   onNeedsHumanOnlyChange,
   awaitingApprovalOnly = false,
   onAwaitingApprovalOnlyChange,
+  viewTaskRef,
+  onViewTaskChange,
   onSaveTask,
   onUpdateTask,
   onCompleteTask,
@@ -93,9 +100,17 @@ export function TasksView({
 
   const [deleteTarget, setDeleteTarget] = useState<Task | null>(null);
   const [blockedChange, setBlockedChange] = useState<BlockedStatusChange | null>(null);
-  // Stored by id so the detail modal follows updates and closes when the task is deleted.
-  const [viewTaskId, setViewTaskId] = useState<string | null>(null);
-  const viewTask = tasks.find((t) => t.id === viewTaskId) ?? null;
+  // Resolved on every render so the detail modal follows updates and closes when the task is deleted.
+  const viewTask = viewTaskRef === undefined ? null : (findTaskByRef(viewTaskRef, projects, tasks) ?? null);
+  const viewTaskMissing = viewTaskRef !== undefined && viewTask === null && !isLoading && error === null;
+
+  function openTask(task: Task) {
+    onViewTaskChange(taskRef(task, projects));
+  }
+
+  function closeTask() {
+    onViewTaskChange(undefined);
+  }
 
   const needsHumanCount = tasks.filter(
     (task) => task.needsHuman !== undefined && (!selectedProjectId || task.projectId === selectedProjectId),
@@ -322,6 +337,26 @@ export function TasksView({
         </div>
       )}
 
+      {viewTaskMissing && (
+        <div
+          role="alert"
+          className="flex items-center justify-between gap-3 rounded-md border border-rule bg-paper-2 p-4 text-sm text-ink-2"
+        >
+          <span>
+            No task <span className="font-mono font-semibold text-ink">{viewTaskRef}</span> was found. It may have
+            been deleted, or its project key changed.
+          </span>
+          <button
+            type="button"
+            onClick={closeTask}
+            aria-label="Dismiss"
+            className="rounded-md p-1 text-ink-3 hover:text-ink focus-visible:outline-focus"
+          >
+            <X size={ICON_SIZE} aria-hidden="true" />
+          </button>
+        </div>
+      )}
+
       {isLoading ? (
         <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
           {[1, 2, 3, 4].map((i) => (
@@ -343,9 +378,7 @@ export function TasksView({
           tasks={filteredTasks}
           projects={projects}
           showProject={!selectedProjectId}
-          onView={(t) => {
-            setViewTaskId(t.id);
-          }}
+          onView={openTask}
           onEdit={(t) => {
             openTaskModal(t);
           }}
@@ -366,9 +399,7 @@ export function TasksView({
           tasks={filteredTasks}
           projects={projects}
           showProject={!selectedProjectId}
-          onView={(t) => {
-            setViewTaskId(t.id);
-          }}
+          onView={openTask}
           onEdit={(t) => {
             openTaskModal(t);
           }}
@@ -386,15 +417,13 @@ export function TasksView({
       <TaskDetailModal
         task={viewTask}
         projects={projects}
-        onClose={() => {
-          setViewTaskId(null);
-        }}
+        onClose={closeTask}
         onEdit={(t) => {
-          setViewTaskId(null);
+          closeTask();
           openTaskModal(t);
         }}
         onDelete={(t) => {
-          setViewTaskId(null);
+          closeTask();
           setDeleteTarget(t);
         }}
         onComplete={handleComplete}
