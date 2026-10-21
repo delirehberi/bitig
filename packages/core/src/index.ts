@@ -77,6 +77,8 @@ export {
   withTaskCodes,
 } from "./domain/ticket-codes";
 export type { ParsedTaskCode, TaskWithCode, TicketCodeBackfillResult } from "./domain/ticket-codes";
+export { extractTaskMentions, taskMentions } from "./domain/mentions";
+export type { MentionRange, TaskMention } from "./domain/mentions";
 export {
   addChecklistItem,
   checklistProgress,
