@@ -20,6 +20,7 @@ import { useTasks } from "./hooks/useTasks";
 import { useWebhooks } from "./hooks/useWebhooks";
 import { LandingPage } from "./landing/LandingPage";
 import { findTaskByRef } from "./domain/task-ref";
+import { TaskMentionsProvider } from "./domain/task-mentions-context";
 import { hrefFor, navigate, useLocationHref, useRoute, type Route } from "./routing/router";
 
 type WorkspaceRoute = Extract<Route, { name: NavigationTab }>;
@@ -134,82 +135,84 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
           onSearchChange={setSearchQuery}
         />
 
-        <main className="px-5 pt-8 pb-16 md:px-10 md:pt-10">
-          {activeTab === "overview" && (
-            <Overview
-              mode={mode}
-              health={health}
-              projects={projects.filter((project) => !project.archived)}
-              tasks={tasks}
-              projectsCount={projects.filter((project) => !project.archived).length}
-              tasksCount={tasks.length}
-              needsHumanCount={tasks.filter((task) => task.needsHuman !== undefined).length}
-              awaitingApprovalCount={tasks.filter((task) => task.pendingApproval === true).length}
-              onNavigate={(tab) => {
-                if (tab === "needs_human") navigate(tasksHref(undefined, true, false));
-                else if (tab === "awaiting_approval") navigate(tasksHref(undefined, false, true));
-                else navigate(hrefFor({ name: tab }));
-              }}
-            />
-          )}
+        <TaskMentionsProvider projects={projects} tasks={tasks}>
+          <main className="px-5 pt-8 pb-16 md:px-10 md:pt-10">
+            {activeTab === "overview" && (
+              <Overview
+                mode={mode}
+                health={health}
+                projects={projects.filter((project) => !project.archived)}
+                tasks={tasks}
+                projectsCount={projects.filter((project) => !project.archived).length}
+                tasksCount={tasks.length}
+                needsHumanCount={tasks.filter((task) => task.needsHuman !== undefined).length}
+                awaitingApprovalCount={tasks.filter((task) => task.pendingApproval === true).length}
+                onNavigate={(tab) => {
+                  if (tab === "needs_human") navigate(tasksHref(undefined, true, false));
+                  else if (tab === "awaiting_approval") navigate(tasksHref(undefined, false, true));
+                  else navigate(hrefFor({ name: tab }));
+                }}
+              />
+            )}
 
-          {activeTab === "projects" && (
-            <ProjectsView
-              projects={recentProjects}
-              tasks={tasks}
-              isLoading={isProjectsLoading}
-              error={projectsError}
-              onCreateProject={createProject}
-              onUpdateProject={updateProject}
-              onDeleteProject={deleteProject}
-              onSelectProject={handleSelectProject}
-              searchQuery={searchQuery}
-              archivedView={archivedProjectsOnly}
-              onArchivedViewChange={(archived) => {
-                navigate(hrefFor(archived ? { name: "projects", archived: true } : { name: "projects" }));
-              }}
-            />
-          )}
+            {activeTab === "projects" && (
+              <ProjectsView
+                projects={recentProjects}
+                tasks={tasks}
+                isLoading={isProjectsLoading}
+                error={projectsError}
+                onCreateProject={createProject}
+                onUpdateProject={updateProject}
+                onDeleteProject={deleteProject}
+                onSelectProject={handleSelectProject}
+                searchQuery={searchQuery}
+                archivedView={archivedProjectsOnly}
+                onArchivedViewChange={(archived) => {
+                  navigate(hrefFor(archived ? { name: "projects", archived: true } : { name: "projects" }));
+                }}
+              />
+            )}
 
-          {activeTab === "tasks" && (
-            <TasksView
-              tasks={tasks}
-              projects={recentProjects}
-              isLoading={isTasksLoading}
-              error={tasksError}
-              selectedProjectId={selectedProjectId}
-              onSelectProject={handleFilterProject}
-              needsHumanOnly={needsHumanOnly}
-              onNeedsHumanOnlyChange={handleFilterNeedsHuman}
-              awaitingApprovalOnly={awaitingApprovalOnly}
-              onAwaitingApprovalOnlyChange={handleFilterAwaitingApproval}
-              viewTaskRef={viewTaskRef}
-              onViewTaskChange={handleViewTask}
-              onSaveTask={saveTask}
-              onUpdateTask={updateTask}
-              onCompleteTask={completeTask}
-              onDeleteTask={deleteTask}
-              searchQuery={searchQuery}
-              storage={storage}
-            />
-          )}
+            {activeTab === "tasks" && (
+              <TasksView
+                tasks={tasks}
+                projects={recentProjects}
+                isLoading={isTasksLoading}
+                error={tasksError}
+                selectedProjectId={selectedProjectId}
+                onSelectProject={handleFilterProject}
+                needsHumanOnly={needsHumanOnly}
+                onNeedsHumanOnlyChange={handleFilterNeedsHuman}
+                awaitingApprovalOnly={awaitingApprovalOnly}
+                onAwaitingApprovalOnlyChange={handleFilterAwaitingApproval}
+                viewTaskRef={viewTaskRef}
+                onViewTaskChange={handleViewTask}
+                onSaveTask={saveTask}
+                onUpdateTask={updateTask}
+                onCompleteTask={completeTask}
+                onDeleteTask={deleteTask}
+                searchQuery={searchQuery}
+                storage={storage}
+              />
+            )}
 
-          {activeTab === "webhooks" && (
-            <WebhooksView
-              webhooks={webhooks}
-              projects={recentProjects}
-              isLoading={isWebhooksLoading}
-              error={webhooksError}
-              selectedProjectId={selectedProjectId}
-              onSelectProjectFilter={handleFilterWebhooksProject}
-              onOpenProjectTasks={handleSelectProject}
-              onCreateWebhook={createWebhook}
-              onUpdateWebhook={updateWebhook}
-              onDeleteWebhook={deleteWebhook}
-              searchQuery={searchQuery}
-            />
-          )}
-        </main>
+            {activeTab === "webhooks" && (
+              <WebhooksView
+                webhooks={webhooks}
+                projects={recentProjects}
+                isLoading={isWebhooksLoading}
+                error={webhooksError}
+                selectedProjectId={selectedProjectId}
+                onSelectProjectFilter={handleFilterWebhooksProject}
+                onOpenProjectTasks={handleSelectProject}
+                onCreateWebhook={createWebhook}
+                onUpdateWebhook={updateWebhook}
+                onDeleteWebhook={deleteWebhook}
+                searchQuery={searchQuery}
+              />
+            )}
+          </main>
+        </TaskMentionsProvider>
       </div>
     </div>
   );
