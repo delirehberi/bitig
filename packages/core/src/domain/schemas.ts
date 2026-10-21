@@ -117,6 +117,8 @@ export const TaskActivityEntrySchema = z.strictObject({
   timestamp: TimestampSchema,
   fromStatus: TaskStatusSchema.exactOptional(),
   toStatus: TaskStatusSchema.exactOptional(),
+  /** On `dependency_override`: the unfinished dependencies (ticket codes, or IDs without one) a person overrode. */
+  blockedBy: z.array(z.string().trim().min(1).max(TASK_ACTOR_MAX)).min(1).max(DEPENDS_ON_MAX_COUNT).exactOptional(),
 });
 
 export const TaskActivitySchema = z.array(TaskActivityEntrySchema).max(TASK_ACTIVITY_MAX_ITEMS);

@@ -184,6 +184,48 @@ describe("MCP Tools integration", () => {
     expect((await task("complete_task", { id: "BIT-1" })).status).toBe("done");
   });
 
+  it("refuses to start or complete a blocked task until its dependencies are done or archived", async () => {
+    const project = (await call("create_project", { name: "Bitig", key: "BIT" })).data as { id: string };
+    const other = (await call("create_project", { name: "Other", key: "OTH" })).data as { id: string };
+    // add_task does not take dependsOn yet, and its tasks need approval: set them up as a person would
+    const first = await storage.saveTask({ projectId: project.id, title: "Schema" });
+    const elsewhere = await storage.saveTask({ projectId: other.id, title: "Elsewhere" });
+    const blocked = await storage.saveTask({
+      projectId: project.id,
+      title: "Signup",
+      dependsOn: [first.id, elsewhere.id],
+    });
+
+    for (const status of ["in_progress", "done"]) {
+      const refused = await call("update_task", { id: "BIT-2", status });
+      expect(refused.isError).toBe(true);
+      expect(refused.data).toContain("blocked by unfinished dependencies: BIT-1, OTH-1");
+    }
+    const refusedComplete = await call("complete_task", { id: "BIT-2" });
+    expect(refusedComplete.isError).toBe(true);
+    expect(refusedComplete.data).toContain("BIT-1, OTH-1");
+    expect((await storage.getTask(blocked.id))?.status).toBe("todo");
+
+    // Agents see why, and can find the tasks that are free to start
+    expect(await task("get_task", { id: "BIT-2" })).toMatchObject({ blockedBy: ["BIT-1", "OTH-1"] });
+    const blockedList = (await call("list_tasks", { blocked: true })).data as TaskResult[];
+    expect(blockedList.map((t) => t.code)).toEqual(["BIT-2"]);
+    expect(blockedList[0]).toMatchObject({ blockedBy: ["BIT-1", "OTH-1"] });
+    const free = (await call("list_tasks", { projectId: "BIT", blocked: false })).data as TaskResult[];
+    expect(free.map((t) => t.code)).toEqual(["BIT-1"]);
+    expect(free[0]).not.toHaveProperty("blockedBy");
+
+    // Other edits still work, and done or archived dependencies stop blocking
+    expect((await task("update_task", { id: "BIT-2", title: "Signup flow" })).title).toBe("Signup flow");
+    expect(await task("complete_task", { id: "BIT-1" })).not.toHaveProperty("blockedBy");
+    expect(await task("get_task", { id: "BIT-2" })).toMatchObject({ blockedBy: ["OTH-1"] });
+    await task("update_task", { id: "OTH-1", status: "archived" });
+    const started = await task("update_task", { id: "BIT-2", status: "in_progress" });
+    expect(started.status).toBe("in_progress");
+    expect(started).not.toHaveProperty("blockedBy");
+    expect((await task("complete_task", { id: "BIT-2" })).status).toBe("done");
+  });
+
   it("names tasks by ticket code and accepts codes and keys in place of IDs", async () => {
     const project = (await call("create_project", { name: "Bitig" })).data as { id: string; key: string };
     expect(project.key).toBe("BIT");

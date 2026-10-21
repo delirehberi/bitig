@@ -78,7 +78,23 @@ export {
 } from "./domain/ticket-codes";
 export type { ParsedTaskCode, TaskWithCode, TicketCodeBackfillResult } from "./domain/ticket-codes";
 export { extractTaskMentions, taskMentions } from "./domain/mentions";
-export { assertTaskDependencies, hasNewDependencies, withoutDependencies } from "./domain/dependencies";
+export {
+  assertTaskDependencies,
+  blockingTasks,
+  hasNewDependencies,
+  isTaskBlocked,
+  isTaskFinished,
+  withoutDependencies,
+} from "./domain/dependencies";
+export {
+  AWAITING_APPROVAL_MESSAGE,
+  GATED_STATUSES,
+  blockedByFromError,
+  blockedTaskError,
+  checkStatusChange,
+  findBlockingTasks,
+} from "./domain/status-gate";
+export type { StatusChangeOptions } from "./domain/status-gate";
 export type { DependencyNode } from "./domain/dependencies";
 export type { MentionRange, TaskMention } from "./domain/mentions";
 export {

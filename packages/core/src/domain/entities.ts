@@ -3,7 +3,12 @@
  * entities these functions return; they never construct entities themselves,
  * so defaults, validation and timestamp rules live in exactly one place.
  */
-import { COMPLETED_TASK_STATUS, TASK_ACTIVITY_MAX_ITEMS, WEBHOOK_TOKEN_PREFIX } from "./constants";
+import {
+  COMPLETED_TASK_STATUS,
+  DEFAULT_OVERRIDE_ACTOR,
+  TASK_ACTIVITY_MAX_ITEMS,
+  WEBHOOK_TOKEN_PREFIX,
+} from "./constants";
 import { parseOrThrow } from "./errors";
 import {
   CommentSchema,
@@ -242,6 +247,33 @@ function buildUpdateActivityEntry(
   };
 }
 
+/**
+ * The task's activity after a change to `nextStatus`. A status change that overrides unfinished
+ * dependencies (`overrideBlockedBy`) records a `dependency_override` entry first, even without an
+ * actor, so the override always shows; the change itself is recorded only with an actor.
+ */
+function appendActivity(
+  task: Task,
+  nextStatus: Task["status"],
+  actor: string | undefined,
+  timestamp: string,
+  overrideBlockedBy: readonly string[] | undefined,
+): TaskActivityEntry[] | undefined {
+  const entries: TaskActivityEntry[] = [];
+  if (overrideBlockedBy !== undefined && overrideBlockedBy.length > 0 && nextStatus !== task.status) {
+    entries.push({
+      action: "dependency_override",
+      actor: actor ?? DEFAULT_OVERRIDE_ACTOR,
+      timestamp,
+      fromStatus: task.status,
+      toStatus: nextStatus,
+      blockedBy: [...overrideBlockedBy],
+    });
+  }
+  if (actor !== undefined) entries.push(buildUpdateActivityEntry(task.status, nextStatus, actor, timestamp));
+  return entries.length === 0 ? task.activity : [...(task.activity ?? []), ...entries];
+}
+
 /** `undefined` keeps the current value, `null` clears it, anything else replaces it. */
 function resolveClearable<T>(current: T | undefined, patch: T | null | undefined): T | undefined {
   if (patch === undefined) return current;
@@ -397,6 +429,7 @@ export function applyTaskPatch(
   patch: UpdateTaskInput,
   now: Date,
   actor?: string,
+  overrideBlockedBy?: readonly string[],
 ): Task {
   const parsed = parseOrThrow(UpdateTaskInputSchema, patch, "updateTask");
   const validActor =
@@ -405,10 +438,7 @@ export function applyTaskPatch(
   const nextStatus = parsed.status ?? task.status;
   const { startedAt, completedAt } = resolveTaskLifecycleTimestamps(task, nextStatus, updatedAt);
   const { startedBy, completedBy } = resolveTaskLifecycleActors(task, nextStatus, validActor);
-  const activity =
-    validActor === undefined
-      ? task.activity
-      : [...(task.activity ?? []), buildUpdateActivityEntry(task.status, nextStatus, validActor, updatedAt)];
+  const activity = appendActivity(task, nextStatus, validActor, updatedAt, overrideBlockedBy);
   const next = assembleTask(
     {
       id: task.id,
@@ -452,18 +482,17 @@ export function renumberTask(task: Task, number: number): Task {
  * Marks a task done. Idempotent: an already-done task is returned unchanged
  * (same `updatedAt`), so repeated MCP calls don't churn timestamps.
  */
-export function completeTaskEntity(task: Task, now: Date, actor?: string): Task {
+export function completeTaskEntity(
+  task: Task,
+  now: Date,
+  actor?: string,
+  overrideBlockedBy?: readonly string[],
+): Task {
   const validActor =
     actor === undefined ? undefined : parseOrThrow(TaskActorSchema, actor, "completeTask actor");
   if (task.status === COMPLETED_TASK_STATUS) return task;
   const updatedAt = nextUpdatedAt(task.updatedAt, now);
-  const activity =
-    validActor === undefined
-      ? task.activity
-      : [
-          ...(task.activity ?? []),
-          buildUpdateActivityEntry(task.status, COMPLETED_TASK_STATUS, validActor, updatedAt),
-        ];
+  const activity = appendActivity(task, COMPLETED_TASK_STATUS, validActor, updatedAt, overrideBlockedBy);
   const next = assembleTask(
     {
       id: task.id,

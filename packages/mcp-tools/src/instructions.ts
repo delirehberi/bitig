@@ -23,5 +23,9 @@ something. 'get_task' returns the task's comments, so read them before picking a
 Approval: every task created with 'add_task' starts with 'pendingApproval: true' and waits for a person to approve
 it in Bitig. Until then it cannot be moved to 'in_progress' or 'done', and agents cannot approve it. Tell the person
 which tasks you created; 'list_tasks' with 'pendingApproval: true' lists the ones still waiting.
+
+Dependencies: a task that depends on unfinished tasks is blocked. Its 'blockedBy' lists their codes, and it cannot be
+moved to 'in_progress' or 'done' until every one of them is done or archived. Agents cannot override this; work on the
+blocking tasks first, or ask a person. 'list_tasks' with 'blocked: false' lists the tasks that are free to start.
 `;
 

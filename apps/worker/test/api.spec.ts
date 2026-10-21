@@ -258,6 +258,65 @@ describe("REST API: Tasks", () => {
     expect(getRes.status).toBe(404);
   });
 
+  it("refuses to start or complete a blocked task unless a person overrides, and logs the override", async () => {
+    async function send(path: string, method: string, body?: unknown): Promise<Response> {
+      return apiRequest(path, {
+        method,
+        headers: { "Content-Type": "application/json", "X-Bitig-Actor": "emre" },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+    }
+    const project = await (await send("/api/projects", "POST", { name: "Bitig", key: "BIT" })).json<Project>();
+    const first = await (await send("/api/tasks", "POST", { projectId: project.id, title: "Schema" })).json<Task>();
+    const blocked = await (
+      await send("/api/tasks", "POST", { projectId: project.id, title: "Signup", dependsOn: [first.id] })
+    ).json<Task>();
+
+    const refusedStart = await send(`/api/tasks/${blocked.id}`, "PATCH", { status: "in_progress" });
+    expect(refusedStart.status).toBe(400);
+    const refusal = await refusedStart.json<{ message: string; details: { params?: { blockedBy?: string[] } }[] }>();
+    expect(refusal.message).toContain("blocked by unfinished dependencies: BIT-1");
+    expect(refusal.details[0]?.params?.blockedBy).toEqual(["BIT-1"]);
+    expect((await send(`/api/tasks/${blocked.id}/complete`, "POST")).status).toBe(400);
+    expect((await (await send(`/api/tasks/${blocked.id}`, "GET")).json<Task>()).status).toBe("todo");
+
+    const startedRes = await send(`/api/tasks/${blocked.id}?overrideBlocked=true`, "PATCH", { status: "in_progress" });
+    expect(startedRes.status).toBe(200);
+    const started = await startedRes.json<Task>();
+    expect(started.status).toBe("in_progress");
+    expect(started.activity?.slice(-2)).toEqual([
+      {
+        action: "dependency_override",
+        actor: "emre",
+        timestamp: started.updatedAt,
+        fromStatus: "todo",
+        toStatus: "in_progress",
+        blockedBy: ["BIT-1"],
+      },
+      {
+        action: "status_changed",
+        actor: "emre",
+        timestamp: started.updatedAt,
+        fromStatus: "todo",
+        toStatus: "in_progress",
+      },
+    ]);
+
+    const completedRes = await send(`/api/tasks/${blocked.id}/complete?overrideBlocked=true`, "POST");
+    expect(completedRes.status).toBe(200);
+    const completed = await completedRes.json<Task>();
+    expect(completed.status).toBe("done");
+    expect(completed.activity?.at(-2)).toMatchObject({ action: "dependency_override", toStatus: "done" });
+
+    // Once the dependency is done nothing is overridden, so nothing extra is logged
+    const free = await (
+      await send("/api/tasks", "POST", { projectId: project.id, title: "Docs", dependsOn: [first.id] })
+    ).json<Task>();
+    await send(`/api/tasks/${first.id}/complete`, "POST");
+    const done = await (await send(`/api/tasks/${free.id}/complete?overrideBlocked=true`, "POST")).json<Task>();
+    expect(done.activity?.map((entry) => entry.action)).toEqual(["created", "completed"]);
+  });
+
   it("cascades task deletion when project is deleted", async () => {
     const pRes = await apiRequest("/api/projects", {
       method: "POST",

@@ -54,7 +54,11 @@ export const TASK_ACTIVITY_ACTIONS = [
   "status_changed",
   "updated",
   "completed",
+  "dependency_override",
 ] as const;
+
+/** Actor recorded for a person's dependency override when the request names nobody. */
+export const DEFAULT_OVERRIDE_ACTOR = "person";
 
 /** Links from a project to outside resources (repository, issue tracker, designs...). */
 export const RESOURCE_TYPES = [

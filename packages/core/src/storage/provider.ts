@@ -22,6 +22,13 @@ export interface OperationOptions {
   readonly signal?: AbortSignalLike;
   /** Optional LLM / actor name that is performing the mutation (e.g. `"claude"`, `"antigravity"`). */
   readonly actor?: string | undefined;
+  /**
+   * Set when a person starts or completes a task despite unfinished dependencies (see
+   * `checkStatusChange`): their ticket codes, or IDs when they have none. The status change then
+   * records a `dependency_override` activity entry naming them. `ApiStorage` sends only the
+   * request to override; the server finds the blockers itself.
+   */
+  readonly overrideBlockedBy?: readonly string[] | undefined;
 }
 
 /**
@@ -60,7 +67,11 @@ export interface StorageProvider {
   /** Deletes the task and its comments, and removes it from every other task's `dependsOn`
    * without changing their `updatedAt`. */
   deleteTask(id: string, opts?: OperationOptions): Promise<void>;
-  /** Sets `status` to `done`. Idempotent: an already-done task is returned unchanged. */
+  /** Sets `status` to `done`. Idempotent: an already-done task is returned unchanged.
+   *
+   * Adapters do not refuse to start or complete a task with unfinished dependencies: callers run
+   * `checkStatusChange` first. The REST API behind `ApiStorage` runs it as well, so there a blocked
+   * change is refused unless `overrideBlockedBy` is set. */
   completeTask(id: string, opts?: OperationOptions): Promise<Task>;
 
   /** A task's comments, oldest first (`compareComments`). An unknown task yields an empty list.

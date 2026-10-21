@@ -1,11 +1,44 @@
 import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
-import { CreateCommentInputSchema, CreateTaskInputSchema, UpdateTaskInputSchema } from "@bitig/core";
+import {
+  CreateCommentInputSchema,
+  CreateTaskInputSchema,
+  UpdateTaskInputSchema,
+  checkStatusChange,
+  type OperationOptions,
+} from "@bitig/core";
+import type { Context } from "hono";
 import type { AppEnv } from "../index";
 
 const HTTP_CREATED = 201;
 const HTTP_NO_CONTENT = 204;
 const HTTP_BAD_REQUEST = 400;
+
+/** Query flag a person sets, after confirming, to start or complete a task despite unfinished dependencies. */
+const OVERRIDE_BLOCKED_PARAM = "overrideBlocked";
+
+/**
+ * Options for a status change by a person: the actor header, and the blockers they overrode.
+ * Without `?overrideBlocked=true` a blocked change is refused, so the dashboard can confirm first.
+ */
+async function statusChangeOptions(
+  c: Context<AppEnv>,
+  id: string,
+  status: Parameters<typeof checkStatusChange>[2] | undefined,
+  context: string,
+): Promise<OperationOptions> {
+  const actor = c.req.header("X-Bitig-Actor") ?? c.req.header("X-Bitig-Agent");
+  const overrideBlockedBy =
+    status === undefined
+      ? []
+      : await checkStatusChange(c.get("storage"), id, status, context, {
+          overrideBlocked: c.req.query(OVERRIDE_BLOCKED_PARAM) === "true",
+        });
+  return {
+    ...(actor ? { actor } : {}),
+    ...(overrideBlockedBy.length > 0 ? { overrideBlockedBy } : {}),
+  };
+}
 
 export const tasksRouter = new Hono<AppEnv>()
   .get("/", async (c) => {
@@ -52,8 +85,7 @@ export const tasksRouter = new Hono<AppEnv>()
       const storage = c.get("storage");
       const id = c.req.param("id");
       const patch = c.req.valid("json");
-      const actor = c.req.header("X-Bitig-Actor") ?? c.req.header("X-Bitig-Agent");
-      const updated = await storage.updateTask(id, patch, actor ? { actor } : undefined);
+      const updated = await storage.updateTask(id, patch, await statusChangeOptions(c, id, patch.status, "updateTask"));
       return c.json(updated);
     },
   )
@@ -66,8 +98,7 @@ export const tasksRouter = new Hono<AppEnv>()
   .post("/:id/complete", async (c) => {
     const storage = c.get("storage");
     const id = c.req.param("id");
-    const actor = c.req.header("X-Bitig-Actor") ?? c.req.header("X-Bitig-Agent");
-    const completed = await storage.completeTask(id, actor ? { actor } : undefined);
+    const completed = await storage.completeTask(id, await statusChangeOptions(c, id, "done", "completeTask"));
     return c.json(completed);
   })
   .get("/:id/comments", async (c) => {

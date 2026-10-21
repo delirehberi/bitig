@@ -65,6 +65,14 @@ const HTTP_BAD_REQUEST = 400;
 const HTTP_UNAUTHORIZED = 401;
 const HTTP_NOT_FOUND = 404;
 
+/**
+ * Asks the server to let a person's status change through despite unfinished dependencies. The
+ * server finds and logs the blockers itself, so only the request travels.
+ */
+function overrideQuery(opts: OperationOptions | undefined): string {
+  return opts?.overrideBlockedBy !== undefined && opts.overrideBlockedBy.length > 0 ? "?overrideBlocked=true" : "";
+}
+
 function encodeBasicAuth(username: string, password = ""): string {
   return `Basic ${btoa(`${username}:${password}`)}`;
 }
@@ -340,7 +348,7 @@ export class ApiStorage implements StorageProvider {
     const validated = parseOrThrow(UpdateTaskInputSchema, patch, "updateTask");
 
     const res = await this.request(
-      `/api/tasks/${encodeURIComponent(validId)}`,
+      `/api/tasks/${encodeURIComponent(validId)}${overrideQuery(opts)}`,
       {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -392,13 +400,17 @@ export class ApiStorage implements StorageProvider {
     const validId = parseOrThrow(IdSchema, id, "completeTask id");
 
     const res = await this.request(
-      `/api/tasks/${encodeURIComponent(validId)}/complete`,
+      `/api/tasks/${encodeURIComponent(validId)}/complete${overrideQuery(opts)}`,
       { method: "POST" },
       opts,
     );
 
     if (res.status === HTTP_NOT_FOUND) {
       throw new NotFoundError("task", id);
+    }
+    if (res.status === HTTP_BAD_REQUEST) {
+      const err = await this.parseJsonResponse<{ details?: readonly [] }>(res);
+      throw new ValidationError("completeTask", err.details ?? []);
     }
     if (res.status === HTTP_UNAUTHORIZED) {
       throw new AuthError();

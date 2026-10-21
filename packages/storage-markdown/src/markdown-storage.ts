@@ -248,7 +248,7 @@ export class MarkdownStorage implements StorageProvider {
       if (text === null) throw new NotFoundError("task", validId);
 
       const existing = decodeTask(found.projectId, validId, text, found.filePath);
-      let next = applyTaskPatch(existing, patch, this.#deps.clock(), opts?.actor);
+      let next = applyTaskPatch(existing, patch, this.#deps.clock(), opts?.actor, opts?.overrideBlockedBy);
       if (hasNewDependencies(existing, next)) {
         assertTaskDependencies(next, await this.#readAllTasks(opts?.signal), "updateTask");
       }
@@ -304,7 +304,7 @@ export class MarkdownStorage implements StorageProvider {
       if (text === null) throw new NotFoundError("task", validId);
 
       const existing = decodeTask(found.projectId, validId, text, found.filePath);
-      const next = completeTaskEntity(existing, this.#deps.clock(), opts?.actor);
+      const next = completeTaskEntity(existing, this.#deps.clock(), opts?.actor, opts?.overrideBlockedBy);
       await this.#fs.writeTextAtomic(found.filePath, encodeTask(next), { signal: opts?.signal });
       const count = await this.#countTaskComments(found.projectId, validId, opts?.signal);
       return withTaskCommentCount(next, count);

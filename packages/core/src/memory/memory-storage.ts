@@ -164,7 +164,7 @@ export class InMemoryStorage implements StorageProvider {
   updateTask(id: string, patch: UpdateTaskInput, opts?: OperationOptions): Promise<Task> {
     return run(opts?.signal, () => {
       const existing = this.#requireTask(parseId(id, "updateTask"));
-      let next = applyTaskPatch(existing, patch, this.#deps.clock(), opts?.actor);
+      let next = applyTaskPatch(existing, patch, this.#deps.clock(), opts?.actor, opts?.overrideBlockedBy);
       if (next.projectId !== existing.projectId) {
         this.#requireProject(next.projectId);
         next = renumberTask(next, nextTaskNumber(this.#tasksOf(next.projectId)));
@@ -186,7 +186,7 @@ export class InMemoryStorage implements StorageProvider {
   completeTask(id: string, opts?: OperationOptions): Promise<Task> {
     return run(opts?.signal, () => {
       const existing = this.#requireTask(parseId(id, "completeTask"));
-      const next = completeTaskEntity(existing, this.#deps.clock(), opts?.actor);
+      const next = completeTaskEntity(existing, this.#deps.clock(), opts?.actor, opts?.overrideBlockedBy);
       this.#tasks.set(next.id, next);
       return this.#withCommentCount(next);
     });

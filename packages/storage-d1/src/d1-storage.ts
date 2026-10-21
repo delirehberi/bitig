@@ -443,7 +443,7 @@ export class D1Storage implements StorageProvider {
     if (!existingRow) throw new NotFoundError("task", validId);
 
     const existing = recordToTask(existingRow);
-    let next = applyTaskPatch(existing, patch, this.#deps.clock(), opts?.actor);
+    let next = applyTaskPatch(existing, patch, this.#deps.clock(), opts?.actor, opts?.overrideBlockedBy);
 
     if (next.projectId !== existing.projectId) {
       const targetProject = await this.#db.select().from(projects).where(eq(projects.id, next.projectId)).get();
@@ -511,7 +511,7 @@ export class D1Storage implements StorageProvider {
     if (!existingRow) throw new NotFoundError("task", validId);
 
     const existing = recordToTask(existingRow);
-    const next = completeTaskEntity(existing, this.#deps.clock(), opts?.actor);
+    const next = completeTaskEntity(existing, this.#deps.clock(), opts?.actor, opts?.overrideBlockedBy);
 
     if (next.status !== existing.status || next.updatedAt !== existing.updatedAt) {
       await this.#db

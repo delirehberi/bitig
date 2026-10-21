@@ -22,18 +22,20 @@ import {
   TaskStatusSchema,
   TaskTitleSchema,
   TASK_ACTOR_MAX,
-  ValidationError,
   WebhookMappingSchema,
   WebhookNameSchema,
   WebhookProviderSchema,
   backfillTicketCodes,
+  blockingTasks,
+  checkStatusChange,
+  findBlockingTasks,
   resolveProjectRef,
   resolveTaskRef,
   withTaskCodes,
   type OperationOptions,
   type StorageProvider,
   type Task,
-  type TaskStatus,
+  type TaskWithCode,
 } from "@bitig/core";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
@@ -48,11 +50,6 @@ const CHECKLIST_DESCRIPTION =
 
 const NEEDS_HUMAN_DESCRIPTION =
   "Set when the task is blocked on a person: say what you need from them (a decision, an approval, access, an answer). The task then shows as needing a human until it is cleared.";
-
-/** Statuses an agent may not move a task to until a person has approved it. */
-const APPROVAL_GATED_STATUSES: ReadonlySet<TaskStatus> = new Set<TaskStatus>(["in_progress", "done"]);
-const AWAITING_APPROVAL_MESSAGE =
-  "Task is awaiting human approval. A person must approve it in Bitig before it can be started or completed.";
 
 const TASK_REF = z.string().min(1).describe("Task ID or ticket code, e.g. BIT-12");
 const PROJECT_REF = z.string().min(1).describe("Project ID or project key, e.g. BIT");
@@ -141,21 +138,24 @@ export function registerBitigTools(
   storage: StorageProvider,
   options?: RegisterBitigToolsOptions,
 ): void {
-  /** The task with its ticket code (`code`), which callers can pass wherever a task ID is accepted. */
-  async function withCode(task: Task, opts: OperationOptions) {
+  /**
+   * The task with its ticket code (`code`), which callers can pass wherever a task ID is accepted,
+   * and the codes of the unfinished tasks it waits on (`blockedBy`) when there are any.
+   */
+  async function withCode(task: Task, opts: OperationOptions): Promise<TaskWithCode & { blockedBy?: string[] }> {
     const project = await storage.getProject(task.projectId, opts);
-    return withTaskCodes([task], project === null ? [] : [project])[0] ?? task;
+    const coded = withTaskCodes([task], project === null ? [] : [project])[0] ?? task;
+    const blockedBy = (await findBlockingTasks(storage, task, opts)).map((t) => t.code ?? t.id);
+    return blockedBy.length > 0 ? { ...coded, blockedBy } : coded;
   }
 
   /**
-   * Refuses to start or complete a task a person has not approved yet. Agents
-   * have no way to approve over MCP; an unknown ID falls through so storage
-   * reports it as not found.
+   * Refuses to start or complete a task a person has not approved yet, or one whose dependencies
+   * are unfinished. Agents can neither approve nor override over MCP; an unknown ID falls through
+   * so storage reports it as not found.
    */
-  async function assertApproved(id: string, context: string, opts: OperationOptions): Promise<void> {
-    const task = await storage.getTask(id, opts);
-    if (task?.pendingApproval !== true) return;
-    throw new ValidationError(context, [{ code: "custom", path: ["status"], message: AWAITING_APPROVAL_MESSAGE }]);
+  async function assertAgentMayMove(id: string, status: Task["status"], context: string, opts: OperationOptions) {
+    await checkStatusChange(storage, id, status, context, { signal: opts.signal, requireApproval: true });
   }
 
   // 1. list_projects
@@ -274,7 +274,7 @@ export function registerBitigTools(
     "list_tasks",
     {
       description:
-        "List tasks with their ticket codes, optionally filtered by project ID or key, to the tasks that need a human, or to the tasks awaiting approval",
+        "List tasks with their ticket codes, optionally filtered by project ID or key, to the tasks that need a human, to the tasks awaiting approval, or to blocked tasks. A blocked task lists the codes of its unfinished dependencies in blockedBy and cannot be started or completed until they are done or archived.",
       annotations: { readOnlyHint: true },
       inputSchema: {
         projectId: PROJECT_REF.optional(),
@@ -286,6 +286,10 @@ export function registerBitigTools(
           .boolean()
           .optional()
           .describe("true lists only tasks awaiting a person's approval, false only approved tasks"),
+        blocked: z
+          .boolean()
+          .optional()
+          .describe("true lists only tasks waiting on unfinished dependencies, false only tasks that are not"),
       },
     },
     async (args, extra) => {
@@ -293,13 +297,22 @@ export function registerBitigTools(
         const opts = { signal: extra.signal };
         const projectId =
           args.projectId === undefined ? undefined : await resolveProjectRef(storage, args.projectId, opts);
-        const tasks = await storage.getTasks(projectId === undefined ? undefined : { projectId }, opts);
-        const matching = tasks.filter(
+        // Every task, since a dependency can live in another project.
+        const all = withTaskCodes(await storage.getTasks(undefined, opts), await storage.getProjects(opts));
+        const byId = new Map(all.map((task) => [task.id, task]));
+        const listed = all
+          .filter((task) => projectId === undefined || task.projectId === projectId)
+          .map((task) => {
+            const blockedBy = blockingTasks(task, byId).map((t) => t.code ?? t.id);
+            return blockedBy.length > 0 ? { ...task, blockedBy } : task;
+          });
+        const matching = listed.filter(
           (task) =>
             (args.needsHuman === undefined || (task.needsHuman !== undefined) === args.needsHuman) &&
-            (args.pendingApproval === undefined || (task.pendingApproval === true) === args.pendingApproval),
+            (args.pendingApproval === undefined || (task.pendingApproval === true) === args.pendingApproval) &&
+            (args.blocked === undefined || ("blockedBy" in task) === args.blocked),
         );
-        return formatSuccessResult(withTaskCodes(matching, await storage.getProjects(opts)));
+        return formatSuccessResult(matching);
       } catch (err) {
         return formatErrorResult(err);
       }
@@ -370,7 +383,7 @@ export function registerBitigTools(
     "update_task",
     {
       description:
-        "Update task fields (set null to clear optional fields). Moving a task to another project gives it a new code there.",
+        "Update task fields (set null to clear optional fields). Moving a task to another project gives it a new code there. Moving it to in_progress or done is refused while it awaits approval or any task it depends on is unfinished.",
       inputSchema: {
         id: TASK_REF,
         projectId: PROJECT_REF.optional(),
@@ -398,9 +411,7 @@ export function registerBitigTools(
         const opts: OperationOptions = { signal: extra.signal, actor };
         const { id: ref, projectId: projectRef, ...rest } = args;
         const id = await resolveTaskRef(storage, ref, opts);
-        if (rest.status !== undefined && APPROVAL_GATED_STATUSES.has(rest.status)) {
-          await assertApproved(id, "update_task", opts);
-        }
+        if (rest.status !== undefined) await assertAgentMayMove(id, rest.status, "update_task", opts);
         const patch =
           projectRef === undefined ? rest : { ...rest, projectId: await resolveProjectRef(storage, projectRef, opts) };
         const task = await storage.updateTask(id, patch, opts);
@@ -415,7 +426,8 @@ export function registerBitigTools(
   server.registerTool(
     "complete_task",
     {
-      description: "Mark a task as completed/done (idempotent)",
+      description:
+        "Mark a task as completed/done (idempotent). Refused while the task awaits approval or any task it depends on is unfinished.",
       annotations: { idempotentHint: true },
       inputSchema: {
         id: TASK_REF,
@@ -426,7 +438,7 @@ export function registerBitigTools(
         const actor = resolveMcpActor(server, extra, options?.fallbackActor);
         const opts: OperationOptions = { signal: extra.signal, actor };
         const id = await resolveTaskRef(storage, args.id, opts);
-        await assertApproved(id, "complete_task", opts);
+        await assertAgentMayMove(id, "done", "complete_task", opts);
         const task = await storage.completeTask(id, opts);
         return formatSuccessResult(await withCode(task, opts));
       } catch (err) {
