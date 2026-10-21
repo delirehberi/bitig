@@ -26,6 +26,7 @@ import {
   WebhookNameSchema,
   WebhookProviderSchema,
   backfillTicketCodes,
+  buildMentionIndex,
   blockingTasks,
   checkStatusChange,
   findBlockingTasks,
@@ -323,7 +324,8 @@ export function registerBitigTools(
   server.registerTool(
     "get_task",
     {
-      description: "Get a task by its ID or ticket code (e.g. BIT-12), with its comments oldest first",
+      description:
+        "Get a task by its ID or ticket code (e.g. BIT-12), with its comments oldest first, the tasks it mentions (#BIT-12 in its description, subtasks or comments) as mentions, and the tasks that mention it as mentionedIn",
       annotations: { readOnlyHint: true },
       inputSchema: {
         id: TASK_REF,
@@ -335,8 +337,13 @@ export function registerBitigTools(
         const id = await resolveTaskRef(storage, args.id, opts);
         const task = await storage.getTask(id, opts);
         if (task === null) throw new NotFoundError("task", args.id);
-        const comments = await storage.getComments(id, opts);
-        return formatSuccessResult({ ...(await withCode(task, opts)), comments });
+        const [comments, tasks, projects] = await Promise.all([
+          storage.getComments(id, opts),
+          storage.getTasks(undefined, opts),
+          storage.getProjects(opts),
+        ]);
+        const links = buildMentionIndex(tasks, projects).linksFor(task, comments);
+        return formatSuccessResult({ ...(await withCode(task, opts)), comments, ...links });
       } catch (err) {
         return formatErrorResult(err);
       }

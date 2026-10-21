@@ -830,6 +830,32 @@ describe("Dashboard routing", () => {
     expect(new URLSearchParams(window.location.search).get("task")).toBe(TASK_A.id);
   });
 
+  it("shows linked tasks in both directions and opens them", async () => {
+    const coded = { ...PROJECT_A, key: "BIT" };
+    const target = { ...TASK_A, number: 64, title: "Signup", description: "After #BIT-63" };
+    const dependency = { ...TASK_A, id: "01940000-0000-7000-8000-0000000000a5", number: 63, title: "Schema", status: "done" };
+    const mentioner = {
+      ...TASK_A,
+      id: "01940000-0000-7000-8000-0000000000a6",
+      number: 70,
+      title: "Launch",
+      checklist: [{ text: "Wait for #BIT-64", done: false }],
+    };
+    window.history.replaceState(null, "", "/tasks?task=BIT-64");
+    stubApi({ projects: [coded], tasks: [target, dependency, mentioner] });
+    const user = userEvent.setup();
+    render(<App />);
+
+    const dialog = await screen.findByRole("dialog");
+    const mentions = within(dialog).getByRole("list", { name: "Mentions" });
+    expect(within(mentions).getByRole("link")).toHaveTextContent("BIT-63Schema");
+    const mentionedIn = within(dialog).getByRole("list", { name: "Mentioned in" });
+    await user.click(within(mentionedIn).getByRole("link", { name: /BIT-70\s*Launch/ }));
+
+    expect(new URLSearchParams(window.location.search).get("task")).toBe("BIT-70");
+    expect(await within(screen.getByRole("dialog")).findByRole("list", { name: "Mentions" })).toHaveTextContent("Signup");
+  });
+
   it("says when a linked task does not exist", async () => {
     window.history.replaceState(null, "", "/tasks?task=BIT-999");
     stubApi({ projects: [PROJECT_A], tasks: [TASK_A] });

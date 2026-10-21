@@ -254,6 +254,27 @@ describe("MCP Tools integration", () => {
     expect(deleted.deletedTaskId).toBe(second.id);
   });
 
+  it("reports the tasks a task mentions and the tasks that mention it", async () => {
+    await call("create_project", { name: "Bitig" });
+    const schema = await task("add_task", { projectId: "BIT", title: "Schema" });
+    await task("add_task", { projectId: "BIT", title: "Signup", description: "After #BIT-1" });
+    await task("add_task", {
+      projectId: "BIT",
+      title: "Launch",
+      checklist: [{ text: "Wait for #BIT-2", done: false }],
+    });
+    await call("add_comment", { taskId: "BIT-1", body: "See #BIT-3 for rollout" });
+
+    expect(await task("get_task", { id: "BIT-2" })).toMatchObject({
+      mentions: [{ id: schema.id, code: "BIT-1", title: "Schema", status: "todo" }],
+      mentionedIn: [{ code: "BIT-3", title: "Launch", status: "todo" }],
+    });
+    expect(await task("get_task", { id: "BIT-1" })).toMatchObject({
+      mentions: [{ code: "BIT-3" }],
+      mentionedIn: [{ code: "BIT-2" }],
+    });
+  });
+
   it("backfills codes for projects and tasks created before them", async () => {
     await storage.importProject({
       version: 1,
