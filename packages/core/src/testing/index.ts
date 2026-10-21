@@ -15,7 +15,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { NotFoundError, ValidationError } from "../domain/errors";
 import { CommentSchema, ProjectSchema, TaskSchema, WebhookSchema } from "../domain/schemas";
 import type { Project, Task } from "../domain/types";
-import { PROJECT_KINDS } from "../domain/constants";
+import { DEFAULT_OVERRIDE_ACTOR, PROJECT_KINDS } from "../domain/constants";
 import type { AbortSignalLike } from "../storage/abort";
 import type { StorageProvider } from "../storage/provider";
 import { createTestRuntime, type TestRuntime } from "./fixtures";
@@ -707,6 +707,8 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
         expect(renamed.dependsOn).toEqual([a.id]);
         const moved = await storage.updateTask(c.id, { projectId: other.id });
         expect(moved.dependsOn).toEqual([a.id]);
+        // a finished first: the REST API behind ApiStorage refuses to complete a blocked task
+        await storage.completeTask(a.id);
         const completed = await storage.completeTask(c.id);
         expect(completed.dependsOn).toEqual([a.id]);
 
@@ -780,6 +782,56 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
         expect(after).not.toHaveProperty("dependsOn");
         // toEqual ignores the undefined key, so this checks every other field, updatedAt included
         expect(after).toEqual({ ...d, dependsOn: undefined });
+      });
+
+      it("records a person's override of unfinished dependencies in the activity", async () => {
+        const project = await createProject();
+        const a = await storage.saveTask({ projectId: project.id, title: "a" });
+        const b = await storage.saveTask({ projectId: project.id, title: "b", dependsOn: [a.id] });
+        const blocker = `${project.key ?? ""}-${String(a.number)}`;
+
+        // Not a status change: nothing is overridden
+        const renamed = await storage.updateTask(b.id, { title: "renamed" }, { overrideBlockedBy: [blocker] });
+        expect(renamed).not.toHaveProperty("activity");
+
+        const started = await storage.updateTask(
+          b.id,
+          { status: "in_progress" },
+          { actor: "emre", overrideBlockedBy: [blocker] },
+        );
+        expect(started.activity).toEqual([
+          {
+            action: "dependency_override",
+            actor: "emre",
+            timestamp: started.updatedAt,
+            fromStatus: "todo",
+            toStatus: "in_progress",
+            blockedBy: [blocker],
+          },
+          {
+            action: "status_changed",
+            actor: "emre",
+            timestamp: started.updatedAt,
+            fromStatus: "todo",
+            toStatus: "in_progress",
+          },
+        ]);
+        expect(await storage.getTask(b.id)).toEqual(started);
+
+        // Without an actor the override is still recorded, under a generic one
+        const completed = await storage.completeTask(b.id, { overrideBlockedBy: [blocker] });
+        expect(completed.activity).toEqual([
+          ...(started.activity ?? []),
+          {
+            action: "dependency_override",
+            actor: DEFAULT_OVERRIDE_ACTOR,
+            timestamp: completed.updatedAt,
+            fromStatus: "in_progress",
+            toStatus: "done",
+            blockedBy: [blocker],
+          },
+        ]);
+        expect(await storage.getTask(b.id)).toEqual(completed);
       });
 
       it("removes a deleted project's tasks from dependencies in other projects", async () => {

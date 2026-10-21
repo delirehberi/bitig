@@ -111,6 +111,14 @@ describe("TaskDetailModal", () => {
           toStatus: "in_progress",
         },
         {
+          action: "dependency_override",
+          actor: "codex",
+          timestamp: "2026-01-01T12:00:00.000Z",
+          fromStatus: "in_progress",
+          toStatus: "done",
+          blockedBy: ["BIT-3", "BIT-4"],
+        },
+        {
           action: "completed",
           actor: "codex",
           timestamp: "2026-01-01T12:00:00.000Z",
@@ -133,13 +141,14 @@ describe("TaskDetailModal", () => {
       </FeatureFlagsProvider>,
     );
 
-    expect(screen.getByRole("region", { name: "Activity (3)" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Activity (4)" })).toBeInTheDocument();
     expect(screen.getByText("created task")).toBeInTheDocument();
     expect(screen.getByText("moved from To Do to In Progress")).toBeInTheDocument();
+    expect(screen.getByText("completed despite unfinished BIT-3, BIT-4")).toBeInTheDocument();
     expect(screen.getByText("completed task")).toBeInTheDocument();
     expect(screen.getAllByText("claude")).toHaveLength(2);
     expect(screen.getAllByText("antigravity")).toHaveLength(2);
-    expect(screen.getAllByText("codex")).toHaveLength(3);
+    expect(screen.getAllByText("codex")).toHaveLength(4);
     unmount();
 
     const { unmount: unmountCard } = render(

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  checkStatusChange,
   withTaskCommentCount,
   type CreateTaskInput,
   type OperationOptions,
@@ -8,6 +9,29 @@ import {
   type UpdateTaskInput,
 } from "@bitig/core";
 import { useRealtimeEvent } from "./useRealtime";
+
+/** A person's confirmed go-ahead to start or complete a task despite unfinished dependencies. */
+export interface StatusChangeChoice {
+  readonly overrideBlocked?: boolean;
+}
+
+/**
+ * Checked here as well as on the server, so Nostr mode (which has no server) refuses a blocked
+ * change too. The refusal carries the blockers (`blockedByFromError`) for the confirmation.
+ */
+async function statusChangeOptions(
+  storage: StorageProvider,
+  id: string,
+  status: Task["status"] | undefined,
+  context: string,
+  choice: StatusChangeChoice | undefined,
+): Promise<OperationOptions | undefined> {
+  if (status === undefined) return undefined;
+  const overrideBlockedBy = await checkStatusChange(storage, id, status, context, {
+    overrideBlocked: choice?.overrideBlocked === true,
+  });
+  return overrideBlockedBy.length > 0 ? { overrideBlockedBy } : undefined;
+}
 
 function upsertTask(tasks: readonly Task[], incoming: Task, projectId?: string): Task[] {
   if (projectId !== undefined && incoming.projectId !== projectId) {
@@ -143,8 +167,9 @@ export function useTasks(storage: StorageProvider, projectId?: string) {
   );
 
   const updateTask = useCallback(
-    async (id: string, patch: UpdateTaskInput): Promise<Task> => {
-      const updated = await storage.updateTask(id, patch);
+    async (id: string, patch: UpdateTaskInput, choice?: StatusChangeChoice): Promise<Task> => {
+      const opts = await statusChangeOptions(storage, id, patch.status, "updateTask", choice);
+      const updated = await storage.updateTask(id, patch, opts);
       setTasks((prev) => upsertTask(prev, updated, projectId));
       return updated;
     },
@@ -152,8 +177,9 @@ export function useTasks(storage: StorageProvider, projectId?: string) {
   );
 
   const completeTask = useCallback(
-    async (id: string): Promise<Task> => {
-      const completed = await storage.completeTask(id);
+    async (id: string, choice?: StatusChangeChoice): Promise<Task> => {
+      const opts = await statusChangeOptions(storage, id, "done", "completeTask", choice);
+      const completed = await storage.completeTask(id, opts);
       setTasks((prev) => upsertTask(prev, completed, projectId));
       return completed;
     },

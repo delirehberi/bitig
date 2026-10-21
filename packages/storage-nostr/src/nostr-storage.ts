@@ -364,7 +364,7 @@ export class NostrStorage implements StorageProvider {
       throw new NotFoundError("project", patch.projectId);
     }
 
-    let updated = applyTaskPatch(existing, patch, this.deps.clock(), opts?.actor);
+    let updated = applyTaskPatch(existing, patch, this.deps.clock(), opts?.actor, opts?.overrideBlockedBy);
     if (updated.projectId !== existing.projectId) {
       updated = renumberTask(updated, nextTaskNumber(this.tasksOf(updated.projectId)));
     }
@@ -443,7 +443,7 @@ export class NostrStorage implements StorageProvider {
       throw new NotFoundError("task", id);
     }
 
-    const completed = completeTaskEntity(existing, this.deps.clock(), opts?.actor);
+    const completed = completeTaskEntity(existing, this.deps.clock(), opts?.actor, opts?.overrideBlockedBy);
     // Idempotent: if already done, return unchanged without publishing
     if (completed === existing) {
       return this.withCommentCount(existing);

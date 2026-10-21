@@ -10,12 +10,14 @@ import {
   removeChecklistItem,
   renameChecklistItem,
   backfillTicketCodes,
+  checkStatusChange,
   resolveProjectRef,
   resolveTaskRef,
   setChecklistItemDone,
   withTaskCodes,
   type ChecklistItem,
   type Comment,
+  type OperationOptions,
   type StorageProvider,
   type Task,
   type TaskPriority,
@@ -25,6 +27,27 @@ import type { Command } from "commander";
 import { readFromEditor, readStdin } from "../io/input";
 import { formatOutput } from "../io/output";
 import { findProjectLink } from "../project-link";
+
+const OVERRIDE_BLOCKED_OPTION = "--override-blocked";
+const OVERRIDE_BLOCKED_DESCRIPTION = "Start or complete the task although tasks it depends on are unfinished (logged)";
+
+/**
+ * Refuses to start or complete a task with unfinished dependencies unless the person passed
+ * --override-blocked, which then records the override in the task's activity.
+ */
+async function statusChangeOptions(
+  storage: StorageProvider,
+  id: string,
+  status: TaskStatus | undefined,
+  context: string,
+  overrideBlocked: boolean | undefined,
+): Promise<OperationOptions | undefined> {
+  if (status === undefined) return undefined;
+  const overrideBlockedBy = await checkStatusChange(storage, id, status, context, {
+    overrideBlocked: overrideBlocked === true,
+  });
+  return overrideBlockedBy.length > 0 ? { overrideBlockedBy } : undefined;
+}
 
 /** A task's ticket code, or its ID while it has none. */
 function label(task: Task & { readonly code?: string }): string {
@@ -251,6 +274,7 @@ export function registerTasksCommands(
     .option("--order <num>", "Sort order", parseFloat)
     .option("--needs-human <reason>", "Flag the task as waiting on a person, saying what it needs")
     .option("--clear-needs-human", "Clear the flag once the person has answered")
+    .option(OVERRIDE_BLOCKED_OPTION, OVERRIDE_BLOCKED_DESCRIPTION)
     .option("--json", "Output JSON")
     .action(
       async (
@@ -267,6 +291,7 @@ export function registerTasksCommands(
           order?: number;
           needsHuman?: string;
           clearNeedsHuman?: boolean;
+          overrideBlocked?: boolean;
           json?: boolean;
         },
       ) => {
@@ -288,17 +313,23 @@ export function registerTasksCommands(
 
         const projectId =
           options.project === undefined ? undefined : await resolveProjectRef(storage, options.project);
-        const saved = await storage.updateTask(id, {
-          title: options.title,
-          projectId,
-          description,
-          status: options.status as TaskStatus | undefined,
-          priority: options.priority as TaskPriority | undefined,
-          dueDate: options.due,
-          labels,
-          order: options.order,
-          needsHuman: options.clearNeedsHuman === true ? null : options.needsHuman,
-        });
+        const status = options.status as TaskStatus | undefined;
+        const opts = await statusChangeOptions(storage, id, status, "updateTask", options.overrideBlocked);
+        const saved = await storage.updateTask(
+          id,
+          {
+            title: options.title,
+            projectId,
+            description,
+            status,
+            priority: options.priority as TaskPriority | undefined,
+            dueDate: options.due,
+            labels,
+            order: options.order,
+            needsHuman: options.clearNeedsHuman === true ? null : options.needsHuman,
+          },
+          opts,
+        );
         const updated = await withCode(storage, saved);
 
         const output = formatOutput(
@@ -339,10 +370,13 @@ export function registerTasksCommands(
   tasks
     .command("done <id>")
     .description("Mark task as completed (done), by ID or ticket code")
+    .option(OVERRIDE_BLOCKED_OPTION, OVERRIDE_BLOCKED_DESCRIPTION)
     .option("--json", "Output JSON")
-    .action(async (ref: string, options: { json?: boolean }) => {
+    .action(async (ref: string, options: { overrideBlocked?: boolean; json?: boolean }) => {
       const storage = await getStorage();
-      const completed = await withCode(storage, await storage.completeTask(await resolveTaskRef(storage, ref)));
+      const id = await resolveTaskRef(storage, ref);
+      const opts = await statusChangeOptions(storage, id, "done", "completeTask", options.overrideBlocked);
+      const completed = await withCode(storage, await storage.completeTask(id, opts));
       const output = formatOutput(
         completed,
         () => `${completed.id}\t${completed.status}`,

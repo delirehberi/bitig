@@ -158,6 +158,10 @@ bitig tasks update BIT-12 --clear-needs-human
 bitig tasks list --awaiting-approval
 bitig tasks approve BIT-12
 
+# Dependencies: a task waiting on unfinished tasks cannot be started or completed until they are done or archived.
+# You can override it; the override is recorded in the task's activity. Agents (MCP) cannot.
+bitig tasks done BIT-14 --override-blocked
+
 # Comments: context agents keep on a task, and answers people give (oldest first, Markdown)
 bitig tasks comment add BIT-12 "Use the staging key"     # no text opens $EDITOR, '-' reads stdin
 bitig tasks comment add BIT-12 - --agent --author claude < notes.md
@@ -246,11 +250,11 @@ Or run against an explicit data directory:
 2. `create_project` - Create a project (optionally with a `key` for ticket codes).
 3. `update_project` - Update a project's name, description, kind, links or key.
 4. `delete_project` - Delete a project and its tasks.
-5. `list_tasks` - List tasks with their codes, optionally for one project (ID or key) only those that need a human (`needsHuman: true`), or only those awaiting approval (`pendingApproval: true`).
+5. `list_tasks` - List tasks with their codes, optionally for one project (ID or key) only those that need a human (`needsHuman: true`), only those awaiting approval (`pendingApproval: true`), or only blocked ones (`blocked: true`). A task waiting on unfinished dependencies carries their codes in `blockedBy`.
 6. `get_task` - Retrieve a task by ID or code (`BIT-12`), with its comments.
 7. `add_task` - Add a task to a project (ID or key). The task awaits a person's approval (`pendingApproval: true`): agents cannot move it to `in_progress` or `done`, or approve it, until a person approves it in the web dashboard, with `bitig tasks approve`, or via REST `PATCH /api/tasks/:id` with `{ "pendingApproval": null }`.
-8. `update_task` - Update a task's fields, or move it to another project. Agents set `needsHuman` to what they need from a person (a decision, an approval, access); `null` clears it.
-9. `complete_task` - Mark a task done (refused while the task awaits approval).
+8. `update_task` - Update a task's fields, or move it to another project. Agents set `needsHuman` to what they need from a person (a decision, an approval, access); `null` clears it. Moving a task to `in_progress` or `done` is refused while it awaits approval or a task it depends on is unfinished.
+9. `complete_task` - Mark a task done (refused while the task awaits approval or a task it depends on is unfinished). People can override the dependency block from the web dashboard, the CLI (`--override-blocked`) or REST (`?overrideBlocked=true` on `PATCH /api/tasks/:id` and `POST /api/tasks/:id/complete`); agents cannot.
 10. `delete_task` - Delete a task.
 11. `backfill_ticket_codes` - Key older projects and number their tasks.
 12. `list_comments` - List a task's comments, oldest first.

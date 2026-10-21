@@ -86,3 +86,29 @@ export function withoutDependencies(task: Task, removedIds: ReadonlySet<string>)
   const kept = dependsOn.filter((id) => !removedIds.has(id));
   return kept.length > 0 ? { ...rest, dependsOn: kept } : rest;
 }
+
+/** Whether a dependency no longer holds anything up: `done` and `archived` both count. */
+export function isTaskFinished(task: Pick<Task, "status">): boolean {
+  return task.status === "done" || task.status === "archived";
+}
+
+/**
+ * The tasks `task` waits on that are not finished yet, in `dependsOn` order. IDs missing from
+ * `tasksById` are skipped: a deleted task stops blocking.
+ */
+export function blockingTasks<T extends Pick<Task, "status">>(
+  task: Pick<Task, "dependsOn">,
+  tasksById: ReadonlyMap<string, T>,
+): T[] {
+  const blockers: T[] = [];
+  for (const id of task.dependsOn ?? []) {
+    const dependency = tasksById.get(id);
+    if (dependency !== undefined && !isTaskFinished(dependency)) blockers.push(dependency);
+  }
+  return blockers;
+}
+
+/** Whether any task `task` waits on is unfinished (`blockingTasks`). */
+export function isTaskBlocked(task: Pick<Task, "dependsOn">, tasksById: ReadonlyMap<string, Pick<Task, "status">>): boolean {
+  return blockingTasks(task, tasksById).length > 0;
+}

@@ -87,6 +87,10 @@ function formatActivityAction(entry: TaskActivityEntry): string {
       return "completed task";
     case "updated":
       return "updated task";
+    case "dependency_override": {
+      const verb = entry.toStatus === "done" ? "completed" : "started";
+      return `${verb} despite unfinished ${entry.blockedBy?.join(", ") ?? "dependencies"}`;
+    }
   }
 }
 

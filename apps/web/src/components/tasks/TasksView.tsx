@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Hand, Kanban, List, Plus, ShieldQuestionMark } from "lucide-react";
 import {
+  blockedByFromError,
   compareTasks,
   type CreateTaskInput,
   type Project,
@@ -15,6 +16,8 @@ import { TaskList } from "./TaskList";
 import { TaskDetailModal } from "./TaskDetailModal";
 import { TaskModal } from "./TaskModal";
 import { DeleteTaskDialog } from "./DeleteTaskDialog";
+import { BlockedTaskDialog, type BlockedStatusChange } from "./BlockedTaskDialog";
+import type { StatusChangeChoice } from "../../hooks/useTasks";
 
 interface TasksViewProps {
   readonly tasks: Task[];
@@ -30,8 +33,9 @@ interface TasksViewProps {
   readonly awaitingApprovalOnly?: boolean;
   readonly onAwaitingApprovalOnlyChange?: (only: boolean) => void;
   readonly onSaveTask: (input: CreateTaskInput) => Promise<Task>;
-  readonly onUpdateTask: (id: string, patch: UpdateTaskInput) => Promise<Task>;
-  readonly onCompleteTask: (id: string) => Promise<Task>;
+  /** A change to in_progress or done is refused while dependencies are unfinished, unless `choice` overrides. */
+  readonly onUpdateTask: (id: string, patch: UpdateTaskInput, choice?: StatusChangeChoice) => Promise<Task>;
+  readonly onCompleteTask: (id: string, choice?: StatusChangeChoice) => Promise<Task>;
   readonly onDeleteTask: (id: string) => Promise<void>;
   readonly searchQuery: string;
   /** Loads and saves comments in the task detail view; omit to hide them. */
@@ -88,6 +92,7 @@ export function TasksView({
   }
 
   const [deleteTarget, setDeleteTarget] = useState<Task | null>(null);
+  const [blockedChange, setBlockedChange] = useState<BlockedStatusChange | null>(null);
   // Stored by id so the detail modal follows updates and closes when the task is deleted.
   const [viewTaskId, setViewTaskId] = useState<string | null>(null);
   const viewTask = tasks.find((t) => t.id === viewTaskId) ?? null;
@@ -125,15 +130,41 @@ export function TasksView({
     return true;
   }).sort(compareTasks);
 
+  /**
+   * Runs a change that may start or complete `task`. When unfinished dependencies block it, asks
+   * the person to confirm and, if they do, runs it again with the override. Other errors propagate.
+   */
+  async function confirmIfBlocked(
+    task: Task,
+    status: TaskStatus,
+    change: (choice: StatusChangeChoice) => Promise<Task>,
+  ): Promise<void> {
+    try {
+      await change({});
+    } catch (err: unknown) {
+      const blockedBy = blockedByFromError(err);
+      if (blockedBy === undefined) throw err;
+      setBlockedChange({ task, status, blockedBy, override: () => change({ overrideBlocked: true }) });
+    }
+  }
+
+  function handleComplete(task: Task) {
+    void confirmIfBlocked(task, "done", (choice) => onCompleteTask(task.id, choice));
+  }
+
   async function handleModalSubmit(input: CreateTaskInput) {
-    if (modalState.task) {
+    const editing = modalState.task;
+    if (editing) {
       // The form leaves needsHuman out when its field is empty; null clears a flag the task had.
       // Editing never touches approval: only Approve clears it.
-      await onUpdateTask(modalState.task.id, {
+      const patch: UpdateTaskInput = {
         ...input,
         needsHuman: input.needsHuman ?? null,
         pendingApproval: undefined,
-      });
+      };
+      await confirmIfBlocked(editing, input.status ?? editing.status, (choice) =>
+        onUpdateTask(editing.id, patch, choice),
+      );
     } else {
       await onSaveTask(input);
     }
@@ -144,11 +175,13 @@ export function TasksView({
   }
 
   async function handleStatusChange(task: Task, status: TaskStatus) {
-    await onUpdateTask(task.id, { status });
+    await confirmIfBlocked(task, status, (choice) => onUpdateTask(task.id, { status }, choice));
   }
 
   async function handleMove(moves: readonly TaskMove[]) {
-    for (const { task, patch } of moves) await onUpdateTask(task.id, patch);
+    for (const { task, patch } of moves) {
+      await confirmIfBlocked(task, patch.status ?? task.status, (choice) => onUpdateTask(task.id, patch, choice));
+    }
   }
 
   return (
@@ -319,9 +352,7 @@ export function TasksView({
           onDelete={(t) => {
             setDeleteTarget(t);
           }}
-          onComplete={(t) => {
-            void onCompleteTask(t.id);
-          }}
+          onComplete={handleComplete}
           onStatusChange={(t, s) => {
             void handleStatusChange(t, s);
           }}
@@ -344,9 +375,7 @@ export function TasksView({
           onDelete={(t) => {
             setDeleteTarget(t);
           }}
-          onComplete={(t) => {
-            void onCompleteTask(t.id);
-          }}
+          onComplete={handleComplete}
           onStatusChange={(t, s) => {
             void handleStatusChange(t, s);
           }}
@@ -368,9 +397,7 @@ export function TasksView({
           setViewTaskId(null);
           setDeleteTarget(t);
         }}
-        onComplete={(t) => {
-          void onCompleteTask(t.id);
-        }}
+        onComplete={handleComplete}
         onChecklistChange={(t, checklist) => onUpdateTask(t.id, { checklist })}
         onNeedsHumanResolve={(t) => {
           void onUpdateTask(t.id, { needsHuman: null });
@@ -388,6 +415,13 @@ export function TasksView({
         defaultProjectId={selectedProjectId}
         onClose={closeTaskModal}
         onSubmit={handleModalSubmit}
+      />
+
+      <BlockedTaskDialog
+        change={blockedChange}
+        onClose={() => {
+          setBlockedChange(null);
+        }}
       />
 
       <DeleteTaskDialog
