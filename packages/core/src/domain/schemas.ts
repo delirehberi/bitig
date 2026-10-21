@@ -14,6 +14,7 @@ import {
   DEFAULT_WEBHOOK_PROVIDER,
   DESCRIPTION_MAX,
   LABELS_MAX_COUNT,
+  DEPENDS_ON_MAX_COUNT,
   LABEL_MAX,
   NEEDS_HUMAN_MAX,
   PROJECT_KINDS,
@@ -76,6 +77,18 @@ export const LabelsSchema = z
   });
 
 export const TaskOrderSchema = z.number();
+
+/**
+ * IDs of the tasks a task waits on. IDs, not codes, because a code changes when a task moves
+ * project or its project key changes. Existence and cycles are checked by storage
+ * (`assertTaskDependencies`), since they depend on the other tasks.
+ */
+export const DependsOnSchema = z
+  .array(IdSchema)
+  .max(DEPENDS_ON_MAX_COUNT)
+  .refine((ids) => new Set(ids).size === ids.length, {
+    message: "Dependencies must be unique",
+  });
 
 /** One subtask. Its position in the checklist is its order. */
 export const ChecklistItemSchema = z.strictObject({
@@ -198,6 +211,8 @@ export const TaskSchema = z.strictObject({
   needsHuman: NeedsHumanSchema.exactOptional(),
   /** Set while an agent- or webhook-created task waits for a person to approve it; omitted once approved. */
   pendingApproval: z.literal(true).exactOptional(),
+  /** Tasks this one waits on. Never empty: an empty list is stored as none. */
+  dependsOn: DependsOnSchema.min(1).exactOptional(),
   /** Assigned by storage, never by callers; tasks created before ticket codes may lack one until backfilled. */
   number: TaskNumberSchema.exactOptional(),
   /** Number of comments on the task; omitted when zero. */
@@ -281,6 +296,7 @@ export const CreateTaskInputSchema = z.strictObject({
   needsHuman: NeedsHumanSchema.optional(),
   /** Set by MCP and webhook creation; people create approved tasks. */
   pendingApproval: z.literal(true).optional(),
+  dependsOn: DependsOnSchema.optional(),
 });
 
 /** `undefined` (or a missing key) leaves a field unchanged; `null` clears an
@@ -302,6 +318,8 @@ export const UpdateTaskInputSchema = z
     needsHuman: NeedsHumanSchema.nullable().optional(),
     /** `null` approves the task. A patch can never re-flag it. */
     pendingApproval: z.null().optional(),
+    /** Replaces the whole list; `null` or `[]` removes it. */
+    dependsOn: DependsOnSchema.nullable().optional(),
   })
   .refine(hasAnyDefinedField, { message: EMPTY_PATCH_MESSAGE });
 

@@ -78,6 +78,8 @@ export {
 } from "./domain/ticket-codes";
 export type { ParsedTaskCode, TaskWithCode, TicketCodeBackfillResult } from "./domain/ticket-codes";
 export { extractTaskMentions, taskMentions } from "./domain/mentions";
+export { assertTaskDependencies, hasNewDependencies, withoutDependencies } from "./domain/dependencies";
+export type { DependencyNode } from "./domain/dependencies";
 export type { MentionRange, TaskMention } from "./domain/mentions";
 export {
   addChecklistItem,

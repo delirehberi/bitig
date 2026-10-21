@@ -32,6 +32,7 @@ const STATEMENTS = [
     \`checklist\` text,
     \`needs_human\` text,
     \`pending_approval\` integer,
+    \`depends_on\` text,
     \`number\` integer,
     \`started_at\` integer,
     \`completed_at\` integer,

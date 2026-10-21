@@ -19,6 +19,7 @@ import {
   renumberTask,
   withTaskCommentCount,
 } from "../domain/entities";
+import { assertTaskDependencies, hasNewDependencies, withoutDependencies } from "../domain/dependencies";
 import { nextTaskNumber } from "../domain/ticket-codes";
 import { NotFoundError, parseOrThrow } from "../domain/errors";
 import {
@@ -117,9 +118,14 @@ export class InMemoryStorage implements StorageProvider {
   deleteProject(id: string, opts?: OperationOptions): Promise<void> {
     return run(opts?.signal, () => {
       const project = this.#requireProject(parseId(id, "deleteProject"));
+      const removed = new Set<string>();
       for (const task of [...this.#tasks.values()]) {
-        if (task.projectId === project.id) this.#deleteTaskAndComments(task.id);
+        if (task.projectId === project.id) {
+          this.#deleteTaskAndComments(task.id);
+          removed.add(task.id);
+        }
       }
+      this.#dropDependencies(removed);
       for (const webhook of [...this.#webhooks.values()]) {
         if (webhook.projectId === project.id) this.#webhooks.delete(webhook.id);
       }
@@ -149,6 +155,7 @@ export class InMemoryStorage implements StorageProvider {
       const projectId = parseOrThrow(IdSchema, input.projectId, "saveTask");
       const task = buildTask(input, this.#deps, nextTaskNumber(this.#tasksOf(projectId)), opts?.actor);
       this.#requireProject(task.projectId);
+      if (hasNewDependencies(undefined, task)) assertTaskDependencies(task, this.#tasks.values(), "saveTask");
       this.#tasks.set(task.id, task);
       return copyTask(task);
     });
@@ -162,6 +169,7 @@ export class InMemoryStorage implements StorageProvider {
         this.#requireProject(next.projectId);
         next = renumberTask(next, nextTaskNumber(this.#tasksOf(next.projectId)));
       }
+      if (hasNewDependencies(existing, next)) assertTaskDependencies(next, this.#tasks.values(), "updateTask");
       this.#tasks.set(next.id, next);
       return this.#withCommentCount(next);
     });
@@ -171,6 +179,7 @@ export class InMemoryStorage implements StorageProvider {
     return run(opts?.signal, () => {
       const task = this.#requireTask(parseId(id, "deleteTask"));
       this.#deleteTaskAndComments(task.id);
+      this.#dropDependencies(new Set([task.id]));
     });
   }
 
@@ -369,6 +378,14 @@ export class InMemoryStorage implements StorageProvider {
     this.#tasks.delete(taskId);
     for (const comment of [...this.#comments.values()]) {
       if (comment.taskId === taskId) this.#comments.delete(comment.id);
+    }
+  }
+
+  /** Removes `removedIds` from every remaining task's `dependsOn`. */
+  #dropDependencies(removedIds: ReadonlySet<string>): void {
+    for (const task of this.#tasks.values()) {
+      const next = withoutDependencies(task, removedIds);
+      if (next !== undefined) this.#tasks.set(next.id, next);
     }
   }
 

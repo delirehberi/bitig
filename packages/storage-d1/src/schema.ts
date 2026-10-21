@@ -49,6 +49,7 @@ export const tasks = sqliteTable(
     checklist: text("checklist", { mode: "json" }).$type<ChecklistItem[]>(),
     needsHuman: text("needs_human"),
     pendingApproval: integer("pending_approval", { mode: "boolean" }),
+    dependsOn: text("depends_on", { mode: "json" }).$type<string[]>(),
     number: integer("number"),
     startedAt: integer("started_at"),
     completedAt: integer("completed_at"),

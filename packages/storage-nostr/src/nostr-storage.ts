@@ -10,6 +10,7 @@ import {
   applyProjectPatch,
   applyTaskPatch,
   applyWebhookPatch,
+  assertTaskDependencies,
   buildComment,
   buildProject,
   buildTask,
@@ -24,6 +25,7 @@ import {
   compareWebhooks,
   completeTaskEntity,
   defaultRuntimeDeps,
+  hasNewDependencies,
   nextTaskNumber,
   parseOrThrow,
   recordWebhookTriggerEntity,
@@ -31,6 +33,7 @@ import {
   throwIfAborted,
   toTimestamp,
   withTaskCommentCount,
+  withoutDependencies,
   type BackupBundle,
   type Comment,
   type CreateCommentInput,
@@ -292,6 +295,7 @@ export class NostrStorage implements StorageProvider {
     for (const w of childWebhooks) {
       this.webhooks.delete(w.id);
     }
+    await this.dropDependencies(new Set(childTasks.map((t) => t.id)), opts);
   }
 
   async getTasks(filter?: TaskFilter, opts?: OperationOptions): Promise<Task[]> {
@@ -328,6 +332,7 @@ export class NostrStorage implements StorageProvider {
     if (!this.projects.has(task.projectId)) {
       throw new NotFoundError("project", task.projectId);
     }
+    if (hasNewDependencies(undefined, task)) assertTaskDependencies(task, this.tasks.values(), "saveTask");
 
     const pubkey = await this.signer.getPublicKey();
     throwIfAborted(opts?.signal);
@@ -362,6 +367,9 @@ export class NostrStorage implements StorageProvider {
     let updated = applyTaskPatch(existing, patch, this.deps.clock(), opts?.actor);
     if (updated.projectId !== existing.projectId) {
       updated = renumberTask(updated, nextTaskNumber(this.tasksOf(updated.projectId)));
+    }
+    if (hasNewDependencies(existing, updated)) {
+      assertTaskDependencies(updated, this.tasks.values(), "updateTask");
     }
     const pubkey = await this.signer.getPublicKey();
     throwIfAborted(opts?.signal);
@@ -421,6 +429,7 @@ export class NostrStorage implements StorageProvider {
     for (const c of childComments) {
       this.comments.delete(c.id);
     }
+    await this.dropDependencies(new Set([id]), opts);
   }
 
   async completeTask(id: string, opts?: OperationOptions): Promise<Task> {
@@ -741,6 +750,25 @@ export class NostrStorage implements StorageProvider {
     const signed = await this.signer.signEvent(template);
     throwIfAborted(opts?.signal);
     await this.relayManager.publishEvent(signed);
+  }
+
+  /** Republishes every cached task that depends on one of `removedIds`, without it. */
+  private async dropDependencies(removedIds: ReadonlySet<string>, opts?: OperationOptions): Promise<void> {
+    if (removedIds.size === 0) return;
+    const pubkey = await this.signer.getPublicKey();
+    for (const task of Array.from(this.tasks.values())) {
+      const next = withoutDependencies(task, removedIds);
+      if (next === undefined) continue;
+      throwIfAborted(opts?.signal);
+      const template = await encodeTaskEvent(next, pubkey, this.signer);
+      throwIfAborted(opts?.signal);
+      // `updatedAt` stays, so the event would carry the same `created_at` as the one it replaces and
+      // could lose the last-write-wins tie-break; one second later always wins.
+      const signed = await this.signer.signEvent({ ...template, created_at: template.created_at + 1 });
+      throwIfAborted(opts?.signal);
+      await this.relayManager.publishEvent(signed);
+      this.tasks.set(next.id, next);
+    }
   }
 
   /** Cached comments on any of `taskIds`, oldest first. */

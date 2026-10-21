@@ -43,18 +43,22 @@ export interface StorageProvider {
   getProject(id: string, opts?: OperationOptions): Promise<Project | null>;
   createProject(input: CreateProjectInput, opts?: OperationOptions): Promise<Project>;
   updateProject(id: string, patch: UpdateProjectInput, opts?: OperationOptions): Promise<Project>;
-  /** Deletes the project and every task, comment and webhook that belongs to it. */
+  /** Deletes the project and every task, comment and webhook that belongs to it. Tasks in other
+   * projects stop depending on the deleted tasks. */
   deleteProject(id: string, opts?: OperationOptions): Promise<void>;
 
   /** Tasks, optionally limited to one project, in `compareTasks` order. An
    * unknown `projectId` yields an empty list. */
   getTasks(filter?: TaskFilter, opts?: OperationOptions): Promise<Task[]>;
   getTask(id: string, opts?: OperationOptions): Promise<Task | null>;
-  /** Creates a task. Rejects with `NotFoundError` if the project does not exist. */
+  /** Creates a task. Rejects with `NotFoundError` if the project does not exist, and with
+   * `ValidationError` if `dependsOn` names a missing task (`assertTaskDependencies`). */
   saveTask(input: CreateTaskInput, opts?: OperationOptions): Promise<Task>;
-  /** Patches a task. Moving it to another project requires that project to exist. */
+  /** Patches a task. Moving it to another project requires that project to exist. An added
+   * dependency must exist and must not close a cycle (`assertTaskDependencies`). */
   updateTask(id: string, patch: UpdateTaskInput, opts?: OperationOptions): Promise<Task>;
-  /** Deletes the task and its comments. */
+  /** Deletes the task and its comments, and removes it from every other task's `dependsOn`
+   * without changing their `updatedAt`. */
   deleteTask(id: string, opts?: OperationOptions): Promise<void>;
   /** Sets `status` to `done`. Idempotent: an already-done task is returned unchanged. */
   completeTask(id: string, opts?: OperationOptions): Promise<Task>;
