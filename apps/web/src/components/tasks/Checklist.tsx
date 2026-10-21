@@ -13,6 +13,7 @@ import {
   type Task,
 } from "@bitig/core";
 import { ArrowDown, ArrowUp, Clock, ListChecks, Play, Plus, X } from "lucide-react";
+import { InlineMarkdown } from "../Markdown";
 
 const ICON_SIZE = 14;
 
@@ -99,7 +100,7 @@ export function ChecklistView({ checklist, onToggle, task }: ChecklistViewProps)
                     htmlFor={`checklist-view-${String(index)}`}
                     className={`text-sm ${item.done ? "text-ink-3 line-through" : "text-ink"}`}
                   >
-                    {item.text}
+                    <InlineMarkdown text={item.text} />
                   </label>
                 </div>
 
