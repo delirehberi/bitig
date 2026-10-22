@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  checkNewTaskStatus,
   checkStatusChange,
   withTaskCommentCount,
   type CreateTaskInput,
@@ -25,10 +26,12 @@ async function statusChangeOptions(
   status: Task["status"] | undefined,
   context: string,
   choice: StatusChangeChoice | undefined,
+  dependsOn?: readonly string[] | null,
 ): Promise<OperationOptions | undefined> {
   if (status === undefined) return undefined;
   const overrideBlockedBy = await checkStatusChange(storage, id, status, context, {
     overrideBlocked: choice?.overrideBlocked === true,
+    dependsOn,
   });
   return overrideBlockedBy.length > 0 ? { overrideBlockedBy } : undefined;
 }
@@ -159,6 +162,7 @@ export function useTasks(storage: StorageProvider, projectId?: string) {
 
   const saveTask = useCallback(
     async (input: CreateTaskInput): Promise<Task> => {
+      await checkNewTaskStatus(storage, input, "saveTask");
       const created = await storage.saveTask(input);
       setTasks((prev) => upsertTask(prev, created, projectId));
       return created;
@@ -168,7 +172,7 @@ export function useTasks(storage: StorageProvider, projectId?: string) {
 
   const updateTask = useCallback(
     async (id: string, patch: UpdateTaskInput, choice?: StatusChangeChoice): Promise<Task> => {
-      const opts = await statusChangeOptions(storage, id, patch.status, "updateTask", choice);
+      const opts = await statusChangeOptions(storage, id, patch.status, "updateTask", choice, patch.dependsOn);
       const updated = await storage.updateTask(id, patch, opts);
       setTasks((prev) => upsertTask(prev, updated, projectId));
       return updated;

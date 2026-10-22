@@ -295,6 +295,14 @@ describe("REST API: Tasks", () => {
       await send("/api/tasks", "POST", { projectId: project.id, title: "Signup", dependsOn: [first.id] })
     ).json<Task>();
 
+    const refusedCreate = await send("/api/tasks", "POST", {
+      projectId: project.id,
+      title: "Docs",
+      status: "done",
+      dependsOn: [first.id],
+    });
+    expect(refusedCreate.status).toBe(400);
+
     const refusedStart = await send(`/api/tasks/${blocked.id}`, "PATCH", { status: "in_progress" });
     expect(refusedStart.status).toBe(400);
     const refusal = await refusedStart.json<{ message: string; details: { params?: { blockedBy?: string[] } }[] }>();

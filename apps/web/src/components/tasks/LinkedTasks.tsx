@@ -1,4 +1,4 @@
-import type { TaskLinks, TaskLinkSummary } from "@bitig/core";
+import type { DependencyLinks, TaskLinks, TaskLinkSummary } from "@bitig/core";
 import { Link } from "../../routing/Link";
 import { hrefFor } from "../../routing/router";
 
@@ -39,21 +39,53 @@ function LinkedTaskList({ label, tasks }: { readonly label: string; readonly tas
   );
 }
 
-/** The tasks a task mentions and the tasks that mention it, both as links; nothing when there are none. */
-export function LinkedTasks({ links }: { readonly links: TaskLinks }) {
-  if (links.mentions.length === 0 && links.mentionedIn.length === 0) return null;
+interface TaskLinkSectionProps {
+  readonly id: string;
+  readonly heading: string;
+  readonly lists: readonly { readonly label: string; readonly tasks: readonly TaskLinkSummary[] }[];
+}
+
+/** A detail-view section of task lists shown as links; nothing when every list is empty. */
+function TaskLinkSection({ id, heading, lists }: TaskLinkSectionProps) {
+  if (lists.every((list) => list.tasks.length === 0)) return null;
   return (
-    <section aria-labelledby="task-detail-links" className="mb-5">
-      <h3
-        id="task-detail-links"
-        className="m-0 mb-2 text-2xs font-semibold uppercase tracking-wider text-ink-3"
-      >
-        Linked tasks
+    <section aria-labelledby={id} className="mb-5">
+      <h3 id={id} className="m-0 mb-2 text-2xs font-semibold uppercase tracking-wider text-ink-3">
+        {heading}
       </h3>
       <div className="flex flex-col gap-3">
-        <LinkedTaskList label="Mentions" tasks={links.mentions} />
-        <LinkedTaskList label="Mentioned in" tasks={links.mentionedIn} />
+        {lists.map((list) => (
+          <LinkedTaskList key={list.label} label={list.label} tasks={list.tasks} />
+        ))}
       </div>
     </section>
+  );
+}
+
+/** The tasks a task mentions and the tasks that mention it, both as links; nothing when there are none. */
+export function LinkedTasks({ links }: { readonly links: TaskLinks }) {
+  return (
+    <TaskLinkSection
+      id="task-detail-links"
+      heading="Linked tasks"
+      lists={[
+        { label: "Mentions", tasks: links.mentions },
+        { label: "Mentioned in", tasks: links.mentionedIn },
+      ]}
+    />
+  );
+}
+
+/** The tasks a task depends on and the tasks waiting on it, both as links; nothing when there are none. */
+export function TaskDependencies({ dependencies }: { readonly dependencies: DependencyLinks }) {
+  return (
+    <TaskLinkSection
+      id="task-detail-dependencies"
+      heading="Dependencies"
+      lists={[
+        { label: "Depends on", tasks: dependencies.dependsOn },
+        { label: "Blocks", tasks: dependencies.dependents },
+      ]}
+    />
   );
 }

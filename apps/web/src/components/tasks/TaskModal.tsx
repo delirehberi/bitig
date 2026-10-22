@@ -13,6 +13,7 @@ import { CheckSquare, X } from "lucide-react";
 import { useFeatureFlags } from "../../hooks/useFeatureFlags";
 import { useFocusTrap } from "../../hooks/useFocusTrap";
 import { ChecklistEditor } from "./Checklist";
+import { DependsOnPicker } from "./DependsOnPicker";
 
 interface TaskModalProps {
   readonly isOpen: boolean;
@@ -21,6 +22,8 @@ interface TaskModalProps {
   readonly task?: Task | null | undefined;
   readonly projects: Project[];
   readonly defaultProjectId?: string | undefined;
+  /** The tasks the dependency picker offers; omit to hide it. */
+  readonly tasks?: readonly Task[] | undefined;
 }
 
 const ICON_SIZE = 16;
@@ -47,6 +50,7 @@ export function TaskModal({
   task,
   projects,
   defaultProjectId,
+  tasks,
 }: TaskModalProps) {
   const { taskVisibility } = useFeatureFlags();
   const initialProjectId =
@@ -62,6 +66,7 @@ export function TaskModal({
   const [isPublic, setIsPublic] = useState(task?.isPublic ?? false);
   const [needsHuman, setNeedsHuman] = useState(task?.needsHuman ?? "");
   const [checklist, setChecklist] = useState<ChecklistItem[]>(() => task?.checklist?.map((item) => ({ ...item })) ?? []);
+  const [dependsOn, setDependsOn] = useState<string[]>(() => [...(task?.dependsOn ?? [])]);
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -107,6 +112,7 @@ export function TaskModal({
       ...(needsHuman.trim() ? { needsHuman: needsHuman.trim() } : {}),
       // When editing, an empty list is sent so removing every item clears the checklist.
       ...(items.length > 0 || isEditing ? { checklist: items } : {}),
+      ...(dependsOn.length > 0 ? { dependsOn } : {}),
     };
 
     try {
@@ -339,6 +345,23 @@ export function TaskModal({
             <legend className="mb-1 block text-xs font-semibold text-ink-2">Subtasks</legend>
             <ChecklistEditor items={checklist} onChange={setChecklist} disabled={isSubmitting} />
           </fieldset>
+
+          {tasks && (
+            <fieldset className="m-0 border-0 p-0">
+              <legend className="mb-1 block text-xs font-semibold text-ink-2">
+                Depends on{" "}
+                <span className="font-normal text-ink-3">(it cannot be started or completed until these are done)</span>
+              </legend>
+              <DependsOnPicker
+                value={dependsOn}
+                onChange={setDependsOn}
+                tasks={tasks}
+                projects={projects}
+                excludeId={task?.id}
+                disabled={isSubmitting}
+              />
+            </fieldset>
+          )}
 
           <div className="mt-2 flex items-center justify-end gap-2">
             <button

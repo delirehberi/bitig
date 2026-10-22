@@ -10,9 +10,13 @@ import {
   removeChecklistItem,
   renameChecklistItem,
   backfillTicketCodes,
+  blockingTasks,
+  checkNewTaskStatus,
   checkStatusChange,
+  dependencyLinks,
   resolveProjectRef,
   resolveTaskRef,
+  resolveTaskRefs,
   setChecklistItemDone,
   withTaskCodes,
   type ChecklistItem,
@@ -21,7 +25,9 @@ import {
   type StorageProvider,
   type Task,
   type TaskPriority,
+  type TaskLinkSummary,
   type TaskStatus,
+  type TaskWithCode,
 } from "@bitig/core";
 import type { Command } from "commander";
 import { readFromEditor, readStdin } from "../io/input";
@@ -30,6 +36,15 @@ import { findProjectLink } from "../project-link";
 
 const OVERRIDE_BLOCKED_OPTION = "--override-blocked";
 const OVERRIDE_BLOCKED_DESCRIPTION = "Start or complete the task although tasks it depends on are unfinished (logged)";
+const DEPENDS_ON_OPTION = "--depends-on <refs>";
+
+/** Comma-separated task IDs or ticket codes, as typed after --depends-on. */
+function splitRefs(raw: string): string[] {
+  return raw
+    .split(",")
+    .map((ref) => ref.trim())
+    .filter((ref) => ref !== "");
+}
 
 /**
  * Refuses to start or complete a task with unfinished dependencies unless the person passed
@@ -41,10 +56,12 @@ async function statusChangeOptions(
   status: TaskStatus | undefined,
   context: string,
   overrideBlocked: boolean | undefined,
+  dependsOn?: readonly string[] | null,
 ): Promise<OperationOptions | undefined> {
   if (status === undefined) return undefined;
   const overrideBlockedBy = await checkStatusChange(storage, id, status, context, {
     overrideBlocked: overrideBlocked === true,
+    dependsOn,
   });
   return overrideBlockedBy.length > 0 ? { overrideBlockedBy } : undefined;
 }
@@ -57,6 +74,12 @@ function label(task: Task & { readonly code?: string }): string {
 async function withCode(storage: StorageProvider, task: Task): Promise<Task & { readonly code?: string }> {
   const project = await storage.getProject(task.projectId);
   return withTaskCodes([task], project === null ? [] : [project])[0] ?? task;
+}
+
+/** `BIT-63 Schema (done)`, one per line, or `(none)`. */
+function formatLinks(tasks: readonly TaskLinkSummary[]): string {
+  if (tasks.length === 0) return "(none)";
+  return tasks.map((t) => `${t.code ?? t.id} ${t.title} (${t.status})`).join("\n");
 }
 
 /** `2/5` for a task with a checklist, empty otherwise. */
@@ -114,26 +137,38 @@ export function registerTasksCommands(
       const storage = await getStorage();
       const pId = await resolveProjectId(storage, options.project);
       const found = await storage.getTasks(pId !== undefined ? { projectId: pId } : undefined);
+      const projects = await storage.getProjects();
+      // Dependencies may sit in another project, so blockers are looked up among all tasks.
+      const all = pId === undefined ? found : await storage.getTasks();
+      const codedById = new Map(withTaskCodes(all, projects).map((t) => [t.id, t]));
+      const blockedBy = (task: Task): string[] => blockingTasks(task, codedById).map((t) => label(t));
       const list = withTaskCodes(
         found.filter(
           (t) =>
             (options.needsHuman !== true || t.needsHuman !== undefined) &&
             (options.awaitingApproval !== true || t.pendingApproval === true),
         ),
-        await storage.getProjects(),
-      );
+        projects,
+      ).map((t): TaskWithCode & { readonly blockedBy?: string[] } => {
+        const blockers = blockedBy(t);
+        return blockers.length > 0 ? { ...t, blockedBy: blockers } : t;
+      });
       const width = Math.max(4, ...list.map((t) => label(t).length));
 
       const output = formatOutput(
         list,
-        () => list.map((t) => `${t.id}\t${t.status}\t${t.priority ?? "-"}\t${t.title}\t${t.code ?? ""}`).join("\n"),
+        () =>
+          list
+            .map((t) => `${t.id}\t${t.status}\t${t.priority ?? "-"}\t${t.title}\t${t.code ?? ""}\t${t.blockedBy?.join(",") ?? ""}`)
+            .join("\n"),
         () => {
           if (list.length === 0) return "No tasks found.";
           const rows = list.map((t) => {
             const progress = progressLabel(t);
             const flag =
               (t.needsHuman === undefined ? "" : " [needs human]") +
-              (t.pendingApproval === true ? " [awaiting approval]" : "");
+              (t.pendingApproval === true ? " [awaiting approval]" : "") +
+              (t.blockedBy === undefined ? "" : ` [blocked by ${t.blockedBy.join(", ")}]`);
             return `${label(t).padEnd(width)}  ${t.status.padEnd(12)}  ${(t.priority ?? "-").padEnd(8)}  ${t.title}${progress ? ` (${progress})` : ""}${flag}`;
           });
           return [`${"CODE".padEnd(width)}  STATUS        PRIORITY  TITLE`, ...rows].join("\n");
@@ -156,9 +191,16 @@ export function registerTasksCommands(
       }
       const task = await withCode(storage, found);
       const comments = await storage.getComments(task.id);
+      const dependencies = dependencyLinks(task, await storage.getTasks(), await storage.getProjects());
+      const blockers = dependencies.dependsOn.filter((t) => t.status !== "done" && t.status !== "archived");
 
       const output = formatOutput(
-        { ...task, comments },
+        {
+          ...task,
+          comments,
+          ...dependencies,
+          ...(blockers.length > 0 ? { blockedBy: blockers.map((t) => t.code ?? t.id) } : {}),
+        },
         () =>
           [
             `Code:        ${task.code ?? "-"}`,
@@ -171,6 +213,7 @@ export function registerTasksCommands(
             `Labels:      ${task.labels?.join(", ") ?? "-"}`,
             `Needs human: ${task.needsHuman ?? "-"}`,
             `Approval:    ${task.pendingApproval === true ? "awaiting approval" : "approved"}`,
+            `Blocked by:  ${blockers.length > 0 ? blockers.map((t) => t.code ?? t.id).join(", ") : "-"}`,
             `Created:     ${task.createdAt}`,
             `Updated:     ${task.updatedAt}`,
             "",
@@ -179,6 +222,12 @@ export function registerTasksCommands(
             "",
             `Checklist:${task.checklist ? ` ${progressLabel(task)}` : ""}`,
             formatChecklist(task.checklist),
+            "",
+            "Depends on:",
+            formatLinks(dependencies.dependsOn),
+            "",
+            "Blocks:",
+            formatLinks(dependencies.dependents),
             "",
             `Comments:${comments.length > 0 ? ` ${String(comments.length)}` : ""}`,
             formatComments(comments),
@@ -202,6 +251,7 @@ export function registerTasksCommands(
     .option("--labels <labels>", "Comma-separated labels")
     .option("--order <num>", "Sort order number", parseFloat)
     .option("--needs-human <reason>", "Flag the task as waiting on a person, saying what it needs")
+    .option(DEPENDS_ON_OPTION, "Comma-separated tasks (IDs or codes, e.g. BIT-63,BIT-62) it waits on")
     .option("--json", "Output JSON")
     .action(
       async (
@@ -216,6 +266,7 @@ export function registerTasksCommands(
           labels?: string;
           order?: number;
           needsHuman?: string;
+          dependsOn?: string;
           json?: boolean;
         },
       ) => {
@@ -236,11 +287,16 @@ export function registerTasksCommands(
 
         const labels = options.labels !== undefined ? options.labels.split(",").map((s) => s.trim()) : undefined;
 
+        const status = options.status as TaskStatus | undefined;
+        const dependsOn =
+          options.dependsOn === undefined ? [] : await resolveTaskRefs(storage, splitRefs(options.dependsOn));
+        await checkNewTaskStatus(storage, { status, dependsOn }, "saveTask");
         const saved = await storage.saveTask({
           projectId,
           title,
           description,
-          status: options.status as TaskStatus | undefined,
+          status,
+          ...(dependsOn.length > 0 ? { dependsOn } : {}),
           priority: options.priority as TaskPriority | undefined,
           dueDate: options.due,
           labels,
@@ -274,6 +330,8 @@ export function registerTasksCommands(
     .option("--order <num>", "Sort order", parseFloat)
     .option("--needs-human <reason>", "Flag the task as waiting on a person, saying what it needs")
     .option("--clear-needs-human", "Clear the flag once the person has answered")
+    .option(DEPENDS_ON_OPTION, "Replace the tasks it waits on (comma-separated IDs or codes)")
+    .option("--clear-depends-on", "Remove all of its dependencies")
     .option(OVERRIDE_BLOCKED_OPTION, OVERRIDE_BLOCKED_DESCRIPTION)
     .option("--json", "Output JSON")
     .action(
@@ -291,6 +349,8 @@ export function registerTasksCommands(
           order?: number;
           needsHuman?: string;
           clearNeedsHuman?: boolean;
+          dependsOn?: string;
+          clearDependsOn?: boolean;
           overrideBlocked?: boolean;
           json?: boolean;
         },
@@ -298,6 +358,9 @@ export function registerTasksCommands(
         const storage = await getStorage();
         if (options.needsHuman !== undefined && options.clearNeedsHuman === true) {
           throw new Error("Use either --needs-human or --clear-needs-human, not both");
+        }
+        if (options.dependsOn !== undefined && options.clearDependsOn === true) {
+          throw new Error("Use either --depends-on or --clear-depends-on, not both");
         }
         const id = await resolveTaskRef(storage, ref);
         let description = options.description;
@@ -314,7 +377,10 @@ export function registerTasksCommands(
         const projectId =
           options.project === undefined ? undefined : await resolveProjectRef(storage, options.project);
         const status = options.status as TaskStatus | undefined;
-        const opts = await statusChangeOptions(storage, id, status, "updateTask", options.overrideBlocked);
+        const resolved =
+          options.dependsOn === undefined ? undefined : await resolveTaskRefs(storage, splitRefs(options.dependsOn));
+        const dependsOn = options.clearDependsOn === true || resolved?.length === 0 ? null : resolved;
+        const opts = await statusChangeOptions(storage, id, status, "updateTask", options.overrideBlocked, dependsOn);
         const saved = await storage.updateTask(
           id,
           {
@@ -327,6 +393,7 @@ export function registerTasksCommands(
             labels,
             order: options.order,
             needsHuman: options.clearNeedsHuman === true ? null : options.needsHuman,
+            dependsOn,
           },
           opts,
         );

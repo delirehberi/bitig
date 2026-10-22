@@ -28,10 +28,13 @@ import {
   backfillTicketCodes,
   buildMentionIndex,
   blockingTasks,
+  checkNewTaskStatus,
   checkStatusChange,
+  dependencyLinks,
   findBlockingTasks,
   resolveProjectRef,
   resolveTaskRef,
+  resolveTaskRefs,
   withTaskCodes,
   type OperationOptions,
   type StorageProvider,
@@ -53,6 +56,8 @@ const NEEDS_HUMAN_DESCRIPTION =
   "Set when the task is blocked on a person: say what you need from them (a decision, an approval, access, an answer). The task then shows as needing a human until it is cleared.";
 
 const TASK_REF = z.string().min(1).describe("Task ID or ticket code, e.g. BIT-12");
+const DEPENDS_ON_DESCRIPTION =
+  "Tasks this task depends on, as task IDs or ticket codes (e.g. ['BIT-1', 'BIT-2']). It cannot be started or completed until they are done or archived. Set it when breaking work into ordered tasks.";
 const PROJECT_REF = z.string().min(1).describe("Project ID or project key, e.g. BIT");
 const KEY_DESCRIPTION =
   "Project key for ticket codes (BIT in BIT-12): 2-10 letters or digits starting with a letter, unique across projects.";
@@ -155,8 +160,14 @@ export function registerBitigTools(
    * are unfinished. Agents can neither approve nor override over MCP; an unknown ID falls through
    * so storage reports it as not found.
    */
-  async function assertAgentMayMove(id: string, status: Task["status"], context: string, opts: OperationOptions) {
-    await checkStatusChange(storage, id, status, context, { signal: opts.signal, requireApproval: true });
+  async function assertAgentMayMove(
+    id: string,
+    status: Task["status"],
+    context: string,
+    opts: OperationOptions,
+    dependsOn?: readonly string[] | null,
+  ) {
+    await checkStatusChange(storage, id, status, context, { signal: opts.signal, requireApproval: true, dependsOn });
   }
 
   // 1. list_projects
@@ -325,7 +336,7 @@ export function registerBitigTools(
     "get_task",
     {
       description:
-        "Get a task by its ID or ticket code (e.g. BIT-12), with its comments oldest first, the tasks it mentions (#BIT-12 in its description, subtasks or comments) as mentions, and the tasks that mention it as mentionedIn",
+        "Get a task by its ID or ticket code (e.g. BIT-12), with its comments oldest first, the tasks it mentions (#BIT-12 in its description, subtasks or comments) as mentions, the tasks that mention it as mentionedIn, the tasks it depends on as dependsOn, the tasks that depend on it as dependents, and the unfinished ones it waits on as blockedBy",
       annotations: { readOnlyHint: true },
       inputSchema: {
         id: TASK_REF,
@@ -343,7 +354,8 @@ export function registerBitigTools(
           storage.getProjects(opts),
         ]);
         const links = buildMentionIndex(tasks, projects).linksFor(task, comments);
-        return formatSuccessResult({ ...(await withCode(task, opts)), comments, ...links });
+        const dependencies = dependencyLinks(task, tasks, projects);
+        return formatSuccessResult({ ...(await withCode(task, opts)), comments, ...links, ...dependencies });
       } catch (err) {
         return formatErrorResult(err);
       }
@@ -355,7 +367,7 @@ export function registerBitigTools(
     "add_task",
     {
       description:
-        "Add a new task to a project. The result's code (e.g. BIT-12) names the task from then on. The task awaits a person's approval and cannot be started or completed until approved.",
+        "Add a new task to a project. The result's code (e.g. BIT-12) names the task from then on. The task awaits a person's approval and cannot be started or completed until approved, nor while any task in dependsOn is unfinished.",
       inputSchema: {
         projectId: PROJECT_REF,
         title: TaskTitleSchema,
@@ -368,15 +380,24 @@ export function registerBitigTools(
         order: TaskOrderSchema.optional(),
         checklist: ChecklistSchema.optional().describe(CHECKLIST_DESCRIPTION),
         needsHuman: NeedsHumanSchema.optional().describe(NEEDS_HUMAN_DESCRIPTION),
+        dependsOn: z.array(TASK_REF).optional().describe(DEPENDS_ON_DESCRIPTION),
       },
     },
     async (args, extra) => {
       try {
         const actor = resolveMcpActor(server, extra, options?.fallbackActor);
         const opts: OperationOptions = { signal: extra.signal, actor };
-        const projectId = await resolveProjectRef(storage, args.projectId, opts);
+        const { dependsOn: dependencyRefs, ...rest } = args;
+        const projectId = await resolveProjectRef(storage, rest.projectId, opts);
+        const dependsOn = dependencyRefs === undefined ? [] : await resolveTaskRefs(storage, dependencyRefs, opts);
+        await checkNewTaskStatus(storage, { status: rest.status, dependsOn }, "add_task", opts);
         // Not an input: every task an agent creates waits for a person to approve it.
-        const parsed = CreateTaskInputSchema.parse({ ...args, projectId, pendingApproval: true });
+        const parsed = CreateTaskInputSchema.parse({
+          ...rest,
+          projectId,
+          pendingApproval: true,
+          ...(dependsOn.length > 0 ? { dependsOn } : {}),
+        });
         const task = await storage.saveTask(parsed, opts);
         return formatSuccessResult(await withCode(task, opts));
       } catch (err) {
@@ -410,17 +431,26 @@ export function registerBitigTools(
           .describe(
             `${NEEDS_HUMAN_DESCRIPTION} null clears it when resolved manually or when a person's comment explicitly states it is resolved.`,
           ),
+        dependsOn: z
+          .array(TASK_REF)
+          .nullable()
+          .optional()
+          .describe(`${DEPENDS_ON_DESCRIPTION} Replaces the whole list; null or [] removes it.`),
       },
     },
     async (args, extra) => {
       try {
         const actor = resolveMcpActor(server, extra, options?.fallbackActor);
         const opts: OperationOptions = { signal: extra.signal, actor };
-        const { id: ref, projectId: projectRef, ...rest } = args;
+        const { id: ref, projectId: projectRef, dependsOn: dependencyRefs, ...rest } = args;
         const id = await resolveTaskRef(storage, ref, opts);
-        if (rest.status !== undefined) await assertAgentMayMove(id, rest.status, "update_task", opts);
+        const resolved = dependencyRefs ? await resolveTaskRefs(storage, dependencyRefs, opts) : undefined;
+        // An empty list clears dependencies, as null does.
+        const dependsOn = dependencyRefs === null || resolved?.length === 0 ? null : resolved;
+        if (rest.status !== undefined) await assertAgentMayMove(id, rest.status, "update_task", opts, dependsOn);
+        const fields = dependsOn === undefined ? rest : { ...rest, dependsOn };
         const patch =
-          projectRef === undefined ? rest : { ...rest, projectId: await resolveProjectRef(storage, projectRef, opts) };
+          projectRef === undefined ? fields : { ...fields, projectId: await resolveProjectRef(storage, projectRef, opts) };
         const task = await storage.updateTask(id, patch, opts);
         return formatSuccessResult(await withCode(task, opts));
       } catch (err) {

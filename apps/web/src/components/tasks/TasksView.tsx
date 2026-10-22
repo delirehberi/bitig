@@ -1,8 +1,9 @@
 import { useMemo, useState } from "react";
-import { Hand, Kanban, List, Plus, ShieldQuestionMark, X } from "lucide-react";
+import { Ban, Hand, Kanban, List, Plus, ShieldQuestionMark, X } from "lucide-react";
 import {
   blockedByFromError,
   buildMentionIndex,
+  dependencyLinks,
   compareTasks,
   type CreateTaskInput,
   type Project,
@@ -20,6 +21,7 @@ import { DeleteTaskDialog } from "./DeleteTaskDialog";
 import { BlockedTaskDialog, type BlockedStatusChange } from "./BlockedTaskDialog";
 import type { StatusChangeChoice } from "../../hooks/useTasks";
 import { findTaskByRef, taskRef } from "../../domain/task-ref";
+import { buildBlockersResolver } from "../../domain/task-mentions";
 
 interface TasksViewProps {
   readonly tasks: Task[];
@@ -34,6 +36,9 @@ interface TasksViewProps {
   /** Shows only the tasks an agent or webhook created that wait for approval. */
   readonly awaitingApprovalOnly?: boolean;
   readonly onAwaitingApprovalOnlyChange?: (only: boolean) => void;
+  /** Shows only the tasks waiting on unfinished dependencies. */
+  readonly blockedOnly?: boolean;
+  readonly onBlockedOnlyChange?: (only: boolean) => void;
   /** The task shown in the detail view, by ticket code or ID; it lives in the URL so it can be shared. */
   readonly viewTaskRef?: string | undefined;
   /** Opens a task's detail view (its code, or ID while it has none), or closes it with `undefined`. */
@@ -61,6 +66,8 @@ export function TasksView({
   onNeedsHumanOnlyChange,
   awaitingApprovalOnly = false,
   onAwaitingApprovalOnlyChange,
+  blockedOnly = false,
+  onBlockedOnlyChange,
   viewTaskRef,
   onViewTaskChange,
   onSaveTask,
@@ -104,6 +111,10 @@ export function TasksView({
   // Resolved on every render so the detail modal follows updates and closes when the task is deleted.
   const viewTask = viewTaskRef === undefined ? null : (findTaskByRef(viewTaskRef, projects, tasks) ?? null);
   const mentionIndex = useMemo(() => buildMentionIndex(tasks, projects), [tasks, projects]);
+  const blockersOf = useMemo(() => buildBlockersResolver(projects, tasks), [projects, tasks]);
+  // Finished tasks wait on nothing, whatever their dependencies.
+  const isBlocked = (task: Task) =>
+    task.status !== "done" && task.status !== "archived" && blockersOf(task).length > 0;
   const viewTaskMissing = viewTaskRef !== undefined && viewTask === null && !isLoading && error === null;
 
   function openTask(task: Task) {
@@ -120,6 +131,9 @@ export function TasksView({
   const awaitingApprovalCount = tasks.filter(
     (task) => task.pendingApproval === true && (!selectedProjectId || task.projectId === selectedProjectId),
   ).length;
+  const blockedCount = tasks.filter(
+    (task) => isBlocked(task) && (!selectedProjectId || task.projectId === selectedProjectId),
+  ).length;
 
   // Sorted here because local updates (a status or order change) don't re-sort `tasks`.
   const filteredTasks = tasks.filter((task) => {
@@ -130,6 +144,9 @@ export function TasksView({
       return false;
     }
     if (awaitingApprovalOnly && task.pendingApproval !== true) {
+      return false;
+    }
+    if (blockedOnly && !isBlocked(task)) {
       return false;
     }
     if (priorityFilter && task.priority !== priorityFilter) {
@@ -177,6 +194,7 @@ export function TasksView({
       const patch: UpdateTaskInput = {
         ...input,
         needsHuman: input.needsHuman ?? null,
+        dependsOn: input.dependsOn ?? null,
         pendingApproval: undefined,
       };
       await confirmIfBlocked(editing, input.status ?? editing.status, (choice) =>
@@ -293,6 +311,23 @@ export function TasksView({
           >
             <ShieldQuestionMark size={14} aria-hidden="true" />
             Awaiting approval ({awaitingApprovalCount})
+          </button>
+
+          <button
+            type="button"
+            aria-pressed={blockedOnly}
+            onClick={() => {
+              onBlockedOnlyChange?.(!blockedOnly);
+            }}
+            title="Show only tasks waiting on unfinished dependencies"
+            className={`inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-semibold transition-colors focus-visible:outline-focus ${
+              blockedOnly
+                ? "border-danger/30 bg-danger-soft text-danger"
+                : "border-rule bg-paper-2 text-ink-2 hover:text-ink"
+            }`}
+          >
+            <Ban size={14} aria-hidden="true" />
+            Blocked ({blockedCount})
           </button>
         </div>
 
@@ -436,6 +471,7 @@ export function TasksView({
         onApprove={handleApprove}
         storage={storage}
         links={viewTask ? mentionIndex.linksFor(viewTask) : undefined}
+        dependencies={viewTask ? dependencyLinks(viewTask, tasks, projects) : undefined}
       />
 
       {/* Keyed so each open remounts the form; its fields are seeded from `task` only on mount. */}
@@ -445,6 +481,7 @@ export function TasksView({
         task={modalState.task}
         projects={projects}
         defaultProjectId={selectedProjectId}
+        tasks={tasks}
         onClose={closeTaskModal}
         onSubmit={handleModalSubmit}
       />

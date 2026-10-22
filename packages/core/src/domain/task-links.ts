@@ -75,3 +75,23 @@ export function buildMentionIndex(tasks: readonly Task[], projects: readonly Pro
     },
   };
 }
+
+export interface DependencyLinks {
+  /** The tasks this task depends on, in `dependsOn` order; IDs of deleted tasks are left out. */
+  readonly dependsOn: TaskLinkSummary[];
+  /** The tasks that depend on this task. */
+  readonly dependents: TaskLinkSummary[];
+}
+
+/** Both directions of a task's dependencies, resolved among `tasks`, with ticket codes. */
+export function dependencyLinks(task: Task, tasks: readonly Task[], projects: readonly Project[]): DependencyLinks {
+  const coded = withTaskCodes(tasks, projects);
+  const byId = new Map(coded.map((t) => [t.id, t]));
+  return {
+    dependsOn: (task.dependsOn ?? []).flatMap((id) => {
+      const dependency = byId.get(id);
+      return dependency === undefined ? [] : [summarize(dependency)];
+    }),
+    dependents: coded.filter((t) => t.dependsOn?.includes(task.id) === true).map(summarize),
+  };
+}
