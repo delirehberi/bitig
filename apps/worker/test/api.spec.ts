@@ -258,6 +258,29 @@ describe("REST API: Tasks", () => {
     expect(getRes.status).toBe(404);
   });
 
+  it("returns a task's mention links", async () => {
+    async function post<T>(path: string, body: unknown): Promise<T> {
+      const res = await apiRequest(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      return res.json<T>();
+    }
+    const project = await post<Project>("/api/projects", { name: "Bitig", key: "BIT" });
+    const first = await post<Task>("/api/tasks", { projectId: project.id, title: "Schema" });
+    const second = await post<Task>("/api/tasks", { projectId: project.id, title: "Signup", description: "After #BIT-1" });
+    await post(`/api/tasks/${first.id}/comments`, { body: "Unblocks #BIT-2" });
+
+    const res = await apiRequest(`/api/tasks/${first.id}/links`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      mentions: [{ id: second.id, code: "BIT-2", title: "Signup", status: "todo" }],
+      mentionedIn: [{ id: second.id, code: "BIT-2", title: "Signup", status: "todo" }],
+    });
+    expect((await apiRequest("/api/tasks/01940000-0000-7000-8000-0000000000ff/links")).status).toBe(404);
+  });
+
   it("refuses to start or complete a blocked task unless a person overrides, and logs the override", async () => {
     async function send(path: string, method: string, body?: unknown): Promise<Response> {
       return apiRequest(path, {

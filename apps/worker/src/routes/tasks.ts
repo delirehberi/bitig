@@ -4,6 +4,7 @@ import {
   CreateCommentInputSchema,
   CreateTaskInputSchema,
   UpdateTaskInputSchema,
+  buildMentionIndex,
   checkStatusChange,
   type OperationOptions,
 } from "@bitig/core";
@@ -100,6 +101,21 @@ export const tasksRouter = new Hono<AppEnv>()
     const id = c.req.param("id");
     const completed = await storage.completeTask(id, await statusChangeOptions(c, id, "done", "completeTask"));
     return c.json(completed);
+  })
+  // Mention links, derived on read: what the task mentions (text and comments) and who mentions it.
+  .get("/:id/links", async (c) => {
+    const storage = c.get("storage");
+    const id = c.req.param("id");
+    const task = await storage.getTask(id);
+    if (!task) {
+      return c.json({ error: "not_found" }, 404);
+    }
+    const [comments, tasks, projects] = await Promise.all([
+      storage.getComments(id),
+      storage.getTasks(),
+      storage.getProjects(),
+    ]);
+    return c.json(buildMentionIndex(tasks, projects).linksFor(task, comments));
   })
   .get("/:id/comments", async (c) => {
     const storage = c.get("storage");

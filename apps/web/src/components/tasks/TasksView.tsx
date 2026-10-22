@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Hand, Kanban, List, Plus, ShieldQuestionMark, X } from "lucide-react";
 import {
   blockedByFromError,
+  buildMentionIndex,
   compareTasks,
   type CreateTaskInput,
   type Project,
@@ -102,6 +103,7 @@ export function TasksView({
   const [blockedChange, setBlockedChange] = useState<BlockedStatusChange | null>(null);
   // Resolved on every render so the detail modal follows updates and closes when the task is deleted.
   const viewTask = viewTaskRef === undefined ? null : (findTaskByRef(viewTaskRef, projects, tasks) ?? null);
+  const mentionIndex = useMemo(() => buildMentionIndex(tasks, projects), [tasks, projects]);
   const viewTaskMissing = viewTaskRef !== undefined && viewTask === null && !isLoading && error === null;
 
   function openTask(task: Task) {
@@ -433,6 +435,7 @@ export function TasksView({
         }}
         onApprove={handleApprove}
         storage={storage}
+        links={viewTask ? mentionIndex.linksFor(viewTask) : undefined}
       />
 
       {/* Keyed so each open remounts the form; its fields are seeded from `task` only on mount. */}

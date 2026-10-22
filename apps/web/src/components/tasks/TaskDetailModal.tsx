@@ -22,6 +22,7 @@ import {
   type Task,
   type TaskActivityEntry,
   type TaskPriority,
+  type TaskLinks,
   type TaskStatus,
 } from "@bitig/core";
 import { useFeatureFlags } from "../../hooks/useFeatureFlags";
@@ -32,6 +33,7 @@ import { ApprovalNote } from "./Approval";
 import { NeedsHumanNote } from "./NeedsHuman";
 import { TaskCode } from "./TaskCode";
 import { TaskComments } from "./TaskComments";
+import { LinkedTasks } from "./LinkedTasks";
 
 interface TaskDetailModalProps {
   readonly task: Task | null;
@@ -48,6 +50,8 @@ interface TaskDetailModalProps {
   readonly onApprove?: ((task: Task) => void) | undefined;
   /** Loads and saves the task's comments; omit to hide them. */
   readonly storage?: StorageProvider | undefined;
+  /** The tasks this task mentions and the tasks that mention it; omit to hide them. */
+  readonly links?: TaskLinks | undefined;
 }
 
 const ICON_SIZE = 16;
@@ -125,6 +129,7 @@ export function TaskDetailModal({
   onNeedsHumanResolve,
   onApprove,
   storage,
+  links,
 }: TaskDetailModalProps) {
   const { taskVisibility } = useFeatureFlags();
   const isOpen = task !== null;
@@ -296,6 +301,8 @@ export function TaskDetailModal({
             />
           </section>
         )}
+
+        {links && <LinkedTasks links={links} />}
 
         <dl className="m-0 mb-5 grid grid-cols-1 gap-4 sm:grid-cols-2">
           <Field label="Due date" icon={Calendar}>
