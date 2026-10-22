@@ -12,6 +12,7 @@ import { Clock, Download, FolderKanban, Hand, ListTodo, ShieldQuestionMark } fro
 import { useMemo, useState, type ReactNode } from "react";
 import { MODE_COPY } from "../domain/modes";
 import type { HealthState } from "../hooks/useHealth";
+import { WhereYouLeftOff } from "./WhereYouLeftOff";
 
 interface OverviewProps {
   readonly mode: StorageMode;
@@ -163,6 +164,8 @@ export function Overview({
           agents have written down.
         </p>
       </section>
+
+      {effectiveProjectsCount > 0 && <WhereYouLeftOff projects={projects} tasks={tasks} />}
 
       <div className="grid grid-cols-1 gap-8 lg:grid-cols-2 lg:items-start">
         <section aria-labelledby="status-heading" className="flex flex-col gap-2">

@@ -31,6 +31,7 @@ import type {
   CreateProjectInput,
   CreateTaskInput,
   CreateWebhookInput,
+  ParsedUpdateTaskInput,
   Project,
   ProjectResource,
   Task,
@@ -434,11 +435,16 @@ export function applyTaskPatch(
   const parsed = parseOrThrow(UpdateTaskInputSchema, patch, "updateTask");
   const validActor =
     actor === undefined ? undefined : parseOrThrow(TaskActorSchema, actor, "updateTask actor");
-  const updatedAt = nextUpdatedAt(task.updatedAt, now);
+  // Reordering a board only arranges tasks; it is not work on them, so it leaves the
+  // last touch (`updatedAt`, `updatedBy`, `activity`) as it was.
+  const orderOnly = isOrderOnlyPatch(parsed);
+  const updatedAt = orderOnly ? task.updatedAt : nextUpdatedAt(task.updatedAt, now);
   const nextStatus = parsed.status ?? task.status;
   const { startedAt, completedAt } = resolveTaskLifecycleTimestamps(task, nextStatus, updatedAt);
   const { startedBy, completedBy } = resolveTaskLifecycleActors(task, nextStatus, validActor);
-  const activity = appendActivity(task, nextStatus, validActor, updatedAt, overrideBlockedBy);
+  const activity = orderOnly
+    ? task.activity
+    : appendActivity(task, nextStatus, validActor, updatedAt, overrideBlockedBy);
   const next = assembleTask(
     {
       id: task.id,
@@ -456,7 +462,7 @@ export function applyTaskPatch(
       createdBy: task.createdBy,
       startedBy,
       completedBy,
-      updatedBy: validActor,
+      updatedBy: orderOnly ? task.updatedBy : validActor,
       activity,
       dueDate: resolveClearable(task.dueDate, parsed.dueDate),
       priority: resolveClearable(task.priority, parsed.priority),
@@ -471,6 +477,14 @@ export function applyTaskPatch(
     },
   );
   return parseOrThrow(TaskSchema, next, "updateTask result");
+}
+
+/** Whether a patch changes only `order`, as a board reorder does. */
+function isOrderOnlyPatch(patch: ParsedUpdateTaskInput): boolean {
+  return (
+    patch.order !== undefined &&
+    Object.entries(patch).every(([key, value]) => key === "order" || value === undefined)
+  );
 }
 
 /** The task with a new number, e.g. after moving it to another project. */
