@@ -110,6 +110,6 @@ function summarizeLastProject(projects: readonly Project[], tasks: readonly Task
     project,
     lastActiveAt,
     inProgressCount: own.filter((task) => task.status === "in_progress").length,
-    openCount: own.filter((task) => task.status === "todo" || task.status === "in_progress").length,
+    openCount: own.filter((task) => task.status !== "done" && task.status !== "archived").length,
   };
 }

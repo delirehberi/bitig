@@ -150,7 +150,7 @@ describe("CreateTaskInputSchema", () => {
     { projectId: "nope", title: "t" },
     { projectId: ID_A, title: "" },
     { projectId: ID_A, title: "x".repeat(TASK_TITLE_MAX + 1) },
-    { projectId: ID_A, title: "t", status: "blocked" },
+    { projectId: ID_A, title: "t", status: "unknown" },
     { projectId: ID_A, title: "t", priority: "critical" },
     { projectId: ID_A, title: "t", order: Number.POSITIVE_INFINITY },
     { projectId: ID_A, title: "t", order: Number.NaN },

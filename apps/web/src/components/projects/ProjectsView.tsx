@@ -121,7 +121,7 @@ export function ProjectsView({
       }
 
       if (taskFilter === "open") {
-        if (!projectTasks.some((t) => t.status === "todo" || t.status === "in_progress")) {
+        if (!projectTasks.some((t) => t.status !== "done" && t.status !== "archived")) {
           return false;
         }
       } else if (taskFilter === "done") {

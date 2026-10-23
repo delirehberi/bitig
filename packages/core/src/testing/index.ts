@@ -242,6 +242,23 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
         expect(await storage.getTask(UNKNOWN_ID)).toBeNull();
       });
 
+      it("persists blocked tasks, preserves their start, and clears completion when blocked", async () => {
+        const project = await createProject();
+        const created = await storage.saveTask({ projectId: project.id, title: "Waiting for approval", status: "blocked" });
+        expect(await storage.getTask(created.id)).toMatchObject({ status: "blocked" });
+        expect(created).not.toHaveProperty("startedAt");
+        expect(await storage.getTasks({ projectId: project.id })).toEqual([created]);
+        const started = await storage.updateTask(created.id, { status: "in_progress" }, { actor: "person" });
+        await storage.completeTask(created.id, { actor: "person" });
+        const blocked = await storage.updateTask(created.id, { status: "blocked" }, { actor: "agent" });
+        expect(blocked.startedAt).toBe(started.startedAt);
+        expect(blocked.startedBy).toBe(started.startedBy);
+        expect(blocked).not.toHaveProperty("completedAt");
+        expect(blocked).not.toHaveProperty("completedBy");
+        expect(blocked.activity?.at(-1)).toMatchObject({ action: "status_changed", toStatus: "blocked", actor: "agent" });
+        expect(await storage.getTask(created.id)).toEqual(blocked);
+      });
+
       it("creates a task with defaults and reads it back", async () => {
         const project = await createProject();
         const task = await storage.saveTask({ projectId: project.id, title: "Write tests" });

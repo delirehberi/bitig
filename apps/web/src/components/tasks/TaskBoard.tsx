@@ -32,13 +32,14 @@ interface TaskBoardProps {
   readonly showProject?: boolean;
 }
 
-const ACTIVE_STATUSES: readonly TaskStatus[] = ["todo", "in_progress", "done"];
+const ACTIVE_STATUSES: readonly TaskStatus[] = ["todo", "in_progress", "blocked", "done"];
 const ARCHIVE_ICON_SIZE = 15;
 
 const COLUMN_CONFIG: Record<
   TaskStatus,
   { label: string; dotClass: string }
 > = {
+  blocked: { label: "Blocked", dotClass: "bg-danger" },
   todo: { label: "To Do", dotClass: "bg-rule-strong" },
   in_progress: { label: "In Progress", dotClass: "bg-accent" },
   done: { label: "Done", dotClass: "bg-ok" },
@@ -119,7 +120,7 @@ export function TaskBoard({
 
   return (
     <div ref={boardRef} className="flex flex-col gap-5">
-      <div className="grid grid-cols-1 gap-5 md:grid-cols-3">
+      <div className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-4">
         {ACTIVE_STATUSES.map((status) => {
           const colTasks = columns.get(status) ?? [];
           const config = COLUMN_CONFIG[status];

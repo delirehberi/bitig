@@ -154,6 +154,11 @@ bitig tasks update BIT-12 --needs-human "Approve the schema change"
 bitig tasks list --needs-human
 bitig tasks update BIT-12 --clear-needs-human
 
+# Block after answering a comment or completing a prerequisite; wait for human approval
+bitig tasks update BIT-12 --status blocked --needs-human "Approve the design linked in the comment"
+# A person releases it when approved (agents cannot change a blocked task's status)
+bitig tasks update BIT-12 --status todo --clear-needs-human
+
 # Approval: tasks agents add over MCP, and tasks webhooks create, wait for you to approve them
 bitig tasks list --awaiting-approval
 bitig tasks approve BIT-12

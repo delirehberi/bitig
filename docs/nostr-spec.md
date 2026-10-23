@@ -61,7 +61,7 @@ An actionable item belonging to a project.
 | `d` | **Yes** | Task ID (UUIDv7) | `["d", "01944547-2b7e-7c15-992e-33633beba656"]` |
 | `a` | **Yes** | Address coordinate of the parent project: `30331:<authorPubkey>:<projectId>` | `["a", "30331:fa56...:01944547-0e62-7901-b755-e7a93540a08f"]` |
 | `project` | **Yes** | Parent project ID for direct query indexing (`#project`) | `["project", "01944547-0e62-7901-b755-e7a93540a08f"]` |
-| `status` | **Yes** | Task status: `todo`, `in_progress`, `done`, or `archived` | `["status", "todo"]` |
+| `status` | **Yes** | Task status: `todo`, `in_progress`, `blocked`, `done`, or `archived` | `["status", "todo"]` |
 | `is_public`| **Yes** | Visibility flag: `"true"` or `"false"` | `["is_public", "false"]` |
 | `priority` | No | Task priority: `trivial`, `low`, `medium`, `high`, or `urgent` | `["priority", "high"]` |
 | `due` | No | Calendar due date (`YYYY-MM-DD`, no timezone) | `["due", "2026-12-31"]` |
