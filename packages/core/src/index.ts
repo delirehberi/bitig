@@ -130,6 +130,19 @@ export type {
   WeeklyProjectTimeRow,
 } from "./domain/time-tracking";
 export {
+  LEFT_OFF_IN_PROGRESS_LIMIT,
+  LEFT_OFF_RECENT_LIMIT,
+  lastTouch,
+  whereYouLeftOff,
+} from "./domain/where-you-left-off";
+export type {
+  LeftOffProject,
+  LeftOffTask,
+  LeftOffTouch,
+  TaskTouchKind,
+  WhereYouLeftOff,
+} from "./domain/where-you-left-off";
+export {
   defaultIdGenerator,
   defaultRuntimeDeps,
   systemClock,

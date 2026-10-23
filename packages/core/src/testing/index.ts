@@ -356,6 +356,17 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
         expect(await storage.getTask(task.id)).toEqual(updated);
       });
 
+      it("reorders without touching updatedAt, updatedBy or activity", async () => {
+        const project = await createProject();
+        const task = await storage.saveTask({ projectId: project.id, title: "t", order: 1 });
+        const edited = await storage.updateTask(task.id, { title: "Edited" }, { actor: "claude" });
+        const moved = await storage.updateTask(edited.id, { order: 2 }, { actor: "antigravity" });
+        expect(moved).toEqual({ ...edited, order: 2 });
+        const movedAgain = await storage.updateTask(edited.id, { order: 3 });
+        expect(movedAgain).toEqual({ ...edited, order: 3 });
+        expect(await storage.getTask(task.id)).toEqual(movedAgain);
+      });
+
       it("edits the checklist as a whole and keeps item order", async () => {
         const project = await createProject();
         const task = await storage.saveTask({

@@ -377,7 +377,13 @@ export class NostrStorage implements StorageProvider {
     const template = await encodeTaskEvent(updated, pubkey, this.signer);
     throwIfAborted(opts?.signal);
 
-    const signed = await this.signer.signEvent(template);
+    // A reorder keeps `updatedAt`, so the event would carry the `created_at` of the one it replaces
+    // and could lose the last-write-wins tie-break; publish it at the current time instead.
+    const createdAt =
+      updated.updatedAt === existing.updatedAt
+        ? Math.max(template.created_at + 1, Math.floor(this.deps.clock().getTime() / 1000))
+        : template.created_at;
+    const signed = await this.signer.signEvent({ ...template, created_at: createdAt });
     throwIfAborted(opts?.signal);
 
     await this.relayManager.publishEvent(signed);
