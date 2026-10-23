@@ -106,7 +106,7 @@ Bitig exposes unified MCP tools across two distribution channels:
 
 2. **Remote Streamable HTTP Server (`apps/worker`):**
    - Mounted at `/mcp`.
-   - Protected by Bearer token authentication and edge rate limiting.
+   - Protected by Bearer token authentication (or `?token=<MCP_URL_TOKEN>` for clients that cannot send headers) and edge rate limiting.
    - Backed by Cloudflare D1 storage.
 
 ### Unified Tool Suite (18 tools):
@@ -157,7 +157,7 @@ MCP is available in every mode: STDIO (local CLI) and Streamable HTTP (Cloudflar
 
 - Dashboard sign-in: `/login` posts to `/api/auth/login`, which sets an HMAC-signed `__Host-` session cookie (`SESSION_SECRET`). Basic Auth headers still work for API clients. Secrets via `wrangler secret`, constant-time comparison, rate limiting, HTTPS only.
 - Dashboard NIP-07 against the Worker (if ever enabled) requires server-verified signing (NIP-98 or signed challenge), a session cookie and a pubkey allowlist. NIP-07 alone is not authentication.
-- MCP: Bearer token only; no credentials in logs.
+- MCP: Bearer token, or a separate URL token for header-less clients; no credentials in Bitig's own logs.
 - Private Nostr tasks: encrypted content; note that tags are visible to relays.
 - Input validation with zod at every boundary; path traversal protection in `MarkdownStorage`.
 

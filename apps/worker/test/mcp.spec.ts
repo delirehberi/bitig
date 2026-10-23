@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { TEST_AUTH_HEADER, TEST_MCP_TOKEN } from "./constants";
+import { TEST_AUTH_HEADER, TEST_MCP_TOKEN, TEST_MCP_URL_TOKEN } from "./constants";
 
 const BASE_URL = "https://bitig.test";
 
@@ -116,16 +116,18 @@ class WebStreamableTransport implements Transport {
   }
 }
 
-function createMcpClient(token: string = TEST_MCP_TOKEN): {
+/** Connects with the header token by default, or with `?token=` and no header when `urlToken` is given. */
+function createMcpClient(
+  token: string = TEST_MCP_TOKEN,
+  urlToken?: string,
+): {
   client: Client;
   transport: Transport;
 } {
-  const transport = new WebStreamableTransport(new URL(`${BASE_URL}/mcp`), {
-    requestInit: {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    },
+  const url = new URL(`${BASE_URL}/mcp`);
+  if (urlToken !== undefined) url.searchParams.set("token", urlToken);
+  const transport = new WebStreamableTransport(url, {
+    requestInit: urlToken === undefined ? { headers: { Authorization: `Bearer ${token}` } } : {},
     fetch: (input: string | URL | Request, init?: RequestInit) => {
       const request = new Request(input, init);
       return exports.default.fetch(request);
@@ -178,6 +180,38 @@ describe("Remote MCP Authentication", () => {
     expect(res.status).toBe(401);
     expect(res.headers.get("www-authenticate")).toBe('Bearer realm="bitig-mcp"');
     expect(await res.json()).toEqual({ error: "unauthorized" });
+  });
+});
+
+describe("Remote MCP URL token", () => {
+  const postMcp = (query: string, headers?: Record<string, string>) =>
+    exports.default.fetch(new Request(`${BASE_URL}/mcp${query}`, { method: "POST", ...(headers ? { headers } : {}) }));
+
+  it("connects with ?token= and no Authorization header", async () => {
+    const { client, transport } = createMcpClient(TEST_MCP_TOKEN, TEST_MCP_URL_TOKEN);
+    try {
+      await client.connect(transport);
+      const { tools } = await client.listTools();
+      expect(tools.length).toBeGreaterThan(0);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("rejects a wrong URL token", async () => {
+    const res = await postMcp("?token=wrong-token");
+    expect(res.status).toBe(401);
+    expect(res.headers.get("www-authenticate")).toBe('Bearer realm="bitig-mcp"');
+  });
+
+  it("does not accept the header token in the URL", async () => {
+    const res = await postMcp(`?token=${TEST_MCP_TOKEN}`);
+    expect(res.status).toBe(401);
+  });
+
+  it("ignores the URL token when an Authorization header is sent", async () => {
+    const res = await postMcp(`?token=${TEST_MCP_URL_TOKEN}`, { Authorization: "Bearer wrong-token" });
+    expect(res.status).toBe(401);
   });
 });
 

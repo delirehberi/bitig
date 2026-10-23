@@ -77,40 +77,46 @@ export function apiAuth(): MiddlewareHandler<AppEnv> {
 
 const BEARER_PREFIX = "Bearer ";
 const MCP_REALM_HEADER_VALUE = 'Bearer realm="bitig-mcp"';
+const URL_TOKEN_PARAM = "token";
 
+/*
+ * Guards /mcp. Clients send `Authorization: Bearer <MCP_AUTH_TOKEN>`. Clients
+ * that cannot set headers (ChatGPT connectors with "No authentication") may
+ * instead call `/mcp?token=<MCP_URL_TOKEN>`. The URL token is a separate secret
+ * so it can be rotated without touching header clients, and it is only checked
+ * when no Authorization header is present. Empty secrets accept nothing.
+ */
 export function bearerAuth(): MiddlewareHandler<AppEnv> {
   return async (c, next) => {
     const config = c.get("config");
-
-    // If no MCP auth token is configured, reject all requests for safety.
-    if (!config.MCP_AUTH_TOKEN) {
-      return c.json({ error: "unauthorized" }, HTTP_UNAUTHORIZED, {
+    const unauthorized = () =>
+      c.json({ error: "unauthorized" }, HTTP_UNAUTHORIZED, {
         "WWW-Authenticate": MCP_REALM_HEADER_VALUE,
       });
-    }
 
     const authHeader = c.req.header("Authorization");
-    if (!authHeader?.startsWith(BEARER_PREFIX)) {
-      if (authHeader !== undefined) await recordAuthFailure(c);
-      return c.json({ error: "unauthorized" }, HTTP_UNAUTHORIZED, {
-        "WWW-Authenticate": MCP_REALM_HEADER_VALUE,
-      });
+    if (authHeader === undefined) {
+      const urlToken = c.req.query(URL_TOKEN_PARAM);
+      if (urlToken === undefined) return unauthorized();
+      if (!config.MCP_URL_TOKEN || !(await timingSafeEqualString(urlToken, config.MCP_URL_TOKEN))) {
+        await recordAuthFailure(c);
+        return unauthorized();
+      }
+      return next();
+    }
+
+    // If no MCP auth token is configured, reject all header requests for safety.
+    if (!config.MCP_AUTH_TOKEN) return unauthorized();
+
+    if (!authHeader.startsWith(BEARER_PREFIX)) {
+      await recordAuthFailure(c);
+      return unauthorized();
     }
 
     const token = authHeader.slice(BEARER_PREFIX.length).trim();
-    if (!token) {
+    if (!token || !(await timingSafeEqualString(token, config.MCP_AUTH_TOKEN))) {
       await recordAuthFailure(c);
-      return c.json({ error: "unauthorized" }, HTTP_UNAUTHORIZED, {
-        "WWW-Authenticate": MCP_REALM_HEADER_VALUE,
-      });
-    }
-
-    const tokenMatch = await timingSafeEqualString(token, config.MCP_AUTH_TOKEN);
-    if (!tokenMatch) {
-      await recordAuthFailure(c);
-      return c.json({ error: "unauthorized" }, HTTP_UNAUTHORIZED, {
-        "WWW-Authenticate": MCP_REALM_HEADER_VALUE,
-      });
+      return unauthorized();
     }
 
     return next();
