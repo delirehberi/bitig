@@ -79,7 +79,7 @@ export function useProjects(storage: StorageProvider) {
 
   const createProject = useCallback(
     async (input: CreateProjectInput): Promise<Project> => {
-      const created = await storage.createProject(input);
+      const created = await storage.createProject(input, { actor: "you" });
       setProjects((prev) => upsertProject(prev, created));
       return created;
     },
@@ -88,7 +88,7 @@ export function useProjects(storage: StorageProvider) {
 
   const updateProject = useCallback(
     async (id: string, patch: UpdateProjectInput): Promise<Project> => {
-      const updated = await storage.updateProject(id, patch);
+      const updated = await storage.updateProject(id, patch, { actor: "you" });
       setProjects((prev) => upsertProject(prev, updated));
       return updated;
     },
@@ -97,7 +97,7 @@ export function useProjects(storage: StorageProvider) {
 
   const deleteProject = useCallback(
     async (id: string): Promise<void> => {
-      await storage.deleteProject(id);
+      await storage.deleteProject(id, { actor: "you" });
       setProjects((prev) => prev.filter((p) => p.id !== id));
     },
     [storage],
