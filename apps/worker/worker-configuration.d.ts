@@ -9,6 +9,7 @@ interface __BaseEnv_Env {
 	BASIC_AUTH_USER: string;
 	BASIC_AUTH_PASS: string;
 	MCP_AUTH_TOKEN: string;
+	MCP_URL_TOKEN: string;
 	SESSION_SECRET: string;
 	RATE_LIMITER: DurableObjectNamespace<import("./src/index").RateLimiter>;
 	REALTIME_HUB: DurableObjectNamespace<import("./src/index").RealtimeHub>;
@@ -25,7 +26,7 @@ type StringifyValues<EnvType extends Record<string, unknown>> = {
 	[Binding in keyof EnvType]: EnvType[Binding] extends string ? EnvType[Binding] : string;
 };
 declare namespace NodeJS {
-	interface ProcessEnv extends StringifyValues<Pick<Cloudflare.Env, "STORAGE_MODE" | "ALLOWED_ORIGINS" | "BASIC_AUTH_USER" | "BASIC_AUTH_PASS" | "MCP_AUTH_TOKEN" | "SESSION_SECRET">> {}
+	interface ProcessEnv extends StringifyValues<Pick<Cloudflare.Env, "STORAGE_MODE" | "ALLOWED_ORIGINS" | "BASIC_AUTH_USER" | "BASIC_AUTH_PASS" | "MCP_AUTH_TOKEN" | "MCP_URL_TOKEN" | "SESSION_SECRET">> {}
 }
 declare module "*.txt" {
 	const value: string;

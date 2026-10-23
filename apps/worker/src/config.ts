@@ -18,6 +18,8 @@ const configSchema = z.object({
   BASIC_AUTH_USER: z.string().default("admin"),
   BASIC_AUTH_PASS: z.string().default(""),
   MCP_AUTH_TOKEN: z.string().default(""),
+  // Accepted as /mcp?token= for clients that cannot send headers. Empty disables it.
+  MCP_URL_TOKEN: z.string().default(""),
   // HMAC key for dashboard session cookies. Empty disables /api/auth/login.
   SESSION_SECRET: z
     .string()

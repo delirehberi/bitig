@@ -10,3 +10,6 @@ export const TEST_SESSION_SECRET = "test-session-secret-0123456789abcdef";
 
 export const TEST_MCP_TOKEN = "test-mcp-bearer-token-secret";
 export const TEST_MCP_AUTH_HEADER = `Bearer ${TEST_MCP_TOKEN}`;
+
+/** Accepted as `/mcp?token=`; deliberately different from TEST_MCP_TOKEN. */
+export const TEST_MCP_URL_TOKEN = "test-mcp-url-token-secret";

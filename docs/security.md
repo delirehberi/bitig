@@ -17,10 +17,18 @@ Bitig is an edge-ready task and project manager deployed across local filesystem
 All authentication mechanisms (HTTP Basic Auth for REST API, Bearer Token for remote MCP) utilize cryptographic constant-time comparison via Web Crypto `crypto.subtle.timingSafeEqual`:
 
 - Passwords and tokens are hashed with SHA-256 before comparison to prevent string length side-channel leakage.
-- If no credentials are configured in environment secrets (`BASIC_AUTH_PASS`, `MCP_AUTH_TOKEN`), all incoming requests are rejected by default with `401 Unauthorized`.
+- If no credentials are configured in environment secrets (`BASIC_AUTH_PASS`, `MCP_AUTH_TOKEN`, `MCP_URL_TOKEN`), all incoming requests are rejected by default with `401 Unauthorized`.
 - Credentials and secrets are never logged or exposed in client error payloads.
 
-### 2.2 Dashboard Sessions
+### 2.2 Remote MCP Tokens
+`/mcp` accepts two separate secrets:
+
+- `Authorization: Bearer <MCP_AUTH_TOKEN>` for clients that can send headers (Claude Code, the CLI, scripts).
+- `/mcp?token=<MCP_URL_TOKEN>` for clients that cannot, such as ChatGPT connectors set to "No authentication". The URL token is checked only when the request has no `Authorization` header, and the header token is never accepted in the URL. Leave `MCP_URL_TOKEN` empty to turn this off.
+
+A token in a URL leaks more easily than a header: Cloudflare's request logs record the full URL, and the client stores it as part of the connector address. The URL token is a separate secret so it can be rotated (`wrangler secret put MCP_URL_TOKEN`) without breaking header clients. Bitig's own logging records only the path. This is a stopgap until `/mcp` supports OAuth.
+
+### 2.3 Dashboard Sessions
 The dashboard signs in on its own `/login` page instead of the browser's native Basic Auth prompt:
 
 - `POST /api/auth/login` takes `{ username, password }` (JSON), checks them against `BASIC_AUTH_USER` / `BASIC_AUTH_PASS` in constant time, and sets a `__Host-bitig_session` cookie: `HttpOnly`, `Secure`, `SameSite=Strict`, `Path=/`, valid for 7 days. `GET /api/auth/session` reports the signed-in user; `POST /api/auth/logout` clears the cookie.
@@ -39,7 +47,7 @@ A sliding-window rate limiter is implemented at the Cloudflare Worker edge. Coun
 
 ### 3.1 Rate Limit Tiers
 - **Authentication Failure Protection:** Max 10 failed login attempts per 15 minutes per IP. Mitigates brute-force attacks against the dashboard login, Basic Auth and MCP tokens.
-  - Login (`/api/auth/login`), Basic Auth (`/api/*`) and Bearer (`/mcp`) failures share one budget per IP.
+  - Login (`/api/auth/login`), Basic Auth (`/api/*`) and Bearer or URL token (`/mcp`) failures share one budget per IP.
   - Only attempts that present credentials count (wrong password or token, malformed or wrong-scheme `Authorization` header). Requests without credentials, such as the dashboard's session check before sign-in, do not, and neither do expired session cookies.
   - Once the budget is used up, every request from that IP to `/api/*` and `/mcp` gets `429` before credentials are checked, including requests with valid credentials, until the window passes. Other clients are not affected. A successful login does not reset the counter.
 - **REST API Routes (`/api/*`):** Max 1,000 requests per minute per IP.
