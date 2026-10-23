@@ -20,6 +20,17 @@ something. 'get_task' returns the task's comments, so read them before picking a
 'needsHuman' set, it is cleared by a person's manual resolve action in the UI, or by calling 'update_task' with
 'needsHuman: null' only if a person's comment explicitly states that the question or blocker is resolved.
 
+Comment decisions and approval blocks:
+- Before starting or resuming work, read the task's comments. If an unblocked task has an unresolved question
+  (e.g. "what do you think?") or a prerequisite (e.g. "do the design in Figma first"), answer the question or
+  carry out the authorized prerequisite first. Respect tool permissions and the user's scope.
+- Add a comment with the decision or result, links to any artifact, and exactly what the person should approve.
+  Then call 'update_task' with status: 'blocked'. Use 'needsHuman' to explain the approval being requested.
+- Stop work on that task and wait for the person. Do not repeat already answered comments or block routine
+  informational comments. A blocked task stays blocked even if a new comment arrives; agents cannot release it.
+  A person approves by changing its status to 'todo' or 'in_progress' in the dashboard or CLI.
+- 'blocked' is a separate status; unfinished 'dependsOn' tasks are a separate dependency block.
+
 Approval: every task created with 'add_task' starts with 'pendingApproval: true' and waits for a person to approve
 it in Bitig. Until then it cannot be moved to 'in_progress' or 'done', and agents cannot approve it. Tell the person
 which tasks you created; 'list_tasks' with 'pendingApproval: true' lists the ones still waiting.

@@ -182,6 +182,8 @@ function resolveTaskLifecycleTimestamps(
   switch (nextStatus) {
     case "todo":
       return { startedAt: undefined, completedAt: undefined };
+    case "blocked":
+      return { startedAt: task.startedAt, completedAt: undefined };
     case "in_progress":
       return {
         startedAt: task.startedAt ?? updatedAt,
@@ -208,6 +210,8 @@ function resolveTaskLifecycleActors(
   switch (nextStatus) {
     case "todo":
       return { startedBy: undefined, completedBy: undefined };
+    case "blocked":
+      return { startedBy: task.startedBy, completedBy: undefined };
     case "in_progress":
       return {
         startedBy: task.startedBy ?? (task.startedAt === undefined ? actor : undefined),

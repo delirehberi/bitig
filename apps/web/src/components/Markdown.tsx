@@ -21,6 +21,7 @@ function isSafeHref(rawUrl: string): boolean {
 }
 
 const MENTION_STATUS_LABELS: Record<TaskStatus, string> = {
+  blocked: "Blocked",
   todo: "To do",
   in_progress: "In progress",
   done: "Done",

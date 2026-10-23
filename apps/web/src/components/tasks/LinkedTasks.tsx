@@ -3,6 +3,7 @@ import { Link } from "../../routing/Link";
 import { hrefFor } from "../../routing/router";
 
 const STATUS_LABELS: Record<TaskLinkSummary["status"], string> = {
+  blocked: "Blocked",
   todo: "To do",
   in_progress: "In progress",
   done: "Done",

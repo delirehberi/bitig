@@ -286,7 +286,7 @@ export function registerBitigTools(
     "list_tasks",
     {
       description:
-        "List tasks with their ticket codes, optionally filtered by project ID or key, to the tasks that need a human, to the tasks awaiting approval, or to blocked tasks. A blocked task lists the codes of its unfinished dependencies in blockedBy and cannot be started or completed until they are done or archived.",
+        "List tasks with their ticket codes, optionally filtered by project ID or key, to the tasks that need a human, to the tasks awaiting approval, or to tasks with blocked status or unfinished dependencies. A dependency-blocked task lists the codes of its unfinished dependencies in blockedBy and cannot be started or completed until they are done or archived.",
       annotations: { readOnlyHint: true },
       inputSchema: {
         projectId: PROJECT_REF.optional(),
@@ -301,7 +301,7 @@ export function registerBitigTools(
         blocked: z
           .boolean()
           .optional()
-          .describe("true lists only tasks waiting on unfinished dependencies, false only tasks that are not"),
+          .describe("true lists tasks with blocked status or unfinished dependencies, false only tasks that are not blocked"),
       },
     },
     async (args, extra) => {
@@ -322,7 +322,7 @@ export function registerBitigTools(
           (task) =>
             (args.needsHuman === undefined || (task.needsHuman !== undefined) === args.needsHuman) &&
             (args.pendingApproval === undefined || (task.pendingApproval === true) === args.pendingApproval) &&
-            (args.blocked === undefined || ("blockedBy" in task) === args.blocked),
+            (args.blocked === undefined || (task.status === "blocked" || "blockedBy" in task) === args.blocked),
         );
         return formatSuccessResult(matching);
       } catch (err) {
@@ -411,7 +411,7 @@ export function registerBitigTools(
     "update_task",
     {
       description:
-        "Update task fields (set null to clear optional fields). Moving a task to another project gives it a new code there. Moving it to in_progress or done is refused while it awaits approval or any task it depends on is unfinished.",
+        "Update task fields (set null to clear optional fields). Moving a task to another project gives it a new code there. A blocked task can only be released by a person changing its status in Bitig. Moving it to in_progress or done is refused while it awaits approval or any task it depends on is unfinished.",
       inputSchema: {
         id: TASK_REF,
         projectId: PROJECT_REF.optional(),
@@ -464,7 +464,7 @@ export function registerBitigTools(
     "complete_task",
     {
       description:
-        "Mark a task as completed/done (idempotent). Refused while the task awaits approval or any task it depends on is unfinished.",
+        "Mark a task as completed/done (idempotent). Refused while its status is blocked, while the task awaits approval or any task it depends on is unfinished.",
       annotations: { idempotentHint: true },
       inputSchema: {
         id: TASK_REF,

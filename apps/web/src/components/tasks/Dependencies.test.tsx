@@ -59,6 +59,22 @@ function cardOf(title: string): HTMLElement {
 }
 
 describe("dependencies in the web app", () => {
+  it("shows an explicit block in its column and filter, and lets a person release it", async () => {
+    const user = userEvent.setup();
+    const { storage, signup } = await setup();
+    await user.selectOptions(within(cardOf("Signup")).getByLabelText("Change status"), "blocked");
+    await waitFor(() => {
+      expect(within(screen.getByTestId("column-blocked")).getByText("Signup")).toBeInTheDocument();
+    });
+    expect(within(cardOf("Signup")).getByTitle("Blocked awaiting human approval")).toBeInTheDocument();
+    expect((await storage.getTask(signup.id))?.status).toBe("blocked");
+    await user.click(screen.getByRole("button", { name: "Blocked (1)" }));
+    expect(screen.queryByText("Schema")).not.toBeInTheDocument();
+    await user.selectOptions(within(cardOf("Signup")).getByLabelText("Change status"), "in_progress");
+    await waitFor(() => expect(screen.queryByText("Signup")).not.toBeInTheDocument());
+    expect((await storage.getTask(signup.id))?.status).toBe("in_progress");
+  });
+
   it("picks a dependency by code, shows the task as blocked, and unblocks it when the dependency is done", async () => {
     const user = userEvent.setup();
     const { storage, schema, signup } = await setup();

@@ -226,6 +226,37 @@ describe("MCP Tools integration", () => {
     expect((await task("complete_task", { id: "BIT-2" })).status).toBe("done");
   });
 
+  it("records a decision, blocks for approval, and only resumes after a person releases it", async () => {
+    await call("create_project", { name: "Bitig", key: "BIT" });
+    const created = await storage.saveTask({
+      projectId: (await storage.getProjects())[0]?.id ?? "",
+      title: "Review design",
+      status: "in_progress",
+    });
+    await call("add_comment", {
+      taskId: "BIT-1",
+      body: "Use the compact layout. Please approve the design before implementation.",
+    });
+    expect(await task("update_task", { id: "BIT-1", status: "blocked", needsHuman: "Approve the compact layout" }))
+      .toMatchObject({ status: "blocked" });
+    expect((await call("list_tasks", { blocked: true })).data).toEqual([expect.objectContaining({ code: "BIT-1" })]);
+    expect((await call("list_tasks", { blocked: false })).data).toEqual([]);
+    await call("add_comment", { taskId: "BIT-1", body: "Another note does not release the block" });
+    for (const status of ["todo", "in_progress", "done", "archived"]) {
+      const refused = await call("update_task", { id: "BIT-1", status, needsHuman: null });
+      expect(refused.isError).toBe(true);
+      expect(refused.data).toContain("blocked awaiting human approval");
+    }
+    expect((await call("complete_task", { id: "BIT-1" })).isError).toBe(true);
+    // Agents can still record context and keep the task blocked.
+    expect(await task("update_task", { id: "BIT-1", status: "blocked", description: "Decision recorded" }))
+      .toMatchObject({ status: "blocked" });
+    expect(await storage.getTask(created.id)).toMatchObject({ status: "blocked", needsHuman: "Approve the compact layout" });
+    await storage.updateTask(created.id, { status: "todo", needsHuman: null });
+    expect(await task("update_task", { id: "BIT-1", status: "in_progress" })).toMatchObject({ status: "in_progress" });
+    expect(await task("complete_task", { id: "BIT-1" })).toMatchObject({ status: "done" });
+  });
+
   it("sets dependencies by ticket code and reports the task as blocked", async () => {
     await call("create_project", { name: "Bitig" });
     const schema = await task("add_task", { projectId: "BIT", title: "Schema" });

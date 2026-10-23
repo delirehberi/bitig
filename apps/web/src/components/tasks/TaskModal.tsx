@@ -29,6 +29,7 @@ interface TaskModalProps {
 const ICON_SIZE = 16;
 
 const STATUS_LABELS: Record<TaskStatus, string> = {
+  blocked: "Blocked",
   todo: "To Do",
   in_progress: "In Progress",
   done: "Done",

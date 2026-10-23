@@ -81,7 +81,8 @@ export function blockedByFromError(err: unknown): string[] | undefined {
  * `ValidationError` when an agent's task awaits approval (`requireApproval`), or when unfinished
  * dependencies block it and nobody overrode them. Resolves to the blockers that were overridden,
  * which the caller passes on as `overrideBlockedBy`; empty when nothing blocks the change.
- * Leaving a status, keeping it, or an unknown ID (left for storage to report) is never refused.
+ * Agents cannot leave the explicit blocked status; a person must release it first.
+ * Keeping a status or an unknown ID (left for storage to report) is never refused.
  */
 export async function checkStatusChange(
   storage: StorageProvider,
@@ -90,10 +91,18 @@ export async function checkStatusChange(
   context: string,
   opts?: StatusChangeOptions,
 ): Promise<string[]> {
-  if (!GATED_STATUSES.has(status)) return [];
   const readOpts = opts?.signal === undefined ? undefined : { signal: opts.signal };
   const task = await storage.getTask(id, readOpts);
   if (task === null || task.status === status) return [];
+  // Check before the gated statuses: an agent must not unblock itself via todo or archived.
+  if (opts?.requireApproval === true && task.status === "blocked") {
+    throw new ValidationError(context, [{
+      code: "custom",
+      path: ["status"],
+      message: "Task is blocked awaiting human approval. A person must change its status in Bitig before an agent can resume it.",
+    }]);
+  }
+  if (!GATED_STATUSES.has(status)) return [];
   if (opts?.requireApproval === true && task.pendingApproval === true) {
     throw new ValidationError(context, [{ code: "custom", path: ["status"], message: AWAITING_APPROVAL_MESSAGE }]);
   }

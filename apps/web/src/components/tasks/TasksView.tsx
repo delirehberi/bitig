@@ -36,7 +36,7 @@ interface TasksViewProps {
   /** Shows only the tasks an agent or webhook created that wait for approval. */
   readonly awaitingApprovalOnly?: boolean;
   readonly onAwaitingApprovalOnlyChange?: (only: boolean) => void;
-  /** Shows only the tasks waiting on unfinished dependencies. */
+  /** Shows tasks with blocked status or unfinished dependencies. */
   readonly blockedOnly?: boolean;
   readonly onBlockedOnlyChange?: (only: boolean) => void;
   /** The task shown in the detail view, by ticket code or ID; it lives in the URL so it can be shared. */
@@ -114,7 +114,7 @@ export function TasksView({
   const blockersOf = useMemo(() => buildBlockersResolver(projects, tasks), [projects, tasks]);
   // Finished tasks wait on nothing, whatever their dependencies.
   const isBlocked = (task: Task) =>
-    task.status !== "done" && task.status !== "archived" && blockersOf(task).length > 0;
+    task.status === "blocked" || (task.status !== "done" && task.status !== "archived" && blockersOf(task).length > 0);
   const viewTaskMissing = viewTaskRef !== undefined && viewTask === null && !isLoading && error === null;
 
   function openTask(task: Task) {

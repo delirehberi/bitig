@@ -4,7 +4,7 @@
  * constraints, frontmatter validation, Nostr tags) derive from them.
  */
 
-export const TASK_STATUSES = ["todo", "in_progress", "done", "archived"] as const;
+export const TASK_STATUSES = ["todo", "in_progress", "blocked", "done", "archived"] as const;
 export const DEFAULT_TASK_STATUS = "todo" satisfies (typeof TASK_STATUSES)[number];
 export const COMPLETED_TASK_STATUS = "done" satisfies (typeof TASK_STATUSES)[number];
 

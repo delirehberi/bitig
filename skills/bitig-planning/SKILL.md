@@ -56,6 +56,12 @@ Tasks have a chronological comment thread (`get_task` returns `comments` oldest 
 - When a task has `needsHuman` set, check its comments via `get_task` or `list_comments` to read the person's response. A comment does not clear `needsHuman` automatically: only clear `needsHuman: null` with `update_task` if the person's comment explicitly states the question or blocker is resolved (otherwise leave it for the person's manual resolve action).
 - Use `delete_comment` with a comment `id` only when removing an erroneous or duplicate comment.
 
+### Decisions that need approval
+
+Before starting or resuming a task, read its comments. If the task is not already blocked and a comment has an unresolved question ("what do you think?") or prerequisite ("do the design in Figma first"), answer it or carry out the authorized prerequisite first. Respect tool permissions and the user's scope. Add an agent comment with the decision or result, artifact links, and what the person should approve. Then set `status: "blocked"` and set `needsHuman` to the specific approval requested.
+
+Wait for the person before doing more work on the task. Do not reprocess answered questions or block informational comments. Agents cannot change a task out of `blocked`, including via `todo` or `archived`, or complete it. A person releases it by changing its status to `todo` or `in_progress` in the dashboard or CLI. A new comment alone does not release the block. Dependency blocks (`dependsOn` / `blockedBy`) remain separate.
+
 ## 5. By request type
 
 - **Roadmap / phase plan**: one task per deliverable, labeled `roadmap` plus its phase label. Put the phase's goal and "done when" criterion in the description of its tasks rather than in a separate file.
