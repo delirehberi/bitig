@@ -134,7 +134,10 @@ export const tasksRouter = new Hono<AppEnv>()
     }),
     async (c) => {
       const storage = c.get("storage");
-      const comment = await storage.addComment({ ...c.req.valid("json"), taskId: c.req.param("id") });
+      const comment = await storage.addComment(
+        { ...c.req.valid("json"), taskId: c.req.param("id") },
+        { actor: c.req.header("X-Bitig-Actor") ?? c.req.header("X-Bitig-Agent") ?? "you" },
+      );
       return c.json(comment, HTTP_CREATED);
     },
   );

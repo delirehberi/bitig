@@ -62,7 +62,7 @@ export function useComments(storage: StorageProvider, taskId: string) {
 
   const addComment = useCallback(
     async (body: string): Promise<Comment> => {
-      const added = await storage.addComment({ taskId, body, authorType: "human" });
+      const added = await storage.addComment({ taskId, body, authorType: "human" }, { actor: "you" });
       setComments((prev) => upsertComment(prev, added));
       dispatchRealtimeEvent({ type: "comment.created", comment: added });
       return added;
@@ -72,7 +72,7 @@ export function useComments(storage: StorageProvider, taskId: string) {
 
   const deleteComment = useCallback(
     async (id: string): Promise<void> => {
-      await storage.deleteComment(id);
+      await storage.deleteComment(id, { actor: "you" });
       setComments((prev) => prev.filter((c) => c.id !== id));
       dispatchRealtimeEvent({ type: "comment.deleted", id, taskId });
     },

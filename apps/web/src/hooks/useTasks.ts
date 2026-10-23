@@ -33,7 +33,7 @@ async function statusChangeOptions(
     overrideBlocked: choice?.overrideBlocked === true,
     dependsOn,
   });
-  return overrideBlockedBy.length > 0 ? { overrideBlockedBy } : undefined;
+  return { actor: "you", ...(overrideBlockedBy.length > 0 ? { overrideBlockedBy } : {}) };
 }
 
 function upsertTask(tasks: readonly Task[], incoming: Task, projectId?: string): Task[] {
@@ -163,7 +163,7 @@ export function useTasks(storage: StorageProvider, projectId?: string) {
   const saveTask = useCallback(
     async (input: CreateTaskInput): Promise<Task> => {
       await checkNewTaskStatus(storage, input, "saveTask");
-      const created = await storage.saveTask(input);
+      const created = await storage.saveTask(input, { actor: "you" });
       setTasks((prev) => upsertTask(prev, created, projectId));
       return created;
     },
@@ -183,7 +183,7 @@ export function useTasks(storage: StorageProvider, projectId?: string) {
   const completeTask = useCallback(
     async (id: string, choice?: StatusChangeChoice): Promise<Task> => {
       const opts = await statusChangeOptions(storage, id, "done", "completeTask", choice);
-      const completed = await storage.completeTask(id, opts);
+      const completed = await storage.completeTask(id, { ...opts, actor: "you" });
       setTasks((prev) => upsertTask(prev, completed, projectId));
       return completed;
     },
@@ -192,7 +192,7 @@ export function useTasks(storage: StorageProvider, projectId?: string) {
 
   const deleteTask = useCallback(
     async (id: string): Promise<void> => {
-      await storage.deleteTask(id);
+      await storage.deleteTask(id, { actor: "you" });
       setTasks((prev) => prev.filter((t) => t.id !== id));
     },
     [storage],

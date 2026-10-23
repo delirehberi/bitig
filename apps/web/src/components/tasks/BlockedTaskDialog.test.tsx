@@ -66,6 +66,7 @@ describe("completing a task with unfinished dependencies", () => {
     expect(completed?.status).toBe("done");
     expect(completed?.activity).toEqual([
       expect.objectContaining({ action: "dependency_override", toStatus: "done", blockedBy: ["BIT-1"] }),
+      expect.objectContaining({ action: "completed", actor: "you", fromStatus: "todo", toStatus: "done" }),
     ]);
   });
 
