@@ -4,14 +4,16 @@ import { CheckpointSchema, SaveCheckpointInputSchema } from "./schemas";
 import type { Checkpoint, SaveCheckpointInput, Task } from "./types";
 import { toTimestamp, type RuntimeDeps } from "../runtime/ids";
 
-/** Upserts retain identity and original commit time; latest always means highest step. */
-export function buildCheckpoint(input: SaveCheckpointInput, runtime: RuntimeDeps, existing?: Checkpoint): Checkpoint {
+/** Upserts retain identity, original commit time and original author; latest always means highest step. */
+export function buildCheckpoint(input: SaveCheckpointInput, runtime: RuntimeDeps, existing?: Checkpoint, actor?: string): Checkpoint {
   const parsed = parseOrThrow(SaveCheckpointInputSchema, input, "save checkpoint");
   const sameStep = existing?.taskId === parsed.taskId && existing.stepIndex === parsed.stepIndex;
+  const createdBy = sameStep ? (existing.createdBy ?? actor) : actor;
   return parseOrThrow(CheckpointSchema, {
     ...parsed,
     id: sameStep ? existing.id : runtime.generateId(),
     createdAt: sameStep ? existing.createdAt : toTimestamp(runtime.clock()),
+    ...(createdBy === undefined ? {} : { createdBy }),
   }, "checkpoint");
 }
 

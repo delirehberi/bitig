@@ -1005,6 +1005,16 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
         expect(await storage.getCheckpoints(task.id)).toEqual([updated]);
       });
 
+      it("records the saving actor and keeps the original author on overwrite", async () => {
+        const task = await createTask();
+        const saved = await storage.saveCheckpoint(input(task.id, 0), { actor: "claude" });
+        expect(saved.createdBy).toBe("claude");
+        const overwritten = await storage.saveCheckpoint({ ...input(task.id, 0), status: "FAILED" }, { actor: "codex" });
+        expect(overwritten.createdBy).toBe("claude");
+        expect(await storage.getCheckpoints(task.id)).toEqual([overwritten]);
+        expect((await storage.saveCheckpoint(input(task.id, 1))).createdBy).toBeUndefined();
+      });
+
       it("rejects invalid input and unknown tasks", async () => {
         const task = await createTask();
         await expect(storage.saveCheckpoint({ ...input(task.id, -1) })).rejects.toBeInstanceOf(ValidationError);

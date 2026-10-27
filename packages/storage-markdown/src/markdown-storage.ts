@@ -386,7 +386,7 @@ export class MarkdownStorage implements StorageProvider {
       if (found === null) throw new NotFoundError("task", parsed.taskId);
       const existing = (await this.#readTaskCheckpoints(found.projectId, parsed.taskId, opts?.signal))
         .find((checkpoint) => checkpoint.stepIndex === parsed.stepIndex);
-      const checkpoint = buildCheckpoint(parsed, this.#deps, existing);
+      const checkpoint = buildCheckpoint(parsed, this.#deps, existing, opts?.actor);
       await this.#writeCheckpoints(found.projectId, [checkpoint], opts?.signal);
       return checkpoint;
     }, { signal: opts?.signal });

@@ -581,7 +581,7 @@ export class NostrStorage implements StorageProvider {
     }
 
     const existing = this.checkpointsOf([parsed.taskId]).find((cp) => cp.stepIndex === parsed.stepIndex);
-    const checkpoint = buildCheckpoint(parsed, this.deps, existing);
+    const checkpoint = buildCheckpoint(parsed, this.deps, existing, opts?.actor);
     await this.publishCheckpoint(checkpoint, opts);
     this.checkpoints.set(checkpoint.id, checkpoint);
     return structuredClone(checkpoint);

@@ -589,7 +589,8 @@ export function registerBitigTools(
     },
     async (args, extra) => {
       try {
-        const opts = { signal: extra.signal };
+        const actor = resolveMcpActor(server, extra, options?.fallbackActor);
+        const opts: OperationOptions = { signal: extra.signal, actor };
         const taskId = await resolveTaskRef(storage, args.taskId, opts);
         const checkpoint = await storage.saveCheckpoint({ ...args, taskId }, opts);
         return formatSuccessResult({

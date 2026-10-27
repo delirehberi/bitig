@@ -170,11 +170,15 @@ export const tasksRouter = new Hono<AppEnv>()
         return c.json({ error: "validation_error", details: [{ path: ["stepIndex"], message: "Invalid step index" }] }, HTTP_BAD_REQUEST);
       }
       const storage = c.get("storage");
-      const checkpoint = await storage.saveCheckpoint({
-        ...c.req.valid("json"),
-        taskId: c.req.param("id"),
-        stepIndex,
-      });
+      const actor = c.req.header("X-Bitig-Actor") ?? c.req.header("X-Bitig-Agent");
+      const checkpoint = await storage.saveCheckpoint(
+        {
+          ...c.req.valid("json"),
+          taskId: c.req.param("id"),
+          stepIndex,
+        },
+        actor ? { actor } : undefined,
+      );
       return c.json(checkpoint);
     },
   );

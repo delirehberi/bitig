@@ -182,8 +182,8 @@ const CheckpointFileSchema = z.object(CheckpointSchema.shape).omit({ id: true, t
 
 /** A checkpoint is a JSON document: its identity comes from the path, the rest from the body. */
 export function encodeCheckpoint(checkpoint: Checkpoint): string {
-  const { stepIndex, status, stateSnapshot, createdAt } = checkpoint;
-  return `${JSON.stringify({ stepIndex, status, createdAt, stateSnapshot }, null, 2)}\n`;
+  const { stepIndex, status, stateSnapshot, createdAt, createdBy } = checkpoint;
+  return `${JSON.stringify({ stepIndex, status, createdAt, ...(createdBy === undefined ? {} : { createdBy }), stateSnapshot }, null, 2)}\n`;
 }
 
 export function decodeCheckpoint(taskId: string, id: string, text: string, location: string): Checkpoint {

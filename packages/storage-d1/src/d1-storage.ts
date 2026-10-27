@@ -206,6 +206,7 @@ function recordToCheckpoint(row: CheckpointRecord): Checkpoint {
     status: row.status,
     stateSnapshot: row.stateSnapshot,
     createdAt: new Date(row.createdAt).toISOString(),
+    ...(row.createdBy === null ? {} : { createdBy: row.createdBy }),
   });
 }
 
@@ -217,6 +218,7 @@ function checkpointToRecord(checkpoint: Checkpoint): InsertCheckpointRecord {
     status: checkpoint.status,
     stateSnapshot: checkpoint.stateSnapshot,
     createdAt: Date.parse(checkpoint.createdAt),
+    createdBy: checkpoint.createdBy ?? null,
   };
 }
 
@@ -594,7 +596,7 @@ export class D1Storage implements StorageProvider {
       .where(and(eq(checkpoints.taskId, parsed.taskId), eq(checkpoints.stepIndex, parsed.stepIndex)))
       .get();
     throwIfAborted(opts?.signal);
-    const checkpoint = buildCheckpoint(parsed, this.#deps, existingRow ? recordToCheckpoint(existingRow) : undefined);
+    const checkpoint = buildCheckpoint(parsed, this.#deps, existingRow ? recordToCheckpoint(existingRow) : undefined, opts?.actor);
     const values = checkpointToRecord(checkpoint);
     // The (task, step) unique index makes a concurrent save of the same step update instead of duplicate.
     await this.#db.insert(checkpoints).values(values).onConflictDoUpdate({
