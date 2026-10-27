@@ -14,7 +14,7 @@ To enable seamless data portability, backup, and cross-mode synchronization, Bit
 All bundles are strictly validated at system boundaries with Zod.
 
 ### 1.1 ProjectBundle (`ProjectBundleSchema`)
-Encapsulates a single project entity alongside all associated tasks and their comments. `comments` is optional on import, so bundles made before comments still load.
+Encapsulates a single project entity alongside all associated tasks and their comments. `comments` and `checkpoints` (execution state, at most one per task step) are optional on import, so bundles made before either still load. A bundle is rejected if a checkpoint references a task outside it or repeats a `(taskId, stepIndex)` pair.
 
 ```json
 {

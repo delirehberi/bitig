@@ -4,6 +4,7 @@ import { D1Storage } from "./d1-storage";
 
 const STATEMENTS = [
   "DROP TABLE IF EXISTS `webhooks`",
+  "DROP TABLE IF EXISTS `checkpoints`",
   "DROP TABLE IF EXISTS `comments`",
   "DROP TABLE IF EXISTS `tasks`",
   "DROP TABLE IF EXISTS `projects`",
@@ -59,6 +60,8 @@ const STATEMENTS = [
     FOREIGN KEY (\`task_id\`) REFERENCES \`tasks\`(\`id\`) ON UPDATE no action ON DELETE cascade
   )`,
   "CREATE INDEX `comments_task_id_idx` ON `comments` (`task_id`)",
+  "CREATE TABLE `checkpoints` (`id` text PRIMARY KEY NOT NULL, `task_id` text NOT NULL, `step_index` integer NOT NULL, `status` text NOT NULL, `state_snapshot` text NOT NULL, `created_at` integer NOT NULL, FOREIGN KEY (`task_id`) REFERENCES `tasks`(`id`) ON UPDATE no action ON DELETE cascade)",
+  "CREATE UNIQUE INDEX `checkpoints_task_step_idx` ON `checkpoints` (`task_id`,`step_index`)",
   `CREATE TABLE \`webhooks\` (
     \`id\` text PRIMARY KEY NOT NULL,
     \`project_id\` text NOT NULL,

@@ -19,6 +19,7 @@ export * from "./domain/constants";
 export * from "./domain/schemas";
 export * from "./domain/realtime";
 export type * from "./domain/types";
+export { buildCheckpoint, compareCheckpoints, buildExecutionContext } from "./domain/checkpoints";
 export {
   BitigError,
   ERROR_CODES,

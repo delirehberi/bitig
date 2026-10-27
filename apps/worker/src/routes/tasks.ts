@@ -3,6 +3,7 @@ import { zValidator } from "@hono/zod-validator";
 import {
   CreateCommentInputSchema,
   CreateTaskInputSchema,
+  SaveCheckpointInputSchema,
   UpdateTaskInputSchema,
   buildMentionIndex,
   checkNewTaskStatus,
@@ -15,6 +16,9 @@ import type { AppEnv } from "../index";
 const HTTP_CREATED = 201;
 const HTTP_NO_CONTENT = 204;
 const HTTP_BAD_REQUEST = 400;
+
+/** A step index in a URL is plain decimal digits; anything else (signs, exponents, spaces) is refused. */
+const STEP_INDEX_PATTERN = /^\d+$/;
 
 /** Query flag a person sets, after confirming, to start or complete a task despite unfinished dependencies. */
 const OVERRIDE_BLOCKED_PARAM = "overrideBlocked";
@@ -139,5 +143,38 @@ export const tasksRouter = new Hono<AppEnv>()
         { actor: c.req.header("X-Bitig-Actor") ?? c.req.header("X-Bitig-Agent") ?? "you" },
       );
       return c.json(comment, HTTP_CREATED);
+    },
+  )
+  .get("/:id/checkpoints", async (c) => {
+    const storage = c.get("storage");
+    return c.json(await storage.getCheckpoints(c.req.param("id")));
+  })
+  // Idempotent upsert of one step. Checkpoints are progress notes: this never touches the task's status,
+  // approval or needs-human gates, which keep their own routes and checks.
+  .put(
+    "/:id/checkpoints/:step",
+    zValidator(
+      "json",
+      SaveCheckpointInputSchema.omit({ taskId: true, stepIndex: true }),
+      (result, c) => {
+        if (!result.success) {
+          return c.json({ error: "validation_error", details: result.error.issues }, HTTP_BAD_REQUEST);
+        }
+        return undefined;
+      },
+    ),
+    async (c) => {
+      const step = c.req.param("step");
+      const stepIndex = STEP_INDEX_PATTERN.test(step) ? Number(step) : Number.NaN;
+      if (!SaveCheckpointInputSchema.shape.stepIndex.safeParse(stepIndex).success) {
+        return c.json({ error: "validation_error", details: [{ path: ["stepIndex"], message: "Invalid step index" }] }, HTTP_BAD_REQUEST);
+      }
+      const storage = c.get("storage");
+      const checkpoint = await storage.saveCheckpoint({
+        ...c.req.valid("json"),
+        taskId: c.req.param("id"),
+        stepIndex,
+      });
+      return c.json(checkpoint);
     },
   );

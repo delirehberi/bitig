@@ -1,5 +1,12 @@
 import { z } from "zod";
 import {
+  CHECKPOINT_STATUSES,
+  CHECKPOINT_SUMMARY_MAX,
+  CHECKPOINT_INSTRUCTIONS_MAX,
+  CHECKPOINT_ITEMS_MAX,
+  CHECKPOINT_ARTIFACT_MAX,
+  CHECKPOINT_VALUE_MAX,
+  CHECKPOINT_KEY_MAX,
   CHECKLIST_ITEM_TEXT_MAX,
   CHECKLIST_MAX_ITEMS,
   COMMENT_AUTHOR_MAX,
@@ -46,6 +53,29 @@ export const IdSchema = z.uuidv7();
 
 /** ISO 8601 UTC timestamp; offsets other than `Z` are rejected. */
 export const TimestampSchema = z.iso.datetime();
+
+export const CheckpointStatusSchema = z.enum(CHECKPOINT_STATUSES);
+const CheckpointValueSchema = z.union([z.string().max(CHECKPOINT_VALUE_MAX), z.number(), z.boolean(), z.null()]);
+const CheckpointMapSchema = z.record(z.string().min(1).max(CHECKPOINT_KEY_MAX), CheckpointValueSchema)
+  .refine((value) => Object.keys(value).length <= CHECKPOINT_ITEMS_MAX, "Too many checkpoint metadata fields");
+export const StateSnapshotSchema = z.strictObject({
+  summary: z.string().trim().min(1).max(CHECKPOINT_SUMMARY_MAX),
+  modifiedArtifacts: z.array(z.string().trim().min(1).max(CHECKPOINT_ARTIFACT_MAX)).max(CHECKPOINT_ITEMS_MAX),
+  decisionsMade: z.array(z.string().trim().min(1).max(CHECKPOINT_VALUE_MAX)).max(CHECKPOINT_ITEMS_MAX),
+  blockersOrErrors: z.union([z.string().max(CHECKPOINT_INSTRUCTIONS_MAX), CheckpointMapSchema]).exactOptional(),
+  nextStepInstructions: z.string().trim().min(1).max(CHECKPOINT_INSTRUCTIONS_MAX),
+  metadata: CheckpointMapSchema.exactOptional(),
+});
+export const SaveCheckpointInputSchema = z.strictObject({
+  taskId: IdSchema,
+  stepIndex: z.number().int().nonnegative(),
+  status: CheckpointStatusSchema,
+  stateSnapshot: StateSnapshotSchema,
+});
+export const CheckpointSchema = SaveCheckpointInputSchema.extend({
+  id: IdSchema,
+  createdAt: TimestampSchema,
+});
 
 /** Calendar date `YYYY-MM-DD`; zod's regex rejects impossible dates (e.g. Feb 30). */
 export const DueDateSchema = z.iso.date();
@@ -378,12 +408,20 @@ export const ProjectBundleSchema = z
     tasks: z.array(TaskSchema),
     /** Comments on the bundled tasks, oldest first. Bundles made before comments have none. */
     comments: z.array(CommentSchema).exactOptional(),
+    checkpoints: z.array(CheckpointSchema).exactOptional(),
     /** Webhooks belonging to the bundled project, oldest first. Bundles made before webhooks have none. */
     webhooks: z.array(WebhookSchema).exactOptional(),
   })
   .refine((bundle) => bundle.tasks.every((task) => task.projectId === bundle.project.id), {
     message: "All tasks in bundle must belong to the bundled project",
   })
+  .refine((bundle) => {
+    const taskIds = new Set(bundle.tasks.map((task) => task.id));
+    const checkpoints = bundle.checkpoints ?? [];
+    return checkpoints.every((checkpoint) => taskIds.has(checkpoint.taskId)) &&
+      new Set(checkpoints.map((checkpoint) => checkpoint.id)).size === checkpoints.length &&
+      new Set(checkpoints.map((checkpoint) => `${checkpoint.taskId}:${String(checkpoint.stepIndex)}`)).size === checkpoints.length;
+  }, { message: "Checkpoints must belong to bundled tasks and have unique IDs and task/step pairs" })
   .refine((bundle) => (bundle.webhooks ?? []).every((webhook) => webhook.projectId === bundle.project.id), {
     message: "All webhooks in bundle must belong to the bundled project",
   })

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  NOSTR_KIND_CHECKPOINT,
   NOSTR_KIND_COMMENT,
   NOSTR_KIND_DELETE,
   NOSTR_KIND_PROJECT,
@@ -88,6 +89,50 @@ describe("NostrStorage extra & wire-level verification", () => {
     const deletion = relay.getEvents().find((e) => e.kind === NOSTR_KIND_DELETE);
     const pubkey = await signer.getPublicKey();
     expect(deletion?.tags).toContainEqual([NOSTR_TAG_A, `${String(NOSTR_KIND_COMMENT)}:${pubkey}:${comment.id}`]);
+  });
+
+  it("encrypts checkpoints, even on public tasks, and a re-saved step supersedes its earlier event", async () => {
+    const project = await storage.createProject({ name: "Open" });
+    const task = await storage.saveTask({ projectId: project.id, title: "Public", isPublic: true });
+    const snapshot = (summary: string) => ({
+      summary,
+      modifiedArtifacts: ["secret/path.ts"],
+      decisionsMade: ["rotate the vault token"],
+      nextStepInstructions: "Call the internal admin API",
+    });
+    const first = await storage.saveCheckpoint({
+      taskId: task.id, stepIndex: 7, status: "WAITING_HUMAN_APPROVAL", stateSnapshot: snapshot("first draft"),
+    });
+    const second = await storage.saveCheckpoint({
+      taskId: task.id, stepIndex: 7, status: "COMPLETED", stateSnapshot: snapshot("final draft"),
+    });
+    expect(second.id).toBe(first.id);
+
+    const events = relay.getEvents().filter((e) => e.kind === NOSTR_KIND_CHECKPOINT);
+    expect(events.length).toBeGreaterThan(0);
+    for (const event of events) {
+      const wire = JSON.stringify(event);
+      for (const secret of ["draft", "secret/path.ts", "vault token", "admin API", "WAITING_HUMAN_APPROVAL", "COMPLETED"]) {
+        expect(wire).not.toContain(secret);
+      }
+      expect(event.tags).toContainEqual(["task", task.id]);
+      expect(event.tags.some((tag) => tag[0] === "step" || tag[0] === "status")).toBe(false);
+    }
+    // Same `d` tag, strictly later event time: a relay keeps only the newest.
+    expect(new Set(events.map((e) => e.tags.find((t) => t[0] === NOSTR_TAG_D)?.[1])).size).toBe(1);
+    expect(new Set(events.map((e) => e.created_at)).size).toBe(events.length);
+
+    const fresh = new NostrStorage({ signer, relays: [relay.url] });
+    try {
+      expect(await fresh.getCheckpoints(task.id)).toEqual([second]);
+      await fresh.deleteTask(task.id);
+    } finally {
+      fresh.getRelayManager().close();
+    }
+
+    const deletion = relay.getEvents().find((e) => e.kind === NOSTR_KIND_DELETE);
+    const pubkey = await signer.getPublicKey();
+    expect(deletion?.tags).toContainEqual([NOSTR_TAG_A, `${String(NOSTR_KIND_CHECKPOINT)}:${pubkey}:${first.id}`]);
   });
 
   it("publishes cleartext JSON for public tasks", async () => {

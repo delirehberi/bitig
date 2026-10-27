@@ -30,6 +30,13 @@ the tasks that must finish first (e.g. dependsOn: ['BIT-63']). A task that depen
 archived. Agents cannot override this; work on the blocking tasks first, or ask a person. 'get_task' lists 'dependsOn'
 and 'dependents'; 'list_tasks' with 'blocked: false' lists the tasks that are free to start.
 
+Checkpoints: on long or interruptible work, call 'save_checkpoint' after each meaningful step with the task, a
+stepIndex (0, 1, 2, ...), a status and a short stateSnapshot (summary, modifiedArtifacts, decisionsMade,
+nextStepInstructions). Saving a step again overwrites it. To pick work back up, call 'resume_from_checkpoint' first: it
+returns the goal, the latest checkpoint and the live gates (pendingApproval, needsHuman, unfinished dependencies).
+A checkpoint never approves, unblocks or moves a task; if a gate is set, stop and ask a person instead of working on.
+Never put secrets in a snapshot.
+
 Mentions: '#BIT-12' in a description, subtask or comment links that task. 'get_task' returns 'mentions' (what the task
 mentions) and 'mentionedIn' (the tasks that mention it).
 `;

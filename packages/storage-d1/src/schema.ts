@@ -7,6 +7,8 @@ import {
   DEFAULT_WEBHOOK_ENABLED,
   DEFAULT_WEBHOOK_PROVIDER,
   type ChecklistItem,
+  type CheckpointStatus,
+  type StateSnapshot,
   type CommentAuthorType,
   type ProjectKind,
   type ProjectResource,
@@ -84,6 +86,22 @@ export const comments = sqliteTable(
   (table) => [index("comments_task_id_idx").on(table.taskId)],
 );
 
+export const checkpoints = sqliteTable(
+  "checkpoints",
+  {
+    id: text("id").primaryKey(),
+    taskId: text("task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    stepIndex: integer("step_index").notNull(),
+    status: text("status").$type<CheckpointStatus>().notNull(),
+    stateSnapshot: text("state_snapshot", { mode: "json" }).$type<StateSnapshot>().notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  // One checkpoint per task step: saving a step again updates it in place.
+  (table) => [uniqueIndex("checkpoints_task_step_idx").on(table.taskId, table.stepIndex)],
+);
+
 export const webhooks = sqliteTable(
   "webhooks",
   {
@@ -118,5 +136,7 @@ export type InsertTaskRecord = typeof tasks.$inferInsert;
 
 export type CommentRecord = typeof comments.$inferSelect;
 export type InsertCommentRecord = typeof comments.$inferInsert;
+export type CheckpointRecord = typeof checkpoints.$inferSelect;
+export type InsertCheckpointRecord = typeof checkpoints.$inferInsert;
 export type WebhookRecord = typeof webhooks.$inferSelect;
 export type InsertWebhookRecord = typeof webhooks.$inferInsert;

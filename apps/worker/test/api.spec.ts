@@ -7,6 +7,7 @@ const BASE_URL = "https://bitig.test";
 
 const STATEMENTS = [
   "DROP TABLE IF EXISTS `webhooks`",
+  "DROP TABLE IF EXISTS `checkpoints`",
   "DROP TABLE IF EXISTS `comments`",
   "DROP TABLE IF EXISTS `tasks`",
   "DROP TABLE IF EXISTS `projects`",
@@ -62,6 +63,8 @@ const STATEMENTS = [
     FOREIGN KEY (\`task_id\`) REFERENCES \`tasks\`(\`id\`) ON UPDATE no action ON DELETE cascade
   )`,
   "CREATE INDEX `comments_task_id_idx` ON `comments` (`task_id`)",
+  "CREATE TABLE `checkpoints` (`id` text PRIMARY KEY NOT NULL, `task_id` text NOT NULL, `step_index` integer NOT NULL, `status` text NOT NULL, `state_snapshot` text NOT NULL, `created_at` integer NOT NULL, FOREIGN KEY (`task_id`) REFERENCES `tasks`(`id`) ON UPDATE no action ON DELETE cascade)",
+  "CREATE UNIQUE INDEX `checkpoints_task_step_idx` ON `checkpoints` (`task_id`,`step_index`)",
   `CREATE TABLE \`webhooks\` (
     \`id\` text PRIMARY KEY NOT NULL,
     \`project_id\` text NOT NULL,
@@ -409,6 +412,67 @@ describe("REST API: Comments", () => {
     expect((await apiRequest(`/api/comments/${comment.id}`, { method: "DELETE" })).status).toBe(204);
     expect((await apiRequest(`/api/comments/${comment.id}`, { method: "DELETE" })).status).toBe(404);
     expect(await (await apiRequest(`/api/tasks/${task.id}/comments`)).json<Comment[]>()).toEqual([]);
+  });
+
+  it("saves, overwrites and lists a task's checkpoints without touching its gates", async () => {
+    const project = await (await postJson("/api/projects", { name: "Work" })).json<Project>();
+    const task = await (await postJson("/api/tasks", { projectId: project.id, title: "Long job" })).json<Task>();
+    const put = (path: string, body: unknown) =>
+      apiRequest(path, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    const body = (summary: string, status = "IN_PROGRESS") => ({
+      status,
+      stateSnapshot: {
+        summary,
+        modifiedArtifacts: [],
+        decisionsMade: [],
+        nextStepInstructions: "Continue",
+      },
+    });
+    const path = `/api/tasks/${task.id}/checkpoints`;
+
+    const first = await put(`${path}/0`, body("first"));
+    expect(first.status).toBe(200);
+    const saved = await first.json<{ id: string; stepIndex: number }>();
+    expect(saved.stepIndex).toBe(0);
+
+    const again = await (await put(`${path}/0`, body("second", "COMPLETED"))).json<{ id: string }>();
+    expect(again.id).toBe(saved.id);
+    await put(`${path}/3`, body("later"));
+    expect(
+      (await (await apiRequest(path)).json<{ stepIndex: number; status: string }[]>()).map((c) => [c.stepIndex, c.status]),
+    ).toEqual([[0, "COMPLETED"], [3, "IN_PROGRESS"]]);
+
+    // Strict input: unknown fields, a body that tries to set the task or step, bad step segments, unknown tasks
+    expect((await put(`${path}/0`, { ...body("x"), taskId: task.id })).status).toBe(400);
+    expect((await put(`${path}/0`, { ...body("x"), stepIndex: 1 })).status).toBe(400);
+    expect((await put(`${path}/0`, body("x", "done"))).status).toBe(400);
+    expect((await put(`${path}/0`, body("x".repeat(501)))).status).toBe(400);
+    for (const step of ["-1", "1.5", "1e2", "abc"]) {
+      expect((await put(`${path}/${step}`, body("x"))).status).toBe(400);
+    }
+    expect((await put("/api/tasks/01940000-0000-7000-8fff-ffffffffffff/checkpoints/0", body("x"))).status).toBe(404);
+
+    // Progress notes never change the task
+    const after = await (await apiRequest(`/api/tasks/${task.id}`)).json<Task>();
+    expect(after).toEqual(task);
+  });
+
+  it("requires authentication for checkpoint routes", async () => {
+    const id = "01940000-0000-7000-8fff-ffffffffffff";
+    const get = await exports.default.fetch(new Request(`${BASE_URL}/api/tasks/${id}/checkpoints`));
+    expect(get.status).toBe(401);
+    const put = await exports.default.fetch(
+      new Request(`${BASE_URL}/api/tasks/${id}/checkpoints/0`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      }),
+    );
+    expect(put.status).toBe(401);
   });
 });
 

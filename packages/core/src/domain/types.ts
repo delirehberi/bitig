@@ -1,5 +1,9 @@
 import type { z } from "zod";
 import type {
+  CheckpointSchema,
+  CheckpointStatusSchema,
+  StateSnapshotSchema,
+  SaveCheckpointInputSchema,
   ChecklistItemSchema,
   CommentAuthorTypeSchema,
   CommentSchema,
@@ -29,6 +33,10 @@ import type {
 } from "./schemas";
 
 export type Project = z.output<typeof ProjectSchema>;
+export type Checkpoint = z.output<typeof CheckpointSchema>;
+export type CheckpointStatus = z.output<typeof CheckpointStatusSchema>;
+export type StateSnapshot = z.output<typeof StateSnapshotSchema>;
+export type SaveCheckpointInput = z.input<typeof SaveCheckpointInputSchema>;
 export type Task = z.output<typeof TaskSchema>;
 export type TaskStatus = z.output<typeof TaskStatusSchema>;
 export type TaskPriority = z.output<typeof TaskPrioritySchema>;

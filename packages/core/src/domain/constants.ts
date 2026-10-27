@@ -5,6 +5,15 @@
  */
 
 export const TASK_STATUSES = ["todo", "in_progress", "done", "archived"] as const;
+export const CHECKPOINT_STATUSES = ["PENDING", "IN_PROGRESS", "WAITING_HUMAN_APPROVAL", "COMPLETED", "FAILED"] as const;
+export const CHECKPOINT_SUMMARY_MAX = 500;
+export const CHECKPOINT_INSTRUCTIONS_MAX = 4000;
+export const CHECKPOINT_ITEMS_MAX = 20;
+export const CHECKPOINT_ARTIFACT_MAX = 1024;
+export const CHECKPOINT_VALUE_MAX = 500;
+export const CHECKPOINT_KEY_MAX = 64;
+export const CHECKPOINT_HISTORY_MAX = 10;
+export const CHECKPOINT_GOAL_MAX = 4000;
 export const DEFAULT_TASK_STATUS = "todo" satisfies (typeof TASK_STATUSES)[number];
 export const COMPLETED_TASK_STATUS = "done" satisfies (typeof TASK_STATUSES)[number];
 

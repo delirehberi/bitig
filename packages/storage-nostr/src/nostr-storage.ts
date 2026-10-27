@@ -4,6 +4,7 @@ import {
   IdSchema,
   NotFoundError,
   ProjectBundleSchema,
+  SaveCheckpointInputSchema,
   TaskFilterSchema,
   WebhookFilterSchema,
   WebhookTokenSchema,
@@ -11,6 +12,7 @@ import {
   applyTaskPatch,
   applyWebhookPatch,
   assertTaskDependencies,
+  buildCheckpoint,
   buildComment,
   buildProject,
   buildTask,
@@ -19,6 +21,7 @@ import {
   cloneProject,
   cloneTask,
   cloneWebhook,
+  compareCheckpoints,
   compareComments,
   compareProjects,
   compareTasks,
@@ -35,7 +38,9 @@ import {
   withTaskCommentCount,
   withoutDependencies,
   type BackupBundle,
+  type Checkpoint,
   type Comment,
+  type SaveCheckpointInput,
   type CreateCommentInput,
   type CreateProjectInput,
   type CreateTaskInput,
@@ -53,12 +58,14 @@ import {
   type Webhook,
   type WebhookFilter,
 } from "@bitig/core";
+import { decodeCheckpointEvent, encodeCheckpointEvent } from "./codecs/checkpoint-codec";
 import { decodeCommentEvent, encodeCommentEvent } from "./codecs/comment-codec";
 import { decodeProjectEvent, encodeProjectEvent } from "./codecs/project-codec";
 import { decodeTaskEvent, encodeTaskEvent } from "./codecs/task-codec";
 import { decodeWebhookEvent, encodeWebhookEvent } from "./codecs/webhook-codec";
 import {
   formatAddressCoordinate,
+  NOSTR_KIND_CHECKPOINT,
   NOSTR_KIND_COMMENT,
   NOSTR_KIND_DELETE,
   NOSTR_KIND_PROJECT,
@@ -94,6 +101,10 @@ export class NostrStorage implements StorageProvider {
   private readonly projects = new Map<string, Project>();
   private readonly tasks = new Map<string, Task>();
   private readonly comments = new Map<string, Comment>();
+  /** Keyed by checkpoint ID. */
+  private readonly checkpoints = new Map<string, Checkpoint>();
+  /** Unix time of the newest event published per checkpoint, so a re-save always supersedes it. */
+  private readonly checkpointEventTimes = new Map<string, number>();
   private readonly webhooks = new Map<string, Webhook>();
   private synced = false;
 
@@ -118,10 +129,11 @@ export class NostrStorage implements StorageProvider {
     const pubkey = await this.signer.getPublicKey();
     throwIfAborted(opts?.signal);
 
-    const [projectEvents, taskEvents, commentEvents, webhookEvents] = await Promise.all([
+    const [projectEvents, taskEvents, commentEvents, checkpointEvents, webhookEvents] = await Promise.all([
       this.relayManager.queryReplaceable({ kinds: [NOSTR_KIND_PROJECT], authors: [pubkey] }, pubkey),
       this.relayManager.queryReplaceable({ kinds: [NOSTR_KIND_TASK], authors: [pubkey] }, pubkey),
       this.relayManager.queryReplaceable({ kinds: [NOSTR_KIND_COMMENT], authors: [pubkey] }, pubkey),
+      this.relayManager.queryReplaceable({ kinds: [NOSTR_KIND_CHECKPOINT], authors: [pubkey] }, pubkey),
       this.relayManager.queryReplaceable({ kinds: [NOSTR_KIND_WEBHOOK], authors: [pubkey] }, pubkey),
     ]);
     throwIfAborted(opts?.signal);
@@ -150,6 +162,16 @@ export class NostrStorage implements StorageProvider {
         this.comments.set(comment.id, comment);
       } catch {
         // Discard malformed or un-decryptable comment events
+      }
+    }
+
+    for (const event of checkpointEvents) {
+      try {
+        const checkpoint = await decodeCheckpointEvent(event, pubkey, this.signer);
+        this.checkpoints.set(checkpoint.id, checkpoint);
+        this.checkpointEventTimes.set(checkpoint.id, event.created_at);
+      } catch {
+        // Discard malformed or un-decryptable checkpoint events
       }
     }
 
@@ -257,6 +279,10 @@ export class NostrStorage implements StorageProvider {
     for (const c of childComments) {
       tags.push([NOSTR_TAG_A, formatAddressCoordinate(NOSTR_KIND_COMMENT, pubkey, c.id)]);
     }
+    const childCheckpoints = this.checkpointsOf(childTasks.map((t) => t.id));
+    for (const cp of childCheckpoints) {
+      tags.push([NOSTR_TAG_A, formatAddressCoordinate(NOSTR_KIND_CHECKPOINT, pubkey, cp.id)]);
+    }
     for (const w of childWebhooks) {
       tags.push([NOSTR_TAG_A, formatAddressCoordinate(NOSTR_KIND_WEBHOOK, pubkey, w.id)]);
     }
@@ -266,6 +292,9 @@ export class NostrStorage implements StorageProvider {
     }
     if (childComments.length > 0) {
       tags.push(["k", String(NOSTR_KIND_COMMENT)]);
+    }
+    if (childCheckpoints.length > 0) {
+      tags.push(["k", String(NOSTR_KIND_CHECKPOINT)]);
     }
     if (childWebhooks.length > 0) {
       tags.push(["k", String(NOSTR_KIND_WEBHOOK)]);
@@ -292,6 +321,7 @@ export class NostrStorage implements StorageProvider {
     for (const c of childComments) {
       this.comments.delete(c.id);
     }
+    this.forgetCheckpoints(childCheckpoints);
     for (const w of childWebhooks) {
       this.webhooks.delete(w.id);
     }
@@ -414,9 +444,16 @@ export class NostrStorage implements StorageProvider {
     for (const c of childComments) {
       tags.push([NOSTR_TAG_A, formatAddressCoordinate(NOSTR_KIND_COMMENT, pubkey, c.id)]);
     }
+    const childCheckpoints = this.checkpointsOf([id]);
+    for (const cp of childCheckpoints) {
+      tags.push([NOSTR_TAG_A, formatAddressCoordinate(NOSTR_KIND_CHECKPOINT, pubkey, cp.id)]);
+    }
     tags.push(["k", String(NOSTR_KIND_TASK)]);
     if (childComments.length > 0) {
       tags.push(["k", String(NOSTR_KIND_COMMENT)]);
+    }
+    if (childCheckpoints.length > 0) {
+      tags.push(["k", String(NOSTR_KIND_CHECKPOINT)]);
     }
     const deleteTemplate = {
       kind: NOSTR_KIND_DELETE,
@@ -435,6 +472,7 @@ export class NostrStorage implements StorageProvider {
     for (const c of childComments) {
       this.comments.delete(c.id);
     }
+    this.forgetCheckpoints(childCheckpoints);
     await this.dropDependencies(new Set([id]), opts);
   }
 
@@ -522,6 +560,31 @@ export class NostrStorage implements StorageProvider {
     await this.relayManager.publishEvent(signed);
 
     this.comments.delete(id);
+  }
+
+  async getCheckpoints(taskId: string, opts?: OperationOptions): Promise<Checkpoint[]> {
+    throwIfAborted(opts?.signal);
+    parseOrThrow(IdSchema, taskId, "getCheckpoints taskId");
+    await this.syncFromRelays(opts);
+    throwIfAborted(opts?.signal);
+
+    return this.checkpointsOf([taskId]).map((checkpoint) => structuredClone(checkpoint));
+  }
+
+  async saveCheckpoint(input: SaveCheckpointInput, opts?: OperationOptions): Promise<Checkpoint> {
+    throwIfAborted(opts?.signal);
+    const parsed = parseOrThrow(SaveCheckpointInputSchema, input, "saveCheckpoint");
+    await this.syncFromRelays(opts);
+    throwIfAborted(opts?.signal);
+    if (!this.tasks.has(parsed.taskId)) {
+      throw new NotFoundError("task", parsed.taskId);
+    }
+
+    const existing = this.checkpointsOf([parsed.taskId]).find((cp) => cp.stepIndex === parsed.stepIndex);
+    const checkpoint = buildCheckpoint(parsed, this.deps, existing);
+    await this.publishCheckpoint(checkpoint, opts);
+    this.checkpoints.set(checkpoint.id, checkpoint);
+    return structuredClone(checkpoint);
   }
 
   async getWebhooks(filter?: WebhookFilter, opts?: OperationOptions): Promise<Webhook[]> {
@@ -654,12 +717,14 @@ export class NostrStorage implements StorageProvider {
 
     const tasks = await this.getTasks({ projectId: id }, opts);
     const webhooks = await this.getWebhooks({ projectId: id }, opts);
+    const checkpoints = this.checkpointsOf(tasks.map((t) => t.id)).map((cp) => structuredClone(cp));
     const bundle: ProjectBundle = {
       version: BUNDLE_VERSION,
       exportedAt: toTimestamp(this.deps.clock()),
       project: copyProject(project),
       tasks,
       comments: this.commentsOf(tasks.map((t) => t.id)).map(cloneComment),
+      ...(checkpoints.length > 0 ? { checkpoints } : {}),
       ...(webhooks.length > 0 ? { webhooks } : {}),
     };
     return parseOrThrow(ProjectBundleSchema, bundle, "exportProject result");
@@ -695,6 +760,12 @@ export class NostrStorage implements StorageProvider {
       throwIfAborted(opts?.signal);
       await this.publishComment(comment, opts);
       this.comments.set(comment.id, cloneComment(comment));
+    }
+
+    for (const checkpoint of validated.checkpoints ?? []) {
+      throwIfAborted(opts?.signal);
+      await this.publishCheckpoint(checkpoint, opts);
+      this.checkpoints.set(checkpoint.id, structuredClone(checkpoint));
     }
 
     for (const webhook of validated.webhooks ?? []) {
@@ -748,6 +819,21 @@ export class NostrStorage implements StorageProvider {
     await this.relayManager.publishEvent(signed);
   }
 
+  /** Publishes a checkpoint event strictly newer than any earlier one for the same checkpoint. */
+  private async publishCheckpoint(checkpoint: Checkpoint, opts?: OperationOptions): Promise<void> {
+    const pubkey = await this.signer.getPublicKey();
+    throwIfAborted(opts?.signal);
+    const previous = this.checkpointEventTimes.get(checkpoint.id);
+    const now = Math.floor(this.deps.clock().getTime() / 1000);
+    const createdAt = previous === undefined ? now : Math.max(now, previous + 1);
+    const template = await encodeCheckpointEvent(checkpoint, pubkey, createdAt, this.signer);
+    throwIfAborted(opts?.signal);
+    const signed = await this.signer.signEvent(template);
+    throwIfAborted(opts?.signal);
+    await this.relayManager.publishEvent(signed);
+    this.checkpointEventTimes.set(checkpoint.id, createdAt);
+  }
+
   private async publishWebhook(webhook: Webhook, opts?: OperationOptions): Promise<void> {
     const pubkey = await this.signer.getPublicKey();
     throwIfAborted(opts?.signal);
@@ -783,6 +869,21 @@ export class NostrStorage implements StorageProvider {
     return Array.from(this.comments.values())
       .filter((c) => ids.has(c.taskId))
       .sort(compareComments);
+  }
+
+  /** Cached checkpoints on any of `taskIds`, ordered by task then step. */
+  private checkpointsOf(taskIds: readonly string[]): Checkpoint[] {
+    const ids = new Set(taskIds);
+    return Array.from(this.checkpoints.values())
+      .filter((cp) => ids.has(cp.taskId))
+      .sort((a, b) => a.taskId.localeCompare(b.taskId) || compareCheckpoints(a, b));
+  }
+
+  private forgetCheckpoints(checkpoints: readonly Checkpoint[]): void {
+    for (const cp of checkpoints) {
+      this.checkpoints.delete(cp.id);
+      this.checkpointEventTimes.delete(cp.id);
+    }
   }
 
   private tasksOf(projectId: string): Task[] {

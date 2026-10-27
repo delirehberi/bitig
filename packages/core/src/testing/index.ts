@@ -961,6 +961,109 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
       });
     });
 
+    describe("checkpoints", () => {
+      async function createTask(title = "t"): Promise<Task> {
+        const project = await createProject();
+        return storage.saveTask({ projectId: project.id, title });
+      }
+
+      const snapshot = (summary: string) => ({
+        summary,
+        modifiedArtifacts: ["src/a.ts"],
+        decisionsMade: ["keep it simple"],
+        nextStepInstructions: "Run the tests",
+      });
+      const input = (taskId: string, stepIndex: number, summary = `step ${String(stepIndex)}`) => ({
+        taskId,
+        stepIndex,
+        status: "IN_PROGRESS" as const,
+        stateSnapshot: snapshot(summary),
+      });
+
+      it("yields an empty list for a task without checkpoints or an unknown task", async () => {
+        const task = await createTask();
+        expect(await storage.getCheckpoints(task.id)).toEqual([]);
+        expect(await storage.getCheckpoints(UNKNOWN_ID)).toEqual([]);
+        await expect(storage.getCheckpoints(MALFORMED_ID)).rejects.toBeInstanceOf(ValidationError);
+      });
+
+      it("saves checkpoints and lists them ordered by step", async () => {
+        const task = await createTask();
+        const second = await storage.saveCheckpoint(input(task.id, 2));
+        const first = await storage.saveCheckpoint(input(task.id, 0));
+        expect(first.id).not.toBe(second.id);
+        expect(await storage.getCheckpoints(task.id)).toEqual([first, second]);
+      });
+
+      it("upserts a step keeping its identity and creation time", async () => {
+        const task = await createTask();
+        const original = await storage.saveCheckpoint(input(task.id, 1, "first try"));
+        const updated = await storage.saveCheckpoint({ ...input(task.id, 1, "second try"), status: "COMPLETED" });
+        expect(updated.id).toBe(original.id);
+        expect(updated.createdAt).toBe(original.createdAt);
+        expect(updated.status).toBe("COMPLETED");
+        expect(await storage.getCheckpoints(task.id)).toEqual([updated]);
+      });
+
+      it("rejects invalid input and unknown tasks", async () => {
+        const task = await createTask();
+        await expect(storage.saveCheckpoint({ ...input(task.id, -1) })).rejects.toBeInstanceOf(ValidationError);
+        await expect(storage.saveCheckpoint({ ...input(task.id, 0), status: "done" } as never)).rejects.toBeInstanceOf(ValidationError);
+        await expect(storage.saveCheckpoint({ ...input(task.id, 0), extra: true } as never)).rejects.toBeInstanceOf(ValidationError);
+        await expect(storage.saveCheckpoint(input(UNKNOWN_ID, 0))).rejects.toBeInstanceOf(NotFoundError);
+        expect(await storage.getCheckpoints(task.id)).toEqual([]);
+      });
+
+      it("does not change the task or its workflow gates", async () => {
+        const task = await createTask();
+        await storage.saveCheckpoint(input(task.id, 0));
+        expect(await storage.getTask(task.id)).toEqual(task);
+      });
+
+      it("travels with a task that moves and is removed with its task or project", async () => {
+        const target = await createProject("target");
+        const doomedProject = await createProject("doomed");
+        const moving = await createTask("moving");
+        const doomed = await storage.saveTask({ projectId: doomedProject.id, title: "doomed" });
+        const survivor = await createTask("survivor");
+        const movingCheckpoint = await storage.saveCheckpoint(input(moving.id, 0));
+        await storage.saveCheckpoint(input(doomed.id, 0));
+        const kept = await storage.saveCheckpoint(input(survivor.id, 0));
+
+        await storage.updateTask(moving.id, { projectId: target.id });
+        expect(await storage.getCheckpoints(moving.id)).toEqual([movingCheckpoint]);
+
+        await storage.deleteTask(moving.id);
+        expect(await storage.getCheckpoints(moving.id)).toEqual([]);
+
+        await storage.deleteProject(doomedProject.id);
+        expect(await storage.getCheckpoints(doomed.id)).toEqual([]);
+        expect(await storage.getCheckpoints(survivor.id)).toEqual([kept]);
+      });
+
+      it("round-trips through project bundles, and old bundles import without checkpoints", async () => {
+        const project = await createProject("bundled");
+        const task = await storage.saveTask({ projectId: project.id, title: "bundled task" });
+        const checkpoint = await storage.saveCheckpoint(input(task.id, 3));
+
+        const bundle = await storage.exportProject(project.id);
+        expect(bundle.checkpoints).toEqual([checkpoint]);
+
+        await storage.deleteProject(project.id);
+        await storage.importProject(bundle);
+        expect(await storage.getCheckpoints(task.id)).toEqual([checkpoint]);
+
+        await storage.importProject(bundle);
+        expect(await storage.getCheckpoints(task.id)).toEqual([checkpoint]);
+
+        const legacy = { ...bundle };
+        delete legacy.checkpoints;
+        await storage.deleteProject(project.id);
+        await storage.importProject(legacy);
+        expect(await storage.getCheckpoints(task.id)).toEqual([]);
+      });
+    });
+
     describe("webhooks", () => {
       it("starts empty", async () => {
         expect(await storage.getWebhooks()).toEqual([]);
