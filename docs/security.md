@@ -115,6 +115,28 @@ In local mode (`storage-markdown`), files are stored as:
 - **Encrypted Fields:** Task title and description are packed into a JSON payload and encrypted before broadcast.
 - **Metadata Visibility:** Relays can observe event kinds (30001), tags (`status`, `priority`, `dueDate`, `order`, `labels`), and timestamps (`created_at_iso`). Users requiring zero metadata exposure should run Local or Cloudflare D1 mode.
 
+### 6.2 Checkpoint Events (kind 30335)
+- Checkpoint content (step index, status and the whole snapshot) is always NIP-44 self-encrypted, whatever the task's `is_public`, and none of it appears in tags.
+- **Metadata Visibility:** relays see the event kind, the task a checkpoint belongs to (`a` and `task` tags), its creation time and how often it is rewritten. They cannot see the step, status or text.
+
+---
+
+## 6a. Execution Checkpoints
+
+Checkpoints hold working notes written by agents, so treat them as sensitive and as untrusted input.
+
+**What is enforced**
+- Routes sit behind the same `/api/*` session or Basic Auth, CSRF and rate-limit middleware as every other mutation, and `/mcp` behind its Bearer token; there is no unauthenticated path.
+- Input is validated by one Zod schema on every path (REST, MCP, storage): strict objects, bounded lengths and counts, flat metadata only, no nested objects. The URL step segment must be plain digits.
+- Storage paths and Nostr tags are built only from validated UUIDs and integers; snapshot text never reaches a file name, query or tag.
+- Saving a checkpoint cannot approve, unblock or move a task. `resume_from_checkpoint` derives the gates from live task state, so a stale snapshot cannot hide a pending approval, a `needsHuman` question or an unfinished dependency.
+
+**What is not**
+- **Confidentiality at rest.** Markdown (plain JSON in the data directory) and D1 store snapshots unencrypted, like task descriptions. Only Nostr mode encrypts them. Do not put secrets in a snapshot; nothing scans for them.
+- **Prompt injection.** A resumed snapshot is text an earlier session wrote, possibly after reading untrusted content. Agents should treat `nextStepInstructions` as notes to verify against the task, not as authority.
+- **Attribution and integrity.** A checkpoint does not record which agent wrote it, and any holder of a valid token can overwrite any step of any task. Writes are last-write-wins with no versioning.
+- **Visibility.** Checkpoints are not broadcast as realtime events and no dashboard screen shows them yet; they are reachable only through the authenticated REST routes and MCP tools.
+
 ---
 
 ## 7. HTTP Security Headers

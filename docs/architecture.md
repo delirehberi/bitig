@@ -109,11 +109,27 @@ Bitig exposes unified MCP tools across two distribution channels:
    - Protected by Bearer token authentication (or `?token=<MCP_URL_TOKEN>` for clients that cannot send headers) and edge rate limiting.
    - Backed by Cloudflare D1 storage.
 
-### Unified Tool Suite (18 tools):
+### Unified Tool Suite (20 tools):
 - **Projects:** `list_projects`, `create_project`, `update_project`, `delete_project`
 - **Tasks:** `list_tasks`, `get_task`, `add_task`, `update_task`, `complete_task`, `delete_task`, `backfill_ticket_codes`
 - **Comments:** `list_comments`, `add_comment`, `delete_comment`
+- **Checkpoints:** `save_checkpoint`, `resume_from_checkpoint`
 - **Webhooks:** `list_webhooks`, `create_webhook`, `update_webhook`, `delete_webhook`
+
+### Execution checkpoints
+
+A checkpoint is one step of a task's sequential execution state, so an agent can resume after an interruption. Over REST the routes are `GET /api/tasks/:id/checkpoints` and `PUT /api/tasks/:id/checkpoints/:step`.
+
+Guarantees (enforced by the shared contract suite and the MCP/REST tests):
+- **One checkpoint per `(taskId, stepIndex)`.** Saving a step again overwrites it but keeps its `id` and `createdAt`. Concurrent saves of the same step are last-write-wins; there is no merge.
+- **Order is by `stepIndex`.** "Latest" means the highest step index, not the most recently saved one, so re-saving an old step never makes it the resume point.
+- **Strict, bounded input.** Unknown fields are rejected; `stepIndex` is a non-negative safe integer; summary is at most 500 characters, next-step instructions 4,000, lists 20 items, metadata values 500 characters. An oversize or malformed save changes nothing.
+- **Saving never moves a gate.** A checkpoint does not change status, `pendingApproval`, `needsHuman` or `dependsOn`, and `update_task`/`complete_task` still refuse gated moves.
+- **`resume_from_checkpoint` is bounded and live.** It returns the task goal (truncated to 4,000 characters, with a flag), the checklist, the gates computed from the task's *current* state (never from the snapshot), at most the 10 most recent earlier steps as one-line summaries (plus the count omitted) and the selected checkpoint. The gates are information for the agent: it must not start work while `pendingApproval` is set or a dependency is unfinished.
+- **Lifecycle.** Checkpoints stay with their task when it moves to another project, and are deleted with the task or its project. A missing task reads as an empty list; saving to one is `not_found`.
+- **Backups.** `ProjectBundle.checkpoints` is optional; bundles made before checkpoints import as before.
+
+Storage: Markdown keeps `<projectId>/<taskId>.checkpoints/<checkpointId>.json`; D1 has a `checkpoints` table with a unique `(task_id, step_index)` index (migration `0012_task_checkpoints.sql`); Nostr uses kind `30335` (see `nostr-spec.md`).
 
 ---
 

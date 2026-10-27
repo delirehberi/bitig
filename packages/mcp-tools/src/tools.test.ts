@@ -43,6 +43,8 @@ describe("MCP Tools integration", () => {
       "backfill_ticket_codes",
       "list_comments",
       "add_comment",
+      "save_checkpoint",
+      "resume_from_checkpoint",
       "delete_comment",
       "list_webhooks",
       "create_webhook",
@@ -366,6 +368,100 @@ describe("MCP Tools integration", () => {
 
     await call("delete_comment", { id: asked.id });
     expect(await storage.getComments(task.id)).toMatchObject([{ body: "The staging one." }]);
+  });
+
+  describe("checkpoints", () => {
+    const snapshot = (summary: string) => ({
+      summary,
+      modifiedArtifacts: ["src/a.ts"],
+      decisionsMade: ["keep it small"],
+      nextStepInstructions: "Run the tests",
+    });
+
+    async function seed(): Promise<{ id: string }> {
+      const project = await storage.createProject({ name: "Bitig", key: "BIT" });
+      return storage.saveTask({ projectId: project.id, title: "Long job" });
+    }
+
+    it("saves by ticket code with a compact confirmation and resumes from the latest step", async () => {
+      const task = await seed();
+      const saved = await call("save_checkpoint", {
+        taskId: "BIT-1", stepIndex: 0, status: "COMPLETED", stateSnapshot: snapshot("Schema done"),
+      });
+      expect(saved.isError).toBe(false);
+      expect(saved.data).toEqual({
+        success: true, taskId: "BIT-1", checkpointId: expect.any(String) as string, stepIndex: 0, status: "COMPLETED",
+      });
+      expect(JSON.stringify(saved.data)).not.toContain("Schema done");
+      await call("save_checkpoint", {
+        taskId: "BIT-1", stepIndex: 1, status: "IN_PROGRESS", stateSnapshot: snapshot("Routes half done"),
+      });
+
+      const resumed = (await call("resume_from_checkpoint", { taskId: "BIT-1" })).data as {
+        task: { id: string; code: string };
+        checkpoint: { stepIndex: number };
+        history: { stepIndex: number; summary: string }[];
+      };
+      expect(resumed.task).toMatchObject({ id: task.id, code: "BIT-1" });
+      expect(resumed.checkpoint.stepIndex).toBe(1);
+      expect(resumed.history).toEqual([{ stepIndex: 0, status: "COMPLETED", summary: "Schema done" }]);
+
+      const earlier = (await call("resume_from_checkpoint", { taskId: "BIT-1", stepIndex: 0 })).data as {
+        checkpoint: { stepIndex: number };
+      };
+      expect(earlier.checkpoint.stepIndex).toBe(0);
+    });
+
+    it("overwrites a step instead of adding one", async () => {
+      const task = await seed();
+      const args = { taskId: "BIT-1", stepIndex: 2, status: "IN_PROGRESS" };
+      await call("save_checkpoint", { ...args, stateSnapshot: snapshot("first") });
+      await call("save_checkpoint", { ...args, status: "FAILED", stateSnapshot: snapshot("second") });
+      expect(await storage.getCheckpoints(task.id)).toMatchObject([{ status: "FAILED", stateSnapshot: { summary: "second" } }]);
+    });
+
+    it("rejects unknown fields, oversize snapshots, bad steps and unknown tasks", async () => {
+      const task = await seed();
+      const base = { taskId: "BIT-1", stepIndex: 0, status: "PENDING", stateSnapshot: snapshot("ok") };
+      for (const bad of [
+        { ...base, stepIndex: -1 },
+        { ...base, stepIndex: 1.5 },
+        { ...base, status: "done" },
+        { ...base, stateSnapshot: { ...snapshot("ok"), extra: true } },
+        { ...base, stateSnapshot: snapshot("x".repeat(501)) },
+        { ...base, stateSnapshot: { ...snapshot("ok"), nextStepInstructions: "x".repeat(4001) } },
+        { ...base, taskId: "BIT-99" },
+      ]) {
+        expect((await call("save_checkpoint", bad)).isError).toBe(true);
+      }
+      expect(await storage.getCheckpoints(task.id)).toEqual([]);
+      expect((await call("resume_from_checkpoint", { taskId: "BIT-99" })).isError).toBe(true);
+    });
+
+    it("never changes approval, blocking or needs-human state, and reports the live gates on resume", async () => {
+      const project = await storage.createProject({ name: "Bitig", key: "BIT" });
+      const blocker = await storage.saveTask({ projectId: project.id, title: "Blocker" });
+      const gated = await storage.saveTask({
+        projectId: project.id, title: "Gated", pendingApproval: true, needsHuman: "Pick a key", dependsOn: [blocker.id],
+      });
+      const before = await storage.getTask(gated.id);
+      await call("save_checkpoint", {
+        taskId: "BIT-2", stepIndex: 0, status: "WAITING_HUMAN_APPROVAL", stateSnapshot: snapshot("Waiting"),
+      });
+      expect(await storage.getTask(gated.id)).toEqual(before);
+
+      const refused = await call("update_task", { id: "BIT-2", status: "in_progress" });
+      expect(refused.isError).toBe(true);
+
+      const resumed = (await call("resume_from_checkpoint", { taskId: "BIT-2" })).data as {
+        gates: { pendingApproval: boolean; needsHuman: string | null; dependencies: { id: string; blocked: boolean }[] };
+      };
+      expect(resumed.gates).toEqual({
+        pendingApproval: true,
+        needsHuman: "Pick a key",
+        dependencies: [{ id: blocker.id, status: "todo", blocked: true }],
+      });
+    });
   });
 
   it("creates, lists, updates and deletes webhooks using project keys", async () => {

@@ -17,6 +17,7 @@ import {
   ProjectKindSchema,
   ProjectNameSchema,
   ProjectResourcesSchema,
+  SaveCheckpointInputSchema,
   TaskOrderSchema,
   TaskPrioritySchema,
   TaskStatusSchema,
@@ -26,6 +27,7 @@ import {
   WebhookNameSchema,
   WebhookProviderSchema,
   backfillTicketCodes,
+  buildExecutionContext,
   buildMentionIndex,
   blockingTasks,
   checkNewTaskStatus,
@@ -567,6 +569,71 @@ export function registerBitigTools(
         const taskId = await resolveTaskRef(storage, args.taskId, opts);
         const comment = await storage.addComment({ ...args, taskId, authorType: args.authorType ?? "agent" }, opts);
         return formatSuccessResult(comment);
+      } catch (err) {
+        return formatErrorResult(err);
+      }
+    },
+  );
+
+  // 13a. save_checkpoint
+  server.registerTool(
+    "save_checkpoint",
+    {
+      description:
+        "Save where you are on a task so work can resume after an interruption. One checkpoint per stepIndex: saving a step again overwrites it. It records progress only and never changes the task's status, approval or needsHuman state. Replies with a short confirmation, not the stored snapshot.",
+      annotations: { idempotentHint: true },
+      inputSchema: {
+        ...SaveCheckpointInputSchema.shape,
+        taskId: TASK_REF,
+      },
+    },
+    async (args, extra) => {
+      try {
+        const opts = { signal: extra.signal };
+        const taskId = await resolveTaskRef(storage, args.taskId, opts);
+        const checkpoint = await storage.saveCheckpoint({ ...args, taskId }, opts);
+        return formatSuccessResult({
+          success: true,
+          taskId: args.taskId,
+          checkpointId: checkpoint.id,
+          stepIndex: checkpoint.stepIndex,
+          status: checkpoint.status,
+        });
+      } catch (err) {
+        return formatErrorResult(err);
+      }
+    },
+  );
+
+  // 13b. resume_from_checkpoint
+  server.registerTool(
+    "resume_from_checkpoint",
+    {
+      description:
+        "Get what you need to continue a task: its goal, checklist, current approval/needsHuman/dependency gates, a bounded recent history of earlier steps, and the checkpoint to resume from (the latest step, or the given stepIndex). Gates come from live task state, not from the saved snapshot, so check them before acting: you may not start work a person has not approved or that is blocked.",
+      annotations: { readOnlyHint: true },
+      inputSchema: {
+        taskId: TASK_REF,
+        stepIndex: SaveCheckpointInputSchema.shape.stepIndex.optional().describe("Resume from this step instead of the latest"),
+      },
+    },
+    async (args, extra) => {
+      try {
+        const opts = { signal: extra.signal };
+        const id = await resolveTaskRef(storage, args.taskId, opts);
+        const task = await storage.getTask(id, opts);
+        if (task === null) throw new NotFoundError("task", args.taskId);
+        const [checkpoints, dependencies] = await Promise.all([
+          storage.getCheckpoints(id, opts),
+          Promise.all((task.dependsOn ?? []).map((dependencyId) => storage.getTask(dependencyId, opts))),
+        ]);
+        const context = buildExecutionContext(
+          task,
+          checkpoints,
+          dependencies.filter((dependency): dependency is Task => dependency !== null),
+          args.stepIndex,
+        );
+        return formatSuccessResult({ ...context, task: { ...context.task, code: (await withCode(task, opts)).code } });
       } catch (err) {
         return formatErrorResult(err);
       }

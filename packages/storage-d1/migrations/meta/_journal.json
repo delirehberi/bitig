@@ -85,6 +85,13 @@
       "when": 1792612566376,
       "tag": "0011_task_depends_on",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1793132714577,
+      "tag": "0012_task_checkpoints",
+      "breakpoints": true
     }
   ]
 }

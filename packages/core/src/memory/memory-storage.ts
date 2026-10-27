@@ -21,10 +21,13 @@ import {
 } from "../domain/entities";
 import { assertTaskDependencies, hasNewDependencies, withoutDependencies } from "../domain/dependencies";
 import { nextTaskNumber } from "../domain/ticket-codes";
+import { buildCheckpoint, compareCheckpoints } from "../domain/checkpoints";
 import { NotFoundError, parseOrThrow } from "../domain/errors";
 import {
   BUNDLE_VERSION,
   BackupBundleSchema,
+  CheckpointSchema,
+  SaveCheckpointInputSchema,
   IdSchema,
   ProjectBundleSchema,
   TaskFilterSchema,
@@ -33,6 +36,8 @@ import {
 } from "../domain/schemas";
 import type {
   BackupBundle,
+  Checkpoint,
+  SaveCheckpointInput,
   Comment,
   CreateCommentInput,
   CreateProjectInput,
@@ -80,11 +85,31 @@ export class InMemoryStorage implements StorageProvider {
   readonly #projects = new Map<string, Project>();
   readonly #tasks = new Map<string, Task>();
   readonly #comments = new Map<string, Comment>();
+  readonly #checkpoints = new Map<string, Checkpoint>();
   readonly #webhooks = new Map<string, Webhook>();
   readonly #deps: RuntimeDeps;
 
   constructor(deps: RuntimeDeps = defaultRuntimeDeps) {
     this.#deps = deps;
+  }
+
+  getCheckpoints(taskId: string, opts?: OperationOptions): Promise<Checkpoint[]> {
+    return run(opts?.signal, () => {
+      const id = parseId(taskId, "getCheckpoints");
+      return [...this.#checkpoints.values()].filter((checkpoint) => checkpoint.taskId === id)
+        .sort(compareCheckpoints).map((checkpoint) => CheckpointSchema.parse(checkpoint));
+    });
+  }
+
+  saveCheckpoint(input: SaveCheckpointInput, opts?: OperationOptions): Promise<Checkpoint> {
+    return run(opts?.signal, () => {
+      const parsed = parseOrThrow(SaveCheckpointInputSchema, input, "saveCheckpoint");
+      this.#requireTask(parsed.taskId);
+      const key = `${parsed.taskId}:${String(parsed.stepIndex)}`;
+      const checkpoint = buildCheckpoint(parsed, this.#deps, this.#checkpoints.get(key));
+      this.#checkpoints.set(key, checkpoint);
+      return CheckpointSchema.parse(checkpoint);
+    });
   }
 
   getProjects(opts?: OperationOptions): Promise<Project[]> {
@@ -305,6 +330,8 @@ export class InMemoryStorage implements StorageProvider {
         project: copyProject(project),
         tasks,
         comments: this.#commentsOf(tasks.map((t) => t.id)).map(cloneComment),
+        ...([...this.#checkpoints.values()].some((checkpoint) => tasks.some((task) => task.id === checkpoint.taskId))
+          ? { checkpoints: [...this.#checkpoints.values()].filter((checkpoint) => tasks.some((task) => task.id === checkpoint.taskId)).sort(compareCheckpoints) } : {}),
         ...(webhooks.length > 0 ? { webhooks } : {}),
       };
       return parseOrThrow(ProjectBundleSchema, bundle, "exportProject result");
@@ -320,6 +347,9 @@ export class InMemoryStorage implements StorageProvider {
       }
       for (const comment of validated.comments ?? []) {
         this.#comments.set(comment.id, cloneComment(comment));
+      }
+      for (const checkpoint of validated.checkpoints ?? []) {
+        this.#checkpoints.set(`${checkpoint.taskId}:${String(checkpoint.stepIndex)}`, CheckpointSchema.parse(checkpoint));
       }
       for (const webhook of validated.webhooks ?? []) {
         this.#webhooks.set(webhook.id, cloneWebhook(webhook));
@@ -376,6 +406,9 @@ export class InMemoryStorage implements StorageProvider {
 
   #deleteTaskAndComments(taskId: string): void {
     this.#tasks.delete(taskId);
+    for (const [key, checkpoint] of this.#checkpoints) {
+      if (checkpoint.taskId === taskId) this.#checkpoints.delete(key);
+    }
     for (const comment of [...this.#comments.values()]) {
       if (comment.taskId === taskId) this.#comments.delete(comment.id);
     }

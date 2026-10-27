@@ -1,5 +1,7 @@
 import type {
   BackupBundle,
+  Checkpoint,
+  SaveCheckpointInput,
   Comment,
   CreateCommentInput,
   CreateProjectInput,
@@ -73,6 +75,11 @@ export interface StorageProvider {
    * `checkStatusChange` first. The REST API behind `ApiStorage` runs it as well, so there a blocked
    * change is refused unless `overrideBlockedBy` is set. */
   completeTask(id: string, opts?: OperationOptions): Promise<Task>;
+
+  /** Sequential execution state, ordered by step index. Missing tasks yield an empty list. */
+  getCheckpoints(taskId: string, opts?: OperationOptions): Promise<Checkpoint[]>;
+  /** Upserts a task/step, preserving its ID and creation time. Does not change workflow gates. */
+  saveCheckpoint(input: SaveCheckpointInput, opts?: OperationOptions): Promise<Checkpoint>;
 
   /** A task's comments, oldest first (`compareComments`). An unknown task yields an empty list.
    * Comments stay with their task when it moves to another project. */

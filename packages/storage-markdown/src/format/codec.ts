@@ -8,6 +8,7 @@
  * reason `corrupt` naming the file; nothing is skipped silently.
  */
 import {
+  CheckpointSchema,
   CommentSchema,
   ProjectSchema,
   StorageError,
@@ -15,6 +16,7 @@ import {
   ValidationError,
   WebhookSchema,
   parseOrThrow,
+  type Checkpoint,
   type Comment,
   type Project,
   type Task,
@@ -171,6 +173,24 @@ export function decodeComment(taskId: string, id: string, text: string, location
     const { data, body } = parseFrontmatter(text);
     const fields = parseOrThrow(CommentFileSchema, data, "comment file");
     return parseOrThrow(CommentSchema, { ...fields, id, taskId, body }, "comment file");
+  } catch (error) {
+    throw corrupt(location, error);
+  }
+}
+
+const CheckpointFileSchema = z.object(CheckpointSchema.shape).omit({ id: true, taskId: true });
+
+/** A checkpoint is a JSON document: its identity comes from the path, the rest from the body. */
+export function encodeCheckpoint(checkpoint: Checkpoint): string {
+  const { stepIndex, status, stateSnapshot, createdAt } = checkpoint;
+  return `${JSON.stringify({ stepIndex, status, createdAt, stateSnapshot }, null, 2)}\n`;
+}
+
+export function decodeCheckpoint(taskId: string, id: string, text: string, location: string): Checkpoint {
+  assertSize(text, location);
+  try {
+    const fields = parseOrThrow(CheckpointFileSchema, JSON.parse(text), "checkpoint file");
+    return parseOrThrow(CheckpointSchema, { ...fields, id, taskId }, "checkpoint file");
   } catch (error) {
     throw corrupt(location, error);
   }

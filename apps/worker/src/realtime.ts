@@ -68,6 +68,8 @@ export function withRealtimeBroadcast(
       return task;
     },
 
+    getCheckpoints: (taskId, opts) => storage.getCheckpoints(taskId, opts),
+    saveCheckpoint: (input, opts) => storage.saveCheckpoint(input, opts),
     getComments: (taskId, opts) => storage.getComments(taskId, opts),
     addComment: async (input, opts) => {
       const comment = await storage.addComment(input, opts);

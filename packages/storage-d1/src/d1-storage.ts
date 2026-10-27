@@ -1,11 +1,13 @@
-import { count, eq, inArray, isNotNull, max, ne } from "drizzle-orm";
+import { and, count, eq, inArray, isNotNull, max, ne } from "drizzle-orm";
 import { drizzle, type DrizzleD1Database } from "drizzle-orm/d1";
 import {
   BUNDLE_VERSION,
   BackupBundleSchema,
+  CheckpointSchema,
   IdSchema,
   NotFoundError,
   ProjectBundleSchema,
+  SaveCheckpointInputSchema,
   TaskFilterSchema,
   WebhookFilterSchema,
   WebhookTokenSchema,
@@ -13,6 +15,7 @@ import {
   applyTaskPatch,
   applyWebhookPatch,
   assertTaskDependencies,
+  buildCheckpoint,
   buildComment,
   buildProject,
   buildTask,
@@ -21,6 +24,7 @@ import {
   cloneProject,
   cloneTask,
   cloneWebhook,
+  compareCheckpoints,
   compareComments,
   compareProjects,
   compareTasks,
@@ -35,7 +39,9 @@ import {
   toTimestamp,
   withTaskCommentCount,
   type BackupBundle,
+  type Checkpoint,
   type Comment,
+  type SaveCheckpointInput,
   type CreateCommentInput,
   type CreateProjectInput,
   type CreateTaskInput,
@@ -56,11 +62,14 @@ import {
 } from "@bitig/core";
 import * as schema from "./schema";
 import {
+  checkpoints,
   comments,
   projects,
   tasks,
   webhooks,
+  type CheckpointRecord,
   type CommentRecord,
+  type InsertCheckpointRecord,
   type InsertCommentRecord,
   type InsertWebhookRecord,
   type ProjectRecord,
@@ -186,6 +195,28 @@ function commentToRecord(comment: Comment): InsertCommentRecord {
     authorType: comment.authorType,
     author: comment.author ?? null,
     createdAt: Date.parse(comment.createdAt),
+  };
+}
+
+function recordToCheckpoint(row: CheckpointRecord): Checkpoint {
+  return CheckpointSchema.parse({
+    id: row.id,
+    taskId: row.taskId,
+    stepIndex: row.stepIndex,
+    status: row.status,
+    stateSnapshot: row.stateSnapshot,
+    createdAt: new Date(row.createdAt).toISOString(),
+  });
+}
+
+function checkpointToRecord(checkpoint: Checkpoint): InsertCheckpointRecord {
+  return {
+    id: checkpoint.id,
+    taskId: checkpoint.taskId,
+    stepIndex: checkpoint.stepIndex,
+    status: checkpoint.status,
+    stateSnapshot: checkpoint.stateSnapshot,
+    createdAt: Date.parse(checkpoint.createdAt),
   };
 }
 
@@ -329,6 +360,7 @@ export class D1Storage implements StorageProvider {
     const projectTaskIds = this.#db.select({ id: tasks.id }).from(tasks).where(eq(tasks.projectId, validId));
     const removed = new Set((await projectTaskIds.all()).map((row) => row.id));
     await this.#db.delete(comments).where(inArray(comments.taskId, projectTaskIds));
+    await this.#db.delete(checkpoints).where(inArray(checkpoints.taskId, projectTaskIds));
     await this.#db.delete(tasks).where(eq(tasks.projectId, validId));
     if (removed.size > 0) await this.#dropDependencies(removed);
     await this.#db.delete(webhooks).where(eq(webhooks.projectId, validId));
@@ -498,6 +530,7 @@ export class D1Storage implements StorageProvider {
     if (!existingRow) throw new NotFoundError("task", validId);
 
     await this.#db.delete(comments).where(eq(comments.taskId, validId));
+    await this.#db.delete(checkpoints).where(eq(checkpoints.taskId, validId));
     await this.#db.delete(tasks).where(eq(tasks.id, validId));
     await this.#dropDependencies(new Set([validId]));
     throwIfAborted(opts?.signal);
@@ -538,6 +571,38 @@ export class D1Storage implements StorageProvider {
     const rows = await this.#db.select().from(comments).where(eq(comments.taskId, validTaskId)).all();
     throwIfAborted(opts?.signal);
     return rows.map(recordToComment).sort(compareComments).map(cloneComment);
+  }
+
+  async getCheckpoints(taskId: string, opts?: OperationOptions): Promise<Checkpoint[]> {
+    throwIfAborted(opts?.signal);
+    const validTaskId = parseOrThrow(IdSchema, taskId, "getCheckpoints");
+    const rows = await this.#db.select().from(checkpoints).where(eq(checkpoints.taskId, validTaskId)).all();
+    throwIfAborted(opts?.signal);
+    return rows.map(recordToCheckpoint).sort(compareCheckpoints);
+  }
+
+  async saveCheckpoint(input: SaveCheckpointInput, opts?: OperationOptions): Promise<Checkpoint> {
+    throwIfAborted(opts?.signal);
+    const parsed = parseOrThrow(SaveCheckpointInputSchema, input, "saveCheckpoint");
+    const taskRow = await this.#db.select({ id: tasks.id }).from(tasks).where(eq(tasks.id, parsed.taskId)).get();
+    throwIfAborted(opts?.signal);
+    if (!taskRow) throw new NotFoundError("task", parsed.taskId);
+
+    const existingRow = await this.#db
+      .select()
+      .from(checkpoints)
+      .where(and(eq(checkpoints.taskId, parsed.taskId), eq(checkpoints.stepIndex, parsed.stepIndex)))
+      .get();
+    throwIfAborted(opts?.signal);
+    const checkpoint = buildCheckpoint(parsed, this.#deps, existingRow ? recordToCheckpoint(existingRow) : undefined);
+    const values = checkpointToRecord(checkpoint);
+    // The (task, step) unique index makes a concurrent save of the same step update instead of duplicate.
+    await this.#db.insert(checkpoints).values(values).onConflictDoUpdate({
+      target: [checkpoints.taskId, checkpoints.stepIndex],
+      set: { status: values.status, stateSnapshot: values.stateSnapshot },
+    });
+    throwIfAborted(opts?.signal);
+    return checkpoint;
   }
 
   async getComment(id: string, opts?: OperationOptions): Promise<Comment | null> {
@@ -669,13 +734,20 @@ export class D1Storage implements StorageProvider {
       .from(comments)
       .where(inArray(comments.taskId, this.#db.select({ id: tasks.id }).from(tasks).where(eq(tasks.projectId, validId))))
       .all();
+    const checkpointRows = await this.#db
+      .select()
+      .from(checkpoints)
+      .where(inArray(checkpoints.taskId, this.#db.select({ id: tasks.id }).from(tasks).where(eq(tasks.projectId, validId))))
+      .all();
     throwIfAborted(opts?.signal);
+    const projectCheckpoints = checkpointRows.map(recordToCheckpoint).sort(compareCheckpoints);
     const bundle: ProjectBundle = {
       version: BUNDLE_VERSION,
       exportedAt: toTimestamp(this.#deps.clock()),
       project,
       tasks: projectTasks,
       comments: commentRows.map(recordToComment).sort(compareComments),
+      ...(projectCheckpoints.length > 0 ? { checkpoints: projectCheckpoints } : {}),
       ...(projectWebhooks.length > 0 ? { webhooks: projectWebhooks } : {}),
     };
     return parseOrThrow(ProjectBundleSchema, bundle, "exportProject result");
@@ -749,6 +821,12 @@ export class D1Storage implements StorageProvider {
       throwIfAborted(opts?.signal);
       const values = commentToRecord(comment);
       await this.#db.insert(comments).values(values).onConflictDoUpdate({ target: comments.id, set: values });
+    }
+
+    for (const checkpoint of validated.checkpoints ?? []) {
+      throwIfAborted(opts?.signal);
+      const values = checkpointToRecord(checkpoint);
+      await this.#db.insert(checkpoints).values(values).onConflictDoUpdate({ target: checkpoints.id, set: values });
     }
 
     for (const webhook of validated.webhooks ?? []) {

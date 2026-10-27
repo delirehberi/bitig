@@ -90,7 +90,7 @@ describe("Bitig CLI STDIO MCP Server E2E", () => {
 
   it("completes full MCP project and task lifecycle over STDIO", async () => {
     const { tools } = await client.listTools();
-    expect(tools.length).toBe(18);
+    expect(tools.length).toBe(20);
 
     // 1. Create project
     const proj = await callToolJson<ProjectResult & { bitig_file_content: string }>("create_project", {
@@ -137,6 +137,8 @@ describe("Bitig CLI STDIO MCP Server E2E", () => {
       "list_projects",
       "list_tasks",
       "list_webhooks",
+      "resume_from_checkpoint",
+      "save_checkpoint",
       "update_project",
       "update_task",
       "update_webhook",
@@ -223,6 +225,23 @@ describe("Bitig CLI STDIO MCP Server E2E", () => {
       deletedCommentId: comment.id,
     });
     expect(await callToolJson("list_comments", { taskId: task.id })).toEqual([]);
+
+    // Checkpoints: save, overwrite a step, resume, gone with the task
+    const stateSnapshot = {
+      summary: "Halfway",
+      modifiedArtifacts: ["src/a.ts"],
+      decisionsMade: [],
+      nextStepInstructions: "Finish the rest",
+    };
+    expect(
+      await callToolJson("save_checkpoint", { taskId: "ALL-1", stepIndex: 0, status: "IN_PROGRESS", stateSnapshot }),
+    ).toMatchObject({ success: true, taskId: "ALL-1", stepIndex: 0, status: "IN_PROGRESS" });
+    await callToolJson("save_checkpoint", { taskId: "ALL-1", stepIndex: 0, status: "COMPLETED", stateSnapshot });
+    expect(await callToolJson("resume_from_checkpoint", { taskId: "ALL-1" })).toMatchObject({
+      task: { id: task.id, code: "ALL-1" },
+      gates: { pendingApproval: false, needsHuman: null, dependencies: [] },
+      checkpoint: { stepIndex: 0, status: "COMPLETED", stateSnapshot: { summary: "Halfway" } },
+    });
 
     // Deletion: task, then project with its remaining tasks
     expect(await callToolJson("delete_task", { id: task.id })).toEqual({ success: true, deletedTaskId: task.id });

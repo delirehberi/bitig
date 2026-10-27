@@ -21,6 +21,7 @@ Bitig uses **parameterized replaceable events** (kinds `30000 <= kind < 40000`, 
 | `30331` | **Bitig Project** | Parameterized replaceable event representing a project container. |
 | `30332` | **Bitig Task** | Parameterized replaceable event representing an individual task. |
 | `30333` | **Bitig Comment** | Parameterized replaceable event representing a comment on a task. |
+| `30335` | **Bitig Checkpoint** | Parameterized replaceable event holding one step of a task's execution state. |
 | `31989` | **App Handler (NIP-89)** | Metadata event declaring Bitig as a handler for kinds `30331` and `30332`. |
 | `5` | **Deletion (NIP-09)** | Standard deletion event referencing deleted project or task coordinates. |
 
@@ -131,6 +132,40 @@ A comment stays with its task when the task moves to another project, since it r
 
 ---
 
+## 4b. Checkpoint Event (`kind: 30335`)
+
+One step of a task's sequential execution state, so an agent can resume where it stopped. A task has at most one checkpoint per step index; saving a step again replaces its event.
+
+### Tags
+
+| Tag | Required | Description | Example |
+| :--- | :--- | :--- | :--- |
+| `d` | **Yes** | Checkpoint ID (UUIDv7), kept when the step is saved again | `["d", "01944547-4c1a-7d20-8a11-2f6e1b0c9d33"]` |
+| `a` | **Yes** | Address coordinate of the task: `30332:<authorPubkey>:<taskId>` | `["a", "30332:fa56...:01944547-2b7e-7c15-992e-33633beba656"]` |
+| `task` | **Yes** | Task ID for direct query indexing (`#task`) | `["task", "01944547-2b7e-7c15-992e-33633beba656"]` |
+| `created_at_iso` | No | Millisecond-precision time the step was first saved | `["created_at_iso", "2026-10-20T00:30:00.000Z"]` |
+| `alt` | No | NIP-31 fallback description | `["alt", "Bitig Checkpoint"]` |
+
+### Content
+Always NIP-44 self-encrypted, whatever the task's `is_public`. The step index, status and snapshot are never tags, so relays see only the task a checkpoint belongs to. The plaintext is JSON:
+```json
+{
+  "stepIndex": 2,
+  "status": "IN_PROGRESS",
+  "stateSnapshot": {
+    "summary": "Schema migrated",
+    "modifiedArtifacts": ["migrations/0012.sql"],
+    "decisionsMade": ["unique (task, step)"],
+    "nextStepInstructions": "Wire the REST routes"
+  }
+}
+```
+`status` is one of `PENDING`, `IN_PROGRESS`, `WAITING_HUMAN_APPROVAL`, `COMPLETED`, `FAILED`. `stateSnapshot` may also carry `blockersOrErrors` and flat `metadata`; every field is length-bounded (summary 500, instructions 4,000, 20 list items).
+
+Saving a step again republishes the same `d` tag with an event time strictly later than the previous one, so last-write-wins resolves to the newest snapshot. A checkpoint is informational: it never changes the task's status, approval or needs-human gates. It stays with its task when the task moves to another project.
+
+---
+
 ## 5. Deletion & Cascades (NIP-09)
 
 Entities are permanently deleted by publishing a **kind `5`** deletion event signed by the author.
@@ -140,6 +175,7 @@ Publish a kind `5` event with:
 - `["a", "30332:<authorPubkey>:<taskId>"]`
 - `["e", "<latestTaskEventId>"]` (optional but recommended)
 - `["a", "30333:<authorPubkey>:<commentId>"]` for each of the task's comments, with `["k", "30333"]`
+- `["a", "30335:<authorPubkey>:<checkpointId>"]` for each of the task's checkpoints, with `["k", "30335"]`
 
 ### Deleting a Comment
 Publish a kind `5` event with `["a", "30333:<authorPubkey>:<commentId>"]` and `["k", "30333"]`.
@@ -151,9 +187,11 @@ Publish a single kind `5` event containing:
 - `["a", "30332:<authorPubkey>:<taskId1>"]`
 - `["a", "30332:<authorPubkey>:<taskId2>"]`
 - `["a", "30333:<authorPubkey>:<commentId>"]` for each comment on those tasks
+- `["a", "30335:<authorPubkey>:<checkpointId>"]` for each checkpoint on those tasks
 - `["k", "30331"]`
 - `["k", "30332"]`
 - `["k", "30333"]` (when there are comments)
+- `["k", "30335"]` (when there are checkpoints)
 
 When a client queries events from relays, it must fetch kind `5` events authored by the user and treat any referenced `d` or `a` coordinates as tombstones.
 

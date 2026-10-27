@@ -1,7 +1,9 @@
 import {
   BackupBundleSchema,
+  CheckpointSchema,
   CommentSchema,
   CreateCommentInputSchema,
+  SaveCheckpointInputSchema,
   CreateProjectInputSchema,
   CreateTaskInputSchema,
   CreateWebhookInputSchema,
@@ -21,7 +23,9 @@ import {
   parseOrThrow,
   throwIfAborted,
   type BackupBundle,
+  type Checkpoint,
   type Comment,
+  type SaveCheckpointInput,
   type CreateCommentInput,
   type CreateProjectInput,
   type CreateTaskInput,
@@ -420,6 +424,58 @@ export class ApiStorage implements StorageProvider {
     }
 
     return this.parseJsonResponse<Task>(res);
+  }
+
+  async getCheckpoints(taskId: string, opts?: OperationOptions): Promise<Checkpoint[]> {
+    throwIfAborted(opts?.signal);
+    const validId = parseOrThrow(IdSchema, taskId, "getCheckpoints taskId");
+    const res = await this.request(
+      `/api/tasks/${encodeURIComponent(validId)}/checkpoints`,
+      { method: "GET" },
+      opts,
+    );
+
+    if (res.status === HTTP_UNAUTHORIZED) {
+      throw new AuthError();
+    }
+    if (!res.ok) {
+      throw new StorageError("io", `Failed to get checkpoints of task ${taskId}: HTTP ${res.status.toString()}`);
+    }
+
+    const data = await this.parseJsonResponse<unknown>(res);
+    return parseOrThrow(CheckpointSchema.array(), data, "getCheckpoints response");
+  }
+
+  async saveCheckpoint(input: SaveCheckpointInput, opts?: OperationOptions): Promise<Checkpoint> {
+    throwIfAborted(opts?.signal);
+    const { taskId, stepIndex, ...validated } = parseOrThrow(SaveCheckpointInputSchema, input, "saveCheckpoint");
+
+    const res = await this.request(
+      `/api/tasks/${encodeURIComponent(taskId)}/checkpoints/${String(stepIndex)}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(validated),
+      },
+      opts,
+    );
+
+    if (res.status === HTTP_NOT_FOUND) {
+      throw new NotFoundError("task", taskId);
+    }
+    if (res.status === HTTP_BAD_REQUEST) {
+      const err = await this.parseJsonResponse<{ details?: readonly [] }>(res);
+      throw new ValidationError("saveCheckpoint", err.details ?? []);
+    }
+    if (res.status === HTTP_UNAUTHORIZED) {
+      throw new AuthError();
+    }
+    if (!res.ok) {
+      throw new StorageError("io", `Failed to save checkpoint: HTTP ${res.status.toString()}`);
+    }
+
+    const data = await this.parseJsonResponse<unknown>(res);
+    return parseOrThrow(CheckpointSchema, data, "saveCheckpoint response");
   }
 
   async getComments(taskId: string, opts?: OperationOptions): Promise<Comment[]> {
