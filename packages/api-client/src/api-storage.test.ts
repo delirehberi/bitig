@@ -7,6 +7,16 @@ const VALID_PROJECT_ID = "01940000-0000-7000-8000-000000000001";
 const VALID_TASK_ID = "01940000-0000-7000-8000-000000000002";
 
 describe("ApiStorage", () => {
+  it("normalizes and sends Backlog patches to the API", async () => {
+    const returned = { id: VALID_TASK_ID, status: "todo", pendingApproval: true };
+    const mockFetch = vi.fn(() => Promise.resolve(new Response(JSON.stringify(returned), { status: 200 })));
+    const storage = new ApiStorage({ baseUrl: "https://api.test", fetch: mockFetch });
+    expect(await storage.updateTask(VALID_TASK_ID, { pendingApproval: true, status: "done", order: 2 })).toEqual(returned);
+    expect(mockFetch).toHaveBeenCalledWith(`https://api.test/api/tasks/${VALID_TASK_ID}`, expect.objectContaining({
+      method: "PATCH", body: JSON.stringify({ status: "todo", order: 2, pendingApproval: true }),
+    }));
+  });
+
   it("encodes basic auth credentials in Authorization header", async () => {
     let capturedHeader: string | null = null;
     const mockFetch = vi.fn((_url: string | URL | Request, init?: RequestInit) => {

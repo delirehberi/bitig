@@ -11,7 +11,7 @@ export function ApprovalBadge({ pending }: { readonly pending: boolean }) {
   if (!pending) return null;
   return (
     <span
-      title="Created by an agent or webhook; approve it before it can be worked on"
+      title="In Backlog; approve it before it can be worked on"
       className="inline-flex shrink-0 items-center gap-1 rounded-pill border border-dashed border-rule-strong bg-paper-3 px-2 py-0.5 text-2xs font-semibold text-ink"
     >
       <ShieldQuestionMark size={12} aria-hidden="true" className="shrink-0" />
@@ -45,7 +45,7 @@ export function ApprovalNote({ pending, onApprove, onReject, compact = false }: 
         {!compact && (
           <span className="text-ink-2">
             {" "}
-            — an agent or webhook created this task. It can't be started or completed by an agent until you approve it.
+            — this task is in Backlog. It can't be started or completed by an agent until you approve it.
           </span>
         )}
       </div>

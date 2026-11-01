@@ -418,12 +418,12 @@ export function registerBitigTools(
     "add_task",
     {
       description:
-        "Add a new task to a project. The result's code (e.g. BIT-12) names the task from then on. The task awaits a person's approval and cannot be started or completed until approved, nor while any task in dependsOn is unfinished.",
+        "Add a new task to a project in Backlog (status todo, awaiting approval). The result's code (e.g. BIT-12) names the task from then on. The task cannot be started or completed until a person approves it, nor while any task in dependsOn is unfinished.",
       inputSchema: {
         projectId: PROJECT_REF,
         title: TaskTitleSchema,
         description: z.string().optional(),
-        status: TaskStatusSchema.optional(),
+        status: z.literal("todo").optional(),
         isPublic: z.boolean().optional(),
         dueDate: DueDateSchema.optional(),
         priority: TaskPrioritySchema.optional(),
@@ -446,6 +446,7 @@ export function registerBitigTools(
         const parsed = CreateTaskInputSchema.parse({
           ...rest,
           projectId,
+          status: "todo",
           pendingApproval: true,
           ...(dependsOn.length > 0 ? { dependsOn } : {}),
         });

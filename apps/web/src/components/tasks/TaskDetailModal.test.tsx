@@ -39,6 +39,7 @@ function renderModal(task: Task | null = TASK, mode: StorageMode = "local") {
     onEdit: vi.fn(),
     onDelete: vi.fn(),
     onComplete: vi.fn(),
+    onMoveToBacklog: vi.fn(),
   };
   render(
     <FeatureFlagsProvider mode={mode}>
@@ -49,6 +50,18 @@ function renderModal(task: Task | null = TASK, mode: StorageMode = "local") {
 }
 
 describe("TaskDetailModal", () => {
+  it.each(["todo", "in_progress", "done", "archived"] as const)("moves %s tasks to Backlog", async (status) => {
+    const task = { ...TASK, status };
+    const handlers = renderModal(task);
+    await userEvent.click(screen.getByRole("button", { name: "Move to Backlog" }));
+    expect(handlers.onMoveToBacklog).toHaveBeenCalledWith(task);
+  });
+
+  it("does not offer to move an existing Backlog task again", () => {
+    renderModal({ ...TASK, status: "todo", pendingApproval: true });
+    expect(screen.queryByRole("button", { name: "Move to Backlog" })).not.toBeInTheDocument();
+  });
+
   it("renders nothing without a task", () => {
     renderModal(null);
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();

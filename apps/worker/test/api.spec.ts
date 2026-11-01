@@ -217,6 +217,22 @@ describe("REST API: Tasks", () => {
     await env.DB.batch(STATEMENTS.map((sql) => env.DB.prepare(sql)));
   });
 
+  it.each(["todo", "in_progress", "done", "archived"] as const)("returns %s to Backlog through the REST API", async (status) => {
+    async function send(path: string, method: string, body: unknown): Promise<Response> {
+      return apiRequest(path, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    }
+    const project = await (await send("/api/projects", "POST", { name: "Backlog project" })).json<Project>();
+    const blocker = await (await send("/api/tasks", "POST", { projectId: project.id, title: "Unfinished dependency" })).json<Task>();
+    const task = await (await send("/api/tasks", "POST", { projectId: project.id, title: "Return task", status })).json<Task>();
+    const response = await send(`/api/tasks/${task.id}`, "PATCH", { pendingApproval: true, status: "done", dependsOn: [blocker.id], order: 2 });
+    expect(response.status).toBe(200);
+    const updated = await response.json<Task>();
+    expect(updated).toMatchObject({ status: "todo", pendingApproval: true, order: 2, dependsOn: [blocker.id] });
+    expect(updated).not.toHaveProperty("startedAt");
+    expect(updated).not.toHaveProperty("completedAt");
+    expect(await (await apiRequest(`/api/tasks/${task.id}`)).json<Task>()).toEqual(updated);
+  });
+
   it("creates, filters, completes and deletes tasks", async () => {
     const pRes = await apiRequest("/api/projects", {
       method: "POST",

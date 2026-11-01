@@ -93,6 +93,27 @@ function rowTitles(): string[] {
 }
 
 describe("TaskList sorting and project column visibility", () => {
+  it.each(["todo", "in_progress", "done"] as const)("moves a %s task to Backlog from the list", async (status) => {
+    const onMoveToBacklog = vi.fn();
+    const original = TASKS[0];
+    if (!original) throw new Error("Missing task fixture");
+    const task: Task = { ...original, status };
+    render(<TaskList tasks={[task]} projects={[PROJECT_ALPHA, PROJECT_ZETA]}
+      onView={vi.fn()} onEdit={vi.fn()} onDelete={vi.fn()} onComplete={vi.fn()}
+      onStatusChange={vi.fn()} onMoveToBacklog={onMoveToBacklog} />);
+    await userEvent.click(screen.getByRole("button", { name: "Move to Backlog" }));
+    expect(onMoveToBacklog).toHaveBeenCalledWith(task);
+  });
+
+  it("hides the Backlog action for tasks already awaiting approval", () => {
+    const original = TASKS[0];
+    if (!original) throw new Error("Missing task fixture");
+    render(<TaskList tasks={[{ ...original, status: "todo", pendingApproval: true }]} projects={[PROJECT_ALPHA, PROJECT_ZETA]}
+      onView={vi.fn()} onEdit={vi.fn()} onDelete={vi.fn()} onComplete={vi.fn()}
+      onStatusChange={vi.fn()} onMoveToBacklog={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: "Move to Backlog" })).not.toBeInTheDocument();
+  });
+
   it("keeps initial order before any column header is clicked", () => {
     renderTaskList();
     expect(rowTitles()).toEqual(["Charlie task", "alpha task", "Bravo task"]);

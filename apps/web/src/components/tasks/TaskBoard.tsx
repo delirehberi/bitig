@@ -24,6 +24,7 @@ interface TaskBoardProps {
   readonly onDelete: (task: Task) => void;
   readonly onComplete: (task: Task) => void;
   readonly onStatusChange: (task: Task, status: TaskStatus) => void;
+  readonly onMoveToBacklog?: ((task: Task) => void) | undefined;
   /** Approves a task an agent or webhook created; omit to show the flag read-only. */
   readonly onApprove?: ((task: Task) => void) | undefined;
   /** Writes for a drag-and-drop or keyboard move; the moved task comes first. */
@@ -34,6 +35,7 @@ interface TaskBoardProps {
 
 const ACTIVE_STATUSES: readonly TaskStatus[] = ["todo", "in_progress", "done"];
 const ARCHIVE_ICON_SIZE = 15;
+const BACKLOG_COLUMN = "backlog";
 
 const COLUMN_CONFIG: Record<
   TaskStatus,
@@ -46,7 +48,7 @@ const COLUMN_CONFIG: Record<
 };
 
 interface DropTarget {
-  readonly status: TaskStatus;
+  readonly status: TaskStatus | typeof BACKLOG_COLUMN;
   /** Position among the column's cards, not counting the dragged one. */
   readonly index: number;
 }
@@ -59,6 +61,7 @@ export function TaskBoard({
   onDelete,
   onComplete,
   onStatusChange,
+  onMoveToBacklog,
   onApprove,
   onMove,
   showProject = true,
@@ -112,10 +115,15 @@ export function TaskBoard({
   function reorderBacklog(task: Task, index: number) {
     const changes = planMove(backlogTasks, task, index);
     if (changes.length === 0) return;
-    onMove(changes.map(({ task: changedTask, order }) => ({ task: changedTask, patch: { order } })));
+    onMove(changes.map(({ task: changedTask, order }): TaskMove => ({
+      task: changedTask,
+      patch: changedTask.id === task.id && task.pendingApproval !== true
+        ? { status: "todo", pendingApproval: true, order }
+        : { order },
+    })));
   }
 
-  function dropIndex(event: DragEvent<HTMLElement>, status: TaskStatus): number {
+  function dropIndex(event: DragEvent<HTMLElement>, status: TaskStatus | typeof BACKLOG_COLUMN): number {
     const cards = Array.from(
       event.currentTarget.querySelectorAll<HTMLElement>("[data-task-id]"),
     ).filter((el) => el.dataset.taskId !== draggedId);
@@ -123,7 +131,8 @@ export function TaskBoard({
       const rect = el.getBoundingClientRect();
       return event.clientY < rect.top + rect.height / 2;
     });
-    return below === -1 ? (columns.get(status) ?? []).filter((t) => t.id !== draggedId).length : below;
+    const column = status === BACKLOG_COLUMN ? backlogTasks : columns.get(status) ?? [];
+    return below === -1 ? column.filter((t) => t.id !== draggedId).length : below;
   }
 
   function endDrag() {
@@ -133,7 +142,27 @@ export function TaskBoard({
 
   return (
     <div ref={boardRef} className="flex flex-col gap-5">
-      <div data-testid="column-backlog" className="flex flex-col rounded-lg border border-rule bg-paper-2/60 p-4">
+      <div
+        data-testid="column-backlog"
+        onDragOver={(event) => {
+          if (!draggedId) return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "move";
+          setDropTarget({ status: BACKLOG_COLUMN, index: dropIndex(event, BACKLOG_COLUMN) });
+        }}
+        onDragLeave={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropTarget(null);
+        }}
+        onDrop={(event) => {
+          event.preventDefault();
+          const task = tasks.find((candidate) => candidate.id === draggedId);
+          if (task) reorderBacklog(task, dropIndex(event, BACKLOG_COLUMN));
+          endDrag();
+        }}
+        className={`flex flex-col rounded-lg border bg-paper-2/60 p-4 transition-colors ${
+          dropTarget?.status === BACKLOG_COLUMN ? "border-accent/50" : "border-rule"
+        }`}
+      >
         <div className="mb-3 flex items-center gap-2">
           <Inbox size={ARCHIVE_ICON_SIZE} className="text-ink-3" aria-hidden="true" />
           <h3 className="m-0 font-display text-sm font-bold text-ink">Backlog</h3>
@@ -170,6 +199,7 @@ export function TaskBoard({
                   onDelete={onDelete}
                   onComplete={onComplete}
                   onStatusChange={onStatusChange}
+                  onMoveToBacklog={onMoveToBacklog}
                   onApprove={onApprove}
                   onReorder={(direction) => {
                     const index = backlogTasks.indexOf(task) + direction;
@@ -326,6 +356,7 @@ export function TaskBoard({
                           onDelete={onDelete}
                           onComplete={onComplete}
                           onStatusChange={onStatusChange}
+                          onMoveToBacklog={onMoveToBacklog}
                           onApprove={onApprove}
                           onReorder={(direction) => {
                             const index = colTasks.indexOf(task) + direction;
@@ -383,7 +414,18 @@ export function TaskBoard({
           ) : (
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
               {archivedTasks.map((task) => (
-                <div key={task.id} data-task-id={task.id}>
+                <div
+                  key={task.id}
+                  data-task-id={task.id}
+                  draggable
+                  onDragStart={(event) => {
+                    event.dataTransfer.effectAllowed = "move";
+                    event.dataTransfer.setData("text/plain", task.title);
+                    setDraggedId(task.id);
+                  }}
+                  onDragEnd={endDrag}
+                  className={task.id === draggedId ? "opacity-40" : ""}
+                >
                   <TaskCard
                     task={task}
                     projects={projects}
@@ -393,6 +435,7 @@ export function TaskBoard({
                     onDelete={onDelete}
                     onComplete={onComplete}
                     onStatusChange={onStatusChange}
+                    onMoveToBacklog={onMoveToBacklog}
                     onApprove={onApprove}
                   />
                 </div>

@@ -46,6 +46,7 @@ interface TaskListProps {
   readonly onDelete: (task: Task) => void;
   readonly onComplete: (task: Task) => void;
   readonly onStatusChange: (task: Task, status: TaskStatus) => void;
+  readonly onMoveToBacklog?: ((task: Task) => void) | undefined;
   /** Approves a task an agent or webhook created; omit to show the flag read-only. */
   readonly onApprove?: ((task: Task) => void) | undefined;
   /** Whether to show the Project column; defaults to true. */
@@ -140,6 +141,7 @@ export function TaskList({
   onDelete,
   onComplete,
   onStatusChange,
+  onMoveToBacklog,
   onApprove,
   showProject = true,
 }: TaskListProps) {
@@ -324,6 +326,17 @@ export function TaskList({
                   </td>
                 )}
                 <td className="py-3 px-3 whitespace-nowrap">
+                  {task.pendingApproval !== true && onMoveToBacklog && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onMoveToBacklog(task);
+                      }}
+                      className="mr-2 rounded-md border border-rule px-2 py-0.5 text-2xs font-semibold text-ink focus-visible:outline-focus"
+                    >
+                      Move to Backlog
+                    </button>
+                  )}
                   <select
                     value={task.status}
                     onChange={(e) => {

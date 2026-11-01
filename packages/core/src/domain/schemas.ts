@@ -389,12 +389,13 @@ export const UpdateTaskInputSchema = z
     checklist: ChecklistSchema.nullable().optional(),
     /** `null` clears it once a person has answered. */
     needsHuman: NeedsHumanSchema.nullable().optional(),
-    /** `null` approves the task. A patch can never re-flag it. */
-    pendingApproval: z.null().optional(),
+    /** `true` returns the task to Backlog; `null` approves it. */
+    pendingApproval: z.literal(true).nullable().optional(),
     /** Replaces the whole list; `null` or `[]` removes it. */
     dependsOn: DependsOnSchema.nullable().optional(),
   })
-  .refine(hasAnyDefinedField, { message: EMPTY_PATCH_MESSAGE });
+  .refine(hasAnyDefinedField, { message: EMPTY_PATCH_MESSAGE })
+  .transform((patch): typeof patch => patch.pendingApproval === true ? { ...patch, status: DEFAULT_TASK_STATUS } : patch);
 
 export const CreateCommentInputSchema = z.strictObject({
   taskId: IdSchema,

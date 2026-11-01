@@ -6,6 +6,7 @@
 import {
   COMPLETED_TASK_STATUS,
   DEFAULT_OVERRIDE_ACTOR,
+  DEFAULT_TASK_STATUS,
   TASK_ACTIVITY_MAX_ITEMS,
   WEBHOOK_TOKEN_PREFIX,
 } from "./constants";
@@ -444,7 +445,7 @@ export function applyTaskPatch(
   // last touch (`updatedAt`, `updatedBy`, `activity`) as it was.
   const orderOnly = isOrderOnlyPatch(parsed);
   const updatedAt = orderOnly ? task.updatedAt : nextUpdatedAt(task.updatedAt, now);
-  const nextStatus = parsed.status ?? task.status;
+  const nextStatus = parsed.pendingApproval === true ? DEFAULT_TASK_STATUS : parsed.status ?? task.status;
   const { startedAt, completedAt } = resolveTaskLifecycleTimestamps(task, nextStatus, updatedAt);
   const { startedBy, completedBy } = resolveTaskLifecycleActors(task, nextStatus, validActor);
   const activity = orderOnly

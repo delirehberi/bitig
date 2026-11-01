@@ -152,12 +152,33 @@ describe("MCP Tools integration", () => {
     await storage.updateTask(id, { pendingApproval: null });
   }
 
+  it.each(["in_progress", "done", "archived"])("refuses MCP task creation in %s", async (status) => {
+    await call("create_project", { name: "Bitig", key: "BIT" });
+    const result = await call("add_task", { projectId: "BIT", title: "Invalid initial status", status });
+    expect(result.isError).toBe(true);
+    expect(await storage.getTasks()).toEqual([]);
+  });
+
+  it("reapplies the agent approval gate after a task returns to Backlog", async () => {
+    await call("create_project", { name: "Bitig", key: "BIT" });
+    const created = await task("add_task", { projectId: "BIT", title: "Reconsider work", status: "todo" });
+    await approve(created.id);
+    await task("update_task", { id: created.id, status: "in_progress" });
+    await storage.updateTask(created.id, { pendingApproval: true });
+    const refused = await call("update_task", { id: created.id, status: "in_progress" });
+    expect(refused.isError).toBe(true);
+    expect(refused.data).toContain("awaiting human approval");
+    expect((await call("complete_task", { id: created.id })).isError).toBe(true);
+    expect(await storage.getTask(created.id)).toMatchObject({ status: "todo", pendingApproval: true });
+  });
+
   it("creates tasks awaiting approval and refuses to start or complete them until a person approves", async () => {
     await call("create_project", { name: "Bitig", key: "BIT" });
     const created = (await call("add_task", { projectId: "BIT", title: "Agent idea" })).data as TaskResult & {
       pendingApproval?: true;
     };
     expect(created.pendingApproval).toBe(true);
+    expect(created.status).toBe("todo");
 
     // An agent cannot opt out at creation or approve through update_task
     const optedOut = (await call("add_task", { projectId: "BIT", title: "Sneaky", pendingApproval: false }))
@@ -263,7 +284,7 @@ describe("MCP Tools integration", () => {
     // Creating a task already started or done behind an unfinished dependency is refused
     const created = await call("add_task", { projectId: "BIT", title: "Docs", status: "done", dependsOn: ["BIT-1"] });
     expect(created.isError).toBe(true);
-    expect(created.data).toContain("BIT-1");
+    expect(created.data).toContain("todo");
     expect((await call("add_task", { projectId: "BIT", title: "Docs", dependsOn: ["BIT-99"] })).isError).toBe(true);
   });
 

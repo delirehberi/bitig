@@ -35,11 +35,11 @@ const SECOND = task(2, 1);
 const THIRD = task(3, 2);
 const STARTED = task(4, 0, "in_progress");
 
-function renderBoard(onMove: (moves: readonly TaskMove[]) => void) {
+function renderBoard(onMove: (moves: readonly TaskMove[]) => void, tasks: Task[] = [FIRST, SECOND, THIRD, STARTED]) {
   render(
     <FeatureFlagsProvider mode="cloudflare">
       <TaskBoard
-        tasks={[FIRST, SECOND, THIRD, STARTED]}
+        tasks={tasks}
         projects={[PROJECT]}
         onView={vi.fn()}
         onEdit={vi.fn()}
@@ -60,6 +60,66 @@ function summary(onMove: ReturnType<typeof vi.fn>) {
 const dataTransfer = { setData: vi.fn(), dropEffect: "", effectAllowed: "" };
 
 describe("TaskBoard reordering", () => {
+  it("accepts a task into an empty Backlog and ignores external drops", () => {
+    const onMove = vi.fn();
+    renderBoard(onMove);
+    const backlog = screen.getByTestId("column-backlog");
+    fireEvent.drop(backlog, { dataTransfer });
+    expect(onMove).not.toHaveBeenCalled();
+    const card = screen.getByText(STARTED.title).closest("[data-task-id]");
+    if (!card) throw new Error("source card not found");
+    fireEvent.dragStart(card, { dataTransfer });
+    fireEvent.dragOver(backlog, { dataTransfer });
+    fireEvent.drop(backlog, { dataTransfer });
+    expect(summary(onMove)).toEqual([[STARTED.title, { status: "todo", pendingApproval: true, order: 0 }]]);
+  });
+
+  it("reorders within Backlog without changing approval or status", () => {
+    const onMove = vi.fn();
+    renderBoard(onMove, [{ ...FIRST, pendingApproval: true }, { ...SECOND, pendingApproval: true }]);
+    const card = screen.getByText(FIRST.title).closest("[data-task-id]");
+    if (!card) throw new Error("backlog card not found");
+    const backlog = screen.getByTestId("column-backlog");
+    fireEvent.dragStart(card, { dataTransfer });
+    fireEvent.drop(backlog, { dataTransfer });
+    expect(summary(onMove)).toEqual([[FIRST.title, { order: 2 }]]);
+  });
+
+  it.each(["todo", "in_progress", "done", "archived"] as const)("drops %s tasks into Backlog", (status) => {
+    const onMove = vi.fn();
+    const movedTask = task(4, 0, status);
+    const backlogTask: Task = { ...FIRST, order: 2, pendingApproval: true };
+    render(
+      <FeatureFlagsProvider mode="cloudflare">
+        <TaskBoard tasks={[backlogTask, movedTask]} projects={[PROJECT]}
+          onView={vi.fn()} onEdit={vi.fn()} onDelete={vi.fn()} onComplete={vi.fn()}
+          onStatusChange={vi.fn()} onMove={onMove} />
+      </FeatureFlagsProvider>,
+    );
+    if (status === "archived") fireEvent.click(screen.getByTestId("toggle-archived-tasks"));
+    const card = screen.getByText(movedTask.title).closest("[data-task-id]");
+    if (!card) throw new Error("source card not found");
+    const backlog = screen.getByTestId("column-backlog");
+    fireEvent.dragStart(card, { dataTransfer });
+    fireEvent.dragOver(backlog, { dataTransfer });
+    fireEvent.drop(backlog, { dataTransfer });
+    expect(summary(onMove)).toEqual([[movedTask.title, { status: "todo", pendingApproval: true, order: 3 }]]);
+  });
+
+  it("offers a Backlog action on cards and hides it for existing Backlog tasks", () => {
+    const onMoveToBacklog = vi.fn();
+    render(
+      <FeatureFlagsProvider mode="cloudflare">
+        <TaskBoard tasks={[FIRST, { ...SECOND, pendingApproval: true }]} projects={[PROJECT]}
+          onView={vi.fn()} onEdit={vi.fn()} onDelete={vi.fn()} onComplete={vi.fn()}
+          onStatusChange={vi.fn()} onMoveToBacklog={onMoveToBacklog} onMove={vi.fn()} />
+      </FeatureFlagsProvider>,
+    );
+    expect(screen.getAllByRole("button", { name: "Move to Backlog" })).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "Move to Backlog" }));
+    expect(onMoveToBacklog).toHaveBeenCalledWith(FIRST);
+  });
+
   it("keeps pending-approval tasks in Backlog and promotes them to Todo on drop", () => {
     const onMove = vi.fn();
     const backlogTask: Task = { ...FIRST, pendingApproval: true };

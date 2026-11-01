@@ -161,6 +161,21 @@ describe("CreateTaskInputSchema", () => {
 });
 
 describe("UpdateTaskInputSchema", () => {
+  it.each(["todo", "in_progress", "done", "archived"] as const)(
+    "normalizes a Backlog patch from %s to todo",
+    (status) => {
+      expect(UpdateTaskInputSchema.parse({ status, pendingApproval: true })).toEqual({
+        status: "todo", pendingApproval: true,
+      });
+    },
+  );
+
+  it("accepts returning to Backlog without an explicit status and rejects false", () => {
+    expect(UpdateTaskInputSchema.parse({ pendingApproval: true })).toEqual({ status: "todo", pendingApproval: true });
+    expect(UpdateTaskInputSchema.safeParse({ pendingApproval: false }).success).toBe(false);
+    expect(UpdateTaskInputSchema.parse({ pendingApproval: null })).toEqual({ pendingApproval: null });
+  });
+
   it("accepts null to clear optional fields", () => {
     const patch = { dueDate: null, priority: null, labels: null, order: null };
     expect(UpdateTaskInputSchema.parse(patch)).toEqual(patch);

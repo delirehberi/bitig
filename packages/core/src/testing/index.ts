@@ -330,6 +330,22 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
         expect(await storage.getTasks()).toEqual([task]);
       });
 
+      it.each(["todo", "in_progress", "done", "archived"] as const)("persists moving %s back to Backlog and approving again", async (status) => {
+        const project = await createProject();
+        const blocker = await storage.saveTask({ projectId: project.id, title: "Dependency" });
+        const task = await storage.saveTask({ projectId: project.id, title: "Return to Backlog", status });
+        const updated = await storage.updateTask(task.id, { pendingApproval: true, order: 4, dependsOn: [blocker.id] });
+        expect(updated).toMatchObject({ status: "todo", pendingApproval: true, order: 4, dependsOn: [blocker.id] });
+        expect(updated).not.toHaveProperty("startedAt");
+        expect(updated).not.toHaveProperty("completedAt");
+        expect(await storage.getTask(task.id)).toEqual(updated);
+        expect((await storage.getTasks({ projectId: project.id })).find((candidate) => candidate.id === task.id)).toEqual(updated);
+        const approved = await storage.updateTask(task.id, { pendingApproval: null });
+        expect(approved.status).toBe("todo");
+        expect(approved).not.toHaveProperty("pendingApproval");
+        expect(await storage.getTask(task.id)).toEqual(approved);
+      });
+
       it("patches fields, clears with null and bumps updatedAt", async () => {
         const project = await createProject();
         const task = await storage.saveTask({
@@ -467,11 +483,11 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
         expect(await storage.getTask(task.id)).toEqual(approved);
       });
 
-      it("never flags a task as pending approval through a patch", async () => {
+      it("rejects false instead of silently clearing pending approval", async () => {
         const project = await createProject();
         const task = await storage.saveTask({ projectId: project.id, title: "t" });
         await expect(
-          storage.updateTask(task.id, { pendingApproval: true } as never),
+          storage.updateTask(task.id, { pendingApproval: false } as never),
         ).rejects.toBeInstanceOf(ValidationError);
         expect(await storage.getTask(task.id)).toEqual(task);
       });

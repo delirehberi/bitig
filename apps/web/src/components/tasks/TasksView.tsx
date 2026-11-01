@@ -209,6 +209,10 @@ export function TasksView({
     void onUpdateTask(task.id, { pendingApproval: null, status: "todo" });
   }
 
+  function handleMoveToBacklog(task: Task) {
+    void onUpdateTask(task.id, { pendingApproval: true, status: "todo" });
+  }
+
   async function handleStatusChange(task: Task, status: TaskStatus) {
     await confirmIfBlocked(task, status, (choice) => onUpdateTask(task.id, { status }, choice));
   }
@@ -427,6 +431,7 @@ export function TasksView({
             void handleStatusChange(t, s);
           }}
           onApprove={handleApprove}
+          onMoveToBacklog={handleMoveToBacklog}
           onMove={(moves) => {
             void handleMove(moves);
           }}
@@ -448,6 +453,7 @@ export function TasksView({
             void handleStatusChange(t, s);
           }}
           onApprove={handleApprove}
+          onMoveToBacklog={handleMoveToBacklog}
         />
       )}
 
@@ -469,6 +475,7 @@ export function TasksView({
           void onUpdateTask(t.id, { needsHuman: null });
         }}
         onApprove={handleApprove}
+        onMoveToBacklog={handleMoveToBacklog}
         storage={storage}
         links={viewTask ? mentionIndex.linksFor(viewTask) : undefined}
         dependencies={viewTask ? dependencyLinks(viewTask, tasks, projects) : undefined}

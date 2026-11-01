@@ -34,6 +34,7 @@ interface TaskCardProps {
   readonly onDelete: (task: Task) => void;
   readonly onComplete: (task: Task) => void;
   readonly onStatusChange: (task: Task, status: TaskStatus) => void;
+  readonly onMoveToBacklog?: ((task: Task) => void) | undefined;
   /** Approves a task an agent or webhook created; omit to show the flag read-only. */
   readonly onApprove?: ((task: Task) => void) | undefined;
   /** Shows a reorder handle; arrow keys on it move the card up (-1) or down (1). */
@@ -60,6 +61,7 @@ export function TaskCard({
   onDelete,
   onComplete,
   onStatusChange,
+  onMoveToBacklog,
   onApprove,
   onReorder,
   showProject = true,
@@ -285,6 +287,17 @@ export function TaskCard({
           )}
         </div>
 
+        {task.pendingApproval !== true && onMoveToBacklog && (
+          <button
+            type="button"
+            onClick={() => {
+              onMoveToBacklog(task);
+            }}
+            className="rounded-md border border-rule px-2 py-1 text-2xs font-semibold text-ink focus-visible:outline-focus"
+          >
+            Move to Backlog
+          </button>
+        )}
         <select
           value={task.status}
           onChange={(e) => {
@@ -303,4 +316,3 @@ export function TaskCard({
     </article>
   );
 }
-

@@ -42,6 +42,7 @@ interface TaskDetailModalProps {
   readonly onEdit: (task: Task) => void;
   readonly onDelete: (task: Task) => void;
   readonly onComplete: (task: Task) => void;
+  readonly onMoveToBacklog?: ((task: Task) => void) | undefined;
   /** Saves a checked or unchecked subtask; omit to show the checklist read-only. */
   readonly onChecklistChange?: ((task: Task, checklist: ChecklistItem[]) => Promise<unknown>) | undefined;
   /** Clears the needs-human flag once a person has answered; omit to show it read-only. */
@@ -127,6 +128,7 @@ export function TaskDetailModal({
   onEdit,
   onDelete,
   onComplete,
+  onMoveToBacklog,
   onChecklistChange,
   onNeedsHumanResolve,
   onApprove,
@@ -469,6 +471,17 @@ export function TaskDetailModal({
             <Trash2 size={14} aria-hidden="true" />
             Delete
           </button>
+          {task.pendingApproval !== true && onMoveToBacklog && (
+            <button
+              type="button"
+              onClick={() => {
+                onMoveToBacklog(task);
+              }}
+              className="rounded-md border border-rule px-3 py-2 text-xs font-medium text-ink-2 focus-visible:outline-focus"
+            >
+              Move to Backlog
+            </button>
+          )}
           {!isDone && (
             <button
               type="button"

@@ -111,6 +111,18 @@ describe("buildTask", () => {
 });
 
 describe("applyTaskPatch", () => {
+  it.each(["todo", "in_progress", "done", "archived"] as const)("returns %s to Backlog and clears work metadata", (status) => {
+    const { task, runtime } = setup();
+    const existing = applyTaskPatch(task, { status }, runtime.clock(), "worker");
+    const next = applyTaskPatch(existing, { pendingApproval: true, order: 3 }, runtime.clock(), "reviewer");
+    expect(next).toMatchObject({ id: task.id, status: "todo", pendingApproval: true, order: 3, updatedBy: "reviewer" });
+    expect(next).not.toHaveProperty("startedAt");
+    expect(next).not.toHaveProperty("completedAt");
+    expect(next).not.toHaveProperty("startedBy");
+    expect(next).not.toHaveProperty("completedBy");
+    expect(applyTaskPatch(next, { pendingApproval: null }, runtime.clock())).not.toHaveProperty("pendingApproval");
+  });
+
   it("sets, keeps and clears optional fields", () => {
     const { task, runtime } = setup();
     const withFields = applyTaskPatch(
