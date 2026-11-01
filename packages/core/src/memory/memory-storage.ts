@@ -17,6 +17,7 @@ import {
   completeTaskEntity,
   recordWebhookTriggerEntity,
   renumberTask,
+  touchTaskEntity,
   withTaskCommentCount,
 } from "../domain/entities";
 import { assertTaskDependencies, hasNewDependencies, withoutDependencies } from "../domain/dependencies";
@@ -236,8 +237,10 @@ export class InMemoryStorage implements StorageProvider {
   addComment(input: CreateCommentInput, opts?: OperationOptions): Promise<Comment> {
     return run(opts?.signal, () => {
       const comment = buildComment(input, this.#deps);
-      this.#requireTask(comment.taskId);
+      const task = this.#requireTask(comment.taskId);
+      const touched = touchTaskEntity(task, this.#deps.clock(), opts?.actor);
       this.#comments.set(comment.id, comment);
+      this.#tasks.set(touched.id, touched);
       return cloneComment(comment);
     });
   }

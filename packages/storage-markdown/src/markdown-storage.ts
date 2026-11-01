@@ -39,6 +39,7 @@ import {
   recordWebhookTriggerEntity,
   renumberTask,
   throwIfAborted,
+  touchTaskEntity,
   toTimestamp,
   withTaskCommentCount,
   withoutDependencies,
@@ -346,7 +347,12 @@ export class MarkdownStorage implements StorageProvider {
       throwIfAborted(opts?.signal);
       const found = await this.#locateTask(comment.taskId, opts?.signal);
       if (found === null) throw new NotFoundError("task", comment.taskId);
+      const text = await this.#fs.readText(found.filePath, { signal: opts?.signal });
+      if (text === null) throw new NotFoundError("task", comment.taskId);
+      const existing = decodeTask(found.projectId, comment.taskId, text, found.filePath);
+      const touched = touchTaskEntity(existing, this.#deps.clock(), opts?.actor);
       await this.#writeComments(found.projectId, [comment], opts?.signal);
+      await this.#fs.writeTextAtomic(found.filePath, encodeTask(touched), { signal: opts?.signal });
       return cloneComment(comment);
     }, { signal: opts?.signal });
   }

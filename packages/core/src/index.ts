@@ -39,6 +39,7 @@ export type {
 export {
   applyProjectPatch,
   applyTaskPatch,
+  touchTaskEntity,
   applyWebhookPatch,
   buildComment,
   buildProject,

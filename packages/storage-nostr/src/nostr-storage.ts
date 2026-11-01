@@ -34,6 +34,7 @@ import {
   recordWebhookTriggerEntity,
   renumberTask,
   throwIfAborted,
+  touchTaskEntity,
   toTimestamp,
   withTaskCommentCount,
   withoutDependencies,
@@ -521,12 +522,22 @@ export class NostrStorage implements StorageProvider {
     const comment = buildComment(input, this.deps);
     await this.syncFromRelays(opts);
     throwIfAborted(opts?.signal);
-    if (!this.tasks.has(comment.taskId)) {
+    const task = this.tasks.get(comment.taskId);
+    if (!task) {
       throw new NotFoundError("task", comment.taskId);
     }
+    const touched = touchTaskEntity(task, this.deps.clock(), opts?.actor);
 
     await this.publishComment(comment, opts);
+    const pubkey = await this.signer.getPublicKey();
+    throwIfAborted(opts?.signal);
+    const template = await encodeTaskEvent(touched, pubkey, this.signer);
+    throwIfAborted(opts?.signal);
+    const signed = await this.signer.signEvent(template);
+    throwIfAborted(opts?.signal);
+    await this.relayManager.publishEvent(signed);
     this.comments.set(comment.id, comment);
+    this.tasks.set(touched.id, touched);
     return cloneComment(comment);
   }
 

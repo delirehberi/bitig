@@ -479,6 +479,48 @@ export function applyTaskPatch(
   return parseOrThrow(TaskSchema, next, "updateTask result");
 }
 
+/** Records work that touched a task without changing one of its editable fields. */
+export function touchTaskEntity(task: Task, now: Date, actor?: string): Task {
+  const validActor =
+    actor === undefined ? undefined : parseOrThrow(TaskActorSchema, actor, "touchTask actor");
+  const updatedAt = nextUpdatedAt(task.updatedAt, now);
+  return parseOrThrow(
+    TaskSchema,
+    assembleTask(
+      {
+        id: task.id,
+        projectId: task.projectId,
+        title: task.title,
+        description: task.description,
+        status: task.status,
+        isPublic: task.isPublic,
+        createdAt: task.createdAt,
+        updatedAt,
+      },
+      {
+        startedAt: task.startedAt,
+        completedAt: task.completedAt,
+        createdBy: task.createdBy,
+        startedBy: task.startedBy,
+        completedBy: task.completedBy,
+        updatedBy: validActor,
+        activity: appendActivity(task, task.status, validActor, updatedAt, undefined),
+        dueDate: task.dueDate,
+        priority: task.priority,
+        labels: task.labels,
+        order: task.order,
+        checklist: task.checklist,
+        needsHuman: task.needsHuman,
+        pendingApproval: task.pendingApproval,
+        dependsOn: task.dependsOn,
+        number: task.number,
+        commentCount: task.commentCount,
+      },
+    ),
+    "touchTask result",
+  );
+}
+
 /** Whether a patch changes only `order`, as a board reorder does. */
 function isOrderOnlyPatch(patch: ParsedUpdateTaskInput): boolean {
   return (

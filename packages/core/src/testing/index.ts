@@ -870,23 +870,39 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
         expect(await storage.getComments(UNKNOWN_ID)).toEqual([]);
       });
 
-      it("adds comments with defaults, lists them oldest first and leaves the task unchanged", async () => {
+      it("adds comments with defaults, lists them oldest first and touches the task", async () => {
         const task = await createTask();
         const first = await storage.addComment({ taskId: task.id, body: "  Which API key?  " });
-        const second = await storage.addComment({
-          taskId: task.id,
-          body: "Use the **staging** key.\n\n- one\n- two",
-          authorType: "agent",
-          author: " claude ",
-        });
+        const second = await storage.addComment(
+          {
+            taskId: task.id,
+            body: "Use the **staging** key.\n\n- one\n- two",
+            authorType: "agent",
+            author: " claude ",
+          },
+          { actor: "claude" },
+        );
         expect(first).toMatchObject({ taskId: task.id, body: "Which API key?", authorType: "human" });
         expect(first).not.toHaveProperty("author");
         expect(second).toMatchObject({ authorType: "agent", author: "claude" });
         expect(CommentSchema.parse(first)).toEqual(first);
         expect(CommentSchema.parse(second)).toEqual(second);
         expect(await storage.getComments(task.id)).toEqual([first, second]);
-        expect(await storage.getTask(task.id)).toEqual({ ...task, commentCount: 2 });
-        expect(await storage.getTasks({ projectId: task.projectId })).toEqual([{ ...task, commentCount: 2 }]);
+        const touched = await storage.getTask(task.id);
+        if (touched === null) throw new Error("commented task was not found");
+        expect(touched).toMatchObject({
+          ...task,
+          updatedAt: touched.updatedAt,
+          commentCount: 2,
+          updatedBy: "claude",
+        });
+        expect(touched.activity?.at(-1)).toEqual({
+          action: "updated",
+          actor: "claude",
+          timestamp: touched.updatedAt,
+        });
+        expect(touched.updatedAt > task.updatedAt).toBe(true);
+        expect(await storage.getTasks({ projectId: task.projectId })).toEqual([touched]);
       });
 
       it("keeps each task's comments apart", async () => {
@@ -914,11 +930,15 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
         const task = await createTask();
         const gone = await storage.addComment({ taskId: task.id, body: "gone" });
         const kept = await storage.addComment({ taskId: task.id, body: "kept" });
+        const touched = await storage.getTask(task.id);
+        if (touched === null) throw new Error("commented task was not found");
+        const { commentCount: initialCommentCount, ...touchedWithoutComments } = touched;
+        expect(initialCommentCount).toBe(2);
         await storage.deleteComment(gone.id);
         expect(await storage.getComments(task.id)).toEqual([kept]);
-        expect(await storage.getTask(task.id)).toEqual({ ...task, commentCount: 1 });
+        expect(await storage.getTask(task.id)).toEqual({ ...touchedWithoutComments, commentCount: 1 });
         await storage.deleteComment(kept.id);
-        expect(await storage.getTask(task.id)).toEqual(task);
+        expect(await storage.getTask(task.id)).toEqual(touchedWithoutComments);
         await expect(storage.deleteComment(gone.id)).rejects.toBeInstanceOf(NotFoundError);
         await expect(storage.deleteComment(UNKNOWN_ID)).rejects.toBeInstanceOf(NotFoundError);
         await expect(storage.deleteComment(MALFORMED_ID)).rejects.toBeInstanceOf(ValidationError);
@@ -1150,6 +1170,8 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
         const project = await createProject();
         const task = await storage.saveTask({ projectId: project.id, title: "t" });
         const comment = await storage.addComment({ taskId: task.id, body: "c" });
+        const touchedTask = await storage.getTask(task.id);
+        if (touchedTask === null) throw new Error("commented task was not found");
         const webhook = await storage.createWebhook({ projectId: project.id, name: "w" });
         const { signal, reason } = abortedSignal();
         const opts = { signal };
@@ -1184,7 +1206,7 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
         }
 
         expect(await storage.getProjects()).toEqual([project]);
-        expect(await storage.getTasks()).toEqual([{ ...task, commentCount: 1 }]);
+        expect(await storage.getTasks()).toEqual([touchedTask]);
         expect(await storage.getComments(task.id)).toEqual([comment]);
         expect(await storage.getWebhooks()).toEqual([webhook]);
       });
@@ -1319,14 +1341,14 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
         });
         const c1 = await storage.addComment({ taskId: t2.id, body: "On the public task" });
         const c2 = await storage.addComment({ taskId: t1.id, body: "Context", authorType: "agent", author: "claude" });
+        const touchedT1 = await storage.getTask(t1.id);
+        const touchedT2 = await storage.getTask(t2.id);
+        if (touchedT1 === null || touchedT2 === null) throw new Error("commented task was not found");
 
         const bundle = await storage.exportProject(project.id);
         expect(bundle.version).toBe(1);
         expect(bundle.project).toEqual(project);
-        expect(bundle.tasks).toEqual([
-          { ...t1, commentCount: 1 },
-          { ...t2, commentCount: 1 },
-        ]);
+        expect(bundle.tasks).toEqual([touchedT1, touchedT2]);
         expect(bundle.comments).toEqual([c1, c2]);
 
         // Delete project to test import restores it
@@ -1338,10 +1360,7 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
         const importedProject = await storage.importProject(bundle);
         expect(importedProject).toEqual(project);
         expect(await storage.getProject(project.id)).toEqual(project);
-        expect(await storage.getTasks({ projectId: project.id })).toEqual([
-          { ...t1, commentCount: 1 },
-          { ...t2, commentCount: 1 },
-        ]);
+        expect(await storage.getTasks({ projectId: project.id })).toEqual([touchedT1, touchedT2]);
         expect(await storage.getComments(t1.id)).toEqual([c2]);
         expect(await storage.getComments(t2.id)).toEqual([c1]);
 
@@ -1360,6 +1379,8 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
         const t1 = await storage.saveTask({ projectId: p1.id, title: "T1" });
         const t2 = await storage.saveTask({ projectId: p2.id, title: "T2" });
         const comment = await storage.addComment({ taskId: t2.id, body: "Backed up" });
+        const touchedT2 = await storage.getTask(t2.id);
+        if (touchedT2 === null) throw new Error("commented task was not found");
 
         const backup = await storage.exportAll();
         expect(backup.version).toBe(1);
@@ -1371,7 +1392,7 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
 
         await storage.importBackup(backup);
         expect(await storage.getProjects()).toEqual([p1, p2]);
-        expect(await storage.getTasks()).toEqual([t1, { ...t2, commentCount: 1 }]);
+        expect(await storage.getTasks()).toEqual([t1, touchedT2]);
         expect(await storage.getComments(t2.id)).toEqual([comment]);
       });
     });

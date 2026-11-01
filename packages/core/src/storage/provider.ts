@@ -34,7 +34,7 @@ export interface OperationOptions {
 }
 
 /**
- * Storage port implemented by every adapter (in-memory, Markdown, D1, Nostr,
+ * Storage port implemented by supported adapters (in-memory, Markdown, D1,
  * HTTP API). All adapters must pass `runStorageContractSuite` from
  * `@bitig/core/testing`.
  *
@@ -86,8 +86,8 @@ export interface StorageProvider {
   getComments(taskId: string, opts?: OperationOptions): Promise<Comment[]>;
   /** Optional single-comment lookup by ID; resolves to `null` when missing or invalid. */
   getComment?(id: string, opts?: OperationOptions): Promise<Comment | null>;
-  /** Adds a comment. Rejects with `NotFoundError` if the task does not exist. Leaves the task,
-   * including its `updatedAt`, unchanged. */
+  /** Adds a comment. Rejects with `NotFoundError` if the task does not exist. Touches the task's
+   * `updatedAt` and attributed activity so comment work appears in recent activity. */
   addComment(input: CreateCommentInput, opts?: OperationOptions): Promise<Comment>;
   /** Rejects with `NotFoundError` if no comment has this ID. */
   deleteComment(id: string, opts?: OperationOptions): Promise<void>;

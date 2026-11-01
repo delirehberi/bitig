@@ -36,6 +36,7 @@ import {
   recordWebhookTriggerEntity,
   renumberTask,
   throwIfAborted,
+  touchTaskEntity,
   toTimestamp,
   withTaskCommentCount,
   type BackupBundle,
@@ -618,11 +619,20 @@ export class D1Storage implements StorageProvider {
   async addComment(input: CreateCommentInput, opts?: OperationOptions): Promise<Comment> {
     throwIfAborted(opts?.signal);
     const comment = buildComment(input, this.#deps);
-    const taskRow = await this.#db.select({ id: tasks.id }).from(tasks).where(eq(tasks.id, comment.taskId)).get();
+    const taskRow = await this.#db.select().from(tasks).where(eq(tasks.id, comment.taskId)).get();
     throwIfAborted(opts?.signal);
     if (!taskRow) throw new NotFoundError("task", comment.taskId);
+    const touched = touchTaskEntity(recordToTask(taskRow), this.#deps.clock(), opts?.actor);
 
     await this.#db.insert(comments).values(commentToRecord(comment));
+    await this.#db
+      .update(tasks)
+      .set({
+        updatedBy: touched.updatedBy ?? null,
+        activity: touched.activity ? touched.activity.map((entry) => ({ ...entry })) : null,
+        updatedAt: Date.parse(touched.updatedAt),
+      })
+      .where(eq(tasks.id, comment.taskId));
     throwIfAborted(opts?.signal);
     return cloneComment(comment);
   }
