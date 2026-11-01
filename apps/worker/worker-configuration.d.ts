@@ -11,6 +11,8 @@ interface __BaseEnv_Env {
 	BASIC_AUTH_USER: string;
 	BASIC_AUTH_PASS: string;
 	MCP_AUTH_TOKEN: string;
+	T3_CF_ACCESS_CLIENT_ID?: string;
+	T3_CF_ACCESS_CLIENT_SECRET?: string;
 	RATE_LIMITER: DurableObjectNamespace<import("./src/index").RateLimiter>;
 	REALTIME_HUB: DurableObjectNamespace<import("./src/index").RealtimeHub>;
 	LOGIN_CHALLENGE: DurableObjectNamespace<import("./src/index").LoginChallenge>;

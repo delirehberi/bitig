@@ -35,6 +35,15 @@ const configSchema = z.object({
     .refine((secret) => secret.length === 0 || secret.length >= MIN_SESSION_SECRET_LENGTH, {
       message: `must be at least ${String(MIN_SESSION_SECRET_LENGTH)} characters`,
     }),
+  // Optional Cloudflare Access Service Token headers sent on Worker-to-T3 requests.
+  T3_CF_ACCESS_CLIENT_ID: z
+    .string()
+    .default("")
+    .transform((val) => val.trim()),
+  T3_CF_ACCESS_CLIENT_SECRET: z
+    .string()
+    .default("")
+    .transform((val) => val.trim()),
   NOSTR_AUTH_PUBKEYS: z
     .string()
     .default("")

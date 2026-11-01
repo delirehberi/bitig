@@ -58,4 +58,15 @@ describe("parseConfig", () => {
     expect(() => parseConfig({ T3_ENCRYPTION_KEY: "too-short" })).toThrow(ConfigError);
     expect(parseConfig({ T3_ENCRYPTION_KEY: "k".repeat(32) }).T3_ENCRYPTION_KEY).toHaveLength(32);
   });
+
+  it("defaults and trims T3_CF_ACCESS_CLIENT_ID and T3_CF_ACCESS_CLIENT_SECRET", () => {
+    expect(parseConfig({}).T3_CF_ACCESS_CLIENT_ID).toBe("");
+    expect(parseConfig({}).T3_CF_ACCESS_CLIENT_SECRET).toBe("");
+    const parsed = parseConfig({
+      T3_CF_ACCESS_CLIENT_ID: "  cf-id.access  ",
+      T3_CF_ACCESS_CLIENT_SECRET: "  cf-secret-val  ",
+    });
+    expect(parsed.T3_CF_ACCESS_CLIENT_ID).toBe("cf-id.access");
+    expect(parsed.T3_CF_ACCESS_CLIENT_SECRET).toBe("cf-secret-val");
+  });
 });

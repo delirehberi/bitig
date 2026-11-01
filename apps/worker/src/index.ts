@@ -18,6 +18,7 @@ import { webhookReceiverRouter, webhooksApiRouter } from "./routes/webhooks";
 import { API_POLICY, MCP_POLICY, WEBHOOK_POLICY, authFailureGuard, rateLimit } from "./rate-limit";
 import { csrfProtection } from "./csrf";
 import { publishRealtimeEvent, realtimeRouter, withRealtimeBroadcast } from "./realtime";
+import { createT3Fetch } from "./t3/client";
 import pkg from "../package.json" with { type: "json" };
 
 export interface AppEnv {
@@ -50,8 +51,19 @@ export function createApp(options?: CreateAppOptions): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
 
   app.use("*", async (c, next) => {
-    c.set("config", options?.config ?? parseConfig(c.env));
-    c.set("t3Fetch", options?.t3Fetch);
+    const config = options?.config ?? parseConfig(c.env);
+    c.set("config", config);
+    const hasCfAccess =
+      config.T3_CF_ACCESS_CLIENT_ID.length > 0 && config.T3_CF_ACCESS_CLIENT_SECRET.length > 0;
+    c.set(
+      "t3Fetch",
+      hasCfAccess
+        ? createT3Fetch(options?.t3Fetch ?? fetch, {
+            clientId: config.T3_CF_ACCESS_CLIENT_ID,
+            clientSecret: config.T3_CF_ACCESS_CLIENT_SECRET,
+          })
+        : options?.t3Fetch,
+    );
     const baseStorage = options?.storageFactory
       ? options.storageFactory(c.env)
       : new D1Storage({ db: c.env.DB, bucket: c.env.ATTACHMENTS });

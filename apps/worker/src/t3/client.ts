@@ -43,6 +43,58 @@ export class T3McpError extends Error {
   }
 }
 
+export interface T3CloudflareAccessCredentials {
+  readonly clientId?: string | undefined;
+  readonly clientSecret?: string | undefined;
+}
+
+/**
+ * Wraps `fetch` to attach Cloudflare Access Service Token headers (`CF-Access-Client-Id`
+ * and `CF-Access-Client-Secret`) when both credentials are configured on the Worker.
+ */
+export function createT3Fetch(
+  baseFetch: typeof fetch = fetch,
+  cfAccess?: T3CloudflareAccessCredentials,
+): typeof fetch {
+  const clientId = cfAccess?.clientId?.trim() ?? "";
+  const clientSecret = cfAccess?.clientSecret?.trim() ?? "";
+  if (!clientId || !clientSecret) {
+    return baseFetch;
+  }
+
+  return (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const headers = new Headers(input instanceof Request ? input.headers : undefined);
+    if (init?.headers) {
+      const initHeaders = new Headers(init.headers);
+      initHeaders.forEach((value, key) => {
+        headers.set(key, value);
+      });
+    }
+    headers.set("CF-Access-Client-Id", clientId);
+    headers.set("CF-Access-Client-Secret", clientSecret);
+
+    if (input instanceof Request) {
+      return baseFetch(new Request(input, { ...init, headers }));
+    }
+    return baseFetch(input, { ...init, headers });
+  };
+}
+
+function isCloudflareAccessLoginRedirect(response: Response): boolean {
+  const location = response.headers.get("location") ?? "";
+  if (location.includes("/cdn-cgi/access/login")) {
+    return true;
+  }
+  const wwwAuth = response.headers.get("www-authenticate") ?? "";
+  if (wwwAuth.toLowerCase().includes("cloudflare-access")) {
+    return true;
+  }
+  if (response.redirected && response.url.includes("/cdn-cgi/access/login")) {
+    return true;
+  }
+  return false;
+}
+
 function assertHttpsOrLoopbackUrl(rawUrl: string, label: string): URL {
   let parsed: URL;
   try {
@@ -104,9 +156,17 @@ export async function startT3OAuthFlow(input: {
   let authServerOrigin = origin;
   const resourceMetaResponse = await fetchFn(new URL("/.well-known/oauth-protected-resource", origin), {
     headers: { Accept: "application/json" },
+    redirect: "manual",
   }).catch((err: unknown) => {
     throw new T3OAuthError("unreachable_host", `Could not reach T3 host at ${origin}: ${String(err)}`);
   });
+
+  if (isCloudflareAccessLoginRedirect(resourceMetaResponse)) {
+    throw new T3OAuthError(
+      "cloudflare_access_blocked",
+      "Cloudflare Access blocked the request to T3. Verify your Service Auth policy allows the Worker's CF-Access-Client-Id / CF-Access-Client-Secret.",
+    );
+  }
 
   if (resourceMetaResponse.ok) {
     const rawMeta: unknown = await resourceMetaResponse.json().catch(() => ({}));
@@ -119,13 +179,23 @@ export async function startT3OAuthFlow(input: {
 
   const authMetaResponse = await fetchFn(
     new URL("/.well-known/oauth-authorization-server", authServerOrigin),
-    { headers: { Accept: "application/json" } },
+    {
+      headers: { Accept: "application/json" },
+      redirect: "manual",
+    },
   ).catch((err: unknown) => {
     throw new T3OAuthError(
       "discovery_failed",
       `Failed to fetch OAuth metadata from ${authServerOrigin}: ${String(err)}`,
     );
   });
+
+  if (isCloudflareAccessLoginRedirect(authMetaResponse)) {
+    throw new T3OAuthError(
+      "cloudflare_access_blocked",
+      "Cloudflare Access blocked the request to T3. Verify your Service Auth policy allows the Worker's CF-Access-Client-Id / CF-Access-Client-Secret.",
+    );
+  }
 
   if (!authMetaResponse.ok) {
     throw new T3OAuthError(

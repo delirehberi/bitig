@@ -719,4 +719,86 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
     const offline = await offlineRes.json<T3TaskRunLiveResponse>();
     expect(offline.run?.state).toBe("offline");
   });
+
+  it("attaches CF-Access-Client-Id and CF-Access-Client-Secret headers when configured and surfaces a clear error when Cloudflare Access redirects to login", async () => {
+    let requireServiceToken = true;
+    const baseMockFetch = createMockT3Fetch(mockState);
+    const gatedFetch: typeof fetch = (input, init) => {
+      const req = input instanceof Request ? input : new Request(input, init);
+      if (requireServiceToken) {
+        const id = req.headers.get("CF-Access-Client-Id");
+        const secret = req.headers.get("CF-Access-Client-Secret");
+        if (id !== "cf-test-id.access" || secret !== "cf-test-secret") {
+          return Promise.resolve(
+            new Response(null, {
+              status: 302,
+              headers: {
+                Location: "https://workouse.cloudflareaccess.com/cdn-cgi/access/login/t3.example.test",
+              },
+            }),
+          );
+        }
+      }
+      return baseMockFetch(input, init);
+    };
+
+    // Without Service Token credentials, Cloudflare Access 302 login redirect returns a clear error
+    const blockedApp = createApp({ t3Fetch: gatedFetch });
+    const blockedRes = await blockedApp.request(
+      `${BASE_URL}/api/t3/oauth/start`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: TEST_AUTH_HEADER,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ mcpUrl: T3_MCP_URL }),
+      },
+      env,
+    );
+    expect(blockedRes.status).toBe(502);
+    const blockedBody = await blockedRes.json<{ error: string; message: string }>();
+    expect(blockedBody.error).toBe("cloudflare_access_blocked");
+    expect(blockedBody.message).toContain("Cloudflare Access blocked the request");
+
+    // With T3_CF_ACCESS_CLIENT_ID and T3_CF_ACCESS_CLIENT_SECRET configured, requests succeed
+    const authedEnv: Env = {
+      ...env,
+      T3_CF_ACCESS_CLIENT_ID: "cf-test-id.access",
+      T3_CF_ACCESS_CLIENT_SECRET: "cf-test-secret",
+    };
+    const startRes = await blockedApp.request(
+      `${BASE_URL}/api/t3/oauth/start`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: TEST_AUTH_HEADER,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ mcpUrl: T3_MCP_URL }),
+      },
+      authedEnv,
+    );
+    expect(startRes.status).toBe(200);
+    const { state } = await startRes.json<{ authorizationUrl: string; state: string }>();
+
+    const callbackRes = await blockedApp.request(
+      `${BASE_URL}/api/t3/oauth/callback?code=auth-code-xyz&state=${encodeURIComponent(state)}`,
+      { method: "GET" },
+      authedEnv,
+    );
+    expect(callbackRes.status).toBe(302);
+
+    const projectsRes = await blockedApp.request(
+      `${BASE_URL}/api/t3/projects`,
+      {
+        headers: { Authorization: TEST_AUTH_HEADER },
+      },
+      authedEnv,
+    );
+    expect(projectsRes.status).toBe(200);
+    const { projects } = await projectsRes.json<{ projects: T3RemoteProject[] }>();
+    expect(projects).toHaveLength(1);
+    requireServiceToken = false;
+  });
 });
