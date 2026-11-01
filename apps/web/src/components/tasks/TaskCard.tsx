@@ -7,6 +7,7 @@ import {
   Edit2,
   GripVertical,
   MessageSquare,
+  Paperclip,
   Tag,
   Trash2,
 } from "lucide-react";
@@ -271,6 +272,15 @@ export function TaskCard({
             >
               <MessageSquare size={12} aria-hidden="true" />
               <span>{task.commentCount}</span>
+            </div>
+          )}
+          {task.attachmentCount !== undefined && task.attachmentCount > 0 && (
+            <div
+              className="flex items-center gap-1 font-mono text-2xs"
+              title={`${String(task.attachmentCount)} ${task.attachmentCount === 1 ? "attachment" : "attachments"}`}
+            >
+              <Paperclip size={12} aria-hidden="true" />
+              <span>{task.attachmentCount}</span>
             </div>
           )}
         </div>

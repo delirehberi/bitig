@@ -5,6 +5,7 @@ import {
   NotFoundError,
   ProjectBundleSchema,
   SaveCheckpointInputSchema,
+  StorageError,
   TaskFilterSchema,
   WebhookFilterSchema,
   WebhookTokenSchema,
@@ -38,9 +39,12 @@ import {
   toTimestamp,
   withTaskCommentCount,
   withoutDependencies,
+  type Attachment,
+  type AttachmentContent,
   type BackupBundle,
   type Checkpoint,
   type Comment,
+  type CreateAttachmentInput,
   type SaveCheckpointInput,
   type CreateCommentInput,
   type CreateProjectInput,
@@ -571,6 +575,27 @@ export class NostrStorage implements StorageProvider {
     await this.relayManager.publishEvent(signed);
 
     this.comments.delete(id);
+  }
+
+  getAttachments(_taskId: string, opts?: OperationOptions): Promise<Attachment[]> {
+    return Promise.reject(this.unsupportedAttachments(opts));
+  }
+
+  getAttachment(_id: string, opts?: OperationOptions): Promise<AttachmentContent | null> {
+    return Promise.reject(this.unsupportedAttachments(opts));
+  }
+
+  addAttachment(_input: CreateAttachmentInput, opts?: OperationOptions): Promise<Attachment> {
+    return Promise.reject(this.unsupportedAttachments(opts));
+  }
+
+  deleteAttachment(_id: string, opts?: OperationOptions): Promise<void> {
+    return Promise.reject(this.unsupportedAttachments(opts));
+  }
+
+  private unsupportedAttachments(opts?: OperationOptions): StorageError {
+    throwIfAborted(opts?.signal);
+    return new StorageError("unsupported", "Attachments are not supported by NostrStorage");
   }
 
   async getCheckpoints(taskId: string, opts?: OperationOptions): Promise<Checkpoint[]> {

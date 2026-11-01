@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   checkNewTaskStatus,
   checkStatusChange,
+  withTaskAttachmentCount,
   withTaskCommentCount,
   type CreateTaskInput,
   type OperationOptions,
@@ -43,10 +44,13 @@ function upsertTask(tasks: readonly Task[], incoming: Task, projectId?: string):
   if (tasks.some((t) => t.id === incoming.id)) {
     return tasks.map((t) => {
       if (t.id !== incoming.id) return t;
-      if (incoming.commentCount === undefined && t.commentCount !== undefined) {
-        return { ...incoming, commentCount: t.commentCount };
-      }
-      return incoming;
+      const commentCount = incoming.commentCount ?? t.commentCount;
+      const attachmentCount = incoming.attachmentCount ?? t.attachmentCount;
+      return {
+        ...incoming,
+        ...(commentCount !== undefined ? { commentCount } : {}),
+        ...(attachmentCount !== undefined ? { attachmentCount } : {}),
+      };
     });
   }
   return [...tasks, incoming];
@@ -58,6 +62,8 @@ export function useTasks(storage: StorageProvider, projectId?: string) {
   const [error, setError] = useState<string | null>(null);
   const createdCommentIdsRef = useRef(new Set<string>());
   const deletedCommentIdsRef = useRef(new Set<string>());
+  const createdAttachmentIdsRef = useRef(new Set<string>());
+  const deletedAttachmentIdsRef = useRef(new Set<string>());
 
   useEffect(() => {
     const controller = new AbortController();
@@ -113,6 +119,43 @@ export function useTasks(storage: StorageProvider, projectId?: string) {
             prev.map((t) =>
               t.id === targetTaskId
                 ? withTaskCommentCount(t, Math.max(0, (t.commentCount ?? 0) - 1))
+                : t,
+            ),
+          );
+        } else {
+          const filter = projectId ? { projectId } : undefined;
+          void storage
+            .getTasks(filter)
+            .then((result) => {
+              setTasks(result);
+            })
+            .catch((err: unknown) => {
+              console.warn("failed to resync tasks", err);
+            });
+        }
+        break;
+      }
+      case "attachment.created": {
+        if (createdAttachmentIdsRef.current.has(event.attachment.id)) break;
+        createdAttachmentIdsRef.current.add(event.attachment.id);
+        setTasks((prev) =>
+          prev.map((t) =>
+            t.id === event.attachment.taskId
+              ? withTaskAttachmentCount(t, (t.attachmentCount ?? 0) + 1)
+              : t,
+          ),
+        );
+        break;
+      }
+      case "attachment.deleted": {
+        if (deletedAttachmentIdsRef.current.has(event.id)) break;
+        deletedAttachmentIdsRef.current.add(event.id);
+        if (event.taskId !== undefined) {
+          const targetTaskId = event.taskId;
+          setTasks((prev) =>
+            prev.map((t) =>
+              t.id === targetTaskId
+                ? withTaskAttachmentCount(t, Math.max(0, (t.attachmentCount ?? 0) - 1))
                 : t,
             ),
           );

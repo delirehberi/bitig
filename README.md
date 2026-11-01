@@ -6,7 +6,7 @@ Bitig (Old Turkic for *record* or *document*) is a flexible, edge-ready task and
 
 - **Local Markdown Storage:** Plaintext `.md` files and YAML metadata on disk. Path-as-identity (`<projectId>/<taskId>.md`), no database required.
 - **Unix & XDG Base Directory Standard:** Clean separation of user data, configuration, and runtime locks following Unix best practices.
-- **Model Context Protocol (MCP):** First-class STDIO MCP server (`bitig mcp`) and remote HTTP MCP endpoint exposing 18 annotated tools for AI agents.
+- **Model Context Protocol (MCP):** First-class STDIO MCP server (`bitig mcp`) and remote HTTP MCP endpoint exposing 24 annotated tools for AI agents.
 - **Workspace Linking:** Automatic project binding via `.bitig` in workspace root directories.
 - **Ticket Codes:** Every task gets a short code like `BIT-12` (project key + number) that works wherever a task ID does.
 - **Strict & Type-Safe:** 100% strict TypeScript, comprehensive contract test suites, zero `any`.
@@ -59,6 +59,7 @@ Bitig follows the **XDG Base Directory Specification**:
 - `_project.yaml` contains project metadata (`name`, `description`, `kind`, `createdAt`, `updatedAt`).
 - `<taskId>.md` contains YAML frontmatter (`title`, `status`, `priority`, `dueDate`, `labels`, `createdAt`, `updatedAt`) and Markdown body description.
 - `<taskId>.comments/<commentId>.md` holds one comment each: frontmatter (`authorType`, `author`, `createdAt`) and the comment as the Markdown body.
+- `<taskId>.attachments/<attachmentId>.meta.yaml` and `<attachmentId>.bin` store attachment metadata (`name`, `mimeType`, `size`, `createdAt`, `createdBy`) and raw bytes (in Cloudflare mode, metadata lives in D1 `attachments` and blobs in R2 `ATTACHMENTS`).
 - Redundant IDs are not stored inside file contents; paths are identity.
 
 ---
@@ -253,7 +254,7 @@ Or run against an explicit data directory:
 3. `update_project` - Update a project's name, description, kind, links or key.
 4. `delete_project` - Delete a project and its tasks.
 5. `list_tasks` - List tasks with their codes, optionally for one project (ID or key) only those that need a human (`needsHuman: true`), only those awaiting approval (`pendingApproval: true`), or only blocked ones (`blocked: true`). A task waiting on unfinished dependencies carries their codes in `blockedBy`.
-6. `get_task` - Retrieve a task by ID or code (`BIT-12`), with its comments, the tasks it mentions (`#BIT-12` in its text or comments) and the tasks that mention it (`mentions`, `mentionedIn`), and the tasks it depends on and that depend on it (`dependsOn`, `dependents`), each as `{ id, code, title, status }`. REST: `GET /api/tasks/:id/links` gives the mention links.
+6. `get_task` - Retrieve a task by ID or code (`BIT-12`), with its comments, attachments, the tasks it mentions (`#BIT-12` in its text or comments) and the tasks that mention it (`mentions`, `mentionedIn`), and the tasks it depends on and that depend on it (`dependsOn`, `dependents`), each as `{ id, code, title, status }`. REST: `GET /api/tasks/:id/links` gives the mention links.
 7. `add_task` - Add a task to a project (ID or key), optionally with `dependsOn` (task IDs or codes). The task awaits a person's approval (`pendingApproval: true`): agents cannot move it to `in_progress` or `done`, or approve it, until a person approves it in the web dashboard, with `bitig tasks approve`, or via REST `PATCH /api/tasks/:id` with `{ "pendingApproval": null }`.
 8. `update_task` - Update a task's fields, or move it to another project. `dependsOn` (IDs or codes) replaces the dependency list; `null` or `[]` clears it. Agents set `needsHuman` to what they need from a person (a decision, an approval, access); `null` clears it. Moving a task to `in_progress` or `done` is refused while it awaits approval or a task it depends on is unfinished.
 9. `complete_task` - Mark a task done (refused while the task awaits approval or a task it depends on is unfinished). People can override the dependency block from the web dashboard, the CLI (`--override-blocked`) or REST (`?overrideBlocked=true` on `PATCH /api/tasks/:id` and `POST /api/tasks/:id/complete`); agents cannot.
@@ -262,10 +263,16 @@ Or run against an explicit data directory:
 12. `list_comments` - List a task's comments, oldest first.
 13. `add_comment` - Comment on a task (marked as written by an agent unless `authorType` says `human`).
 14. `delete_comment` - Delete a comment.
-15. `list_webhooks` - List incoming webhooks configured for projects.
-16. `create_webhook` - Create an incoming webhook endpoint (`generic`, `sentry`, `github`, or `linear`) for a project.
-17. `update_webhook` - Update a webhook's name, provider, enabled state, field mapping, defaults, or rotate its secret token.
-18. `delete_webhook` - Delete an incoming webhook.
+15. `save_checkpoint` - Save or overwrite a structured execution checkpoint (`stepIndex`, `status`, `stateSnapshot`) for a task.
+16. `resume_from_checkpoint` - Retrieve the latest checkpoint (and full checkpoint list) for a task.
+17. `list_attachments` - List a task's file attachments (metadata only, oldest first).
+18. `get_attachment` - Retrieve an attachment by ID (`content` as UTF-8 text for Markdown/text files, `data` as Base64 + `downloadUrl` for images and binary files).
+19. `add_attachment` - Attach a file (`content` text or `data` Base64) to a task.
+20. `delete_attachment` - Delete a task attachment by ID.
+21. `list_webhooks` - List incoming webhooks configured for projects.
+22. `create_webhook` - Create an incoming webhook endpoint (`generic`, `sentry`, `github`, or `linear`) for a project.
+23. `update_webhook` - Update a webhook's name, provider, enabled state, field mapping, defaults, or rotate its secret token.
+24. `delete_webhook` - Delete an incoming webhook.
 
 ### Bundled Agent Skill (`bitig-planning`)
 

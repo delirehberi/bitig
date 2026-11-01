@@ -112,6 +112,64 @@ export class NodeFileSystem implements FileSystemPort {
     }
   }
 
+  async readBytes(relPath: string, opts?: FsOptions): Promise<Uint8Array | null> {
+    throwIfAborted(opts?.signal);
+    const target = this.#resolvePath(relPath);
+    try {
+      const stat = await fs.lstat(target);
+      if (stat.isSymbolicLink()) {
+        throw new StorageError("corrupt", "Symbolic link encountered", { location: relPath });
+      }
+      if (!stat.isFile()) {
+        throw new StorageError("io", "Target is not a regular file", { location: relPath });
+      }
+      if (stat.size > MAX_READ_BYTES) {
+        throw new StorageError("corrupt", `File exceeds max size (${String(MAX_READ_BYTES)} bytes)`, { location: relPath });
+      }
+      throwIfAborted(opts?.signal);
+      const buffer = await fs.readFile(target);
+      return new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+    } catch (err: unknown) {
+      if (err instanceof StorageError) throw err;
+      if (typeof err === "object" && err !== null && "code" in err && err.code === "ENOENT") {
+        return null;
+      }
+      throw new StorageError("io", `Failed to read file: ${err instanceof Error ? err.message : String(err)}`, {
+        location: relPath,
+        cause: err,
+      });
+    }
+  }
+
+  async writeBytesAtomic(relPath: string, content: Uint8Array, opts?: FsOptions): Promise<void> {
+    throwIfAborted(opts?.signal);
+    const target = this.#resolvePath(relPath);
+    const dir = path.dirname(target);
+    const tmpName = `.tmp-${randomBytes(8).toString("hex")}`;
+    const tmpPath = path.join(dir, tmpName);
+
+    try {
+      await fs.mkdir(dir, { recursive: true, mode: DIR_MODE });
+      throwIfAborted(opts?.signal);
+
+      await fs.writeFile(tmpPath, content, { mode: FILE_MODE });
+      throwIfAborted(opts?.signal);
+
+      await fs.rename(tmpPath, target);
+    } catch (err: unknown) {
+      try {
+        await fs.unlink(tmpPath);
+      } catch {
+        // ignore cleanup error
+      }
+      if (err instanceof StorageError) throw err;
+      throw new StorageError("io", `Failed to write file atomically: ${err instanceof Error ? err.message : String(err)}`, {
+        location: relPath,
+        cause: err,
+      });
+    }
+  }
+
   async listDir(relPath: string, opts?: FsOptions): Promise<DirEntry[] | null> {
     throwIfAborted(opts?.signal);
     const target = this.#resolvePath(relPath);

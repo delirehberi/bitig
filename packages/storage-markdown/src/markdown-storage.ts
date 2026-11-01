@@ -16,16 +16,21 @@ import {
   applyProjectPatch,
   applyTaskPatch,
   applyWebhookPatch,
+  assertTaskAttachmentQuota,
   assertTaskDependencies,
+  buildAttachment,
   buildCheckpoint,
   buildComment,
   buildProject,
   buildTask,
   buildWebhook,
+  cloneAttachment,
+  cloneAttachmentContent,
   cloneComment,
   cloneProject,
   cloneTask,
   cloneWebhook,
+  compareAttachments,
   compareCheckpoints,
   compareComments,
   compareProjects,
@@ -38,14 +43,19 @@ import {
   parseOrThrow,
   recordWebhookTriggerEntity,
   renumberTask,
+  stripAttachmentData,
   throwIfAborted,
   touchTaskEntity,
   toTimestamp,
+  withTaskAttachmentCount,
   withTaskCommentCount,
   withoutDependencies,
+  type Attachment,
+  type AttachmentContent,
   type BackupBundle,
   type Checkpoint,
   type Comment,
+  type CreateAttachmentInput,
   type SaveCheckpointInput,
   type CreateCommentInput,
   type CreateProjectInput,
@@ -65,11 +75,13 @@ import {
   type WebhookFilter,
 } from "@bitig/core";
 import {
+  decodeAttachmentMeta,
   decodeCheckpoint,
   decodeComment,
   decodeProject,
   decodeTask,
   decodeWebhook,
+  encodeAttachmentMeta,
   encodeCheckpoint,
   encodeComment,
   encodeProject,
@@ -79,6 +91,10 @@ import {
 import type { FileSystemPort } from "./fs/port";
 import {
   ROOT_PATH,
+  attachmentBlobFilePath,
+  attachmentIdFromMetaFileName,
+  attachmentMetaFilePath,
+  attachmentsDirPath,
   checkpointFilePath,
   checkpointIdFromFileName,
   checkpointsDirPath,
@@ -89,6 +105,7 @@ import {
   projectDirPath,
   projectFilePath,
   taskFilePath,
+  taskIdFromAttachmentsDirName,
   taskIdFromCommentsDirName,
   taskIdFromFileName,
   webhookFilePath,
@@ -221,8 +238,7 @@ export class MarkdownStorage implements StorageProvider {
       const text = await this.#fs.readText(found.filePath, { signal: opts?.signal });
       if (text === null) return null;
       const decoded = decodeTask(found.projectId, validId, text, found.filePath);
-      const count = await this.#countTaskComments(found.projectId, validId, opts?.signal);
-      return withTaskCommentCount(decoded, count);
+      return this.#withTaskCounts(found.projectId, decoded, opts?.signal);
     }, { signal: opts?.signal });
   }
 
@@ -273,19 +289,21 @@ export class MarkdownStorage implements StorageProvider {
 
         const nextFilePath = taskFilePath(next.projectId, next.id);
         await this.#fs.writeTextAtomic(nextFilePath, encodeTask(next), { signal: opts?.signal });
-        // Copy the comments before removing anything, so a failure never loses one.
+        // Copy comments, checkpoints, and attachments before removing anything, so a failure never loses one.
         const comments = await this.#readTaskComments(existing.projectId, validId, opts?.signal);
         await this.#writeComments(next.projectId, comments, opts?.signal);
         const checkpoints = await this.#readTaskCheckpoints(existing.projectId, validId, opts?.signal);
         await this.#writeCheckpoints(next.projectId, checkpoints, opts?.signal);
+        const attachments = await this.#readTaskAttachmentsWithContent(existing.projectId, validId, opts?.signal);
+        await this.#writeAttachmentsWithContent(next.projectId, attachments, opts?.signal);
         await this.#fs.removeFile(found.filePath, { signal: opts?.signal });
         await this.#fs.removeDir(commentsDirPath(existing.projectId, validId), { signal: opts?.signal });
         await this.#fs.removeDir(checkpointsDirPath(existing.projectId, validId), { signal: opts?.signal });
-        return withTaskCommentCount(next, comments.length);
+        await this.#fs.removeDir(attachmentsDirPath(existing.projectId, validId), { signal: opts?.signal });
+        return withTaskAttachmentCount(withTaskCommentCount(next, comments.length), attachments.length);
       } else {
         await this.#fs.writeTextAtomic(found.filePath, encodeTask(next), { signal: opts?.signal });
-        const count = await this.#countTaskComments(existing.projectId, validId, opts?.signal);
-        return withTaskCommentCount(next, count);
+        return this.#withTaskCounts(existing.projectId, next, opts?.signal);
       }
     }, { signal: opts?.signal });
   }
@@ -302,6 +320,7 @@ export class MarkdownStorage implements StorageProvider {
       await this.#fs.removeFile(found.filePath, { signal: opts?.signal });
       await this.#fs.removeDir(commentsDirPath(found.projectId, validId), { signal: opts?.signal });
       await this.#fs.removeDir(checkpointsDirPath(found.projectId, validId), { signal: opts?.signal });
+      await this.#fs.removeDir(attachmentsDirPath(found.projectId, validId), { signal: opts?.signal });
       await this.#dropDependencies(new Set([validId]), opts?.signal);
     }, { signal: opts?.signal });
   }
@@ -321,8 +340,7 @@ export class MarkdownStorage implements StorageProvider {
       const existing = decodeTask(found.projectId, validId, text, found.filePath);
       const next = completeTaskEntity(existing, this.#deps.clock(), opts?.actor, opts?.overrideBlockedBy);
       await this.#fs.writeTextAtomic(found.filePath, encodeTask(next), { signal: opts?.signal });
-      const count = await this.#countTaskComments(found.projectId, validId, opts?.signal);
-      return withTaskCommentCount(next, count);
+      return this.#withTaskCounts(found.projectId, next, opts?.signal);
     }, { signal: opts?.signal });
   }
 
@@ -366,6 +384,79 @@ export class MarkdownStorage implements StorageProvider {
       const filePath = await this.#locateComment(validId, opts?.signal);
       if (filePath === null) throw new NotFoundError("comment", validId);
       await this.#fs.removeFile(filePath, { signal: opts?.signal });
+    }, { signal: opts?.signal });
+  }
+
+  async getAttachments(taskId: string, opts?: OperationOptions): Promise<Attachment[]> {
+    throwIfAborted(opts?.signal);
+    const validTaskId = parseOrThrow(IdSchema, taskId, "getAttachments");
+
+    return this.#lock.withLock(async () => {
+      throwIfAborted(opts?.signal);
+      const found = await this.#locateTask(validTaskId, opts?.signal);
+      if (found === null) return [];
+      const attachments = await this.#readTaskAttachments(found.projectId, validTaskId, opts?.signal);
+      return attachments.sort(compareAttachments).map(cloneAttachment);
+    }, { signal: opts?.signal });
+  }
+
+  async getAttachment(id: string, opts?: OperationOptions): Promise<AttachmentContent | null> {
+    throwIfAborted(opts?.signal);
+    const validId = parseOrThrow(IdSchema, id, "getAttachment");
+
+    return this.#lock.withLock(async () => {
+      throwIfAborted(opts?.signal);
+      const found = await this.#locateAttachment(validId, opts?.signal);
+      if (found === null) return null;
+      const metaText = await this.#fs.readText(found.metaPath, { signal: opts?.signal });
+      if (metaText === null) return null;
+      const meta = decodeAttachmentMeta(found.taskId, validId, metaText, found.metaPath);
+      const data = await this.#fs.readBytes(found.blobPath, { signal: opts?.signal });
+      if (data === null) {
+        throw new StorageError("corrupt", `Missing attachment binary payload for ${validId}`, {
+          location: found.blobPath,
+        });
+      }
+      return cloneAttachmentContent({ ...meta, data });
+    }, { signal: opts?.signal });
+  }
+
+  async addAttachment(input: CreateAttachmentInput, opts?: OperationOptions): Promise<Attachment> {
+    throwIfAborted(opts?.signal);
+    const attachment = buildAttachment(input, this.#deps, opts?.actor);
+
+    return this.#lock.withLock(async () => {
+      throwIfAborted(opts?.signal);
+      const found = await this.#locateTask(attachment.taskId, opts?.signal);
+      if (found === null) throw new NotFoundError("task", attachment.taskId);
+      const text = await this.#fs.readText(found.filePath, { signal: opts?.signal });
+      if (text === null) throw new NotFoundError("task", attachment.taskId);
+
+      const existingAttachments = await this.#readTaskAttachments(
+        found.projectId,
+        attachment.taskId,
+        opts?.signal,
+      );
+      assertTaskAttachmentQuota(existingAttachments, attachment.size, "addAttachment");
+
+      const existingTask = decodeTask(found.projectId, attachment.taskId, text, found.filePath);
+      const touched = touchTaskEntity(existingTask, this.#deps.clock(), opts?.actor);
+      await this.#writeAttachmentsWithContent(found.projectId, [attachment], opts?.signal);
+      await this.#fs.writeTextAtomic(found.filePath, encodeTask(touched), { signal: opts?.signal });
+      return stripAttachmentData(attachment);
+    }, { signal: opts?.signal });
+  }
+
+  async deleteAttachment(id: string, opts?: OperationOptions): Promise<void> {
+    throwIfAborted(opts?.signal);
+    const validId = parseOrThrow(IdSchema, id, "deleteAttachment");
+
+    return this.#lock.withLock(async () => {
+      throwIfAborted(opts?.signal);
+      const found = await this.#locateAttachment(validId, opts?.signal);
+      if (found === null) throw new NotFoundError("attachment", validId);
+      await this.#fs.removeFile(found.metaPath, { signal: opts?.signal });
+      await this.#fs.removeFile(found.blobPath, { signal: opts?.signal });
     }, { signal: opts?.signal });
   }
 
@@ -664,8 +755,7 @@ export class MarkdownStorage implements StorageProvider {
                 const text = await this.#fs.readText(filePath, { signal });
                 if (text !== null) {
                   const decoded = decodeTask(pId, taskId, text, filePath);
-                  const count = await this.#countTaskComments(pId, taskId, signal);
-                  tasks.push(withTaskCommentCount(decoded, count));
+                  tasks.push(await this.#withTaskCounts(pId, decoded, signal));
                 }
               }
             }
@@ -704,13 +794,18 @@ export class MarkdownStorage implements StorageProvider {
           const text = await this.#fs.readText(filePath, { signal });
           if (text !== null) {
             const decoded = decodeTask(projectId, taskId, text, filePath);
-            const count = await this.#countTaskComments(projectId, taskId, signal);
-            tasks.push(withTaskCommentCount(decoded, count));
+            tasks.push(await this.#withTaskCounts(projectId, decoded, signal));
           }
         }
       }
     }
     return tasks;
+  }
+
+  async #withTaskCounts(projectId: string, task: Task, signal?: OperationOptions["signal"]): Promise<Task> {
+    const commentCount = await this.#countTaskComments(projectId, task.id, signal);
+    const attachmentCount = await this.#countTaskAttachments(projectId, task.id, signal);
+    return withTaskAttachmentCount(withTaskCommentCount(task, commentCount), attachmentCount);
   }
 
   /** Number of comment files stored for a task; call under the lock. */
@@ -722,6 +817,21 @@ export class MarkdownStorage implements StorageProvider {
     for (const entry of entries) {
       throwIfAborted(signal);
       if (entry.kind === "file" && commentIdFromFileName(entry.name) !== null) {
+        count++;
+      }
+    }
+    return count;
+  }
+
+  /** Number of attachment metadata files stored for a task; call under the lock. */
+  async #countTaskAttachments(projectId: string, taskId: string, signal?: OperationOptions["signal"]): Promise<number> {
+    const entries = await this.#fs.listDir(attachmentsDirPath(projectId, taskId), { signal });
+    if (entries === null) return 0;
+
+    let count = 0;
+    for (const entry of entries) {
+      throwIfAborted(signal);
+      if (entry.kind === "file" && attachmentIdFromMetaFileName(entry.name) !== null) {
         count++;
       }
     }
@@ -773,6 +883,73 @@ export class MarkdownStorage implements StorageProvider {
       await this.#fs.writeTextAtomic(commentFilePath(projectId, comment.taskId, comment.id), encodeComment(comment), {
         signal,
       });
+    }
+  }
+
+  /** One task's attachment metadata entries, unsorted; call under the lock. */
+  async #readTaskAttachments(projectId: string, taskId: string, signal?: OperationOptions["signal"]): Promise<Attachment[]> {
+    const entries = await this.#fs.listDir(attachmentsDirPath(projectId, taskId), { signal });
+    if (entries === null) return [];
+
+    const attachments: Attachment[] = [];
+    for (const entry of entries) {
+      throwIfAborted(signal);
+      if (entry.kind !== "file") continue;
+      const attachmentId = attachmentIdFromMetaFileName(entry.name);
+      if (attachmentId === null) continue;
+      const metaPath = attachmentMetaFilePath(projectId, taskId, attachmentId);
+      const text = await this.#fs.readText(metaPath, { signal });
+      if (text !== null) attachments.push(decodeAttachmentMeta(taskId, attachmentId, text, metaPath));
+    }
+    return attachments;
+  }
+
+  /** One task's attachments with binary payloads, unsorted; call under the lock. */
+  async #readTaskAttachmentsWithContent(
+    projectId: string,
+    taskId: string,
+    signal?: OperationOptions["signal"],
+  ): Promise<AttachmentContent[]> {
+    const metas = await this.#readTaskAttachments(projectId, taskId, signal);
+    const items: AttachmentContent[] = [];
+    for (const meta of metas) {
+      throwIfAborted(signal);
+      const blobPath = attachmentBlobFilePath(projectId, taskId, meta.id);
+      const data = await this.#fs.readBytes(blobPath, { signal });
+      if (data === null) {
+        throw new StorageError("corrupt", `Missing attachment binary payload for ${meta.id}`, {
+          location: blobPath,
+        });
+      }
+      items.push({ ...meta, data });
+    }
+    return items;
+  }
+
+  /** Writes attachments (metadata + binary payload) into their tasks' `.files` directories; call under the lock. */
+  async #writeAttachmentsWithContent(
+    projectId: string,
+    attachments: readonly AttachmentContent[],
+    signal?: OperationOptions["signal"],
+  ): Promise<void> {
+    const readyDirs = new Set<string>();
+    for (const attachment of attachments) {
+      throwIfAborted(signal);
+      const dir = attachmentsDirPath(projectId, attachment.taskId);
+      if (!readyDirs.has(dir)) {
+        if ((await this.#fs.listDir(dir, { signal })) === null) await this.#fs.makeDir(dir, { signal });
+        readyDirs.add(dir);
+      }
+      await this.#fs.writeBytesAtomic(
+        attachmentBlobFilePath(projectId, attachment.taskId, attachment.id),
+        attachment.data,
+        { signal },
+      );
+      await this.#fs.writeTextAtomic(
+        attachmentMetaFilePath(projectId, attachment.taskId, attachment.id),
+        encodeAttachmentMeta(stripAttachmentData(attachment)),
+        { signal },
+      );
     }
   }
 
@@ -888,6 +1065,36 @@ export class MarkdownStorage implements StorageProvider {
         if (taskId === null) continue;
         const filePath = commentFilePath(rootEntry.name, taskId, commentId);
         if (await this.#fs.fileExists(filePath, { signal })) return filePath;
+      }
+    }
+    return null;
+  }
+
+  /** Paths of the attachment's metadata and binary files, or `null` if no task has it; call under the lock. */
+  async #locateAttachment(
+    attachmentId: string,
+    signal?: OperationOptions["signal"],
+  ): Promise<{ projectId: string; taskId: string; metaPath: string; blobPath: string } | null> {
+    const rootEntries = await this.#fs.listDir(ROOT_PATH, { signal });
+    if (rootEntries === null) return null;
+
+    for (const rootEntry of rootEntries) {
+      if (rootEntry.kind !== "directory" || !isEntityId(rootEntry.name)) continue;
+      const entries = await this.#fs.listDir(projectDirPath(rootEntry.name), { signal });
+      for (const entry of entries ?? []) {
+        throwIfAborted(signal);
+        if (entry.kind !== "directory") continue;
+        const taskId = taskIdFromAttachmentsDirName(entry.name);
+        if (taskId === null) continue;
+        const metaPath = attachmentMetaFilePath(rootEntry.name, taskId, attachmentId);
+        if (await this.#fs.fileExists(metaPath, { signal })) {
+          return {
+            projectId: rootEntry.name,
+            taskId,
+            metaPath,
+            blobPath: attachmentBlobFilePath(rootEntry.name, taskId, attachmentId),
+          };
+        }
       }
     }
     return null;

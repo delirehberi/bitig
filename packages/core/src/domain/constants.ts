@@ -91,6 +91,34 @@ export const COMMENT_BODY_MAX = 20_000;
 export const COMMENT_AUTHOR_MAX = 100;
 
 /**
+ * Task attachments: Markdown notes, screenshots/images, logs, and supporting files attached to a task.
+ */
+export const ATTACHMENT_NAME_MAX = 255;
+/** Maximum size of a single attached file (4 MiB). */
+export const ATTACHMENT_MAX_BYTES = 4 * 1024 * 1024;
+/** Maximum combined size of all files attached to one task (20 MiB). */
+export const ATTACHMENT_TASK_MAX_BYTES = 20 * 1024 * 1024;
+/** Maximum number of files attached to one task. */
+export const ATTACHMENT_TASK_MAX_COUNT = 20;
+export const ATTACHMENT_MIME_TYPES = [
+  "text/markdown",
+  "text/plain",
+  "text/csv",
+  "application/json",
+  "application/yaml",
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+  "image/avif",
+  "application/pdf",
+  "application/zip",
+  "application/gzip",
+  "application/octet-stream",
+] as const;
+export const DEFAULT_ATTACHMENT_MIME_TYPE = "application/octet-stream" satisfies (typeof ATTACHMENT_MIME_TYPES)[number];
+
+/**
  * Incoming webhooks: external services (Sentry, Jira, GitHub, or generic JSON) post payloads to
  * `/webhooks/:token` to create tasks in a project.
  */

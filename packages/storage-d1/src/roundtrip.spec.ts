@@ -10,6 +10,7 @@ import { D1Storage } from "./d1-storage";
 
 class MemoryFileSystem implements FileSystemPort {
   private readonly files = new Map<string, string>();
+  private readonly bytes = new Map<string, Uint8Array>();
   private readonly dirs = new Set<string>([""]);
 
   readText(path: string): Promise<string | null> {
@@ -18,6 +19,16 @@ class MemoryFileSystem implements FileSystemPort {
 
   writeTextAtomic(path: string, content: string): Promise<void> {
     this.files.set(path, content);
+    return Promise.resolve();
+  }
+
+  readBytes(path: string): Promise<Uint8Array | null> {
+    const raw = this.bytes.get(path);
+    return Promise.resolve(raw ? new Uint8Array(raw) : null);
+  }
+
+  writeBytesAtomic(path: string, content: Uint8Array): Promise<void> {
+    this.bytes.set(path, new Uint8Array(content));
     return Promise.resolve();
   }
 
@@ -33,7 +44,7 @@ class MemoryFileSystem implements FileSystemPort {
         if (name) entries.set(name, { name, kind: "directory" });
       }
     }
-    for (const f of this.files.keys()) {
+    for (const f of [...this.files.keys(), ...this.bytes.keys()]) {
       if (f.startsWith(prefix)) {
         const rest = f.slice(prefix.length);
         if (!rest.includes("/")) {
@@ -51,6 +62,7 @@ class MemoryFileSystem implements FileSystemPort {
 
   removeFile(path: string): Promise<void> {
     this.files.delete(path);
+    this.bytes.delete(path);
     return Promise.resolve();
   }
 
@@ -60,6 +72,9 @@ class MemoryFileSystem implements FileSystemPort {
     for (const key of [...this.files.keys()]) {
       if (key.startsWith(prefix)) this.files.delete(key);
     }
+    for (const key of [...this.bytes.keys()]) {
+      if (key.startsWith(prefix)) this.bytes.delete(key);
+    }
     for (const key of [...this.dirs]) {
       if (key.startsWith(prefix)) this.dirs.delete(key);
     }
@@ -67,7 +82,7 @@ class MemoryFileSystem implements FileSystemPort {
   }
 
   fileExists(path: string): Promise<boolean> {
-    return Promise.resolve(this.files.has(path));
+    return Promise.resolve(this.files.has(path) || this.bytes.has(path));
   }
 }
 
@@ -98,6 +113,7 @@ class MemoryRelayManager extends RelayManager {
 
 const STATEMENTS = [
   "DROP TABLE IF EXISTS `webhooks`",
+  "DROP TABLE IF EXISTS `attachments`",
   "DROP TABLE IF EXISTS `checkpoints`",
   "DROP TABLE IF EXISTS `comments`",
   "DROP TABLE IF EXISTS `tasks`",
@@ -154,6 +170,17 @@ const STATEMENTS = [
     FOREIGN KEY (\`task_id\`) REFERENCES \`tasks\`(\`id\`) ON UPDATE no action ON DELETE cascade
   )`,
   "CREATE INDEX `comments_task_id_idx` ON `comments` (`task_id`)",
+  `CREATE TABLE \`attachments\` (
+    \`id\` text PRIMARY KEY NOT NULL,
+    \`task_id\` text NOT NULL,
+    \`name\` text NOT NULL,
+    \`mime_type\` text NOT NULL,
+    \`size\` integer NOT NULL,
+    \`created_at\` integer NOT NULL,
+    \`created_by\` text,
+    FOREIGN KEY (\`task_id\`) REFERENCES \`tasks\`(\`id\`) ON UPDATE no action ON DELETE cascade
+  )`,
+  "CREATE INDEX `attachments_task_id_idx` ON `attachments` (`task_id`)",
   "CREATE TABLE `checkpoints` (`id` text PRIMARY KEY NOT NULL, `task_id` text NOT NULL, `step_index` integer NOT NULL, `status` text NOT NULL, `state_snapshot` text NOT NULL, `created_at` integer NOT NULL, `created_by` text, FOREIGN KEY (`task_id`) REFERENCES `tasks`(`id`) ON UPDATE no action ON DELETE cascade)",
   "CREATE UNIQUE INDEX `checkpoints_task_step_idx` ON `checkpoints` (`task_id`,`step_index`)",
   `CREATE TABLE \`webhooks\` (

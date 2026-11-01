@@ -21,6 +21,23 @@ export * from "./domain/realtime";
 export type * from "./domain/types";
 export { buildCheckpoint, compareCheckpoints, buildExecutionContext } from "./domain/checkpoints";
 export {
+  assertTaskAttachmentQuota,
+  buildAttachment,
+  cloneAttachment,
+  cloneAttachmentContent,
+  compareAttachments,
+  decodeBase64,
+  decodeUtf8,
+  encodeBase64,
+  encodeUtf8,
+  inferAttachmentMimeType,
+  isImageAttachmentMimeType,
+  isMarkdownAttachment,
+  isTextAttachmentMimeType,
+  normalizeAttachmentMimeType,
+  stripAttachmentData,
+} from "./domain/attachments";
+export {
   BitigError,
   ERROR_CODES,
   NotFoundError,
@@ -57,6 +74,7 @@ export {
   recordWebhookTriggerEntity,
   renumberTask,
   sortProjectsByActivity,
+  withTaskAttachmentCount,
   withTaskCommentCount,
 } from "./domain/entities";
 export {

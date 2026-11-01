@@ -14,16 +14,20 @@ import {
   applyProjectPatch,
   applyTaskPatch,
   applyWebhookPatch,
+  assertTaskAttachmentQuota,
   assertTaskDependencies,
+  buildAttachment,
   buildCheckpoint,
   buildComment,
   buildProject,
   buildTask,
   buildWebhook,
+  cloneAttachment,
   cloneComment,
   cloneProject,
   cloneTask,
   cloneWebhook,
+  compareAttachments,
   compareCheckpoints,
   compareComments,
   compareProjects,
@@ -35,13 +39,18 @@ import {
   parseOrThrow,
   recordWebhookTriggerEntity,
   renumberTask,
+  stripAttachmentData,
   throwIfAborted,
   touchTaskEntity,
   toTimestamp,
+  withTaskAttachmentCount,
   withTaskCommentCount,
+  type Attachment,
+  type AttachmentContent,
   type BackupBundle,
   type Checkpoint,
   type Comment,
+  type CreateAttachmentInput,
   type SaveCheckpointInput,
   type CreateCommentInput,
   type CreateProjectInput,
@@ -63,13 +72,16 @@ import {
 } from "@bitig/core";
 import * as schema from "./schema";
 import {
+  attachments,
   checkpoints,
   comments,
   projects,
   tasks,
   webhooks,
+  type AttachmentRecord,
   type CheckpointRecord,
   type CommentRecord,
+  type InsertAttachmentRecord,
   type InsertCheckpointRecord,
   type InsertCommentRecord,
   type InsertWebhookRecord,
@@ -78,9 +90,85 @@ import {
   type WebhookRecord,
 } from "./schema";
 
+export interface AttachmentBlobObject {
+  arrayBuffer(): Promise<ArrayBuffer>;
+}
+
+export interface AttachmentBlobStore {
+  put(
+    key: string,
+    value: Uint8Array | ArrayBuffer,
+    options?: { httpMetadata?: { contentType?: string } },
+  ): Promise<unknown>;
+  get(key: string): Promise<AttachmentBlobObject | null>;
+  delete(keys: string | string[]): Promise<unknown>;
+}
+
+class InMemoryAttachmentBlobStore implements AttachmentBlobStore {
+  readonly #blobs = new Map<string, Uint8Array>();
+
+  put(key: string, value: Uint8Array | ArrayBuffer): Promise<unknown> {
+    const bytes = value instanceof Uint8Array ? new Uint8Array(value) : new Uint8Array(value);
+    this.#blobs.set(key, bytes);
+    return Promise.resolve();
+  }
+
+  get(key: string): Promise<AttachmentBlobObject | null> {
+    const bytes = this.#blobs.get(key);
+    if (!bytes) return Promise.resolve(null);
+    return Promise.resolve({
+      arrayBuffer: () => {
+        const copy = new Uint8Array(bytes.byteLength);
+        copy.set(bytes);
+        return Promise.resolve(copy.buffer);
+      },
+    });
+  }
+
+  delete(keys: string | string[]): Promise<unknown> {
+    const list = Array.isArray(keys) ? keys : [keys];
+    for (const key of list) {
+      this.#blobs.delete(key);
+    }
+    return Promise.resolve();
+  }
+}
+
 export interface D1StorageOptions {
   readonly db: D1Database | DrizzleD1Database<typeof schema>;
+  readonly bucket?: AttachmentBlobStore;
   readonly deps?: RuntimeDeps;
+}
+
+function attachmentBlobKey(taskId: string, attachmentId: string): string {
+  return `tasks/${taskId}/attachments/${attachmentId}`;
+}
+
+function recordToAttachment(row: AttachmentRecord): Attachment {
+  const attachment: Attachment = {
+    id: row.id,
+    taskId: row.taskId,
+    name: row.name,
+    mimeType: row.mimeType,
+    size: row.size,
+    createdAt: new Date(row.createdAt).toISOString(),
+  };
+  if (row.createdBy !== null) {
+    attachment.createdBy = row.createdBy;
+  }
+  return attachment;
+}
+
+function attachmentToRecord(attachment: Attachment): InsertAttachmentRecord {
+  return {
+    id: attachment.id,
+    taskId: attachment.taskId,
+    name: attachment.name,
+    mimeType: attachment.mimeType,
+    size: attachment.size,
+    createdAt: Date.parse(attachment.createdAt),
+    createdBy: attachment.createdBy ?? null,
+  };
 }
 
 function copyProject(project: Project): Project {
@@ -289,6 +377,7 @@ function isTaskNumberConflict(err: unknown): boolean {
 
 export class D1Storage implements StorageProvider {
   readonly #db: DrizzleD1Database<typeof schema>;
+  readonly #bucket: AttachmentBlobStore;
   readonly #deps: RuntimeDeps;
 
   constructor(
@@ -297,9 +386,11 @@ export class D1Storage implements StorageProvider {
   ) {
     if ("db" in dbOrOptions) {
       this.#db = isD1Database(dbOrOptions.db) ? drizzle(dbOrOptions.db, { schema }) : dbOrOptions.db;
+      this.#bucket = dbOrOptions.bucket ?? new InMemoryAttachmentBlobStore();
       this.#deps = dbOrOptions.deps ?? defaultRuntimeDeps;
     } else {
       this.#db = isD1Database(dbOrOptions) ? drizzle(dbOrOptions, { schema }) : dbOrOptions;
+      this.#bucket = new InMemoryAttachmentBlobStore();
       this.#deps = maybeDeps ?? defaultRuntimeDeps;
     }
   }
@@ -377,6 +468,15 @@ export class D1Storage implements StorageProvider {
     // Explicitly delete cascade to guarantee consistency across all SQLite configurations
     const projectTaskIds = this.#db.select({ id: tasks.id }).from(tasks).where(eq(tasks.projectId, validId));
     const removed = new Set((await projectTaskIds.all()).map((row) => row.id));
+    const attachmentRows = await this.#db
+      .select({ id: attachments.id, taskId: attachments.taskId })
+      .from(attachments)
+      .where(inArray(attachments.taskId, projectTaskIds))
+      .all();
+    await this.#db.delete(attachments).where(inArray(attachments.taskId, projectTaskIds));
+    if (attachmentRows.length > 0) {
+      await this.#bucket.delete(attachmentRows.map((row) => attachmentBlobKey(row.taskId, row.id)));
+    }
     await this.#db.delete(comments).where(inArray(comments.taskId, projectTaskIds));
     await this.#db.delete(checkpoints).where(inArray(checkpoints.taskId, projectTaskIds));
     await this.#db.delete(tasks).where(eq(tasks.projectId, validId));
@@ -392,6 +492,7 @@ export class D1Storage implements StorageProvider {
 
     let rows: TaskRecord[];
     let commentCountRows: { taskId: string; total: number }[];
+    let attachmentCountRows: { taskId: string; total: number }[];
     if (parsedFilter?.projectId !== undefined) {
       rows = await this.#db.select().from(tasks).where(eq(tasks.projectId, parsedFilter.projectId)).all();
       throwIfAborted(opts?.signal);
@@ -409,6 +510,20 @@ export class D1Storage implements StorageProvider {
               )
               .groupBy(comments.taskId)
               .all();
+      attachmentCountRows =
+        rows.length === 0
+          ? []
+          : await this.#db
+              .select({ taskId: attachments.taskId, total: count() })
+              .from(attachments)
+              .where(
+                inArray(
+                  attachments.taskId,
+                  this.#db.select({ id: tasks.id }).from(tasks).where(eq(tasks.projectId, parsedFilter.projectId)),
+                ),
+              )
+              .groupBy(attachments.taskId)
+              .all();
     } else {
       rows = await this.#db.select().from(tasks).all();
       throwIfAborted(opts?.signal);
@@ -420,13 +535,30 @@ export class D1Storage implements StorageProvider {
               .from(comments)
               .groupBy(comments.taskId)
               .all();
+      attachmentCountRows =
+        rows.length === 0
+          ? []
+          : await this.#db
+              .select({ taskId: attachments.taskId, total: count() })
+              .from(attachments)
+              .groupBy(attachments.taskId)
+              .all();
     }
     throwIfAborted(opts?.signal);
     const countsByTaskId = new Map<string, number>();
     for (const entry of commentCountRows) {
       countsByTaskId.set(entry.taskId, entry.total);
     }
-    const result = rows.map((row) => withTaskCommentCount(recordToTask(row), countsByTaskId.get(row.id) ?? 0));
+    const attachmentCountsByTaskId = new Map<string, number>();
+    for (const entry of attachmentCountRows) {
+      attachmentCountsByTaskId.set(entry.taskId, entry.total);
+    }
+    const result = rows.map((row) =>
+      withTaskAttachmentCount(
+        withTaskCommentCount(recordToTask(row), countsByTaskId.get(row.id) ?? 0),
+        attachmentCountsByTaskId.get(row.id) ?? 0,
+      ),
+    );
     result.sort(compareTasks);
     return result;
   }
@@ -438,8 +570,9 @@ export class D1Storage implements StorageProvider {
     throwIfAborted(opts?.signal);
     if (!row) return null;
     const total = await this.#commentCount(validId);
+    const attachmentTotal = await this.#attachmentCount(validId);
     throwIfAborted(opts?.signal);
-    return withTaskCommentCount(recordToTask(row), total);
+    return withTaskAttachmentCount(withTaskCommentCount(recordToTask(row), total), attachmentTotal);
   }
 
   async saveTask(input: CreateTaskInput, opts?: OperationOptions): Promise<Task> {
@@ -557,8 +690,9 @@ export class D1Storage implements StorageProvider {
     }
     throwIfAborted(opts?.signal);
     const total = await this.#commentCount(validId);
+    const attachmentTotal = await this.#attachmentCount(validId);
     throwIfAborted(opts?.signal);
-    return withTaskCommentCount(next, total);
+    return withTaskAttachmentCount(withTaskCommentCount(next, total), attachmentTotal);
   }
 
   async deleteTask(id: string, opts?: OperationOptions): Promise<void> {
@@ -568,6 +702,15 @@ export class D1Storage implements StorageProvider {
     throwIfAborted(opts?.signal);
     if (!existingRow) throw new NotFoundError("task", validId);
 
+    const attachmentRows = await this.#db
+      .select({ id: attachments.id })
+      .from(attachments)
+      .where(eq(attachments.taskId, validId))
+      .all();
+    await this.#db.delete(attachments).where(eq(attachments.taskId, validId));
+    if (attachmentRows.length > 0) {
+      await this.#bucket.delete(attachmentRows.map((row) => attachmentBlobKey(validId, row.id)));
+    }
     await this.#db.delete(comments).where(eq(comments.taskId, validId));
     await this.#db.delete(checkpoints).where(eq(checkpoints.taskId, validId));
     await this.#db.delete(tasks).where(eq(tasks.id, validId));
@@ -600,8 +743,9 @@ export class D1Storage implements StorageProvider {
     }
     throwIfAborted(opts?.signal);
     const total = await this.#commentCount(validId);
+    const attachmentTotal = await this.#attachmentCount(validId);
     throwIfAborted(opts?.signal);
-    return withTaskCommentCount(next, total);
+    return withTaskAttachmentCount(withTaskCommentCount(next, total), attachmentTotal);
   }
 
   async getComments(taskId: string, opts?: OperationOptions): Promise<Comment[]> {
@@ -681,6 +825,81 @@ export class D1Storage implements StorageProvider {
     const deleted = await this.#db.delete(comments).where(eq(comments.id, validId)).returning({ id: comments.id });
     throwIfAborted(opts?.signal);
     if (deleted.length === 0) throw new NotFoundError("comment", validId);
+  }
+
+  async getAttachments(taskId: string, opts?: OperationOptions): Promise<Attachment[]> {
+    throwIfAborted(opts?.signal);
+    const validTaskId = parseOrThrow(IdSchema, taskId, "getAttachments");
+    const rows = await this.#db.select().from(attachments).where(eq(attachments.taskId, validTaskId)).all();
+    throwIfAborted(opts?.signal);
+    return rows.map(recordToAttachment).sort(compareAttachments).map(cloneAttachment);
+  }
+
+  async getAttachment(id: string, opts?: OperationOptions): Promise<AttachmentContent | null> {
+    throwIfAborted(opts?.signal);
+    const validId = parseOrThrow(IdSchema, id, "getAttachment");
+    const row = await this.#db.select().from(attachments).where(eq(attachments.id, validId)).get();
+    throwIfAborted(opts?.signal);
+    if (!row) return null;
+    const attachment = recordToAttachment(row);
+    const blob = await this.#bucket.get(attachmentBlobKey(attachment.taskId, attachment.id));
+    throwIfAborted(opts?.signal);
+    const data = blob ? new Uint8Array(await blob.arrayBuffer()) : new Uint8Array(0);
+    throwIfAborted(opts?.signal);
+    return {
+      ...cloneAttachment(attachment),
+      data,
+    };
+  }
+
+  async addAttachment(input: CreateAttachmentInput, opts?: OperationOptions): Promise<Attachment> {
+    throwIfAborted(opts?.signal);
+    const content = buildAttachment(input, this.#deps, opts?.actor);
+    const taskRow = await this.#db.select().from(tasks).where(eq(tasks.id, content.taskId)).get();
+    throwIfAborted(opts?.signal);
+    if (!taskRow) throw new NotFoundError("task", content.taskId);
+
+    const existingRows = await this.#db
+      .select()
+      .from(attachments)
+      .where(eq(attachments.taskId, content.taskId))
+      .all();
+    throwIfAborted(opts?.signal);
+    const existingAttachments = existingRows.map(recordToAttachment);
+    assertTaskAttachmentQuota(existingAttachments, content.size);
+
+    const meta = stripAttachmentData(content);
+    const key = attachmentBlobKey(meta.taskId, meta.id);
+    await this.#bucket.put(key, content.data, {
+      httpMetadata: { contentType: meta.mimeType },
+    });
+    await this.#db.insert(attachments).values(attachmentToRecord(meta));
+
+    const touched = touchTaskEntity(recordToTask(taskRow), this.#deps.clock(), opts?.actor);
+    await this.#db
+      .update(tasks)
+      .set({
+        updatedBy: touched.updatedBy ?? null,
+        activity: touched.activity ? touched.activity.map((entry) => ({ ...entry })) : null,
+        updatedAt: Date.parse(touched.updatedAt),
+      })
+      .where(eq(tasks.id, meta.taskId));
+    throwIfAborted(opts?.signal);
+    return cloneAttachment(meta);
+  }
+
+  async deleteAttachment(id: string, opts?: OperationOptions): Promise<void> {
+    throwIfAborted(opts?.signal);
+    const validId = parseOrThrow(IdSchema, id, "deleteAttachment");
+    const deleted = await this.#db
+      .delete(attachments)
+      .where(eq(attachments.id, validId))
+      .returning({ id: attachments.id, taskId: attachments.taskId });
+    throwIfAborted(opts?.signal);
+    const removed = deleted[0];
+    if (!removed) throw new NotFoundError("attachment", validId);
+    await this.#bucket.delete(attachmentBlobKey(removed.taskId, removed.id));
+    throwIfAborted(opts?.signal);
   }
 
   async getWebhooks(filter?: WebhookFilter, opts?: OperationOptions): Promise<Webhook[]> {
@@ -959,6 +1178,15 @@ export class D1Storage implements StorageProvider {
       .select({ total: count() })
       .from(comments)
       .where(eq(comments.taskId, taskId))
+      .get();
+    return row?.total ?? 0;
+  }
+
+  async #attachmentCount(taskId: string): Promise<number> {
+    const row = await this.#db
+      .select({ total: count() })
+      .from(attachments)
+      .where(eq(attachments.taskId, taskId))
       .get();
     return row?.total ?? 0;
   }

@@ -31,6 +31,7 @@ import { ApprovalNote } from "./Approval";
 import { NeedsHumanNote } from "./NeedsHuman";
 import { TaskCode } from "./TaskCode";
 import { TaskCheckpoint } from "./TaskCheckpoint";
+import { TaskAttachments } from "./TaskAttachments";
 import { TaskComments } from "./TaskComments";
 import { LinkedTasks, TaskDependencies } from "./LinkedTasks";
 
@@ -438,6 +439,8 @@ export function TaskDetailModal({
             </ol>
           </section>
         )}
+
+        {storage && <TaskAttachments key={`attachments-${task.id}`} storage={storage} taskId={task.id} />}
 
         {/* Keyed so a draft never carries over to another task. */}
         {storage && (

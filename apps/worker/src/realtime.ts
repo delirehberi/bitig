@@ -86,6 +86,23 @@ export function withRealtimeBroadcast(
       });
     },
 
+    getAttachments: (taskId, opts) => storage.getAttachments(taskId, opts),
+    getAttachment: (id, opts) => storage.getAttachment(id, opts),
+    addAttachment: async (input, opts) => {
+      const attachment = await storage.addAttachment(input, opts);
+      await notify({ type: "attachment.created", attachment });
+      return attachment;
+    },
+    deleteAttachment: async (id, opts) => {
+      const existing = await storage.getAttachment(id, opts);
+      await storage.deleteAttachment(id, opts);
+      await notify({
+        type: "attachment.deleted",
+        id,
+        ...(existing !== null ? { taskId: existing.taskId } : {}),
+      });
+    },
+
     getWebhooks: (filter, opts) => storage.getWebhooks(filter, opts),
     getWebhook: (id, opts) => storage.getWebhook(id, opts),
     getWebhookByToken: (token, opts) => storage.getWebhookByToken(token, opts),

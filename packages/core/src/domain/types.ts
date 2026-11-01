@@ -1,5 +1,7 @@
 import type { z } from "zod";
 import type {
+  AttachmentMimeTypeSchema,
+  AttachmentSchema,
   CheckpointSchema,
   CheckpointStatusSchema,
   StateSnapshotSchema,
@@ -7,6 +9,7 @@ import type {
   ChecklistItemSchema,
   CommentAuthorTypeSchema,
   CommentSchema,
+  CreateAttachmentInputSchema,
   CreateCommentInputSchema,
   CreateProjectInputSchema,
   CreateTaskInputSchema,
@@ -48,6 +51,11 @@ export type ProjectResource = z.output<typeof ProjectResourceSchema>;
 export type ResourceType = z.output<typeof ResourceTypeSchema>;
 export type Comment = z.output<typeof CommentSchema>;
 export type CommentAuthorType = z.output<typeof CommentAuthorTypeSchema>;
+export type Attachment = z.output<typeof AttachmentSchema>;
+export type AttachmentMimeType = z.output<typeof AttachmentMimeTypeSchema>;
+export interface AttachmentContent extends Attachment {
+  readonly data: Uint8Array;
+}
 export type Webhook = z.output<typeof WebhookSchema>;
 export type WebhookProvider = z.output<typeof WebhookProviderSchema>;
 export type WebhookMapping = z.output<typeof WebhookMappingSchema>;
@@ -62,6 +70,7 @@ export type CreateTaskInput = z.input<typeof CreateTaskInputSchema>;
 export type UpdateTaskInput = z.input<typeof UpdateTaskInputSchema>;
 export type TaskFilter = z.input<typeof TaskFilterSchema>;
 export type CreateCommentInput = z.input<typeof CreateCommentInputSchema>;
+export type CreateAttachmentInput = z.input<typeof CreateAttachmentInputSchema>;
 export type CreateWebhookInput = z.input<typeof CreateWebhookInputSchema>;
 export type UpdateWebhookInput = z.input<typeof UpdateWebhookInputSchema>;
 export type WebhookFilter = z.input<typeof WebhookFilterSchema>;
@@ -72,6 +81,7 @@ export type ParsedUpdateProjectInput = z.output<typeof UpdateProjectInputSchema>
 export type ParsedCreateTaskInput = z.output<typeof CreateTaskInputSchema>;
 export type ParsedUpdateTaskInput = z.output<typeof UpdateTaskInputSchema>;
 export type ParsedCreateCommentInput = z.output<typeof CreateCommentInputSchema>;
+export type ParsedCreateAttachmentInput = z.output<typeof CreateAttachmentInputSchema>;
 export type ParsedCreateWebhookInput = z.output<typeof CreateWebhookInputSchema>;
 export type ParsedUpdateWebhookInput = z.output<typeof UpdateWebhookInputSchema>;
 

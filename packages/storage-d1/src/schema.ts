@@ -6,6 +6,7 @@ import {
   DEFAULT_TASK_STATUS,
   DEFAULT_WEBHOOK_ENABLED,
   DEFAULT_WEBHOOK_PROVIDER,
+  type AttachmentMimeType,
   type ChecklistItem,
   type CheckpointStatus,
   type StateSnapshot,
@@ -130,6 +131,22 @@ export const webhooks = sqliteTable(
   ],
 );
 
+export const attachments = sqliteTable(
+  "attachments",
+  {
+    id: text("id").primaryKey(),
+    taskId: text("task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    mimeType: text("mime_type").$type<AttachmentMimeType>().notNull(),
+    size: integer("size").notNull(),
+    createdAt: integer("created_at").notNull(),
+    createdBy: text("created_by"),
+  },
+  (table) => [index("attachments_task_id_idx").on(table.taskId)],
+);
+
 export type ProjectRecord = typeof projects.$inferSelect;
 export type InsertProjectRecord = typeof projects.$inferInsert;
 export type TaskRecord = typeof tasks.$inferSelect;
@@ -141,3 +158,5 @@ export type CheckpointRecord = typeof checkpoints.$inferSelect;
 export type InsertCheckpointRecord = typeof checkpoints.$inferInsert;
 export type WebhookRecord = typeof webhooks.$inferSelect;
 export type InsertWebhookRecord = typeof webhooks.$inferInsert;
+export type AttachmentRecord = typeof attachments.$inferSelect;
+export type InsertAttachmentRecord = typeof attachments.$inferInsert;

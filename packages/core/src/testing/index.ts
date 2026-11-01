@@ -12,8 +12,9 @@
  * timestamps and ordering are deterministic.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { NotFoundError, ValidationError } from "../domain/errors";
-import { CommentSchema, ProjectSchema, TaskSchema, WebhookSchema } from "../domain/schemas";
+import { decodeUtf8, encodeUtf8 } from "../domain/attachments";
+import { NotFoundError, StorageError, ValidationError } from "../domain/errors";
+import { AttachmentSchema, CommentSchema, ProjectSchema, TaskSchema, WebhookSchema } from "../domain/schemas";
 import type { Project, Task } from "../domain/types";
 import { DEFAULT_OVERRIDE_ACTOR, PROJECT_KINDS } from "../domain/constants";
 import type { AbortSignalLike } from "../storage/abort";
@@ -32,6 +33,8 @@ export interface StorageHarness {
   readonly storage: StorageProvider;
   /** Releases resources (connections, temp dirs, relays) after each test. */
   readonly dispose?: () => Promise<void> | void;
+  /** Set to `false` for adapters that explicitly reject binary attachments (e.g. `NostrStorage`). */
+  readonly supportsAttachments?: boolean;
 }
 
 export type StorageFactory = (runtime: TestRuntime) => Promise<StorageHarness> | StorageHarness;
@@ -981,6 +984,182 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
       });
     });
 
+    describe("attachments", () => {
+      async function createTask(title = "t"): Promise<Task> {
+        const project = await createProject();
+        return storage.saveTask({ projectId: project.id, title });
+      }
+
+      async function assertUnsupportedIfConfigured(taskId: string): Promise<boolean> {
+        if (harness.supportsAttachments !== false) return false;
+        for (const call of [
+          () => storage.getAttachments(taskId),
+          () => storage.getAttachment(UNKNOWN_ID),
+          () => storage.addAttachment({ taskId, name: "note.md", data: "# hi" }),
+          () => storage.deleteAttachment(UNKNOWN_ID),
+        ]) {
+          const err: unknown = await call().catch((e: unknown) => e);
+          expect(err).toBeInstanceOf(StorageError);
+          expect((err as StorageError).reason).toBe("unsupported");
+        }
+        return true;
+      }
+
+      it("starts with no attachments, also for an unknown task", async () => {
+        const task = await createTask();
+        if (await assertUnsupportedIfConfigured(task.id)) return;
+        expect(await storage.getAttachments(task.id)).toEqual([]);
+        expect(await storage.getAttachments(UNKNOWN_ID)).toEqual([]);
+        expect(await storage.getAttachment(UNKNOWN_ID)).toBeNull();
+      });
+
+      it("adds text and binary attachments, infers MIME types, lists oldest first, and touches the task", async () => {
+        const task = await createTask();
+        if (await assertUnsupportedIfConfigured(task.id)) return;
+        const mdText = "# Architecture\n\n- Step 1\n- Step 2\n";
+        const first = await storage.addAttachment({
+          taskId: task.id,
+          name: "  spec.md  ",
+          data: mdText,
+        });
+        const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+        const second = await storage.addAttachment(
+          {
+            taskId: task.id,
+            name: "screen.png",
+            mimeType: "image/png",
+            data: pngBytes,
+          },
+          { actor: "claude" },
+        );
+
+        expect(first).toMatchObject({
+          taskId: task.id,
+          name: "spec.md",
+          mimeType: "text/markdown",
+          size: encodeUtf8(mdText).byteLength,
+        });
+        expect(first).not.toHaveProperty("createdBy");
+        expect(second).toMatchObject({
+          taskId: task.id,
+          name: "screen.png",
+          mimeType: "image/png",
+          size: pngBytes.byteLength,
+          createdBy: "claude",
+        });
+        expect(AttachmentSchema.parse(first)).toEqual(first);
+        expect(AttachmentSchema.parse(second)).toEqual(second);
+        expect(await storage.getAttachments(task.id)).toEqual([first, second]);
+
+        const firstContent = await storage.getAttachment(first.id);
+        if (firstContent === null) throw new Error("expected first attachment content");
+        expect(decodeUtf8(firstContent.data)).toBe(mdText);
+
+        const secondContent = await storage.getAttachment(second.id);
+        expect(secondContent).toEqual({ ...second, data: pngBytes });
+
+        const touched = await storage.getTask(task.id);
+        if (touched === null) throw new Error("task with attachments was not found");
+        expect(touched).toMatchObject({
+          ...task,
+          updatedAt: touched.updatedAt,
+          attachmentCount: 2,
+          updatedBy: "claude",
+        });
+        expect(touched.updatedAt > task.updatedAt).toBe(true);
+        expect(await storage.getTasks({ projectId: task.projectId })).toEqual([touched]);
+      });
+
+      it("rejects invalid attachment names, MIME types, empty payloads, and missing tasks", async () => {
+        const task = await createTask();
+        if (await assertUnsupportedIfConfigured(task.id)) return;
+        await expect(
+          storage.addAttachment({ taskId: task.id, name: "../evil.md", data: "x" }),
+        ).rejects.toBeInstanceOf(ValidationError);
+        await expect(
+          storage.addAttachment({ taskId: task.id, name: "sub/path.md", data: "x" }),
+        ).rejects.toBeInstanceOf(ValidationError);
+        await expect(
+          storage.addAttachment({ taskId: task.id, name: "empty.txt", data: "" }),
+        ).rejects.toBeInstanceOf(ValidationError);
+        await expect(
+          storage.addAttachment({
+            taskId: task.id,
+            name: "xss.html",
+            mimeType: "text/html",
+            data: "<script>alert(1)</script>",
+          }),
+        ).rejects.toBeInstanceOf(ValidationError);
+        await expect(storage.getAttachments(MALFORMED_ID)).rejects.toBeInstanceOf(ValidationError);
+        await expect(storage.getAttachment(MALFORMED_ID)).rejects.toBeInstanceOf(ValidationError);
+        await expect(
+          storage.addAttachment({ taskId: UNKNOWN_ID, name: "note.md", data: "hello" }),
+        ).rejects.toBeInstanceOf(NotFoundError);
+        expect(await storage.getAttachments(task.id)).toEqual([]);
+      });
+
+      it("deletes one attachment and updates attachmentCount without touching updatedAt", async () => {
+        const task = await createTask();
+        if (await assertUnsupportedIfConfigured(task.id)) return;
+        const gone = await storage.addAttachment({ taskId: task.id, name: "gone.txt", data: "gone" });
+        const kept = await storage.addAttachment({ taskId: task.id, name: "kept.txt", data: "kept" });
+        const touched = await storage.getTask(task.id);
+        if (touched === null) throw new Error("task with attachments was not found");
+        const { attachmentCount: initialCount, ...withoutAttachments } = touched;
+        expect(initialCount).toBe(2);
+
+        await storage.deleteAttachment(gone.id);
+        expect(await storage.getAttachment(gone.id)).toBeNull();
+        expect(await storage.getAttachments(task.id)).toEqual([kept]);
+        expect(await storage.getTask(task.id)).toEqual({ ...withoutAttachments, attachmentCount: 1 });
+
+        await storage.deleteAttachment(kept.id);
+        expect(await storage.getTask(task.id)).toEqual(withoutAttachments);
+        await expect(storage.deleteAttachment(gone.id)).rejects.toBeInstanceOf(NotFoundError);
+        await expect(storage.deleteAttachment(UNKNOWN_ID)).rejects.toBeInstanceOf(NotFoundError);
+        await expect(storage.deleteAttachment(MALFORMED_ID)).rejects.toBeInstanceOf(ValidationError);
+      });
+
+      it("keeps attachments when a task moves project and deletes them with the task or project", async () => {
+        const task = await createTask();
+        if (await assertUnsupportedIfConfigured(task.id)) return;
+        const moving = await storage.addAttachment({
+          taskId: task.id,
+          name: "travels.md",
+          data: "travels along",
+        });
+        const target = await createProject("target");
+        await storage.updateTask(task.id, { projectId: target.id });
+        expect(await storage.getAttachments(task.id)).toEqual([moving]);
+        const movedContent = await storage.getAttachment(moving.id);
+        if (movedContent === null) throw new Error("expected moved attachment content");
+        expect(decodeUtf8(movedContent.data)).toBe("travels along");
+
+        const doomedProject = await createProject("doomed");
+        const doomedTask = await storage.saveTask({ projectId: doomedProject.id, title: "doomed" });
+        const siblingTask = await storage.saveTask({ projectId: doomedProject.id, title: "sibling" });
+        const doomedAttachment = await storage.addAttachment({
+          taskId: doomedTask.id,
+          name: "doomed.txt",
+          data: "gone with task",
+        });
+        const siblingAttachment = await storage.addAttachment({
+          taskId: siblingTask.id,
+          name: "sibling.txt",
+          data: "gone with project",
+        });
+
+        await storage.deleteTask(doomedTask.id);
+        expect(await storage.getAttachments(doomedTask.id)).toEqual([]);
+        expect(await storage.getAttachment(doomedAttachment.id)).toBeNull();
+
+        await storage.deleteProject(doomedProject.id);
+        expect(await storage.getAttachments(siblingTask.id)).toEqual([]);
+        expect(await storage.getAttachment(siblingAttachment.id)).toBeNull();
+        expect(await storage.getAttachments(task.id)).toEqual([moving]);
+      });
+    });
+
     describe("checkpoints", () => {
       async function createTask(title = "t"): Promise<Task> {
         const project = await createProject();
@@ -1183,6 +1362,10 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
         const project = await createProject();
         const task = await storage.saveTask({ projectId: project.id, title: "t" });
         const comment = await storage.addComment({ taskId: task.id, body: "c" });
+        const attachment =
+          harness.supportsAttachments === false
+            ? null
+            : await storage.addAttachment({ taskId: task.id, name: "a.txt", data: "a" });
         const touchedTask = await storage.getTask(task.id);
         if (touchedTask === null) throw new Error("commented task was not found");
         const webhook = await storage.createWebhook({ projectId: project.id, name: "w" });
@@ -1204,6 +1387,14 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
           () => storage.getComments(task.id, opts),
           () => storage.addComment({ taskId: task.id, body: "new" }, opts),
           () => storage.deleteComment(comment.id, opts),
+          ...(attachment === null
+            ? []
+            : [
+                () => storage.getAttachments(task.id, opts),
+                () => storage.getAttachment(attachment.id, opts),
+                () => storage.addAttachment({ taskId: task.id, name: "b.txt", data: "b" }, opts),
+                () => storage.deleteAttachment(attachment.id, opts),
+              ]),
           () => storage.getWebhooks(undefined, opts),
           () => storage.getWebhook(webhook.id, opts),
           () => storage.getWebhookByToken(webhook.token, opts),

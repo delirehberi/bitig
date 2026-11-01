@@ -34,6 +34,10 @@ export interface FileSystemPort {
   readText(path: string, opts?: FsOptions): Promise<string | null>;
   /** Writes via a temporary sibling file and rename, so readers never see partial content. */
   writeTextAtomic(path: string, content: string, opts?: FsOptions): Promise<void>;
+  /** Binary contents, or `null` if the file does not exist. */
+  readBytes(path: string, opts?: FsOptions): Promise<Uint8Array | null>;
+  /** Writes binary content via a temporary sibling file and rename. */
+  writeBytesAtomic(path: string, content: Uint8Array, opts?: FsOptions): Promise<void>;
   /** Directory entries in unspecified order, or `null` if the directory does not exist. */
   listDir(path: string, opts?: FsOptions): Promise<DirEntry[] | null>;
   /** Creates one directory; the parent must exist. */

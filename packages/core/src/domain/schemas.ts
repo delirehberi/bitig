@@ -1,5 +1,8 @@
 import { z } from "zod";
 import {
+  ATTACHMENT_MAX_BYTES,
+  ATTACHMENT_MIME_TYPES,
+  ATTACHMENT_NAME_MAX,
   CHECKPOINT_STATUSES,
   CHECKPOINT_SUMMARY_MAX,
   CHECKPOINT_INSTRUCTIONS_MAX,
@@ -175,6 +178,29 @@ export const CommentBodySchema = z.string().trim().min(1).max(COMMENT_BODY_MAX);
 /** A display name such as `Emre` or `claude`; never used for access control. */
 export const CommentAuthorSchema = z.string().trim().min(1).max(COMMENT_AUTHOR_MAX);
 
+/**
+ * Display file name of an attachment (e.g. `spec.md`, `screenshot.png`).
+ * Rejects path separators, relative path segments, and control characters.
+ */
+export const AttachmentNameSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(ATTACHMENT_NAME_MAX)
+  .refine(
+    (name) =>
+      name !== "." &&
+      name !== ".." &&
+      !name.includes("/") &&
+      !name.includes("\\") &&
+      // eslint-disable-next-line no-control-regex
+      !/[\x00-\x1f\x7f]/.test(name),
+    "Attachment name must not contain path separators or control characters",
+  );
+
+export const AttachmentMimeTypeSchema = z.enum(ATTACHMENT_MIME_TYPES);
+export const AttachmentSizeSchema = z.int().positive().max(ATTACHMENT_MAX_BYTES);
+
 export const WebhookProviderSchema = z.enum(WEBHOOK_PROVIDERS);
 export const WebhookNameSchema = z.string().trim().min(1).max(WEBHOOK_NAME_MAX);
 export const WebhookTokenSchema = z.string().regex(WEBHOOK_TOKEN_PATTERN, "Invalid webhook token");
@@ -251,6 +277,8 @@ export const TaskSchema = z.strictObject({
   number: TaskNumberSchema.exactOptional(),
   /** Number of comments on the task; omitted when zero. */
   commentCount: z.int().positive().exactOptional(),
+  /** Number of file attachments on the task; omitted when zero. */
+  attachmentCount: z.int().positive().exactOptional(),
 });
 
 /** A note on a task. Comments are never edited: they are added and deleted. */
@@ -262,6 +290,17 @@ export const CommentSchema = z.strictObject({
   authorType: CommentAuthorTypeSchema,
   createdAt: TimestampSchema,
   author: CommentAuthorSchema.exactOptional(),
+});
+
+/** Metadata for a file attached to a task. Binary content is fetched via `getAttachment`. */
+export const AttachmentSchema = z.strictObject({
+  id: IdSchema,
+  taskId: IdSchema,
+  name: AttachmentNameSchema,
+  mimeType: AttachmentMimeTypeSchema,
+  size: AttachmentSizeSchema,
+  createdAt: TimestampSchema,
+  createdBy: TaskActorSchema.exactOptional(),
 });
 
 /** An incoming webhook endpoint bound to a project. */
@@ -362,6 +401,21 @@ export const CreateCommentInputSchema = z.strictObject({
   body: CommentBodySchema,
   authorType: CommentAuthorTypeSchema.default(DEFAULT_COMMENT_AUTHOR_TYPE),
   author: CommentAuthorSchema.optional(),
+});
+
+export const CreateAttachmentInputSchema = z.strictObject({
+  taskId: IdSchema,
+  name: AttachmentNameSchema,
+  mimeType: z.string().trim().min(1).max(128).optional(),
+  data: z.union([
+    z.custom<Uint8Array>(
+      (val): val is Uint8Array =>
+        val instanceof Uint8Array ||
+        (ArrayBuffer.isView(val) && Object.prototype.toString.call(val) === "[object Uint8Array]"),
+      { message: "Expected Uint8Array or string" },
+    ),
+    z.string(),
+  ]),
 });
 
 export const TaskFilterSchema = z.strictObject({

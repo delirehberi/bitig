@@ -19,7 +19,7 @@ export class BitigError extends Error {
   }
 }
 
-export type EntityKind = "project" | "task" | "comment" | "webhook";
+export type EntityKind = "project" | "task" | "comment" | "attachment" | "webhook";
 
 export class NotFoundError extends BitigError {
   readonly entity: EntityKind;
@@ -48,8 +48,9 @@ export class ValidationError extends BitigError {
  * - `corrupt`: persisted data exists but cannot be parsed or fails validation.
  * - `io`: the underlying medium (filesystem, database, relay) failed.
  * - `lock`: exclusive access could not be obtained in time.
+ * - `unsupported`: the adapter does not support this operation (e.g. file attachments on Nostr).
  */
-export const STORAGE_ERROR_REASONS = ["corrupt", "io", "lock"] as const;
+export const STORAGE_ERROR_REASONS = ["corrupt", "io", "lock", "unsupported"] as const;
 export type StorageErrorReason = (typeof STORAGE_ERROR_REASONS)[number];
 
 export interface StorageErrorOptions extends ErrorOptions {

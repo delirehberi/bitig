@@ -9,6 +9,7 @@ const BASE_URL = "https://bitig.test";
 
 const STATEMENTS = [
   "DROP TABLE IF EXISTS `webhooks`",
+  "DROP TABLE IF EXISTS `attachments`",
   "DROP TABLE IF EXISTS `checkpoints`",
   "DROP TABLE IF EXISTS `comments`",
   "DROP TABLE IF EXISTS `tasks`",
@@ -65,6 +66,17 @@ const STATEMENTS = [
     FOREIGN KEY (\`task_id\`) REFERENCES \`tasks\`(\`id\`) ON UPDATE no action ON DELETE cascade
   )`,
   "CREATE INDEX `comments_task_id_idx` ON `comments` (`task_id`)",
+  `CREATE TABLE \`attachments\` (
+    \`id\` text PRIMARY KEY NOT NULL,
+    \`task_id\` text NOT NULL,
+    \`name\` text NOT NULL,
+    \`mime_type\` text NOT NULL,
+    \`size\` integer NOT NULL,
+    \`created_at\` integer NOT NULL,
+    \`created_by\` text,
+    FOREIGN KEY (\`task_id\`) REFERENCES \`tasks\`(\`id\`) ON UPDATE no action ON DELETE cascade
+  )`,
+  "CREATE INDEX `attachments_task_id_idx` ON `attachments` (`task_id`)",
   "CREATE TABLE `checkpoints` (`id` text PRIMARY KEY NOT NULL, `task_id` text NOT NULL, `step_index` integer NOT NULL, `status` text NOT NULL, `state_snapshot` text NOT NULL, `created_at` integer NOT NULL, `created_by` text, FOREIGN KEY (`task_id`) REFERENCES `tasks`(`id`) ON UPDATE no action ON DELETE cascade)",
   "CREATE UNIQUE INDEX `checkpoints_task_step_idx` ON `checkpoints` (`task_id`,`step_index`)",
   `CREATE TABLE \`webhooks\` (
@@ -94,7 +106,7 @@ async function resetDb(): Promise<void> {
 runStorageContractSuite("ApiStorage", async (runtime: TestRuntime) => {
   await resetDb();
   const app = createApp({
-    storageFactory: () => new D1Storage(env.DB, runtime),
+    storageFactory: () => new D1Storage({ db: env.DB, bucket: env.ATTACHMENTS, deps: runtime }),
   });
 
   const storage = new ApiStorage({
@@ -108,6 +120,7 @@ runStorageContractSuite("ApiStorage", async (runtime: TestRuntime) => {
     dispose: async () => {
       await env.DB.batch([
         env.DB.prepare("DELETE FROM `webhooks`"),
+        env.DB.prepare("DELETE FROM `attachments`"),
         env.DB.prepare("DELETE FROM `comments`"),
         env.DB.prepare("DELETE FROM `tasks`"),
         env.DB.prepare("DELETE FROM `projects`"),

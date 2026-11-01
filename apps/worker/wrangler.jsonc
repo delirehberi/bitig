@@ -22,6 +22,13 @@
       "migrations_dir": "../../packages/storage-d1/migrations"
     }
   ],
+  "r2_buckets": [
+    {
+      "binding": "ATTACHMENTS",
+      "bucket_name": "bitig-attachments",
+      "preview_bucket_name": "bitig-attachments"
+    }
+  ],
   // The dashboard (apps/web) is served as static assets. API routes run the
   // Worker first; every other path falls back to the SPA's index.html.
   // Rate limit counters (one object per policy + client IP) and the workspace

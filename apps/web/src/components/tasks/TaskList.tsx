@@ -9,6 +9,7 @@ import {
   Clock,
   Edit2,
   MessageSquare,
+  Paperclip,
   ShieldCheck,
   Trash2,
 } from "lucide-react";
@@ -277,6 +278,15 @@ export function TaskList({
                         >
                           <MessageSquare size={11} aria-hidden="true" />
                           <span>{task.commentCount}</span>
+                        </span>
+                      )}
+                      {task.attachmentCount !== undefined && task.attachmentCount > 0 && (
+                        <span
+                          className="inline-flex items-center gap-1 rounded-pill bg-paper-2 px-2 py-0.5 font-mono text-2xs font-medium text-ink-2"
+                          title={`${String(task.attachmentCount)} ${task.attachmentCount === 1 ? "attachment" : "attachments"}`}
+                        >
+                          <Paperclip size={11} aria-hidden="true" />
+                          <span>{task.attachmentCount}</span>
                         </span>
                       )}
                       {spentMs !== undefined && (

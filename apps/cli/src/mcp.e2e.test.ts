@@ -90,7 +90,7 @@ describe("Bitig CLI STDIO MCP Server E2E", () => {
 
   it("completes full MCP project and task lifecycle over STDIO", async () => {
     const { tools } = await client.listTools();
-    expect(tools.length).toBe(20);
+    expect(tools.length).toBe(24);
 
     // 1. Create project
     const proj = await callToolJson<ProjectResult & { bitig_file_content: string }>("create_project", {
@@ -122,17 +122,21 @@ describe("Bitig CLI STDIO MCP Server E2E", () => {
   it("exercises every registered tool over STDIO", async () => {
     const { tools } = await client.listTools();
     expect(tools.map((tool) => tool.name).sort()).toEqual([
+      "add_attachment",
       "add_comment",
       "add_task",
       "backfill_ticket_codes",
       "complete_task",
       "create_project",
       "create_webhook",
+      "delete_attachment",
       "delete_comment",
       "delete_project",
       "delete_task",
       "delete_webhook",
+      "get_attachment",
       "get_task",
+      "list_attachments",
       "list_comments",
       "list_projects",
       "list_tasks",
@@ -225,6 +229,25 @@ describe("Bitig CLI STDIO MCP Server E2E", () => {
       deletedCommentId: comment.id,
     });
     expect(await callToolJson("list_comments", { taskId: task.id })).toEqual([]);
+
+    // Attachments: add, list, get, read with the task, delete
+    const attachment = await callToolJson<{ id: string }>("add_attachment", {
+      taskId: "ALL-1",
+      name: "notes.md",
+      content: "# E2E Notes",
+    });
+    expect(attachment).toMatchObject({ taskId: task.id, name: "notes.md", mimeType: "text/markdown" });
+    expect(await callToolJson("list_attachments", { taskId: task.id })).toEqual([attachment]);
+    expect(await callToolJson("get_attachment", { id: attachment.id })).toEqual({
+      ...attachment,
+      content: "# E2E Notes",
+    });
+    expect(await callToolJson("get_task", { id: "ALL-1" })).toMatchObject({ attachments: [attachment] });
+    expect(await callToolJson("delete_attachment", { id: attachment.id })).toEqual({
+      success: true,
+      deletedAttachmentId: attachment.id,
+    });
+    expect(await callToolJson("list_attachments", { taskId: task.id })).toEqual([]);
 
     // Checkpoints: save, overwrite a step, resume, gone with the task
     const stateSnapshot = {

@@ -7,6 +7,7 @@ const BASE_URL = "https://bitig.test";
 
 const STATEMENTS = [
   "DROP TABLE IF EXISTS `webhooks`",
+  "DROP TABLE IF EXISTS `attachments`",
   "DROP TABLE IF EXISTS `checkpoints`",
   "DROP TABLE IF EXISTS `comments`",
   "DROP TABLE IF EXISTS `tasks`",
@@ -63,6 +64,17 @@ const STATEMENTS = [
     FOREIGN KEY (\`task_id\`) REFERENCES \`tasks\`(\`id\`) ON UPDATE no action ON DELETE cascade
   )`,
   "CREATE INDEX `comments_task_id_idx` ON `comments` (`task_id`)",
+  `CREATE TABLE \`attachments\` (
+    \`id\` text PRIMARY KEY NOT NULL,
+    \`task_id\` text NOT NULL,
+    \`name\` text NOT NULL,
+    \`mime_type\` text NOT NULL,
+    \`size\` integer NOT NULL,
+    \`created_at\` integer NOT NULL,
+    \`created_by\` text,
+    FOREIGN KEY (\`task_id\`) REFERENCES \`tasks\`(\`id\`) ON UPDATE no action ON DELETE cascade
+  )`,
+  "CREATE INDEX `attachments_task_id_idx` ON `attachments` (`task_id`)",
   "CREATE TABLE `checkpoints` (`id` text PRIMARY KEY NOT NULL, `task_id` text NOT NULL, `step_index` integer NOT NULL, `status` text NOT NULL, `state_snapshot` text NOT NULL, `created_at` integer NOT NULL, `created_by` text, FOREIGN KEY (`task_id`) REFERENCES `tasks`(`id`) ON UPDATE no action ON DELETE cascade)",
   "CREATE UNIQUE INDEX `checkpoints_task_step_idx` ON `checkpoints` (`task_id`,`step_index`)",
   `CREATE TABLE \`webhooks\` (
@@ -412,6 +424,52 @@ describe("REST API: Comments", () => {
     expect((await apiRequest(`/api/comments/${comment.id}`, { method: "DELETE" })).status).toBe(204);
     expect((await apiRequest(`/api/comments/${comment.id}`, { method: "DELETE" })).status).toBe(404);
     expect(await (await apiRequest(`/api/tasks/${task.id}/comments`)).json<Comment[]>()).toEqual([]);
+  });
+
+  it("uploads, lists, downloads and deletes task attachments via multipart and JSON", async () => {
+    const project = await (await postJson("/api/projects", { name: "Work" })).json<Project>();
+    const task = await (await postJson("/api/tasks", { projectId: project.id, title: "Has files" })).json<Task>();
+
+    const formData = new FormData();
+    formData.append("file", new File(["# Plan\n\nShip it.\n"], "plan.md", { type: "text/markdown" }));
+    const uploadRes = await apiRequest(`/api/tasks/${task.id}/attachments`, {
+      method: "POST",
+      headers: { Origin: BASE_URL },
+      body: formData,
+    });
+    expect(uploadRes.status).toBe(201);
+    const mdAtt = await uploadRes.json<{ id: string; name: string; mimeType: string; size: number }>();
+    expect(mdAtt).toMatchObject({
+      name: "plan.md",
+      mimeType: "text/markdown",
+      size: 17,
+    });
+
+    const jsonRes = await postJson(`/api/tasks/${task.id}/attachments`, {
+      name: "notes.txt",
+      content: "hello",
+    });
+    expect(jsonRes.status).toBe(201);
+    const txtAtt = await jsonRes.json<{ id: string; name: string; mimeType: string; size: number }>();
+    expect(txtAtt).toMatchObject({
+      name: "notes.txt",
+      mimeType: "text/plain",
+      size: 5,
+    });
+
+    const dlRes = await apiRequest(`/api/attachments/${mdAtt.id}`);
+    expect(dlRes.status).toBe(200);
+    expect(dlRes.headers.get("content-type")).toBe("text/markdown; charset=utf-8");
+    expect(dlRes.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(dlRes.headers.get("cache-control")).toBe("private, no-store");
+    expect(await dlRes.text()).toBe("# Plan\n\nShip it.\n");
+
+    const listRes = await apiRequest(`/api/tasks/${task.id}/attachments`);
+    expect(listRes.status).toBe(200);
+    expect(await listRes.json()).toEqual([mdAtt, txtAtt]);
+
+    expect((await apiRequest(`/api/attachments/${mdAtt.id}`, { method: "DELETE" })).status).toBe(204);
+    expect((await apiRequest(`/api/attachments/${mdAtt.id}`)).status).toBe(404);
   });
 
   it("saves, overwrites and lists a task's checkpoints without touching its gates", async () => {

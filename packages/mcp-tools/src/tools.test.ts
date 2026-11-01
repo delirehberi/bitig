@@ -46,6 +46,10 @@ describe("MCP Tools integration", () => {
       "save_checkpoint",
       "resume_from_checkpoint",
       "delete_comment",
+      "list_attachments",
+      "get_attachment",
+      "add_attachment",
+      "delete_attachment",
       "list_webhooks",
       "create_webhook",
       "update_webhook",
@@ -586,5 +590,59 @@ describe("MCP Tools integration", () => {
         requestInfo: { headers: { "user-agent": "node-fetch/3.0" } },
       }),
     ).toBe("mcp");
+  });
+
+  it("manages text and binary task attachments and includes them in get_task", async () => {
+    await call("create_project", { name: "Bitig", key: "BIT" });
+    await task("add_task", { projectId: "BIT", title: "Spec task" });
+
+    const mdAdded = await call("add_attachment", {
+      taskId: "BIT-1",
+      name: "spec.md",
+      content: "# Design\n\nHello world",
+    });
+    expect(mdAdded.isError).toBe(false);
+    const mdMeta = mdAdded.data as { id: string; name: string; mimeType: string; size: number };
+    expect(mdMeta).toMatchObject({ name: "spec.md", mimeType: "text/markdown" });
+
+    const pngAdded = await call("add_attachment", {
+      taskId: "BIT-1",
+      name: "pixel.png",
+      data: "iVBORw0KGgo=",
+    });
+    expect(pngAdded.isError).toBe(false);
+    const pngMeta = pngAdded.data as { id: string; name: string; mimeType: string; size: number };
+    expect(pngMeta).toMatchObject({ name: "pixel.png", mimeType: "image/png" });
+
+    const listed = await call("list_attachments", { taskId: "BIT-1" });
+    expect(listed.isError).toBe(false);
+    expect(listed.data).toEqual([mdMeta, pngMeta]);
+
+    const fullTask = await call("get_task", { id: "BIT-1" });
+    expect(fullTask.isError).toBe(false);
+    expect(fullTask.data).toMatchObject({
+      attachmentCount: 2,
+      attachments: [mdMeta, pngMeta],
+    });
+
+    const fetchedMd = await call("get_attachment", { id: mdMeta.id });
+    expect(fetchedMd.isError).toBe(false);
+    expect(fetchedMd.data).toEqual({
+      ...mdMeta,
+      content: "# Design\n\nHello world",
+    });
+
+    const fetchedPng = await call("get_attachment", { id: pngMeta.id });
+    expect(fetchedPng.isError).toBe(false);
+    expect(fetchedPng.data).toEqual({
+      ...pngMeta,
+      data: "iVBORw0KGgo=",
+      downloadUrl: `/api/attachments/${pngMeta.id}`,
+    });
+
+    const deleted = await call("delete_attachment", { id: mdMeta.id });
+    expect(deleted.isError).toBe(false);
+    expect(deleted.data).toEqual({ success: true, deletedAttachmentId: mdMeta.id });
+    expect((await call("list_attachments", { taskId: "BIT-1" })).data).toEqual([pngMeta]);
   });
 });

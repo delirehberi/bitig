@@ -2,6 +2,7 @@
  * Registration of Bitig MCP tools onto an McpServer instance.
  */
 import {
+  AttachmentNameSchema,
   ChecklistSchema,
   CommentAuthorSchema,
   CommentAuthorTypeSchema,
@@ -18,11 +19,13 @@ import {
   ProjectNameSchema,
   ProjectResourcesSchema,
   SaveCheckpointInputSchema,
+  StorageError,
   TaskOrderSchema,
   TaskPrioritySchema,
   TaskStatusSchema,
   TaskTitleSchema,
   TASK_ACTOR_MAX,
+  ValidationError,
   WebhookMappingSchema,
   WebhookNameSchema,
   WebhookProviderSchema,
@@ -32,11 +35,16 @@ import {
   blockingTasks,
   checkNewTaskStatus,
   checkStatusChange,
+  decodeBase64,
+  decodeUtf8,
   dependencyLinks,
+  encodeBase64,
   findBlockingTasks,
+  isTextAttachmentMimeType,
   resolveProjectRef,
   resolveTaskRef,
   resolveTaskRefs,
+  stripAttachmentData,
   withTaskCodes,
   type OperationOptions,
   type StorageProvider,
@@ -338,7 +346,7 @@ export function registerBitigTools(
     "get_task",
     {
       description:
-        "Get a task by its ID or ticket code (e.g. BIT-12), with its comments oldest first, the tasks it mentions (#BIT-12 in its description, subtasks or comments) as mentions, the tasks that mention it as mentionedIn, the tasks it depends on as dependsOn, the tasks that depend on it as dependents, and the unfinished ones it waits on as blockedBy",
+        "Get a task by its ID or ticket code (e.g. BIT-12), with its comments and attachments oldest first, the tasks it mentions (#BIT-12 in its description, subtasks or comments) as mentions, the tasks that mention it as mentionedIn, the tasks it depends on as dependsOn, the tasks that depend on it as dependents, and the unfinished ones it waits on as blockedBy",
       annotations: { readOnlyHint: true },
       inputSchema: {
         id: TASK_REF,
@@ -350,14 +358,24 @@ export function registerBitigTools(
         const id = await resolveTaskRef(storage, args.id, opts);
         const task = await storage.getTask(id, opts);
         if (task === null) throw new NotFoundError("task", args.id);
-        const [comments, tasks, projects] = await Promise.all([
+        const [comments, attachments, tasks, projects] = await Promise.all([
           storage.getComments(id, opts),
+          storage.getAttachments(id, opts).catch((err: unknown) => {
+            if (err instanceof StorageError && err.reason === "unsupported") return [];
+            throw err;
+          }),
           storage.getTasks(undefined, opts),
           storage.getProjects(opts),
         ]);
         const links = buildMentionIndex(tasks, projects).linksFor(task, comments);
         const dependencies = dependencyLinks(task, tasks, projects);
-        return formatSuccessResult({ ...(await withCode(task, opts)), comments, ...links, ...dependencies });
+        return formatSuccessResult({
+          ...(await withCode(task, opts)),
+          comments,
+          attachments,
+          ...links,
+          ...dependencies,
+        });
       } catch (err) {
         return formatErrorResult(err);
       }
@@ -655,6 +673,129 @@ export function registerBitigTools(
       try {
         await storage.deleteComment(args.id, { signal: extra.signal });
         return formatSuccessResult({ success: true, deletedCommentId: args.id });
+      } catch (err) {
+        return formatErrorResult(err);
+      }
+    },
+  );
+
+  // 14a. list_attachments
+  server.registerTool(
+    "list_attachments",
+    {
+      description: "List a task's file attachments (metadata only), oldest first",
+      annotations: { readOnlyHint: true },
+      inputSchema: {
+        taskId: TASK_REF,
+      },
+    },
+    async (args, extra) => {
+      try {
+        const opts = { signal: extra.signal };
+        const taskId = await resolveTaskRef(storage, args.taskId, opts);
+        return formatSuccessResult(await storage.getAttachments(taskId, opts));
+      } catch (err) {
+        return formatErrorResult(err);
+      }
+    },
+  );
+
+  // 14b. get_attachment
+  server.registerTool(
+    "get_attachment",
+    {
+      description:
+        "Get a file attachment by ID. Returns decoded UTF-8 text in `content` for Markdown/text files (`.md`, `.txt`, `.json`, `.csv`, `.yaml`, `.xml`) and base64-encoded bytes in `data` plus `downloadUrl` for images and binary files.",
+      annotations: { readOnlyHint: true },
+      inputSchema: {
+        id: IdSchema,
+      },
+    },
+    async (args, extra) => {
+      try {
+        const opts = { signal: extra.signal };
+        const attachment = await storage.getAttachment(args.id, opts);
+        if (attachment === null) throw new NotFoundError("attachment", args.id);
+        const meta = stripAttachmentData(attachment);
+        if (isTextAttachmentMimeType(meta.mimeType)) {
+          return formatSuccessResult({
+            ...meta,
+            content: decodeUtf8(attachment.data),
+          });
+        }
+        return formatSuccessResult({
+          ...meta,
+          data: encodeBase64(attachment.data),
+          downloadUrl: `/api/attachments/${meta.id}`,
+        });
+      } catch (err) {
+        return formatErrorResult(err);
+      }
+    },
+  );
+
+  // 14c. add_attachment
+  server.registerTool(
+    "add_attachment",
+    {
+      description:
+        "Attach a file (Markdown, plain text, JSON, CSV, YAML, XML, PDF, image, or archive) to a task. Pass UTF-8 text in `content` for Markdown/text files, or base64-encoded bytes in `data` for binary files.",
+      inputSchema: {
+        taskId: TASK_REF,
+        name: AttachmentNameSchema.describe("File name with extension, e.g. 'spec.md' or 'screenshot.png'"),
+        mimeType: z
+          .string()
+          .optional()
+          .describe("Optional MIME type (inferred from file extension when omitted)"),
+        content: z.string().optional().describe("UTF-8 text content for Markdown or text attachments"),
+        data: z.string().optional().describe("Base64-encoded file bytes for binary or image attachments"),
+      },
+    },
+    async (args, extra) => {
+      try {
+        const actor = resolveMcpActor(server, extra, options?.fallbackActor);
+        const opts: OperationOptions = { signal: extra.signal, actor };
+        const taskId = await resolveTaskRef(storage, args.taskId, opts);
+        let payload: Uint8Array | string;
+        if (args.content !== undefined) {
+          payload = args.content;
+        } else if (args.data !== undefined) {
+          payload = decodeBase64(args.data, "add_attachment");
+        } else {
+          throw new ValidationError("add_attachment", [
+            { code: "custom", path: ["content"], message: "Provide either content (text) or data (base64)", input: undefined },
+          ]);
+        }
+        const attachment = await storage.addAttachment(
+          {
+            taskId,
+            name: args.name,
+            ...(args.mimeType !== undefined ? { mimeType: args.mimeType } : {}),
+            data: payload,
+          },
+          opts,
+        );
+        return formatSuccessResult(attachment);
+      } catch (err) {
+        return formatErrorResult(err);
+      }
+    },
+  );
+
+  // 14d. delete_attachment
+  server.registerTool(
+    "delete_attachment",
+    {
+      description: "Permanently delete a file attachment by its ID",
+      annotations: { destructiveHint: true },
+      inputSchema: {
+        id: IdSchema,
+      },
+    },
+    async (args, extra) => {
+      try {
+        await storage.deleteAttachment(args.id, { signal: extra.signal });
+        return formatSuccessResult({ success: true, deletedAttachmentId: args.id });
       } catch (err) {
         return formatErrorResult(err);
       }

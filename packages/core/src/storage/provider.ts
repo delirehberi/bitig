@@ -1,8 +1,11 @@
 import type {
+  Attachment,
+  AttachmentContent,
   BackupBundle,
   Checkpoint,
   SaveCheckpointInput,
   Comment,
+  CreateAttachmentInput,
   CreateCommentInput,
   CreateProjectInput,
   CreateTaskInput,
@@ -40,7 +43,7 @@ export interface OperationOptions {
  *
  * Error contract:
  * - Invalid input rejects with `ValidationError`.
- * - Reads of a missing entity (`getProject`, `getTask`) resolve to `null`.
+ * - Reads of a missing entity (`getProject`, `getTask`, `getAttachment`) resolve to `null`.
  * - Mutations of a missing entity reject with `NotFoundError`.
  * - An aborted signal rejects with the signal's reason and has no side effects.
  *
@@ -91,6 +94,18 @@ export interface StorageProvider {
   addComment(input: CreateCommentInput, opts?: OperationOptions): Promise<Comment>;
   /** Rejects with `NotFoundError` if no comment has this ID. */
   deleteComment(id: string, opts?: OperationOptions): Promise<void>;
+
+  /** A task's file attachments (metadata only), oldest first (`compareAttachments`). An unknown task
+   * yields an empty list. Attachments stay with their task when it moves to another project. */
+  getAttachments(taskId: string, opts?: OperationOptions): Promise<Attachment[]>;
+  /** Reads an attachment's metadata and binary content by ID, or `null` if missing. */
+  getAttachment(id: string, opts?: OperationOptions): Promise<AttachmentContent | null>;
+  /** Attaches a file to a task. Rejects with `NotFoundError` if the task does not exist, and with
+   * `ValidationError` if size/MIME/quota limits are exceeded. Touches the task's `updatedAt` and
+   * attributed activity. */
+  addAttachment(input: CreateAttachmentInput, opts?: OperationOptions): Promise<Attachment>;
+  /** Deletes an attachment by ID. Rejects with `NotFoundError` if no attachment has this ID. */
+  deleteAttachment(id: string, opts?: OperationOptions): Promise<void>;
 
   /** Webhooks, optionally limited to one project, oldest first (`compareWebhooks`). */
   getWebhooks(filter?: WebhookFilter, opts?: OperationOptions): Promise<Webhook[]>;

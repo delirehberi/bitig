@@ -39,5 +39,9 @@ Never put secrets in a snapshot.
 
 Mentions: '#BIT-12' in a description, subtask or comment links that task. 'get_task' returns 'mentions' (what the task
 mentions) and 'mentionedIn' (the tasks that mention it).
+
+Attachments: 'get_task' and 'list_attachments' list a task's attached files. Call 'get_attachment' to read an attachment
+(returns UTF-8 'content' for Markdown/text files and base64 'data' + 'downloadUrl' for images/binaries). Use
+'add_attachment' to attach Markdown specs, logs, or screenshots to a task, and 'delete_attachment' to remove one.
 `;
 

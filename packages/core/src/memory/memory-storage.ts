@@ -1,4 +1,11 @@
 import {
+  assertTaskAttachmentQuota,
+  buildAttachment,
+  cloneAttachmentContent,
+  compareAttachments,
+  stripAttachmentData,
+} from "../domain/attachments";
+import {
   applyProjectPatch,
   applyTaskPatch,
   applyWebhookPatch,
@@ -18,6 +25,7 @@ import {
   recordWebhookTriggerEntity,
   renumberTask,
   touchTaskEntity,
+  withTaskAttachmentCount,
   withTaskCommentCount,
 } from "../domain/entities";
 import { assertTaskDependencies, hasNewDependencies, withoutDependencies } from "../domain/dependencies";
@@ -36,10 +44,13 @@ import {
   WebhookTokenSchema,
 } from "../domain/schemas";
 import type {
+  Attachment,
+  AttachmentContent,
   BackupBundle,
   Checkpoint,
   SaveCheckpointInput,
   Comment,
+  CreateAttachmentInput,
   CreateCommentInput,
   CreateProjectInput,
   CreateTaskInput,
@@ -86,6 +97,7 @@ export class InMemoryStorage implements StorageProvider {
   readonly #projects = new Map<string, Project>();
   readonly #tasks = new Map<string, Task>();
   readonly #comments = new Map<string, Comment>();
+  readonly #attachments = new Map<string, AttachmentContent>();
   readonly #checkpoints = new Map<string, Checkpoint>();
   readonly #webhooks = new Map<string, Webhook>();
   readonly #deps: RuntimeDeps;
@@ -147,7 +159,7 @@ export class InMemoryStorage implements StorageProvider {
       const removed = new Set<string>();
       for (const task of [...this.#tasks.values()]) {
         if (task.projectId === project.id) {
-          this.#deleteTaskAndComments(task.id);
+          this.#deleteTaskAndChildren(task.id);
           removed.add(task.id);
         }
       }
@@ -165,14 +177,14 @@ export class InMemoryStorage implements StorageProvider {
       return [...this.#tasks.values()]
         .filter((task) => projectId === undefined || task.projectId === projectId)
         .sort(compareTasks)
-        .map((task) => this.#withCommentCount(task));
+        .map((task) => this.#withTaskCounts(task));
     });
   }
 
   getTask(id: string, opts?: OperationOptions): Promise<Task | null> {
     return run(opts?.signal, () => {
       const task = this.#tasks.get(parseId(id, "getTask"));
-      return task === undefined ? null : this.#withCommentCount(task);
+      return task === undefined ? null : this.#withTaskCounts(task);
     });
   }
 
@@ -197,14 +209,14 @@ export class InMemoryStorage implements StorageProvider {
       }
       if (hasNewDependencies(existing, next)) assertTaskDependencies(next, this.#tasks.values(), "updateTask");
       this.#tasks.set(next.id, next);
-      return this.#withCommentCount(next);
+      return this.#withTaskCounts(next);
     });
   }
 
   deleteTask(id: string, opts?: OperationOptions): Promise<void> {
     return run(opts?.signal, () => {
       const task = this.#requireTask(parseId(id, "deleteTask"));
-      this.#deleteTaskAndComments(task.id);
+      this.#deleteTaskAndChildren(task.id);
       this.#dropDependencies(new Set([task.id]));
     });
   }
@@ -214,7 +226,7 @@ export class InMemoryStorage implements StorageProvider {
       const existing = this.#requireTask(parseId(id, "completeTask"));
       const next = completeTaskEntity(existing, this.#deps.clock(), opts?.actor, opts?.overrideBlockedBy);
       this.#tasks.set(next.id, next);
-      return this.#withCommentCount(next);
+      return this.#withTaskCounts(next);
     });
   }
 
@@ -249,6 +261,40 @@ export class InMemoryStorage implements StorageProvider {
     return run(opts?.signal, () => {
       const validId = parseId(id, "deleteComment");
       if (!this.#comments.delete(validId)) throw new NotFoundError("comment", validId);
+    });
+  }
+
+  getAttachments(taskId: string, opts?: OperationOptions): Promise<Attachment[]> {
+    return run(opts?.signal, () => {
+      const validTaskId = parseId(taskId, "getAttachments");
+      return this.#attachmentsOf([validTaskId]).map(stripAttachmentData);
+    });
+  }
+
+  getAttachment(id: string, opts?: OperationOptions): Promise<AttachmentContent | null> {
+    return run(opts?.signal, () => {
+      const validId = parseId(id, "getAttachment");
+      const attachment = this.#attachments.get(validId);
+      return attachment === undefined ? null : cloneAttachmentContent(attachment);
+    });
+  }
+
+  addAttachment(input: CreateAttachmentInput, opts?: OperationOptions): Promise<Attachment> {
+    return run(opts?.signal, () => {
+      const attachment = buildAttachment(input, this.#deps, opts?.actor);
+      const task = this.#requireTask(attachment.taskId);
+      assertTaskAttachmentQuota(this.#attachmentsOf([task.id]), attachment.size, "addAttachment");
+      const touched = touchTaskEntity(task, this.#deps.clock(), opts?.actor);
+      this.#attachments.set(attachment.id, attachment);
+      this.#tasks.set(touched.id, touched);
+      return stripAttachmentData(attachment);
+    });
+  }
+
+  deleteAttachment(id: string, opts?: OperationOptions): Promise<void> {
+    return run(opts?.signal, () => {
+      const validId = parseId(id, "deleteAttachment");
+      if (!this.#attachments.delete(validId)) throw new NotFoundError("attachment", validId);
     });
   }
 
@@ -322,7 +368,7 @@ export class InMemoryStorage implements StorageProvider {
       const tasks = [...this.#tasks.values()]
         .filter((t) => t.projectId === project.id)
         .sort(compareTasks)
-        .map((t) => this.#withCommentCount(t));
+        .map((t) => this.#withTaskCounts(t));
       const webhooks = [...this.#webhooks.values()]
         .filter((w) => w.projectId === project.id)
         .sort(compareWebhooks)
@@ -346,7 +392,7 @@ export class InMemoryStorage implements StorageProvider {
       const validated = parseOrThrow(ProjectBundleSchema, bundle, "importProject");
       this.#projects.set(validated.project.id, copyProject(validated.project));
       for (const task of validated.tasks) {
-        this.#tasks.set(task.id, withTaskCommentCount(task, 0));
+        this.#tasks.set(task.id, withTaskAttachmentCount(withTaskCommentCount(task, 0), 0));
       }
       for (const comment of validated.comments ?? []) {
         this.#comments.set(comment.id, cloneComment(comment));
@@ -399,21 +445,34 @@ export class InMemoryStorage implements StorageProvider {
     return [...this.#comments.values()].filter((c) => ids.has(c.taskId)).sort(compareComments);
   }
 
-  #withCommentCount(task: Task): Task {
-    let count = 0;
-    for (const comment of this.#comments.values()) {
-      if (comment.taskId === task.id) count++;
-    }
-    return withTaskCommentCount(task, count);
+  /** Attachments on any of `taskIds`, oldest first. */
+  #attachmentsOf(taskIds: readonly string[]): AttachmentContent[] {
+    const ids = new Set(taskIds);
+    return [...this.#attachments.values()].filter((a) => ids.has(a.taskId)).sort(compareAttachments);
   }
 
-  #deleteTaskAndComments(taskId: string): void {
+  #withTaskCounts(task: Task): Task {
+    let commentCount = 0;
+    for (const comment of this.#comments.values()) {
+      if (comment.taskId === task.id) commentCount++;
+    }
+    let attachmentCount = 0;
+    for (const attachment of this.#attachments.values()) {
+      if (attachment.taskId === task.id) attachmentCount++;
+    }
+    return withTaskAttachmentCount(withTaskCommentCount(task, commentCount), attachmentCount);
+  }
+
+  #deleteTaskAndChildren(taskId: string): void {
     this.#tasks.delete(taskId);
     for (const [key, checkpoint] of this.#checkpoints) {
       if (checkpoint.taskId === taskId) this.#checkpoints.delete(key);
     }
     for (const comment of [...this.#comments.values()]) {
       if (comment.taskId === taskId) this.#comments.delete(comment.id);
+    }
+    for (const attachment of [...this.#attachments.values()]) {
+      if (attachment.taskId === taskId) this.#attachments.delete(attachment.id);
     }
   }
 
@@ -443,4 +502,3 @@ export class InMemoryStorage implements StorageProvider {
     return webhook;
   }
 }
-

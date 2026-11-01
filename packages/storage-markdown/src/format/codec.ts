@@ -8,6 +8,7 @@
  * reason `corrupt` naming the file; nothing is skipped silently.
  */
 import {
+  AttachmentSchema,
   CheckpointSchema,
   CommentSchema,
   ProjectSchema,
@@ -16,6 +17,7 @@ import {
   ValidationError,
   WebhookSchema,
   parseOrThrow,
+  type Attachment,
   type Checkpoint,
   type Comment,
   type Project,
@@ -35,7 +37,7 @@ import {
 const ProjectFileSchema = z.object(ProjectSchema.shape).omit({ id: true });
 const TaskFileSchema = z
   .object(TaskSchema.shape)
-  .omit({ id: true, projectId: true, description: true, commentCount: true });
+  .omit({ id: true, projectId: true, description: true, commentCount: true, attachmentCount: true });
 
 const CommentFileSchema = z.object(CommentSchema.shape).omit({ id: true, taskId: true, body: true });
 const WebhookFileSchema = z.object(WebhookSchema.shape).omit({ id: true, projectId: true });
@@ -173,6 +175,28 @@ export function decodeComment(taskId: string, id: string, text: string, location
     const { data, body } = parseFrontmatter(text);
     const fields = parseOrThrow(CommentFileSchema, data, "comment file");
     return parseOrThrow(CommentSchema, { ...fields, id, taskId, body }, "comment file");
+  } catch (error) {
+    throw corrupt(location, error);
+  }
+}
+
+const AttachmentFileSchema = z.object(AttachmentSchema.shape).omit({ id: true, taskId: true });
+
+/** Attachment metadata is stored as JSON alongside the binary `<id>.bin` payload. */
+export function encodeAttachmentMeta(attachment: Attachment): string {
+  const { name, mimeType, size, createdAt, createdBy } = attachment;
+  return `${JSON.stringify(
+    { name, mimeType, size, createdAt, ...(createdBy === undefined ? {} : { createdBy }) },
+    null,
+    2,
+  )}\n`;
+}
+
+export function decodeAttachmentMeta(taskId: string, id: string, text: string, location: string): Attachment {
+  assertSize(text, location);
+  try {
+    const fields = parseOrThrow(AttachmentFileSchema, JSON.parse(text), "attachment metadata file");
+    return parseOrThrow(AttachmentSchema, { ...fields, id, taskId }, "attachment metadata file");
   } catch (error) {
     throw corrupt(location, error);
   }

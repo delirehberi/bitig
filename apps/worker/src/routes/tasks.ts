@@ -5,9 +5,11 @@ import {
   CreateTaskInputSchema,
   SaveCheckpointInputSchema,
   UpdateTaskInputSchema,
+  ValidationError,
   buildMentionIndex,
   checkNewTaskStatus,
   checkStatusChange,
+  decodeBase64,
   type OperationOptions,
 } from "@bitig/core";
 import type { Context } from "hono";
@@ -145,6 +147,77 @@ export const tasksRouter = new Hono<AppEnv>()
       return c.json(comment, HTTP_CREATED);
     },
   )
+  .get("/:id/attachments", async (c) => {
+    const storage = c.get("storage");
+    const attachments = await storage.getAttachments(c.req.param("id"));
+    return c.json(attachments);
+  })
+  .post("/:id/attachments", async (c) => {
+    const storage = c.get("storage");
+    const taskId = c.req.param("id");
+    const actor = c.req.header("X-Bitig-Actor") ?? c.req.header("X-Bitig-Agent");
+    const contentType = c.req.header("content-type")?.toLowerCase() ?? "";
+
+    if (contentType.includes("multipart/form-data")) {
+      const formData = await c.req.formData().catch((err: unknown) => {
+        throw new ValidationError("addAttachment", [{ code: "custom", path: ["file"], message: "Invalid multipart form data", input: String(err) }]);
+      });
+      const fileEntry = formData.get("file");
+      if (!(fileEntry instanceof File)) {
+        return c.json(
+          { error: "validation_error", details: [{ path: ["file"], message: "Expected a file field" }] },
+          HTTP_BAD_REQUEST,
+        );
+      }
+      const nameOverride = formData.get("name");
+      const name = typeof nameOverride === "string" && nameOverride.trim().length > 0 ? nameOverride : fileEntry.name;
+      const bytes = new Uint8Array(await fileEntry.arrayBuffer());
+      const attachment = await storage.addAttachment(
+        {
+          taskId,
+          name,
+          ...(fileEntry.type ? { mimeType: fileEntry.type } : {}),
+          data: bytes,
+        },
+        actor ? { actor } : undefined,
+      );
+      return c.json(attachment, HTTP_CREATED);
+    }
+
+    const body = (await c.req.json().catch(() => null)) as
+      | { name?: unknown; mimeType?: unknown; data?: unknown; content?: unknown }
+      | null;
+    if (!body || typeof body !== "object") {
+      return c.json(
+        { error: "validation_error", details: [{ path: [], message: "Expected JSON object" }] },
+        HTTP_BAD_REQUEST,
+      );
+    }
+    const name = typeof body.name === "string" ? body.name : "";
+    const mimeType = typeof body.mimeType === "string" ? body.mimeType : undefined;
+    let payload: Uint8Array | string;
+    if (typeof body.content === "string") {
+      payload = body.content;
+    } else if (typeof body.data === "string") {
+      payload = decodeBase64(body.data, "addAttachment");
+    } else {
+      return c.json(
+        { error: "validation_error", details: [{ path: ["data"], message: "Expected base64 data or text content" }] },
+        HTTP_BAD_REQUEST,
+      );
+    }
+
+    const attachment = await storage.addAttachment(
+      {
+        taskId,
+        name,
+        ...(mimeType !== undefined ? { mimeType } : {}),
+        data: payload,
+      },
+      actor ? { actor } : undefined,
+    );
+    return c.json(attachment, HTTP_CREATED);
+  })
   .get("/:id/checkpoints", async (c) => {
     const storage = c.get("storage");
     return c.json(await storage.getCheckpoints(c.req.param("id")));

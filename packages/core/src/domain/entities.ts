@@ -65,6 +65,7 @@ type TaskRequiredFields = Omit<
   | "dependsOn"
   | "number"
   | "commentCount"
+  | "attachmentCount"
 >;
 
 interface TaskOptionalValues {
@@ -85,6 +86,7 @@ interface TaskOptionalValues {
   readonly dependsOn: readonly string[] | undefined;
   readonly number: number | undefined;
   readonly commentCount?: number | undefined;
+  readonly attachmentCount?: number | undefined;
 }
 
 /** Builds a task that omits unset optional fields (exactOptionalPropertyTypes). */
@@ -116,6 +118,9 @@ function assembleTask(base: TaskRequiredFields, optional: TaskOptionalValues): T
   if (optional.number !== undefined) task.number = optional.number;
   if (optional.commentCount !== undefined && optional.commentCount > 0) {
     task.commentCount = optional.commentCount;
+  }
+  if (optional.attachmentCount !== undefined && optional.attachmentCount > 0) {
+    task.attachmentCount = optional.attachmentCount;
   }
   return task;
 }
@@ -474,6 +479,7 @@ export function applyTaskPatch(
       dependsOn: resolveClearable(task.dependsOn, parsed.dependsOn),
       number: task.number,
       commentCount: task.commentCount,
+      attachmentCount: task.attachmentCount,
     },
   );
   return parseOrThrow(TaskSchema, next, "updateTask result");
@@ -515,6 +521,7 @@ export function touchTaskEntity(task: Task, now: Date, actor?: string): Task {
         dependsOn: task.dependsOn,
         number: task.number,
         commentCount: task.commentCount,
+        attachmentCount: task.attachmentCount,
       },
     ),
     "touchTask result",
@@ -578,6 +585,7 @@ export function completeTaskEntity(
       dependsOn: task.dependsOn,
       number: task.number,
       commentCount: task.commentCount,
+      attachmentCount: task.attachmentCount,
     },
   );
   return parseOrThrow(TaskSchema, next, "completeTask result");
@@ -634,6 +642,17 @@ export function withTaskCommentCount(task: Task, count: number): Task {
     copy.commentCount = count;
   } else {
     delete copy.commentCount;
+  }
+  return copy;
+}
+
+/** Returns a deep copy of `task` with `attachmentCount` set when `count > 0` and omitted otherwise. */
+export function withTaskAttachmentCount(task: Task, count: number): Task {
+  const copy = cloneTask(task);
+  if (count > 0) {
+    copy.attachmentCount = count;
+  } else {
+    delete copy.attachmentCount;
   }
   return copy;
 }

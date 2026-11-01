@@ -15,6 +15,7 @@ runStorageContractSuite("NostrStorage", async (runtime: TestRuntime) => {
 
   return {
     storage,
+    supportsAttachments: false,
     dispose: async () => {
       storage.getRelayManager().close();
       await relay.close();

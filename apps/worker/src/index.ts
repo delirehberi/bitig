@@ -9,6 +9,7 @@ import { apiAuth, bearerAuth } from "./auth";
 import { projectsRouter } from "./routes/projects";
 import { tasksRouter } from "./routes/tasks";
 import { commentsRouter } from "./routes/comments";
+import { attachmentsRouter } from "./routes/attachments";
 import { backupRouter } from "./routes/backup";
 import { mcpRouter } from "./routes/mcp";
 import { sessionRouter } from "./routes/session";
@@ -47,7 +48,9 @@ export function createApp(options?: CreateAppOptions): Hono<AppEnv> {
 
   app.use("*", async (c, next) => {
     c.set("config", options?.config ?? parseConfig(c.env));
-    const baseStorage = options?.storageFactory ? options.storageFactory(c.env) : new D1Storage(c.env.DB);
+    const baseStorage = options?.storageFactory
+      ? options.storageFactory(c.env)
+      : new D1Storage({ db: c.env.DB, bucket: c.env.ATTACHMENTS });
     c.set(
       "storage",
       withRealtimeBroadcast(baseStorage, (event) => publishRealtimeEvent(c.env, event)),
@@ -66,7 +69,7 @@ export function createApp(options?: CreateAppOptions): Hono<AppEnv> {
         defaultSrc: ["'self'"],
         scriptSrc: ["'self'"],
         styleSrc: ["'self'", "'unsafe-inline'"],
-        imgSrc: ["'self'", "data:"],
+        imgSrc: ["'self'", "data:", "blob:"],
         connectSrc: ["'self'"],
         frameAncestors: ["'none'"],
       },
@@ -108,6 +111,7 @@ export function createApp(options?: CreateAppOptions): Hono<AppEnv> {
   app.route("/api/projects", projectsRouter);
   app.route("/api/tasks", tasksRouter);
   app.route("/api/comments", commentsRouter);
+  app.route("/api/attachments", attachmentsRouter);
   app.route("/api/webhooks", webhooksApiRouter);
   app.route("/api/backup", backupRouter);
   app.route("/api/realtime", realtimeRouter);

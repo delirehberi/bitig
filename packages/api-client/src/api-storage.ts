@@ -1,7 +1,9 @@
 import {
+  AttachmentSchema,
   BackupBundleSchema,
   CheckpointSchema,
   CommentSchema,
+  CreateAttachmentInputSchema,
   CreateCommentInputSchema,
   SaveCheckpointInputSchema,
   CreateProjectInputSchema,
@@ -20,11 +22,17 @@ import {
   WebhookFilterSchema,
   WebhookSchema,
   WebhookTokenSchema,
+  decodeBase64,
+  encodeBase64,
+  encodeUtf8,
   parseOrThrow,
   throwIfAborted,
+  type Attachment,
+  type AttachmentContent,
   type BackupBundle,
   type Checkpoint,
   type Comment,
+  type CreateAttachmentInput,
   type SaveCheckpointInput,
   type CreateCommentInput,
   type CreateProjectInput,
@@ -547,6 +555,128 @@ export class ApiStorage implements StorageProvider {
     }
     if (res.status !== HTTP_NO_CONTENT && !res.ok) {
       throw new StorageError("io", `Failed to delete comment ${id}: HTTP ${res.status.toString()}`);
+    }
+  }
+
+  async getAttachments(taskId: string, opts?: OperationOptions): Promise<Attachment[]> {
+    throwIfAborted(opts?.signal);
+    const validId = parseOrThrow(IdSchema, taskId, "getAttachments taskId");
+    const res = await this.request(
+      `/api/tasks/${encodeURIComponent(validId)}/attachments`,
+      { method: "GET" },
+      opts,
+    );
+
+    if (res.status === HTTP_UNAUTHORIZED) {
+      throw new AuthError();
+    }
+    if (!res.ok) {
+      throw new StorageError("io", `Failed to get attachments of task ${taskId}: HTTP ${res.status.toString()}`);
+    }
+
+    const data = await this.parseJsonResponse<unknown>(res);
+    return parseOrThrow(AttachmentSchema.array(), data, "getAttachments response");
+  }
+
+  async getAttachment(id: string, opts?: OperationOptions): Promise<AttachmentContent | null> {
+    throwIfAborted(opts?.signal);
+    const validId = parseOrThrow(IdSchema, id, "getAttachment id");
+    const res = await this.request(
+      `/api/attachments/${encodeURIComponent(validId)}`,
+      { method: "GET" },
+      opts,
+    );
+
+    if (res.status === HTTP_NOT_FOUND) {
+      return null;
+    }
+    if (res.status === HTTP_UNAUTHORIZED) {
+      throw new AuthError();
+    }
+    if (!res.ok) {
+      throw new StorageError("io", `Failed to get attachment ${id}: HTTP ${res.status.toString()}`);
+    }
+
+    const metaHeader = res.headers.get("X-Bitig-Attachment");
+    const rawBuffer = await res.arrayBuffer();
+    throwIfAborted(opts?.signal);
+    const data = new Uint8Array(rawBuffer);
+
+    if (metaHeader) {
+      let parsedMeta: unknown;
+      try {
+        parsedMeta = JSON.parse(decodeURIComponent(metaHeader));
+      } catch (error) {
+        throw new StorageError("corrupt", "Failed to parse X-Bitig-Attachment header", { cause: error });
+      }
+      const meta = parseOrThrow(AttachmentSchema, parsedMeta, "getAttachment metadata");
+      return { ...meta, data };
+    }
+
+    const json = await new Response(data).json().catch(() => null) as { data?: string } & Record<string, unknown> | null;
+    if (json && typeof json.data === "string") {
+      const { data: base64Data, ...rest } = json;
+      const meta = parseOrThrow(AttachmentSchema, rest, "getAttachment response");
+      return { ...meta, data: decodeBase64(base64Data, "getAttachment") };
+    }
+    throw new StorageError("corrupt", "Missing attachment metadata in API response");
+  }
+
+  async addAttachment(input: CreateAttachmentInput, opts?: OperationOptions): Promise<Attachment> {
+    throwIfAborted(opts?.signal);
+    const parsed = parseOrThrow(CreateAttachmentInputSchema, input, "addAttachment");
+    const bytes = typeof parsed.data === "string" ? encodeUtf8(parsed.data) : new Uint8Array(parsed.data);
+
+    const res = await this.request(
+      `/api/tasks/${encodeURIComponent(parsed.taskId)}/attachments`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: parsed.name,
+          ...(parsed.mimeType !== undefined ? { mimeType: parsed.mimeType } : {}),
+          data: encodeBase64(bytes),
+        }),
+      },
+      opts,
+    );
+
+    if (res.status === HTTP_NOT_FOUND) {
+      throw new NotFoundError("task", parsed.taskId);
+    }
+    if (res.status === HTTP_BAD_REQUEST) {
+      const err = await this.parseJsonResponse<{ details?: readonly [] }>(res);
+      throw new ValidationError("addAttachment", err.details ?? []);
+    }
+    if (res.status === HTTP_UNAUTHORIZED) {
+      throw new AuthError();
+    }
+    if (res.status !== HTTP_CREATED && res.status !== HTTP_OK) {
+      throw new StorageError("io", `Failed to add attachment: HTTP ${res.status.toString()}`);
+    }
+
+    const data = await this.parseJsonResponse<unknown>(res);
+    return parseOrThrow(AttachmentSchema, data, "addAttachment response");
+  }
+
+  async deleteAttachment(id: string, opts?: OperationOptions): Promise<void> {
+    throwIfAborted(opts?.signal);
+    const validId = parseOrThrow(IdSchema, id, "deleteAttachment id");
+
+    const res = await this.request(
+      `/api/attachments/${encodeURIComponent(validId)}`,
+      { method: "DELETE" },
+      opts,
+    );
+
+    if (res.status === HTTP_NOT_FOUND) {
+      throw new NotFoundError("attachment", id);
+    }
+    if (res.status === HTTP_UNAUTHORIZED) {
+      throw new AuthError();
+    }
+    if (res.status !== HTTP_NO_CONTENT && !res.ok) {
+      throw new StorageError("io", `Failed to delete attachment ${id}: HTTP ${res.status.toString()}`);
     }
   }
 

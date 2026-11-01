@@ -22,10 +22,14 @@ export const TASK_FILE_EXTENSION = ".md";
 export const COMMENT_FILE_EXTENSION = ".md";
 export const WEBHOOK_FILE_EXTENSION = ".yaml";
 export const CHECKPOINT_FILE_EXTENSION = ".json";
+export const ATTACHMENT_META_EXTENSION = ".json";
+export const ATTACHMENT_BLOB_EXTENSION = ".bin";
 /** A task's execution checkpoints live in a directory next to its file, one file per step. */
 export const CHECKPOINTS_DIR_SUFFIX = ".checkpoints";
 /** A task's comments live in a directory next to its file, one file per comment. */
 export const COMMENTS_DIR_SUFFIX = ".comments";
+/** A task's attachments live in a directory next to its file (`<id>.json` metadata + `<id>.bin` payload). */
+export const ATTACHMENTS_DIR_SUFFIX = ".files";
 /** A project's webhooks live in `_webhooks/<webhookId>.yaml` inside its directory. */
 export const WEBHOOKS_DIR_NAME = "_webhooks";
 export const PATH_SEPARATOR = "/";
@@ -55,6 +59,20 @@ export function commentIdFromFileName(fileName: string): string | null {
 export function taskIdFromCommentsDirName(dirName: string): string | null {
   if (!dirName.endsWith(COMMENTS_DIR_SUFFIX)) return null;
   const id = dirName.slice(0, -COMMENTS_DIR_SUFFIX.length);
+  return isEntityId(id) ? id : null;
+}
+
+/** Returns the attachment ID encoded in a metadata file name, or `null` if not an attachment metadata file. */
+export function attachmentIdFromMetaFileName(fileName: string): string | null {
+  if (!fileName.endsWith(ATTACHMENT_META_EXTENSION)) return null;
+  const id = fileName.slice(0, -ATTACHMENT_META_EXTENSION.length);
+  return isEntityId(id) ? id : null;
+}
+
+/** Returns the task ID encoded in a directory name, or `null` if it is not an attachments directory. */
+export function taskIdFromAttachmentsDirName(dirName: string): string | null {
+  if (!dirName.endsWith(ATTACHMENTS_DIR_SUFFIX)) return null;
+  const id = dirName.slice(0, -ATTACHMENTS_DIR_SUFFIX.length);
   return isEntityId(id) ? id : null;
 }
 
@@ -101,6 +119,21 @@ export function commentsDirPath(projectId: string, taskId: string): string {
 export function commentFilePath(projectId: string, taskId: string, commentId: string): string {
   assertEntityId(commentId);
   return `${commentsDirPath(projectId, taskId)}${PATH_SEPARATOR}${commentId}${COMMENT_FILE_EXTENSION}`;
+}
+
+export function attachmentsDirPath(projectId: string, taskId: string): string {
+  assertEntityId(taskId);
+  return `${projectDirPath(projectId)}${PATH_SEPARATOR}${taskId}${ATTACHMENTS_DIR_SUFFIX}`;
+}
+
+export function attachmentMetaFilePath(projectId: string, taskId: string, attachmentId: string): string {
+  assertEntityId(attachmentId);
+  return `${attachmentsDirPath(projectId, taskId)}${PATH_SEPARATOR}${attachmentId}${ATTACHMENT_META_EXTENSION}`;
+}
+
+export function attachmentBlobFilePath(projectId: string, taskId: string, attachmentId: string): string {
+  assertEntityId(attachmentId);
+  return `${attachmentsDirPath(projectId, taskId)}${PATH_SEPARATOR}${attachmentId}${ATTACHMENT_BLOB_EXTENSION}`;
 }
 
 export function checkpointsDirPath(projectId: string, taskId: string): string {

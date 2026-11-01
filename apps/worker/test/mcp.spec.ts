@@ -9,6 +9,7 @@ const BASE_URL = "https://bitig.test";
 
 const DB_SETUP_STATEMENTS = [
   "DROP TABLE IF EXISTS `webhooks`",
+  "DROP TABLE IF EXISTS `attachments`",
   "DROP TABLE IF EXISTS `checkpoints`",
   "DROP TABLE IF EXISTS `comments`",
   "DROP TABLE IF EXISTS `tasks`",
@@ -65,6 +66,17 @@ const DB_SETUP_STATEMENTS = [
     FOREIGN KEY (\`task_id\`) REFERENCES \`tasks\`(\`id\`) ON UPDATE no action ON DELETE cascade
   )`,
   "CREATE INDEX `comments_task_id_idx` ON `comments` (`task_id`)",
+  `CREATE TABLE \`attachments\` (
+    \`id\` text PRIMARY KEY NOT NULL,
+    \`task_id\` text NOT NULL,
+    \`name\` text NOT NULL,
+    \`mime_type\` text NOT NULL,
+    \`size\` integer NOT NULL,
+    \`created_at\` integer NOT NULL,
+    \`created_by\` text,
+    FOREIGN KEY (\`task_id\`) REFERENCES \`tasks\`(\`id\`) ON UPDATE no action ON DELETE cascade
+  )`,
+  "CREATE INDEX `attachments_task_id_idx` ON `attachments` (`task_id`)",
   "CREATE TABLE `checkpoints` (`id` text PRIMARY KEY NOT NULL, `task_id` text NOT NULL, `step_index` integer NOT NULL, `status` text NOT NULL, `state_snapshot` text NOT NULL, `created_at` integer NOT NULL, `created_by` text, FOREIGN KEY (`task_id`) REFERENCES `tasks`(`id`) ON UPDATE no action ON DELETE cascade)",
   "CREATE UNIQUE INDEX `checkpoints_task_step_idx` ON `checkpoints` (`task_id`,`step_index`)",
   `CREATE TABLE \`webhooks\` (
@@ -247,17 +259,21 @@ describe("Remote MCP Protocol & Tool Execution", () => {
     const toolNames = tools.map((t) => t.name).sort();
 
     expect(toolNames).toEqual([
+      "add_attachment",
       "add_comment",
       "add_task",
       "backfill_ticket_codes",
       "complete_task",
       "create_project",
       "create_webhook",
+      "delete_attachment",
       "delete_comment",
       "delete_project",
       "delete_task",
       "delete_webhook",
+      "get_attachment",
       "get_task",
+      "list_attachments",
       "list_comments",
       "list_projects",
       "list_tasks",
