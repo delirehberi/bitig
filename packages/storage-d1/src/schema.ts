@@ -67,7 +67,7 @@ export const tasks = sqliteTable(
     index("tasks_project_id_idx").on(table.projectId),
     index("tasks_status_idx").on(table.status),
     index("tasks_order_idx").on(table.order),
-    index("tasks_project_number_idx").on(table.projectId, table.number),
+    uniqueIndex("tasks_project_number_idx").on(table.projectId, table.number),
   ],
 );
 

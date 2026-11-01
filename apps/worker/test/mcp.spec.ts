@@ -54,7 +54,7 @@ const DB_SETUP_STATEMENTS = [
   "CREATE INDEX `tasks_project_id_idx` ON `tasks` (`project_id`)",
   "CREATE INDEX `tasks_status_idx` ON `tasks` (`status`)",
   "CREATE INDEX `tasks_order_idx` ON `tasks` (`order`)",
-  "CREATE INDEX `tasks_project_number_idx` ON `tasks` (`project_id`,`number`)",
+  "CREATE UNIQUE INDEX `tasks_project_number_idx` ON `tasks` (`project_id`,`number`)",
   `CREATE TABLE \`comments\` (
     \`id\` text PRIMARY KEY NOT NULL,
     \`task_id\` text NOT NULL,

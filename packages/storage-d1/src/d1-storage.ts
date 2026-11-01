@@ -268,8 +268,23 @@ function webhookToRecord(webhook: Webhook): InsertWebhookRecord {
   };
 }
 
+const TASK_NUMBER_CONFLICT_MAX_RETRIES = 5;
+
 function isD1Database(db: unknown): db is D1Database {
   return typeof db === "object" && db !== null && "prepare" in db && typeof db.prepare === "function";
+}
+
+function isTaskNumberConflict(err: unknown): boolean {
+  for (let current: unknown = err, depth = 0; current instanceof Error && depth < 5; current = current.cause, depth++) {
+    const msg = current.message;
+    if (
+      msg.includes("UNIQUE constraint failed: tasks.project_id, tasks.number") ||
+      msg.includes("tasks_project_number_idx")
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export class D1Storage implements StorageProvider {
@@ -430,7 +445,7 @@ export class D1Storage implements StorageProvider {
   async saveTask(input: CreateTaskInput, opts?: OperationOptions): Promise<Task> {
     throwIfAborted(opts?.signal);
     const projectId = parseOrThrow(IdSchema, input.projectId, "saveTask");
-    const task = buildTask(input, this.#deps, await this.#nextTaskNumber(projectId), opts?.actor);
+    let task = buildTask(input, this.#deps, await this.#nextTaskNumber(projectId), opts?.actor);
 
     const projectRow = await this.#db.select().from(projects).where(eq(projects.id, task.projectId)).get();
     throwIfAborted(opts?.signal);
@@ -440,32 +455,42 @@ export class D1Storage implements StorageProvider {
       throwIfAborted(opts?.signal);
     }
 
-    await this.#db.insert(tasks).values({
-      id: task.id,
-      projectId: task.projectId,
-      title: task.title,
-      description: task.description,
-      status: task.status,
-      isPublic: task.isPublic,
-      dueDate: task.dueDate ?? null,
-      priority: task.priority ?? null,
-      labels: task.labels ? [...task.labels] : null,
-      order: task.order ?? null,
-      checklist: task.checklist ?? null,
-      needsHuman: task.needsHuman ?? null,
-      pendingApproval: task.pendingApproval ?? null,
-      dependsOn: task.dependsOn ? [...task.dependsOn] : null,
-      number: task.number ?? null,
-      startedAt: task.startedAt !== undefined ? Date.parse(task.startedAt) : null,
-      completedAt: task.completedAt !== undefined ? Date.parse(task.completedAt) : null,
-      createdBy: task.createdBy ?? null,
-      startedBy: task.startedBy ?? null,
-      completedBy: task.completedBy ?? null,
-      updatedBy: task.updatedBy ?? null,
-      activity: task.activity ? task.activity.map((entry) => ({ ...entry })) : null,
-      createdAt: Date.parse(task.createdAt),
-      updatedAt: Date.parse(task.updatedAt),
-    });
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await this.#db.insert(tasks).values({
+          id: task.id,
+          projectId: task.projectId,
+          title: task.title,
+          description: task.description,
+          status: task.status,
+          isPublic: task.isPublic,
+          dueDate: task.dueDate ?? null,
+          priority: task.priority ?? null,
+          labels: task.labels ? [...task.labels] : null,
+          order: task.order ?? null,
+          checklist: task.checklist ?? null,
+          needsHuman: task.needsHuman ?? null,
+          pendingApproval: task.pendingApproval ?? null,
+          dependsOn: task.dependsOn ? [...task.dependsOn] : null,
+          number: task.number ?? null,
+          startedAt: task.startedAt !== undefined ? Date.parse(task.startedAt) : null,
+          completedAt: task.completedAt !== undefined ? Date.parse(task.completedAt) : null,
+          createdBy: task.createdBy ?? null,
+          startedBy: task.startedBy ?? null,
+          completedBy: task.completedBy ?? null,
+          updatedBy: task.updatedBy ?? null,
+          activity: task.activity ? task.activity.map((entry) => ({ ...entry })) : null,
+          createdAt: Date.parse(task.createdAt),
+          updatedAt: Date.parse(task.updatedAt),
+        });
+        break;
+      } catch (err) {
+        if (attempt >= TASK_NUMBER_CONFLICT_MAX_RETRIES || !isTaskNumberConflict(err)) throw err;
+        throwIfAborted(opts?.signal);
+        task = renumberTask(task, await this.#nextTaskNumber(projectId));
+        throwIfAborted(opts?.signal);
+      }
+    }
     throwIfAborted(opts?.signal);
     return copyTask(task);
   }
@@ -479,8 +504,9 @@ export class D1Storage implements StorageProvider {
 
     const existing = recordToTask(existingRow);
     let next = applyTaskPatch(existing, patch, this.#deps.clock(), opts?.actor, opts?.overrideBlockedBy);
+    const movedProject = next.projectId !== existing.projectId;
 
-    if (next.projectId !== existing.projectId) {
+    if (movedProject) {
       const targetProject = await this.#db.select().from(projects).where(eq(projects.id, next.projectId)).get();
       throwIfAborted(opts?.signal);
       if (!targetProject) throw new NotFoundError("project", next.projectId);
@@ -492,33 +518,43 @@ export class D1Storage implements StorageProvider {
       throwIfAborted(opts?.signal);
     }
 
-    await this.#db
-      .update(tasks)
-      .set({
-        projectId: next.projectId,
-        title: next.title,
-        description: next.description,
-        status: next.status,
-        isPublic: next.isPublic,
-        dueDate: next.dueDate ?? null,
-        priority: next.priority ?? null,
-        labels: next.labels ? [...next.labels] : null,
-        order: next.order ?? null,
-        checklist: next.checklist ?? null,
-        needsHuman: next.needsHuman ?? null,
-        pendingApproval: next.pendingApproval ?? null,
-        dependsOn: next.dependsOn ? [...next.dependsOn] : null,
-        number: next.number ?? null,
-        startedAt: next.startedAt !== undefined ? Date.parse(next.startedAt) : null,
-        completedAt: next.completedAt !== undefined ? Date.parse(next.completedAt) : null,
-        createdBy: next.createdBy ?? null,
-        startedBy: next.startedBy ?? null,
-        completedBy: next.completedBy ?? null,
-        updatedBy: next.updatedBy ?? null,
-        activity: next.activity ? next.activity.map((entry) => ({ ...entry })) : null,
-        updatedAt: Date.parse(next.updatedAt),
-      })
-      .where(eq(tasks.id, validId));
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await this.#db
+          .update(tasks)
+          .set({
+            projectId: next.projectId,
+            title: next.title,
+            description: next.description,
+            status: next.status,
+            isPublic: next.isPublic,
+            dueDate: next.dueDate ?? null,
+            priority: next.priority ?? null,
+            labels: next.labels ? [...next.labels] : null,
+            order: next.order ?? null,
+            checklist: next.checklist ?? null,
+            needsHuman: next.needsHuman ?? null,
+            pendingApproval: next.pendingApproval ?? null,
+            dependsOn: next.dependsOn ? [...next.dependsOn] : null,
+            number: next.number ?? null,
+            startedAt: next.startedAt !== undefined ? Date.parse(next.startedAt) : null,
+            completedAt: next.completedAt !== undefined ? Date.parse(next.completedAt) : null,
+            createdBy: next.createdBy ?? null,
+            startedBy: next.startedBy ?? null,
+            completedBy: next.completedBy ?? null,
+            updatedBy: next.updatedBy ?? null,
+            activity: next.activity ? next.activity.map((entry) => ({ ...entry })) : null,
+            updatedAt: Date.parse(next.updatedAt),
+          })
+          .where(eq(tasks.id, validId));
+        break;
+      } catch (err) {
+        if (!movedProject || attempt >= TASK_NUMBER_CONFLICT_MAX_RETRIES || !isTaskNumberConflict(err)) throw err;
+        throwIfAborted(opts?.signal);
+        next = renumberTask(next, await this.#nextTaskNumber(next.projectId));
+        throwIfAborted(opts?.signal);
+      }
+    }
     throwIfAborted(opts?.signal);
     const total = await this.#commentCount(validId);
     throwIfAborted(opts?.signal);

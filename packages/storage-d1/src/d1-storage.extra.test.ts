@@ -51,7 +51,7 @@ const STATEMENTS = [
   "CREATE INDEX `tasks_project_id_idx` ON `tasks` (`project_id`)",
   "CREATE INDEX `tasks_status_idx` ON `tasks` (`status`)",
   "CREATE INDEX `tasks_order_idx` ON `tasks` (`order`)",
-  "CREATE INDEX `tasks_project_number_idx` ON `tasks` (`project_id`,`number`)",
+  "CREATE UNIQUE INDEX `tasks_project_number_idx` ON `tasks` (`project_id`,`number`)",
   `CREATE TABLE \`comments\` (
     \`id\` text PRIMARY KEY NOT NULL,
     \`task_id\` text NOT NULL,
@@ -113,6 +113,33 @@ describe("D1Storage extra tests", () => {
     await storage.deleteProject(proj.id);
     expect(await storage.getProject(proj.id)).toBeNull();
     expect(await storage.getTask(task.id)).toBeNull();
+  });
+
+  it("assigns distinct sequential numbers when tasks are saved or moved concurrently", async () => {
+    const storage = new D1Storage(env.DB);
+    const proj = await storage.createProject({ name: "Concurrent Project", key: "ULA" });
+    const otherProj = await storage.createProject({ name: "Other Project", key: "OTH" });
+
+    const created = await Promise.all([
+      storage.saveTask({ projectId: proj.id, title: "Task A" }),
+      storage.saveTask({ projectId: proj.id, title: "Task B" }),
+      storage.saveTask({ projectId: proj.id, title: "Task C" }),
+      storage.saveTask({ projectId: proj.id, title: "Task D" }),
+    ]);
+
+    expect(created.map((t) => t.number).sort((a, b) => (a ?? 0) - (b ?? 0))).toEqual([1, 2, 3, 4]);
+
+    const otherTasks = await Promise.all([
+      storage.saveTask({ projectId: otherProj.id, title: "Move 1" }),
+      storage.saveTask({ projectId: otherProj.id, title: "Move 2" }),
+      storage.saveTask({ projectId: otherProj.id, title: "Move 3" }),
+    ]);
+
+    const moved = await Promise.all(
+      otherTasks.map((t) => storage.updateTask(t.id, { projectId: proj.id })),
+    );
+
+    expect(moved.map((t) => t.number).sort((a, b) => (a ?? 0) - (b ?? 0))).toEqual([5, 6, 7]);
   });
 });
 
