@@ -107,7 +107,7 @@ export class InMemoryStorage implements StorageProvider {
       const parsed = parseOrThrow(SaveCheckpointInputSchema, input, "saveCheckpoint");
       this.#requireTask(parsed.taskId);
       const key = `${parsed.taskId}:${String(parsed.stepIndex)}`;
-      const checkpoint = buildCheckpoint(parsed, this.#deps, this.#checkpoints.get(key));
+      const checkpoint = buildCheckpoint(parsed, this.#deps, this.#checkpoints.get(key), opts?.actor);
       this.#checkpoints.set(key, checkpoint);
       return CheckpointSchema.parse(checkpoint);
     });

@@ -54,6 +54,9 @@ export const IdSchema = z.uuidv7();
 /** ISO 8601 UTC timestamp; offsets other than `Z` are rejected. */
 export const TimestampSchema = z.iso.datetime();
 
+/** Name of the LLM or actor that touched a task, e.g. `claude` or `antigravity`. */
+export const TaskActorSchema = z.string().trim().min(1).max(TASK_ACTOR_MAX);
+
 export const CheckpointStatusSchema = z.enum(CHECKPOINT_STATUSES);
 const CheckpointValueSchema = z.union([z.string().max(CHECKPOINT_VALUE_MAX), z.number(), z.boolean(), z.null()]);
 const CheckpointMapSchema = z.record(z.string().min(1).max(CHECKPOINT_KEY_MAX), CheckpointValueSchema)
@@ -75,6 +78,8 @@ export const SaveCheckpointInputSchema = z.strictObject({
 export const CheckpointSchema = SaveCheckpointInputSchema.extend({
   id: IdSchema,
   createdAt: TimestampSchema,
+  /** Actor that first saved this step; absent on checkpoints saved before attribution existed. */
+  createdBy: TaskActorSchema.exactOptional(),
 });
 
 /** Calendar date `YYYY-MM-DD`; zod's regex rejects impossible dates (e.g. Feb 30). */
@@ -134,9 +139,6 @@ export const ChecklistSchema = z.array(ChecklistItemSchema).max(CHECKLIST_MAX_IT
 
 /** Why a task needs a person, e.g. a decision or an approval. Set means the task waits on a human. */
 export const NeedsHumanSchema = z.string().trim().min(1).max(NEEDS_HUMAN_MAX);
-
-/** Name of the LLM or actor that touched a task, e.g. `claude` or `antigravity`. */
-export const TaskActorSchema = z.string().trim().min(1).max(TASK_ACTOR_MAX);
 
 export const TaskActivityActionSchema = z.enum(TASK_ACTIVITY_ACTIONS);
 

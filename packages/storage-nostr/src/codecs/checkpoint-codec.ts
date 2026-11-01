@@ -17,6 +17,7 @@ export interface CheckpointPayload {
   stepIndex: Checkpoint["stepIndex"];
   status: Checkpoint["status"];
   stateSnapshot: Checkpoint["stateSnapshot"];
+  createdBy?: Checkpoint["createdBy"];
 }
 
 /**
@@ -41,6 +42,7 @@ export async function encodeCheckpointEvent(
     stepIndex: checkpoint.stepIndex,
     status: checkpoint.status,
     stateSnapshot: checkpoint.stateSnapshot,
+    ...(checkpoint.createdBy === undefined ? {} : { createdBy: checkpoint.createdBy }),
   };
 
   return {
@@ -76,6 +78,7 @@ export async function decodeCheckpointEvent(
     stepIndex: payload.stepIndex,
     status: payload.status,
     stateSnapshot: payload.stateSnapshot,
+    ...(payload.createdBy === undefined ? {} : { createdBy: payload.createdBy }),
     createdAt: tag(NOSTR_TAG_CREATED_AT_ISO) ?? new Date(event.created_at * 1000).toISOString(),
   });
 }

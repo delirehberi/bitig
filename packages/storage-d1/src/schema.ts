@@ -97,6 +97,7 @@ export const checkpoints = sqliteTable(
     status: text("status").$type<CheckpointStatus>().notNull(),
     stateSnapshot: text("state_snapshot", { mode: "json" }).$type<StateSnapshot>().notNull(),
     createdAt: integer("created_at").notNull(),
+    createdBy: text("created_by"),
   },
   // One checkpoint per task step: saving a step again updates it in place.
   (table) => [uniqueIndex("checkpoints_task_step_idx").on(table.taskId, table.stepIndex)],

@@ -50,6 +50,16 @@ describe("checkpoint semantics", () => {
     expect(buildCheckpoint({ ...input, stepIndex: 1 }, runtime, first).id).not.toBe(first.id);
   });
 
+  it("records the saving actor and keeps the original author on overwrite", () => {
+    const { runtime, input } = setup();
+    const first = buildCheckpoint(input, runtime, undefined, "claude");
+    expect(first.createdBy).toBe("claude");
+    expect(buildCheckpoint({ ...input, status: "FAILED" }, runtime, first, "codex").createdBy).toBe("claude");
+    expect(buildCheckpoint(input, runtime).createdBy).toBeUndefined();
+    const legacy = buildCheckpoint(input, runtime);
+    expect(buildCheckpoint(input, runtime, legacy, "codex").createdBy).toBe("codex");
+  });
+
   it("selects the highest step, bounds history, and ignores other tasks", () => {
     const { runtime, task, input } = setup();
     const checkpoints = Array.from({ length: 15 }, (_, stepIndex) => buildCheckpoint({ ...input, stepIndex }, runtime));

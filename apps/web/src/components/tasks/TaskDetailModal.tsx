@@ -30,6 +30,7 @@ import { ChecklistProgressBadge, ChecklistView } from "./Checklist";
 import { ApprovalNote } from "./Approval";
 import { NeedsHumanNote } from "./NeedsHuman";
 import { TaskCode } from "./TaskCode";
+import { TaskCheckpoint } from "./TaskCheckpoint";
 import { TaskComments } from "./TaskComments";
 import { LinkedTasks, TaskDependencies } from "./LinkedTasks";
 
@@ -301,6 +302,8 @@ export function TaskDetailModal({
             />
           </section>
         )}
+
+        {storage && <TaskCheckpoint key={task.id} storage={storage} taskId={task.id} />}
 
         {dependencies && <TaskDependencies dependencies={dependencies} />}
         {links && <LinkedTasks links={links} />}

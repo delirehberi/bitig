@@ -1,0 +1,1 @@
+ALTER TABLE `checkpoints` ADD `created_by` text;
