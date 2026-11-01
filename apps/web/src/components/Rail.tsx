@@ -4,21 +4,20 @@ import type { HealthState } from "../hooks/useHealth";
 import { Link } from "../routing/Link";
 import { hrefFor } from "../routing/router";
 
-export type NavigationTab = "overview" | "projects" | "tasks" | "webhooks";
+export type NavigationTab = "overview" | "projects" | "tasks" | "webhooks" | "settings";
 
 interface NavItem {
-  readonly id: NavigationTab | "settings";
+  readonly id: NavigationTab;
   readonly label: string;
   readonly icon: LucideIcon;
-  readonly available: boolean;
 }
 
 const NAV_ITEMS: readonly NavItem[] = [
-  { id: "overview", label: "Overview", icon: Sprout, available: true },
-  { id: "projects", label: "Projects", icon: FolderKanban, available: true },
-  { id: "tasks", label: "Tasks", icon: ListTodo, available: true },
-  { id: "webhooks", label: "Webhooks", icon: Webhook, available: true },
-  { id: "settings", label: "Settings", icon: Settings, available: false },
+  { id: "overview", label: "Overview", icon: Sprout },
+  { id: "projects", label: "Projects", icon: FolderKanban },
+  { id: "tasks", label: "Tasks", icon: ListTodo },
+  { id: "webhooks", label: "Webhooks", icon: Webhook },
+  { id: "settings", label: "Settings", icon: Settings },
 ];
 
 const ICON_SIZE = 18;
@@ -38,39 +37,26 @@ export function Rail({ health, activeTab }: RailProps) {
 
       <nav aria-label="Primary">
         <ul className="flex flex-row flex-wrap gap-1 md:flex-col">
-          {NAV_ITEMS.map(({ id, label, icon: Icon, available }) =>
-            available && id !== "settings" ? (
-              <li key={id}>
-                <Link
-                  href={hrefFor({ name: id })}
-                  aria-current={activeTab === id ? "page" : undefined}
-                  className={`flex w-full items-center gap-3 whitespace-nowrap rounded-md px-3 py-2 text-sm font-semibold transition-colors ${
-                    activeTab === id
-                      ? "bg-paper text-ink shadow-xs"
-                      : "text-ink-2 hover:bg-paper-3 hover:text-ink"
-                  }`}
-                >
-                  <Icon
-                    size={ICON_SIZE}
-                    aria-hidden="true"
-                    className={activeTab === id ? "text-accent-ink" : "text-ink-3"}
-                  />
-                  {label}
-                </Link>
-              </li>
-            ) : (
-              <li key={label} className="hidden md:block">
-                <span
-                  aria-disabled="true"
-                  className="flex items-center gap-3 whitespace-nowrap rounded-md px-3 py-2 text-sm text-ink-3"
-                >
-                  <Icon size={ICON_SIZE} aria-hidden="true" />
-                  {label}
-                  <span className="ml-auto text-xs">later</span>
-                </span>
-              </li>
-            ),
-          )}
+          {NAV_ITEMS.map(({ id, label, icon: Icon }) => (
+            <li key={id}>
+              <Link
+                href={hrefFor({ name: id })}
+                aria-current={activeTab === id ? "page" : undefined}
+                className={`flex w-full items-center gap-3 whitespace-nowrap rounded-md px-3 py-2 text-sm font-semibold transition-colors ${
+                  activeTab === id
+                    ? "bg-paper text-ink shadow-xs"
+                    : "text-ink-2 hover:bg-paper-3 hover:text-ink"
+                }`}
+              >
+                <Icon
+                  size={ICON_SIZE}
+                  aria-hidden="true"
+                  className={activeTab === id ? "text-accent-ink" : "text-ink-3"}
+                />
+                {label}
+              </Link>
+            </li>
+          ))}
         </ul>
       </nav>
 

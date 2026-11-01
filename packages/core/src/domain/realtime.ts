@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { AttachmentSchema, CommentSchema, IdSchema, ProjectSchema, TaskSchema, WebhookSchema } from "./schemas";
+import { AgentRunSchema } from "./t3";
 
 /**
  * Live workspace mutation events broadcast by the Worker's RealtimeHub Durable
@@ -59,6 +60,10 @@ export const RealtimeEventSchema = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("webhook.deleted"),
     id: IdSchema,
+  }),
+  z.strictObject({
+    type: z.literal("agent_run.updated"),
+    run: AgentRunSchema,
   }),
   z.strictObject({
     type: z.literal("sync"),

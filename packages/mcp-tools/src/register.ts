@@ -47,9 +47,12 @@ import {
   resolveTaskRefs,
   selectProjectWork,
   stripAttachmentData,
+  T3WorkspaceStrategySchema,
   withTaskCodes,
+  type AgentRun,
   type OperationOptions,
   type StorageProvider,
+  type T3WorkspaceStrategy,
   type Task,
   type TaskWithCode,
 } from "@bitig/core";
@@ -79,12 +82,30 @@ const WEBHOOK_MAPPING_DESCRIPTION =
 const GENERIC_USER_AGENTS =
   /^(?:node(?:-fetch)?|undici|mozilla|curl|fetch|okhttp|axios|python-requests|go-http-client)(?:\/|\s|$)/i;
 
+export interface StartT3ThreadToolInput {
+  readonly taskId: string;
+  readonly workspaceStrategy?: T3WorkspaceStrategy | undefined;
+  readonly providerInstanceId?: string | undefined;
+  readonly model?: string | undefined;
+  readonly actor?: string | undefined;
+}
+
+export interface StartT3ThreadToolResult {
+  readonly run: AgentRun;
+  readonly task: Task;
+  readonly code?: string | undefined;
+}
+
 export interface RegisterBitigToolsOptions {
   /**
    * Optional fallback actor name (or getter) when the MCP transport is stateless
    * and `server.server.getClientVersion()` is not populated on the per-request server instance.
    */
   readonly fallbackActor?: string | (() => string | undefined) | undefined;
+  /**
+   * Optional callback to launch a task in a connected T3 Code host.
+   */
+  readonly startT3Thread?: ((input: StartT3ThreadToolInput) => Promise<StartT3ThreadToolResult>) | undefined;
 }
 
 interface McpExtraLike {
@@ -933,6 +954,66 @@ export function registerBitigTools(
       try {
         await storage.deleteWebhook(args.id, { signal: extra.signal });
         return formatSuccessResult({ success: true, deletedWebhookId: args.id });
+      } catch (err) {
+        return formatErrorResult(err);
+      }
+    },
+  );
+
+  // 19. start_t3_thread
+  server.registerTool(
+    "start_t3_thread",
+    {
+      description:
+        "Launch a T3 Code thread for a task on the connected T3 host. Refused if the task has pendingApproval: true, has unfinished dependencies in dependsOn, belongs to an unmapped project, or if no T3 host is connected. Moves the task to in_progress and records the T3 thread link.",
+      inputSchema: {
+        taskId: TASK_REF,
+        workspaceStrategy: T3WorkspaceStrategySchema.optional().describe(
+          "Workspace strategy: 'worktree' (default, isolated git worktree on HEAD) or 'root'",
+        ),
+        providerInstanceId: z
+          .string()
+          .trim()
+          .min(1)
+          .max(200)
+          .optional()
+          .describe("Optional T3 provider instance ID"),
+        model: z
+          .string()
+          .trim()
+          .min(1)
+          .max(200)
+          .optional()
+          .describe("Optional model slug to run in T3"),
+      },
+    },
+    async (args, extra) => {
+      try {
+        const actor = resolveMcpActor(server, extra, options?.fallbackActor);
+        const opts: OperationOptions = { signal: extra.signal, actor };
+        const taskId = await resolveTaskRef(storage, args.taskId, opts);
+        await checkStatusChange(storage, taskId, "in_progress", "start_t3_thread", opts);
+        if (!options?.startT3Thread) {
+          throw new ValidationError("start_t3_thread", [
+            {
+              code: "custom",
+              path: ["t3Connection"],
+              message: "T3 integration is not configured on this server",
+              input: args.taskId,
+            },
+          ]);
+        }
+        const result = await options.startT3Thread({
+          taskId,
+          workspaceStrategy: args.workspaceStrategy,
+          providerInstanceId: args.providerInstanceId,
+          model: args.model,
+          actor,
+        });
+        return formatSuccessResult({
+          run: result.run,
+          task: await withCode(result.task, opts),
+        });
       } catch (err) {
         return formatErrorResult(err);
       }

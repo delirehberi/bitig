@@ -28,6 +28,13 @@ const configSchema = z.object({
     .refine((secret) => secret.length === 0 || secret.length >= MIN_SESSION_SECRET_LENGTH, {
       message: `must be at least ${String(MIN_SESSION_SECRET_LENGTH)} characters`,
     }),
+  // AES-256-GCM key material for encrypting T3 OAuth tokens at rest in D1. Empty disables T3 connection.
+  T3_ENCRYPTION_KEY: z
+    .string()
+    .default("")
+    .refine((secret) => secret.length === 0 || secret.length >= MIN_SESSION_SECRET_LENGTH, {
+      message: `must be at least ${String(MIN_SESSION_SECRET_LENGTH)} characters`,
+    }),
   NOSTR_AUTH_PUBKEYS: z
     .string()
     .default("")

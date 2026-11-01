@@ -13,6 +13,7 @@ import { attachmentsRouter } from "./routes/attachments";
 import { backupRouter } from "./routes/backup";
 import { mcpRouter } from "./routes/mcp";
 import { sessionRouter } from "./routes/session";
+import { t3ApiRouter, t3OauthCallbackRouter, t3TaskRunsRouter } from "./routes/t3";
 import { webhookReceiverRouter, webhooksApiRouter } from "./routes/webhooks";
 import { API_POLICY, MCP_POLICY, WEBHOOK_POLICY, authFailureGuard, rateLimit } from "./rate-limit";
 import { csrfProtection } from "./csrf";
@@ -24,6 +25,7 @@ export interface AppEnv {
   Variables: {
     config: AppConfig;
     storage: StorageProvider;
+    t3Fetch: typeof fetch | undefined;
   };
 }
 
@@ -41,6 +43,7 @@ export interface HealthResponse {
 export interface CreateAppOptions {
   storageFactory?: (env: Env) => StorageProvider;
   config?: AppConfig;
+  t3Fetch?: typeof fetch;
 }
 
 export function createApp(options?: CreateAppOptions): Hono<AppEnv> {
@@ -48,6 +51,7 @@ export function createApp(options?: CreateAppOptions): Hono<AppEnv> {
 
   app.use("*", async (c, next) => {
     c.set("config", options?.config ?? parseConfig(c.env));
+    c.set("t3Fetch", options?.t3Fetch);
     const baseStorage = options?.storageFactory
       ? options.storageFactory(c.env)
       : new D1Storage({ db: c.env.DB, bucket: c.env.ATTACHMENTS });
@@ -81,7 +85,7 @@ export function createApp(options?: CreateAppOptions): Hono<AppEnv> {
     cors({
       // Hono types this context loosely; re-validate env rather than trusting `any`.
       origin: (origin, c) => (parseConfig(c.env).ALLOWED_ORIGINS.includes(origin) ? origin : null),
-      allowMethods: ["GET", "POST", "PATCH", "DELETE"],
+      allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
       maxAge: CORS_MAX_AGE_SECONDS,
     }),
   );
@@ -101,8 +105,9 @@ export function createApp(options?: CreateAppOptions): Hono<AppEnv> {
   // Clients over the failed-login budget get 429 before any credentials are checked
   app.use("/api/*", authFailureGuard());
 
-  // Sign-in routes answer before the guard below, so they need no credentials
+  // Sign-in and OAuth PKCE callback routes answer before the guard below
   app.route("/api/auth", sessionRouter);
+  app.route("/api/t3/oauth/callback", t3OauthCallbackRouter);
 
   // A session cookie or Basic credentials guard every other /api/* route
   app.use("/api/*", apiAuth());
@@ -110,11 +115,13 @@ export function createApp(options?: CreateAppOptions): Hono<AppEnv> {
   // REST API routes
   app.route("/api/projects", projectsRouter);
   app.route("/api/tasks", tasksRouter);
+  app.route("/api/tasks", t3TaskRunsRouter);
   app.route("/api/comments", commentsRouter);
   app.route("/api/attachments", attachmentsRouter);
   app.route("/api/webhooks", webhooksApiRouter);
   app.route("/api/backup", backupRouter);
   app.route("/api/realtime", realtimeRouter);
+  app.route("/api/t3", t3ApiRouter);
 
   // Incoming webhook receiver endpoint guarded by secret token in the URL and rate limiting
   app.use("/webhooks/*", rateLimit(WEBHOOK_POLICY));

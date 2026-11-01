@@ -17,3 +17,6 @@ export const TEST_MCP_AUTH_HEADER = `Bearer ${TEST_MCP_TOKEN}`;
 
 /** Accepted as `/mcp?token=`; deliberately different from TEST_MCP_TOKEN. */
 export const TEST_MCP_URL_TOKEN = "test-mcp-url-token-secret";
+
+/** AES-256-GCM key material for T3 token encryption in tests (>= 32 chars). */
+export const TEST_T3_ENCRYPTION_KEY = "test-t3-encryption-key-0123456789abcdef";

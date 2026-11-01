@@ -55,6 +55,7 @@ describe("MCP Tools integration", () => {
       "create_webhook",
       "update_webhook",
       "delete_webhook",
+      "start_t3_thread",
     ]);
 
     // Create project

@@ -6,6 +6,7 @@ import {
   DEFAULT_TASK_STATUS,
   DEFAULT_WEBHOOK_ENABLED,
   DEFAULT_WEBHOOK_PROVIDER,
+  type AgentRunState,
   type AttachmentMimeType,
   type ChecklistItem,
   type CheckpointStatus,
@@ -13,6 +14,8 @@ import {
   type CommentAuthorType,
   type ProjectKind,
   type ProjectResource,
+  type T3WorkspaceStrategy,
+  type TaskActor,
   type TaskActivityEntry,
   type TaskPriority,
   type TaskStatus,
@@ -147,6 +150,63 @@ export const attachments = sqliteTable(
   (table) => [index("attachments_task_id_idx").on(table.taskId)],
 );
 
+export const t3Connections = sqliteTable("t3_connections", {
+  id: text("id").primaryKey(),
+  mcpUrl: text("mcp_url").notNull(),
+  issuer: text("issuer").notNull(),
+  clientId: text("client_id").notNull(),
+  encryptedAccessToken: text("encrypted_access_token").notNull(),
+  tokenIv: text("token_iv").notNull(),
+  scope: text("scope").notNull(),
+  expiresAt: integer("expires_at").notNull(),
+  connectedAt: integer("connected_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+});
+
+export const t3OauthStates = sqliteTable("t3_oauth_states", {
+  state: text("state").primaryKey(),
+  mcpUrl: text("mcp_url").notNull(),
+  issuer: text("issuer").notNull(),
+  tokenEndpoint: text("token_endpoint").notNull(),
+  clientId: text("client_id").notNull(),
+  codeVerifier: text("code_verifier").notNull(),
+  redirectUri: text("redirect_uri").notNull(),
+  createdAt: integer("created_at").notNull(),
+  expiresAt: integer("expires_at").notNull(),
+});
+
+export const t3ProjectMappings = sqliteTable("t3_project_mappings", {
+  projectId: text("project_id")
+    .primaryKey()
+    .references(() => projects.id, { onDelete: "cascade" }),
+  t3ProjectId: text("t3_project_id").notNull(),
+  t3ProjectTitle: text("t3_project_title").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+});
+
+export const agentRuns = sqliteTable(
+  "agent_runs",
+  {
+    id: text("id").primaryKey(),
+    taskId: text("task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    t3ProjectId: text("t3_project_id").notNull(),
+    threadId: text("thread_id").notNull(),
+    link: text("link"),
+    state: text("state").$type<AgentRunState>().notNull(),
+    model: text("model"),
+    workspaceStrategy: text("workspace_strategy").$type<T3WorkspaceStrategy>(),
+    startedBy: text("started_by").$type<TaskActor>(),
+    startedAt: integer("started_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("agent_runs_task_id_idx").on(table.taskId),
+    index("agent_runs_thread_id_idx").on(table.threadId),
+  ],
+);
+
 export type ProjectRecord = typeof projects.$inferSelect;
 export type InsertProjectRecord = typeof projects.$inferInsert;
 export type TaskRecord = typeof tasks.$inferSelect;
@@ -160,3 +220,11 @@ export type WebhookRecord = typeof webhooks.$inferSelect;
 export type InsertWebhookRecord = typeof webhooks.$inferInsert;
 export type AttachmentRecord = typeof attachments.$inferSelect;
 export type InsertAttachmentRecord = typeof attachments.$inferInsert;
+export type T3ConnectionRecord = typeof t3Connections.$inferSelect;
+export type InsertT3ConnectionRecord = typeof t3Connections.$inferInsert;
+export type T3OauthStateRecord = typeof t3OauthStates.$inferSelect;
+export type InsertT3OauthStateRecord = typeof t3OauthStates.$inferInsert;
+export type T3ProjectMappingRecord = typeof t3ProjectMappings.$inferSelect;
+export type InsertT3ProjectMappingRecord = typeof t3ProjectMappings.$inferInsert;
+export type AgentRunRecord = typeof agentRuns.$inferSelect;
+export type InsertAgentRunRecord = typeof agentRuns.$inferInsert;

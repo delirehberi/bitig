@@ -22,6 +22,7 @@ export type Route =
       readonly taskRef?: string;
     }
   | { readonly name: "webhooks"; readonly projectId?: string }
+  | { readonly name: "settings" }
   | { readonly name: "login"; readonly next?: string }
   | { readonly name: "not_found" };
 
@@ -87,6 +88,8 @@ export function parseRoute(pathname: string, search: string): Route {
         ...(projectId ? { projectId } : {}),
       };
     }
+    case "/settings":
+      return { name: "settings" };
     case LOGIN_PATH: {
       const next = safeNextPath(params.get(NEXT_PARAM));
       return next ? { name: "login", next } : { name: "login" };
@@ -121,6 +124,8 @@ export function hrefFor(route: Route): string {
       const query = params.toString();
       return query ? `/webhooks?${query}` : "/webhooks";
     }
+    case "settings":
+      return "/settings";
     case "login":
       return route.next ? `${LOGIN_PATH}?${new URLSearchParams({ [NEXT_PARAM]: route.next }).toString()}` : LOGIN_PATH;
   }

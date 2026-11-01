@@ -33,6 +33,7 @@ import { TaskCode } from "./TaskCode";
 import { TaskCheckpoint } from "./TaskCheckpoint";
 import { TaskAttachments } from "./TaskAttachments";
 import { TaskComments } from "./TaskComments";
+import { TaskT3Section } from "./TaskT3Section";
 import { LinkedTasks, TaskDependencies } from "./LinkedTasks";
 
 interface TaskDetailModalProps {
@@ -307,6 +308,19 @@ export function TaskDetailModal({
         )}
 
         {storage && <TaskCheckpoint key={task.id} storage={storage} taskId={task.id} />}
+
+        {storage && (
+          <TaskT3Section
+            key={`t3-${task.id}`}
+            task={task}
+            project={project}
+            hasUnfinishedDependencies={Boolean(
+              dependencies?.dependsOn.some(
+                (dep) => dep.status !== "done" && dep.status !== "archived",
+              ),
+            )}
+          />
+        )}
 
         {dependencies && <TaskDependencies dependencies={dependencies} />}
         {links && <LinkedTasks links={links} />}

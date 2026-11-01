@@ -281,6 +281,7 @@ describe("Remote MCP Protocol & Tool Execution", () => {
       "next_task",
       "resume_from_checkpoint",
       "save_checkpoint",
+      "start_t3_thread",
       "update_project",
       "update_task",
       "update_webhook",
@@ -403,8 +404,14 @@ describe("Remote MCP Protocol & Tool Execution", () => {
     }[];
     expect(tasksList.some((t) => t.id === task.id)).toBe(true);
 
-    // 6. Agents cannot complete a task a person has not approved; a person approves it over REST
+    // 6. Agents cannot complete or start_t3_thread on a task a person has not approved; a person approves it over REST
     expect((task as { pendingApproval?: true }).pendingApproval).toBe(true);
+    const refusedStartT3Res = await client.callTool({
+      name: "start_t3_thread",
+      arguments: { taskId: task.id },
+    });
+    expect(refusedStartT3Res.isError).toBe(true);
+    expect((refusedStartT3Res.content as { text: string }[])[0]?.text).toContain("awaiting human approval");
     const refusedCompleteRes = await client.callTool({
       name: "complete_task",
       arguments: { id: task.id },

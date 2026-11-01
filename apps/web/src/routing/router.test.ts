@@ -30,4 +30,9 @@ describe("task links", () => {
     expect(parseRoute("/tasks", "?blocked=yes")).toEqual({ name: "tasks" });
     expect(hrefFor({ name: "tasks", projectId: "p1", blocked: true })).toBe("/tasks?project=p1&blocked=true");
   });
+
+  it("round-trips the settings route", () => {
+    expect(parseRoute("/settings", "")).toEqual({ name: "settings" });
+    expect(hrefFor({ name: "settings" })).toBe("/settings");
+  });
 });

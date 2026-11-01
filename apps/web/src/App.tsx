@@ -7,6 +7,7 @@ import { Header } from "./components/Header";
 import { Overview } from "./components/Overview";
 import { ProjectsView } from "./components/projects/ProjectsView";
 import { Rail, type NavigationTab } from "./components/Rail";
+import { SettingsView } from "./components/settings/SettingsView";
 import { TasksView } from "./components/tasks/TasksView";
 import { WebhooksView } from "./components/webhooks/WebhooksView";
 import { FeatureFlagsProvider } from "./domain/feature-context";
@@ -230,6 +231,13 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
                 onUpdateWebhook={updateWebhook}
                 onDeleteWebhook={deleteWebhook}
                 searchQuery={searchQuery}
+              />
+            )}
+
+            {activeTab === "settings" && (
+              <SettingsView
+                mode={mode}
+                projects={recentProjects}
               />
             )}
           </main>

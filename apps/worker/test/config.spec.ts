@@ -52,4 +52,10 @@ describe("parseConfig", () => {
     expect(() => parseConfig({ SESSION_SECRET: "too-short" })).toThrow(ConfigError);
     expect(parseConfig({ SESSION_SECRET: "x".repeat(32) }).SESSION_SECRET).toHaveLength(32);
   });
+
+  it("leaves T3_ENCRYPTION_KEY empty when unset and rejects values shorter than 32 characters", () => {
+    expect(parseConfig({}).T3_ENCRYPTION_KEY).toBe("");
+    expect(() => parseConfig({ T3_ENCRYPTION_KEY: "too-short" })).toThrow(ConfigError);
+    expect(parseConfig({ T3_ENCRYPTION_KEY: "k".repeat(32) }).T3_ENCRYPTION_KEY).toHaveLength(32);
+  });
 });
