@@ -90,7 +90,7 @@ describe("Bitig CLI STDIO MCP Server E2E", () => {
 
   it("completes full MCP project and task lifecycle over STDIO", async () => {
     const { tools } = await client.listTools();
-    expect(tools.length).toBe(24);
+    expect(tools.length).toBe(25);
 
     // 1. Create project
     const proj = await callToolJson<ProjectResult & { bitig_file_content: string }>("create_project", {
@@ -141,6 +141,7 @@ describe("Bitig CLI STDIO MCP Server E2E", () => {
       "list_projects",
       "list_tasks",
       "list_webhooks",
+      "next_task",
       "resume_from_checkpoint",
       "save_checkpoint",
       "update_project",
@@ -214,7 +215,15 @@ describe("Bitig CLI STDIO MCP Server E2E", () => {
     expect(task.code).toBe("ALL-1");
     const awaiting = await callToolJson<TaskResult[]>("list_tasks", { pendingApproval: true });
     expect(awaiting).toHaveLength(2);
+    expect(await callToolJson("next_task", { projectId: "ALL" })).toMatchObject({
+      primary: null, context: null, counts: { pendingApproval: 1, actionableTodo: 0 },
+    });
     await approveWithCli("ALL-1");
+    expect(await callToolJson("next_task", { projectId: project.id })).toMatchObject({
+      primary: { id: task.id, code: "ALL-1", nextSubtask: "Step two" },
+      context: { checkpoint: null, comments: [] },
+      counts: { pendingApproval: 0, actionableTodo: 1 },
+    });
     const completed = await callToolJson<TaskResult>("complete_task", { id: "all-1" });
     expect(completed).toMatchObject({ id: task.id, status: "done", code: "ALL-1" });
     expect(await callToolJson("backfill_ticket_codes")).toEqual({ keyedProjects: 0, numberedTasks: 0 });

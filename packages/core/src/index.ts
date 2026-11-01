@@ -20,6 +20,8 @@ export * from "./domain/schemas";
 export * from "./domain/realtime";
 export type * from "./domain/types";
 export { buildCheckpoint, compareCheckpoints, buildExecutionContext } from "./domain/checkpoints";
+export { PROJECT_WORK_LIMITS, selectProjectWork, buildProjectWorkContext } from "./domain/project-work";
+export type { ProjectWorkSummary, ProjectWorkContext } from "./domain/project-work";
 export {
   assertTaskAttachmentQuota,
   buildAttachment,

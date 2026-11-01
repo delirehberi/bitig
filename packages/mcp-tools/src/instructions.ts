@@ -10,7 +10,13 @@ Project Linking Flow for AI Agents:
    - Call 'list_projects' to check if a suitable Bitig project already exists.
    - If not, prompt the user or call 'create_project' to create one.
    - Save the returned 'project_id' into a '.bitig' file (format: "project_id: <id>\\n") at the workspace root.
-4. Pass 'projectId' to all task tools ('list_tasks', 'add_task', etc.).
+4. Pass 'projectId' to project-scoped task tools ('next_task', 'list_tasks', 'add_task', etc.).
+
+Picking up work: call 'next_task' with the project ID or key first, rather than downloading all of 'list_tasks'.
+It returns bounded in-progress and actionable todo summaries, overlapping counts of open tasks waiting on approval,
+dependencies or a person, and recent comments plus the latest checkpoint for the primary ungated task. In-progress
+work takes precedence; todo tasks use canonical ordering. No primary means no work is currently actionable.
+Text ending in … and omitted counts indicate truncation; use 'get_task' or 'resume_from_checkpoint' for full context.
 
 Ticket codes: every task has a code like BIT-12 (project key + number). Use it when talking about a task;
 every tool that takes a task 'id' also accepts its code, and 'projectId' also accepts the project key.
@@ -32,7 +38,7 @@ and 'dependents'; 'list_tasks' with 'blocked: false' lists the tasks that are fr
 
 Checkpoints: on long or interruptible work, call 'save_checkpoint' after each meaningful step with the task, a
 stepIndex (0, 1, 2, ...), a status and a short stateSnapshot (summary, modifiedArtifacts, decisionsMade,
-nextStepInstructions). Saving a step again overwrites it. To pick work back up, call 'resume_from_checkpoint' first: it
+nextStepInstructions). Saving a step again overwrites it. For a specific task's full execution context, call 'resume_from_checkpoint': it
 returns the goal, the latest checkpoint and the live gates (pendingApproval, needsHuman, unfinished dependencies).
 A checkpoint never approves, unblocks or moves a task; if a gate is set, stop and ask a person instead of working on.
 Never put secrets in a snapshot.
@@ -44,4 +50,3 @@ Attachments: 'get_task' and 'list_attachments' list a task's attached files. Cal
 (returns UTF-8 'content' for Markdown/text files and base64 'data' + 'downloadUrl' for images/binaries). Use
 'add_attachment' to attach Markdown specs, logs, or screenshots to a task, and 'delete_attachment' to remove one.
 `;
-

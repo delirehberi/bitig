@@ -5,7 +5,7 @@ description: Record plans and findings as Bitig tasks through the bitig MCP serv
 
 # Bitig planning
 
-Bitig is the single source of truth for planned work. Roadmaps, task lists and review findings go into Bitig as tasks through the `bitig` MCP server (tools: `list_projects`, `create_project`, `update_project`, `delete_project`, `list_tasks`, `get_task`, `add_task`, `update_task`, `complete_task`, `delete_task`, `backfill_ticket_codes`, `list_comments`, `add_comment`, `delete_comment`).
+Bitig is the single source of truth for planned work. Roadmaps, task lists and review findings go into Bitig as tasks through the `bitig` MCP server (tools: `list_projects`, `create_project`, `update_project`, `delete_project`, `next_task`, `list_tasks`, `get_task`, `add_task`, `update_task`, `complete_task`, `delete_task`, `backfill_ticket_codes`, `list_comments`, `add_comment`, `delete_comment`).
 
 Do not create `ROADMAP.md`, `TASKS.md`, `TODO.md` or similar files for tracking. If the user explicitly asks for such a file, write it **in addition to** the Bitig tasks, never instead of them.
 
@@ -21,6 +21,8 @@ Do not create `ROADMAP.md`, `TASKS.md`, `TODO.md` or similar files for tracking.
 5. **Project resources**: Attach related external links (`repository`, `issue_tracker`, `design`, `documentation`, `other`) via `resources: [{ type, label, url }]` on `create_project` or `update_project` (send the full edited list to add, edit, or remove links; `null` or `[]` clears them).
 
 ## 2. Avoid duplicates
+
+When picking up project work, call `next_task({ projectId })` first. It returns bounded in-progress summaries (latest touch first), actionable todo summaries (canonical order), overlapping gate counts, and recent comments plus the latest checkpoint for the primary ungated task. No primary means no task is currently actionable; do not bypass approval, dependency or `needsHuman` gates. Archived projects have no actionable work. Text ending in `…` and omitted counts indicate truncation; use `get_task` or `resume_from_checkpoint` for full context when needed.
 
 Call `list_tasks` with the `projectId` (or project `key`) before adding anything. If a task already covers the item, update it with `update_task` instead of adding a new one. Do not reopen `done` or `archived` tasks unless the user asks for that.
 

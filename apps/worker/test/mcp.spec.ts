@@ -278,6 +278,7 @@ describe("Remote MCP Protocol & Tool Execution", () => {
       "list_projects",
       "list_tasks",
       "list_webhooks",
+      "next_task",
       "resume_from_checkpoint",
       "save_checkpoint",
       "update_project",
@@ -420,6 +421,18 @@ describe("Remote MCP Protocol & Tool Execution", () => {
     expect(approveRes.status).toBe(200);
     expect(await approveRes.json()).not.toHaveProperty("pendingApproval");
 
+    const nextTaskRes = await client.callTool({
+      name: "next_task",
+      arguments: { projectId: project.id },
+    });
+    expect(nextTaskRes.isError).toBeFalsy();
+    const nextTask: unknown = JSON.parse((nextTaskRes.content as { text: string }[])[0]?.text ?? "{}");
+    expect(nextTask).toMatchObject({
+      primary: { id: task.id, gates: { pendingApproval: false, blocked: false, needsHuman: false } },
+      counts: { actionableTodo: 1 },
+      context: { checkpoint: null },
+    });
+
     // 7. Complete task
     const completeTaskRes = await client.callTool({
       name: "complete_task",
@@ -509,4 +522,3 @@ describe("Remote MCP Protocol & Tool Execution", () => {
     expect(list.some((p) => p.id === proj.id)).toBe(true);
   });
 });
-

@@ -31,6 +31,7 @@ import {
   WebhookProviderSchema,
   backfillTicketCodes,
   buildExecutionContext,
+  buildProjectWorkContext,
   buildMentionIndex,
   blockingTasks,
   checkNewTaskStatus,
@@ -44,6 +45,7 @@ import {
   resolveProjectRef,
   resolveTaskRef,
   resolveTaskRefs,
+  selectProjectWork,
   stripAttachmentData,
   withTaskCodes,
   type OperationOptions,
@@ -335,6 +337,35 @@ export function registerBitigTools(
             (args.blocked === undefined || ("blockedBy" in task) === args.blocked),
         );
         return formatSuccessResult(matching);
+      } catch (err) {
+        return formatErrorResult(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "next_task",
+    {
+      description:
+        "Pick up project work without listing its history. Returns up to three in-progress tasks (latest touch first), three actionable todo tasks (canonical order), overlapping live gate counts, and bounded description, checklist, recent comments and latest checkpoint for the primary ungated task. Archived projects have no actionable work. Text ending in … and omitted counts indicate truncation; use get_task or resume_from_checkpoint for full context. A checkpoint never overrides approval, dependencies or needsHuman.",
+      annotations: { readOnlyHint: true },
+      inputSchema: { projectId: PROJECT_REF },
+    },
+    async (args, extra) => {
+      try {
+        const opts = { signal: extra.signal };
+        const projectId = await resolveProjectRef(storage, args.projectId, opts);
+        const project = await storage.getProject(projectId, opts);
+        if (project === null) throw new NotFoundError("project", args.projectId);
+        const tasks = await storage.getTasks(undefined, opts);
+        const summary = selectProjectWork(project, tasks);
+        const primary = tasks.find((task) => task.id === summary.primary?.id);
+        if (primary === undefined) return formatSuccessResult({ ...summary, context: null });
+        const [checkpoints, comments] = await Promise.all([
+          storage.getCheckpoints(primary.id, opts),
+          storage.getComments(primary.id, opts),
+        ]);
+        return formatSuccessResult({ ...summary, context: buildProjectWorkContext(primary, checkpoints, comments) });
       } catch (err) {
         return formatErrorResult(err);
       }

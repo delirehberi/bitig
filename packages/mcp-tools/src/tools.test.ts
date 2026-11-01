@@ -1,8 +1,8 @@
-import { InMemoryStorage } from "@bitig/core";
+import { InMemoryStorage, type ProjectWorkContext, type ProjectWorkSummary } from "@bitig/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerBitigTools, resolveMcpActor } from "./register";
 
 describe("MCP Tools integration", () => {
@@ -35,6 +35,7 @@ describe("MCP Tools integration", () => {
       "update_project",
       "delete_project",
       "list_tasks",
+      "next_task",
       "get_task",
       "add_task",
       "update_task",
@@ -372,6 +373,103 @@ describe("MCP Tools integration", () => {
 
     await call("delete_comment", { id: asked.id });
     expect(await storage.getComments(task.id)).toMatchObject([{ body: "The staging one." }]);
+  });
+
+  describe("next_task", () => {
+    type Result = ProjectWorkSummary & { context: ProjectWorkContext | null };
+
+    async function next(projectId: string): Promise<Result> {
+      const result = await call("next_task", { projectId });
+      expect(result.isError).toBe(false);
+      return result.data as Result;
+    }
+
+    it("resolves IDs and keys, declares read-only behavior and returns empty states", async () => {
+      const project = await storage.createProject({ name: "Bitig", key: "BIT" });
+      expect(await next("BIT")).toEqual(await next(project.id));
+      expect(await next("BIT")).toMatchObject({ primary: null, context: null, inProgress: [], next: [] });
+      const tools = await client.listTools();
+      expect(tools.tools.find((entry) => entry.name === "next_task")?.annotations?.readOnlyHint).toBe(true);
+      expect((await call("next_task", {})).isError).toBe(true);
+      expect((await call("next_task", { projectId: "" })).isError).toBe(true);
+      expect((await call("next_task", { projectId: "MISSING" })).isError).toBe(true);
+      await storage.deleteProject(project.id);
+      expect((await call("next_task", { projectId: project.id })).isError).toBe(true);
+    });
+
+    it("resumes with latest checkpoint, recent comments and next unchecked subtask without mutations", async () => {
+      const project = await storage.createProject({ name: "Bitig", key: "BIT" });
+      const ready = await storage.saveTask({ projectId: project.id, title: "Ready" });
+      const active = await storage.saveTask({
+        projectId: project.id, title: "Active", status: "in_progress",
+        checklist: [{ text: "Done", done: true }, { text: "Validate", done: false }],
+      });
+      const snapshot = { summary: "Implementation ready", modifiedArtifacts: [], decisionsMade: [], nextStepInstructions: "Run make check" };
+      await storage.saveCheckpoint({ taskId: active.id, stepIndex: 2, status: "IN_PROGRESS", stateSnapshot: snapshot });
+      await storage.saveCheckpoint({ taskId: active.id, stepIndex: 1, status: "FAILED", stateSnapshot: snapshot });
+      await storage.addComment({ taskId: active.id, body: "Review context", authorType: "human", author: "Reviewer" });
+      const before = await storage.getTasks();
+      const checkpoints = vi.spyOn(storage, "getCheckpoints");
+      const comments = vi.spyOn(storage, "getComments");
+      const result = await next("BIT");
+      expect(result.primary).toMatchObject({ id: active.id, code: "BIT-2", nextSubtask: "Validate" });
+      expect(result.next[0]?.id).toBe(ready.id);
+      expect(result.context?.checkpoint).toMatchObject({ stepIndex: 2, nextStepInstructions: "Run make check" });
+      expect(result.context?.comments[0]).toMatchObject({ author: "Reviewer", body: "Review context" });
+      expect(checkpoints).toHaveBeenCalledExactlyOnceWith(active.id, { signal: expect.any(AbortSignal) as AbortSignal });
+      expect(comments).toHaveBeenCalledExactlyOnceWith(active.id, { signal: expect.any(AbortSignal) as AbortSignal });
+      expect(await storage.getTasks()).toEqual(before);
+    });
+
+    it("honors cross-project live gates, canonical ordering and archived dependencies", async () => {
+      const project = await storage.createProject({ name: "Bitig", key: "BIT" });
+      const other = await storage.createProject({ name: "Other", key: "OTHER" });
+      const dependency = await storage.saveTask({ projectId: other.id, title: "Dependency" });
+      await storage.saveTask({ projectId: project.id, title: "Gated", status: "in_progress", pendingApproval: true, needsHuman: "Decision", dependsOn: [dependency.id] });
+      const first = await storage.saveTask({ projectId: project.id, title: "First", order: 1 });
+      await storage.saveTask({ projectId: project.id, title: "Second", order: 2, priority: "urgent" });
+      const blocked = await storage.saveTask({ projectId: project.id, title: "Blocked", order: 0, dependsOn: [dependency.id] });
+      const result = await next("BIT");
+      expect(result.primary?.id).toBe(first.id);
+      expect(result.counts).toEqual({ inProgress: 1, actionableTodo: 2, pendingApproval: 1, blocked: 2, needsHuman: 1 });
+      expect(JSON.stringify(result)).not.toContain("Dependency");
+      await storage.updateTask(dependency.id, { status: "archived" });
+      expect((await next("BIT")).primary?.id).toBe(blocked.id);
+      await storage.updateProject(project.id, { archived: true });
+      expect(await next("BIT")).toMatchObject({ primary: null, context: null, next: [] });
+    });
+
+    it("does not fetch context when all tasks are gated and formats storage errors", async () => {
+      const project = await storage.createProject({ name: "Bitig", key: "BIT" });
+      await storage.saveTask({ projectId: project.id, title: "Waiting", pendingApproval: true });
+      const checkpoints = vi.spyOn(storage, "getCheckpoints");
+      const comments = vi.spyOn(storage, "getComments");
+      expect(await next("BIT")).toMatchObject({ primary: null, context: null });
+      expect(checkpoints).not.toHaveBeenCalled();
+      expect(comments).not.toHaveBeenCalled();
+      const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      vi.spyOn(storage, "getTasks").mockRejectedValueOnce(new Error("Storage unavailable"));
+      expect((await call("next_task", { projectId: "BIT" })).isError).toBe(true);
+      expect(errorLog).toHaveBeenCalled();
+      errorLog.mockRestore();
+    });
+
+    it("keeps payload bounded despite a large closed history and verbose selected tasks", async () => {
+      const project = await storage.createProject({ name: "Bitig", key: "BIT" });
+      const largeText = "x".repeat(4000);
+      for (let index = 0; index < 30; index += 1) {
+        await storage.saveTask({ projectId: project.id, title: "Closed history", description: largeText, status: "done" });
+      }
+      const active = await storage.saveTask({ projectId: project.id, title: "Resume", status: "in_progress", description: largeText });
+      for (let index = 0; index < 5; index += 1) {
+        await storage.addComment({ taskId: active.id, body: largeText, authorType: "agent" });
+      }
+      const result = await next("BIT");
+      expect(result.context?.descriptionTruncated).toBe(true);
+      expect(result.context?.omittedCommentCount).toBe(3);
+      expect(JSON.stringify(result)).not.toContain("Closed history");
+      expect(JSON.stringify(result).length).toBeLessThan(6000);
+    });
   });
 
   describe("checkpoints", () => {
