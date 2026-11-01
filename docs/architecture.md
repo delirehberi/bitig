@@ -10,7 +10,6 @@ bitig/
     core/              Domain entities, Zod schemas, StorageProvider contract, in-memory double
     storage-markdown/  MarkdownStorage (FileSystemPort, FileLock, YAML frontmatter codec)
     storage-d1/        D1Storage (Drizzle ORM schema, SQL migrations, D1 driver)
-    storage-nostr/     Legacy migration adapter, excluded from supported runtimes
     mcp-tools/         MCP tool definitions and schema registrations
     api-client/        ApiStorage (HTTP REST StorageProvider client)
   apps/

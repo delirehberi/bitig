@@ -1,7 +1,7 @@
 /**
  * Domain vocabulary and field limits shared by every storage adapter.
  * Adapters must not hard-code these values; persistence layers (D1 check
- * constraints, frontmatter validation, Nostr tags) derive from them.
+ * constraints, frontmatter validation) derive from them.
  */
 
 export const TASK_STATUSES = ["todo", "in_progress", "done", "archived"] as const;

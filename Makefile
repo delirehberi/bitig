@@ -17,13 +17,16 @@ NODE_ENV_SETUP := if [ -z "$$CI" ] && [ -s "$(NVM_SCRIPT)" ]; then source "$(NVM
 # Local Worker credentials; the browser tests sign in with them.
 WORKER_DEV_VARS := apps/worker/.dev.vars
 
-.PHONY: help install dev migrate-local migrate-remote build test e2e lint typecheck check deploy clean
+.PHONY: help install lockfile dev migrate-local migrate-remote build test e2e lint typecheck check deploy clean
 
 help: ## List available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-18s %s\n", $$1, $$2}'
 
 install: ## Install workspace dependencies from the lockfile
 	@$(NODE_ENV_SETUP) pnpm install --frozen-lockfile
+
+lockfile: ## Refresh pnpm-lock.yaml after package.json changes (no node_modules install)
+	@$(NODE_ENV_SETUP) pnpm install --lockfile-only
 
 dev: migrate-local ## Run the worker (wrangler dev) and web app (vite) together
 	@$(NODE_ENV_SETUP) pnpm run dev

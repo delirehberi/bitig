@@ -2,10 +2,6 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import type { DirEntry, FileSystemPort } from "@bitig/storage-markdown";
 import { MarkdownStorage } from "@bitig/storage-markdown";
-import { NostrStorage, PrivateKeySigner, RelayManager } from "@bitig/storage-nostr";
-import type { VerifiedEvent } from "nostr-tools/pure";
-import type { Filter } from "nostr-tools/filter";
-import { matchFilters } from "nostr-tools/filter";
 import { D1Storage } from "./d1-storage";
 
 class MemoryFileSystem implements FileSystemPort {
@@ -83,31 +79,6 @@ class MemoryFileSystem implements FileSystemPort {
 
   fileExists(path: string): Promise<boolean> {
     return Promise.resolve(this.files.has(path) || this.bytes.has(path));
-  }
-}
-
-class MemoryRelayManager extends RelayManager {
-  private events: VerifiedEvent[] = [];
-
-  constructor() {
-    super({ relays: ["ws://mock-relay"] });
-  }
-
-  override publishEvent(event: VerifiedEvent): Promise<void> {
-    if (event.kind >= 30000 && event.kind < 40000) {
-      const dTag = event.tags.find((t) => t[0] === "d")?.[1];
-      this.events = this.events.filter((existing) => {
-        if (existing.kind !== event.kind || existing.pubkey !== event.pubkey) return true;
-        const existingD = existing.tags.find((t) => t[0] === "d")?.[1];
-        return existingD !== dTag;
-      });
-    }
-    this.events.push(event);
-    return Promise.resolve();
-  }
-
-  override queryEvents(filter: Filter): Promise<VerifiedEvent[]> {
-    return Promise.resolve(this.events.filter((ev) => matchFilters([filter], ev)));
   }
 }
 
@@ -208,7 +179,7 @@ async function resetDb(): Promise<void> {
 }
 
 describe("Cross-Mode Round-Trip Interoperability", () => {
-  it("round-trips a project and diverse tasks across Markdown -> D1 -> Nostr -> Markdown without data loss", async () => {
+  it("round-trips a project and diverse tasks across Markdown -> D1 -> Markdown without data loss", async () => {
     await resetDb();
 
     // 1. Initialize source Markdown storage
@@ -218,19 +189,11 @@ describe("Cross-Mode Round-Trip Interoperability", () => {
     // 2. Initialize D1 storage
     const d1Storage = new D1Storage(env.DB);
 
-    // 3. Initialize Nostr storage with self-encrypting NIP-44 signer
-    const nostrSigner = new PrivateKeySigner();
-    const nostrRelayManager = new MemoryRelayManager();
-    const nostrStorage = new NostrStorage({
-      signer: nostrSigner,
-      relayManager: nostrRelayManager,
-    });
-
-    // 4. Create rich source project in Markdown storage
+    // 3. Create rich source project in Markdown storage
     const project = await markdownStorage.createProject({
       name: "Cross-Mode Interop Project",
       kind: "open_source",
-      description: "Testing lossless roundtrip across Markdown, D1, and Nostr",
+      description: "Testing lossless roundtrip across Markdown and D1",
       resources: [
         { type: "repository", label: "Code", url: "https://github.com/acme/interop" },
         { type: "issue_tracker", label: "Jira: INT", url: "https://acme.atlassian.net/browse/INT" },
@@ -256,13 +219,13 @@ describe("Cross-Mode Round-Trip Interoperability", () => {
     const task2 = await markdownStorage.saveTask({
       projectId: project.id,
       title: "Private Confidential Feature",
-      description: "Top secret NIP-44 encrypted task content",
+      description: "Private task content",
       status: "todo",
       priority: "high",
       labels: ["confidential"],
       order: 20,
       isPublic: false,
-      checklist: [{ text: "Encrypted subtask", done: false }],
+      checklist: [{ text: "Private subtask", done: false }],
     });
 
     const task3 = await markdownStorage.saveTask({
@@ -297,25 +260,16 @@ describe("Cross-Mode Round-Trip Interoperability", () => {
     expect(d1Bundle.project).toEqual(project);
     expect(d1Bundle.tasks).toEqual([task1, task2, task3, task4]);
 
-    // Step C: Import into Nostr storage (encrypting private tasks)
-    const nostrProject = await nostrStorage.importProject(d1Bundle);
-    expect(nostrProject).toEqual(project);
-
-    // Export bundle from Nostr storage (decrypting private tasks)
-    const nostrBundle = await nostrStorage.exportProject(project.id);
-    expect(nostrBundle.project).toEqual(project);
-    expect(nostrBundle.tasks).toEqual([task1, task2, task3, task4]);
-
-    // Step D: Import back into a fresh, completely separate Markdown storage instance
+    // Step C: Import back into a fresh, completely separate Markdown storage instance
     const freshMarkdownFs = new MemoryFileSystem();
     const freshMarkdownStorage = new MarkdownStorage({ fs: freshMarkdownFs });
-    const restoredProject = await freshMarkdownStorage.importProject(nostrBundle);
+    const restoredProject = await freshMarkdownStorage.importProject(d1Bundle);
     expect(restoredProject).toEqual(project);
 
     // Export bundle from restored Markdown storage
     const restoredBundle = await freshMarkdownStorage.exportProject(project.id);
 
-    // FINAL ASSERTION: Zero loss across all three modes
+    // FINAL ASSERTION: Zero loss across both modes
     expect(restoredBundle.project).toEqual(project);
     expect(restoredBundle.tasks).toEqual([task1, task2, task3, task4]);
     expect(restoredBundle.version).toBe(markdownBundle.version);

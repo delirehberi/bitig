@@ -22,7 +22,6 @@ bitig/
     storage-markdown/  MarkdownStorage engine (fs abstraction, YAML frontmatter, locking)
     mcp-tools/         MCP tool definitions, schema annotations, .bitig discovery
     storage-d1/        D1 / Drizzle ORM storage adapter
-    storage-nostr/     Legacy migration adapter; not used by supported runtimes
     api-client/        StorageProvider implementation over Hono REST API
   apps/
     cli/               Local CLI (`bitig`) and STDIO MCP server (`bitig mcp`)

@@ -86,7 +86,7 @@ describe("TaskAttachments", () => {
 
   it("hides the attachments section when the storage adapter does not support attachments", async () => {
     vi.spyOn(storage, "getAttachments").mockRejectedValueOnce(
-      new StorageError("unsupported", "Attachments are not supported by NostrStorage"),
+      new StorageError("unsupported", "Attachments are not supported by this storage adapter"),
     );
 
     const { container } = render(<TaskAttachments storage={storage} taskId={task.id} />);

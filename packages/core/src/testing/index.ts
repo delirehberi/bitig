@@ -31,9 +31,9 @@ export type { TestClock, TestRuntime } from "./fixtures";
 
 export interface StorageHarness {
   readonly storage: StorageProvider;
-  /** Releases resources (connections, temp dirs, relays) after each test. */
+  /** Releases resources (connections, temp dirs) after each test. */
   readonly dispose?: () => Promise<void> | void;
-  /** Set to `false` for adapters that explicitly reject binary attachments (e.g. `NostrStorage`). */
+  /** Set to `false` for adapters that explicitly reject binary attachments. */
   readonly supportsAttachments?: boolean;
 }
 

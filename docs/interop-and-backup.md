@@ -137,5 +137,5 @@ Projects and tasks round-trip across **Markdown ↔ D1** through the canonical b
 
 ## Retiring Nostr storage
 
-Before upgrading a deployment that used `STORAGE_MODE=nostr`, open the old dashboard and download a full JSON backup. After deploying the D1-backed release, sign in with an allowlisted NIP-07 key and restore that backup from the dashboard. Keep the backup until project, task, comment and checkpoint counts have been verified. The legacy `storage-nostr` package remains only to validate old bundle compatibility; supported runtimes no longer read or write relay data.
+Before upgrading a deployment that used `STORAGE_MODE=nostr`, open the old dashboard and download a full JSON backup. After deploying the D1-backed release, sign in with an allowlisted NIP-07 key and restore that backup from the dashboard. Keep the backup until project, task, comment and checkpoint counts have been verified. Relay storage has been removed: current releases cannot read relay data, so the JSON backup is the only migration path.
 

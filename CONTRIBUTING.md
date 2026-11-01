@@ -32,7 +32,7 @@ Before opening a pull request, please review [`docs/architecture.md`](./docs/arc
 
 - **Strict TypeScript:** Zero `any`, `exactOptionalPropertyTypes: true`, and `noUncheckedIndexedAccess: true` are enforced across the entire workspace.
 - **Runtime Isolation:** `@bitig/core` must remain 100% environment-neutral (no Node `fs`/`path`, DOM, or Cloudflare Worker globals).
-- **Storage Provider Contract:** Any change to `StorageProvider` or domain entities must update and pass the shared contract suite in `@bitig/core/testing` across all adapters (`InMemoryStorage`, `MarkdownStorage`, `D1Storage`, `NostrStorage`, and `ApiStorage`).
+- **Storage Provider Contract:** Any change to `StorageProvider` or domain entities must update and pass the shared contract suite in `@bitig/core/testing` across all adapters (`InMemoryStorage`, `MarkdownStorage`, `D1Storage`, and `ApiStorage`).
 - **Validation at Boundaries:** All inputs crossing storage, CLI, MCP, or HTTP boundaries must be validated with `@bitig/core` Zod schemas.
 
 ## Quality Gate

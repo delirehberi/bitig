@@ -5,7 +5,6 @@
     { "path": "./packages/storage-markdown" },
     { "path": "./packages/storage-markdown/tsconfig.node.json" },
     { "path": "./packages/storage-d1" },
-    { "path": "./packages/storage-nostr" },
     { "path": "./packages/mcp-tools" },
     { "path": "./packages/api-client" },
     { "path": "./apps/cli" },

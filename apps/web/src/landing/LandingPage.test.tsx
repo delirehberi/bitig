@@ -9,7 +9,7 @@ describe("Landing page", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn<typeof fetch>(() =>
-        Promise.resolve(Response.json({ status: "ok", version: "0.4.1", storageMode: "nostr" })),
+        Promise.resolve(Response.json({ status: "ok", version: "0.4.1", storageMode: "cloudflare" })),
       ),
     );
   });

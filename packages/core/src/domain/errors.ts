@@ -46,9 +46,9 @@ export class ValidationError extends BitigError {
 /**
  * Why a storage adapter could not complete an operation:
  * - `corrupt`: persisted data exists but cannot be parsed or fails validation.
- * - `io`: the underlying medium (filesystem, database, relay) failed.
+ * - `io`: the underlying medium (filesystem, database) failed.
  * - `lock`: exclusive access could not be obtained in time.
- * - `unsupported`: the adapter does not support this operation (e.g. file attachments on Nostr).
+ * - `unsupported`: the adapter does not support this operation (e.g. file attachments).
  */
 export const STORAGE_ERROR_REASONS = ["corrupt", "io", "lock", "unsupported"] as const;
 export type StorageErrorReason = (typeof STORAGE_ERROR_REASONS)[number];

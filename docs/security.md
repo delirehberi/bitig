@@ -2,12 +2,11 @@
 
 ## 1. Threat Model & Overview
 
-Bitig is an edge-ready task and project manager deployed across local filesystems, Cloudflare Workers (edge compute + D1 storage), and decentralized Nostr networks. Security controls are enforced at every domain and protocol boundary.
+Bitig is an edge-ready task and project manager deployed on local filesystems and Cloudflare Workers (edge compute + D1 storage). Security controls are enforced at every domain and protocol boundary.
 
 ### Trust Boundaries
 1. **Local CLI / STDIO MCP:** Trusted local user executing on local filesystem. Isolation enforced via POSIX file permissions (`0700` directories) and advisory locking.
 2. **Cloudflare Worker (HTTP REST & Streamable MCP):** Public internet facing. Guarded by TLS, HMAC-signed dashboard session cookies, constant-time Basic Auth, constant-time Bearer token auth, sliding-window rate limiting, and CSRF protection.
-3. **Nostr Relays:** Untrusted relay nodes. Cleartext is never sent for private tasks; NIP-44 authenticated encryption with ChaCha20-Poly1305 is used for task payloads.
 
 ---
 

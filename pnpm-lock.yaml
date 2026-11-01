@@ -234,9 +234,6 @@ importers:
       '@bitig/storage-markdown':
         specifier: workspace:*
         version: link:../storage-markdown
-      '@bitig/storage-nostr':
-        specifier: workspace:*
-        version: link:../storage-nostr
       '@cloudflare/vitest-plugin':
         specifier: ^1.3.7
         version: 1.3.7(@cloudflare/workers-types@4.20260702.1)(@types/node@26.6.4)(@vitest/runner@4.1.11)(@vitest/snapshot@4.1.11)(vitest@4.1.11(@types/node@26.6.4)(jsdom@30.1.2(@noble/hashes@2.0.1))(vite@8.3.3(@types/node@26.6.4)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1)))
@@ -246,9 +243,6 @@ importers:
       drizzle-kit:
         specifier: ^0.31.11
         version: 0.31.11
-      nostr-tools:
-        specifier: ^2.10.4
-        version: 2.25.2(typescript@6.0.3)
       typescript:
         specifier: ~6.0.3
         version: 6.0.3
@@ -277,25 +271,6 @@ importers:
       vitest:
         specifier: ^4.1.11
         version: 4.1.11(@types/node@26.6.4)(jsdom@30.1.2(@noble/hashes@2.0.1))(vite@8.3.3(@types/node@26.6.4)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
-
-  packages/storage-nostr:
-    dependencies:
-      '@bitig/core':
-        specifier: workspace:*
-        version: link:../core
-      nostr-tools:
-        specifier: ^2.10.4
-        version: 2.25.2(typescript@6.0.3)
-    devDependencies:
-      '@types/ws':
-        specifier: ^8.5.14
-        version: 8.18.2
-      vitest:
-        specifier: ^4.1.11
-        version: 4.1.11(@types/node@26.6.4)(jsdom@30.1.2(@noble/hashes@2.0.1))(vite@8.3.3(@types/node@26.6.4)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
-      ws:
-        specifier: ^8.21.0
-        version: 8.21.0
 
 packages:
 
@@ -1535,9 +1510,6 @@ packages:
 
   '@types/react@19.3.0':
     resolution: {integrity: sha512-N0rFCuH9YoxG9/m61l9MfpJKfmLOVU0em7ipIz6TRgSSkvReLB9vL85GB+yr8Bs5leqpvg96JSwF4ZS1s4viQg==}
-
-  '@types/ws@8.18.2':
-    resolution: {integrity: sha512-67MQl+fpWKVTT1NYdnmo3U4sc/xPo/zQBncVnI74qmQa0z/b+1g6iYqNmGCPbxO+zz2aklb08a0oHfegiVd0/w==}
 
   '@typescript-eslint/eslint-plugin@8.71.1':
     resolution: {integrity: sha512-nNlBf6HuotqMgZvSkWD5hNdemiBIxQ2NmrlgfcUIeZRs+BbakjscCQRq/Hb74EFVnFiSWWdL12JruqwBy3ERDw==}
@@ -3971,10 +3943,6 @@ snapshots:
   '@types/react@19.3.0':
     dependencies:
       csstype: 3.2.3
-
-  '@types/ws@8.18.2':
-    dependencies:
-      '@types/node': 26.6.4
 
   '@typescript-eslint/eslint-plugin@8.71.1(@typescript-eslint/parser@8.71.1(eslint@10.12.0(jiti@2.7.0))(typescript@6.0.3))(eslint@10.12.0(jiti@2.7.0))(typescript@6.0.3)':
     dependencies:

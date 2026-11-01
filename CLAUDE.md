@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Bitig is a task/project manager for humans and AI agents. A pnpm monorepo (`packages/*`, `apps/*`) where all business logic and UI talk to storage only through the `StorageProvider` interface (`packages/core/src/storage/provider.ts`). Three backends: local Markdown files, Cloudflare D1, and Nostr relays.
+Bitig is a task/project manager for humans and AI agents. A pnpm monorepo (`packages/*`, `apps/*`) where all business logic and UI talk to storage only through the `StorageProvider` interface (`packages/core/src/storage/provider.ts`). Two backends: local Markdown files and Cloudflare D1. (Nostr is used only for NIP-07 sign-in, not storage.)
 
 ## Commands
 
@@ -37,15 +37,14 @@ Dependency direction: `core` ← storage adapters / `api-client` / `mcp-tools` �
 - Storage adapters each implement `StorageProvider`:
   - `storage-markdown` — filesystem behind `FileSystemPort`; Node implementation lives only under `src/node` (exported as `@bitig/storage-markdown/node`, typechecked by the separate `tsconfig.node.json`). Paths are identity: `<dataDir>/<projectId>/_project.yaml` and `<projectId>/<taskId>.md`; IDs are never written inside files. Uses file locking.
   - `storage-d1` — Drizzle ORM over D1; timestamps stored as integers, ISO strings in the domain.
-  - `storage-nostr` — addressable events (kind 30331 projects, 30332 tasks), NIP-44 self-encryption for private tasks, NIP-09 deletion. Spec: `docs/nostr-spec.md`.
   - `api-client` — `ApiStorage`, a `StorageProvider` over the worker's REST API.
 - `packages/mcp-tools` — single MCP tool registration shared by both MCP transports, plus `.bitig` workspace-link discovery.
 - `apps/cli` — commander CLI + STDIO MCP server on `MarkdownStorage`; bundled by esbuild (`build.mjs`) into `dist/bitig.js`. Follows XDG dirs (data/config/runtime lock); see README for override precedence.
 - `apps/worker` — Hono app built by `createApp()` in `src/index.ts`; injects `config` and `storage` per request (tests pass a `storageFactory`). Routes in `src/routes/`: REST under `/api/*` (session cookie from `/api/auth/login` or Basic Auth, CORS allowlist, CSRF, rate limiting), Streamable HTTP MCP at `/mcp` (Bearer token). Bindings validated by Zod in `src/config.ts` (`ALLOWED_ORIGINS`, `BASIC_AUTH_USER`, `BASIC_AUTH_PASS`, `SESSION_SECRET`, `MCP_AUTH_TOKEN`; local values in `.dev.vars`). Also serves the web SPA from `../web/dist`.
-- `apps/web` — React 19 + Vite + Tailwind 4 dashboard using Hallmark design tokens; URL routing via a small History API router in `src/routing/` (`/`, `/projects`, `/tasks?project=`, `/login`); picks `ApiStorage` (Cloudflare mode) or `NostrStorage` (Nostr mode).
+- `apps/web` — React 19 + Vite + Tailwind 4 dashboard using Hallmark design tokens; URL routing via a small History API router in `src/routing/` (`/`, `/projects`, `/tasks?project=`, `/login`); uses `ApiStorage` (Cloudflare mode) or `InMemoryStorage`.
 
 ### Contract tests
-Every adapter must pass `runStorageContractSuite(name, factory)` from `@bitig/core/testing` (see `*.contract.test.ts` / `*.contract.spec.ts`). The factory receives a `TestRuntime` (deterministic clock + ID generator) that the adapter must use. Adapter-specific behavior goes in `*.extra.test.ts`. A change to `StorageProvider` semantics means updating the contract suite and all adapters (memory, markdown, d1, nostr, api-client).
+Every adapter must pass `runStorageContractSuite(name, factory)` from `@bitig/core/testing` (see `*.contract.test.ts` / `*.contract.spec.ts`). The factory receives a `TestRuntime` (deterministic clock + ID generator) that the adapter must use. Adapter-specific behavior goes in `*.extra.test.ts`. A change to `StorageProvider` semantics means updating the contract suite and all adapters (memory, markdown, d1, api-client).
 
 ## TypeScript conventions
 `tsconfig.base.json` enables `exactOptionalPropertyTypes`, `noUncheckedIndexedAccess`, `verbatimModuleSyntax`, and `allowImportingTsExtensions`. Use `import type` for types (lint-enforced). Packages export `src/*.ts` directly (no build step for libraries); only `cli`, `web`, and `worker` produce bundles.
@@ -53,4 +52,4 @@ Every adapter must pass `runStorageContractSuite(name, factory)` from `@bitig/co
 ## Docs vs code
 README and `docs/architecture.md` are partly stale. Trust the code: Node 26 is required (not 20), and the real MCP tools are those registered in `packages/mcp-tools/src/register.ts` (e.g. `add_task`, not `create_task`; there is no `get_project`).
 
-Further docs: `docs/architecture.md`, `docs/security.md`, `docs/interop-and-backup.md`, `docs/nostr-spec.md`. The roadmap and open work live in Bitig itself (project linked via `.bitig`), not in Markdown files.
+Further docs: `docs/architecture.md`, `docs/security.md`, `docs/interop-and-backup.md`. The roadmap and open work live in Bitig itself (project linked via `.bitig`), not in Markdown files.
