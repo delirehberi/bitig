@@ -21,7 +21,7 @@ const configSchema = z.object({
   MCP_AUTH_TOKEN: z.string().default(""),
   // Accepted as /mcp?token= for clients that cannot send headers. Empty disables it.
   MCP_URL_TOKEN: z.string().default(""),
-  // HMAC key for dashboard session cookies. Empty disables /api/auth/login.
+  // HMAC key for dashboard session cookies. Empty disables both dashboard sign-in methods.
   SESSION_SECRET: z
     .string()
     .default("")

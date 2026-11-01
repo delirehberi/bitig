@@ -2,8 +2,17 @@ import { env, exports } from "cloudflare:workers";
 import { generateSignedCookie } from "hono/cookie";
 import { finalizeEvent, type EventTemplate } from "nostr-tools/pure";
 import { describe, expect, it } from "vitest";
+import { parseConfig } from "../src/config";
+import { createApp } from "../src/index";
+import { AUTH_FAIL_POLICY } from "../src/rate-limit";
 import { SESSION_COOKIE, sessionValue } from "../src/session";
-import { TEST_NOSTR_PUBKEY, TEST_NOSTR_SECRET_KEY, TEST_SESSION_SECRET } from "./constants";
+import {
+  TEST_AUTH_PASS,
+  TEST_AUTH_USER,
+  TEST_NOSTR_PUBKEY,
+  TEST_NOSTR_SECRET_KEY,
+  TEST_SESSION_SECRET,
+} from "./constants";
 
 const BASE_URL = "https://bitig.test";
 const COOKIE_NAME = `__Host-${SESSION_COOKIE}`;
@@ -39,6 +48,14 @@ function submitLogin(event: unknown): Promise<Response> {
     method: "POST",
     headers: { "Content-Type": "application/json", Origin: BASE_URL, "X-Bitig-Request": "true" },
     body: JSON.stringify(event),
+  });
+}
+
+function submitPasswordLogin(username: string, password: string): Promise<Response> {
+  return request("/api/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Origin: BASE_URL, "X-Bitig-Request": "true" },
+    body: JSON.stringify({ username, password }),
   });
 }
 
@@ -108,11 +125,40 @@ describe("NIP-07 dashboard login", () => {
   });
 });
 
+describe("password dashboard login", () => {
+  it("sets the same hardened session cookie for valid configured credentials", async () => {
+    const res = await submitPasswordLogin(TEST_AUTH_USER, TEST_AUTH_PASS);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ user: TEST_AUTH_USER });
+    const setCookie = res.headers.get("set-cookie") ?? "";
+    expect(setCookie).toMatch(new RegExp(`^${COOKIE_NAME}=`));
+    expect(setCookie).toContain("HttpOnly");
+    expect(setCookie).toContain("Secure");
+    expect(setCookie).toContain("SameSite=Strict");
+  });
+
+  it("rejects wrong credentials and malformed input", async () => {
+    expect((await submitPasswordLogin(TEST_AUTH_USER, "wrong-password")).status).toBe(401);
+    expect((await submitPasswordLogin("wrong-user", TEST_AUTH_PASS)).status).toBe(401);
+    expect((await request("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: BASE_URL, "X-Bitig-Request": "true" },
+      body: JSON.stringify({ username: TEST_AUTH_USER }),
+    })).status).toBe(400);
+  });
+});
+
 describe("session cookie", () => {
   it("authenticates API requests and reports the Nostr public key", async () => {
     const cookie = cookiePair(await submitLogin(await signedLoginEvent()));
     expect((await request(AUTHENTICATED_PATH, { cookie })).status).toBe(404);
     expect(await (await request("/api/auth/session", { cookie })).json()).toEqual({ user: TEST_NOSTR_PUBKEY });
+  });
+
+  it("authenticates a password-login session and reports the configured username", async () => {
+    const cookie = cookiePair(await submitPasswordLogin(TEST_AUTH_USER, TEST_AUTH_PASS));
+    expect((await request(AUTHENTICATED_PATH, { cookie })).status).toBe(404);
+    expect(await (await request("/api/auth/session", { cookie })).json()).toEqual({ user: TEST_AUTH_USER });
   });
 
   it("rejects another signature, tampering, expiry, and a non-allowlisted user", async () => {
@@ -134,5 +180,110 @@ describe("session routes", () => {
     const res = await request("/api/auth/logout", { method: "POST", headers: { Origin: BASE_URL } });
     expect(res.status).toBe(204);
     expect(res.headers.get("set-cookie") ?? "").toMatch(new RegExp(`^${COOKIE_NAME}=;`));
+  });
+});
+
+describe("stale and unauthorized sessions", () => {
+  it("rejects a password session for a user that is no longer the configured one", async () => {
+    const cookie = await signedCookie("former-admin", nowSeconds() + HOUR_SECONDS);
+    expect((await request(AUTHENTICATED_PATH, { cookie })).status).toBe(401);
+    expect((await request("/api/auth/session", { cookie })).status).toBe(401);
+  });
+
+  it("rejects an expired password session", async () => {
+    const cookie = await signedCookie(TEST_AUTH_USER, nowSeconds() - 1);
+    expect((await request(AUTHENTICATED_PATH, { cookie })).status).toBe(401);
+  });
+
+  it("does not count a stale session toward the failed-login budget", async () => {
+    const ip = uniqueIp();
+    const cookie = await signedCookie(TEST_AUTH_USER, nowSeconds() - 1);
+    for (let attempt = 0; attempt <= AUTH_FAIL_POLICY.max; attempt += 1) {
+      expect((await request(AUTHENTICATED_PATH, { cookie, ip })).status).toBe(401);
+    }
+  });
+});
+
+describe("failed-login rate limit", () => {
+  it("answers 429 after repeated bad passwords, even for valid credentials", async () => {
+    const ip = uniqueIp();
+    for (let attempt = 0; attempt < AUTH_FAIL_POLICY.max; attempt += 1) {
+      const res = await request("/api/auth/login", {
+        ip,
+        method: "POST",
+        headers: { "Content-Type": "application/json", Origin: BASE_URL, "X-Bitig-Request": "true" },
+        body: JSON.stringify({ username: TEST_AUTH_USER, password: "wrong-password" }),
+      });
+      expect(res.status).toBe(401);
+    }
+    const blocked = await request("/api/auth/login", {
+      ip,
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: BASE_URL, "X-Bitig-Request": "true" },
+      body: JSON.stringify({ username: TEST_AUTH_USER, password: TEST_AUTH_PASS }),
+    });
+    expect(blocked.status).toBe(429);
+  });
+
+  it("answers 429 after repeated unauthorized Nostr signatures", async () => {
+    const ip = uniqueIp();
+    for (let attempt = 0; attempt < AUTH_FAIL_POLICY.max; attempt += 1) {
+      const event = await signedLoginEvent(OTHER_SECRET_KEY);
+      const res = await request("/api/auth/nostr", {
+        ip,
+        method: "POST",
+        headers: { "Content-Type": "application/json", Origin: BASE_URL, "X-Bitig-Request": "true" },
+        body: JSON.stringify(event),
+      });
+      expect(res.status).toBe(401);
+    }
+    const blocked = await request("/api/auth/nostr", {
+      ip,
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: BASE_URL, "X-Bitig-Request": "true" },
+      body: JSON.stringify(await signedLoginEvent()),
+    });
+    expect(blocked.status).toBe(429);
+  });
+});
+
+describe("unconfigured sign-in", () => {
+  const baseEnv = {
+    ALLOWED_ORIGINS: "",
+    BASIC_AUTH_USER: TEST_AUTH_USER,
+    BASIC_AUTH_PASS: TEST_AUTH_PASS,
+    NOSTR_AUTH_PUBKEYS: TEST_NOSTR_PUBKEY,
+    SESSION_SECRET: TEST_SESSION_SECRET,
+  };
+
+  function appRequest(config: Record<string, string>, path: string, body?: unknown): Promise<Response> {
+    const app = createApp({ config: parseConfig({ ...baseEnv, ...config }) });
+    return Promise.resolve(
+      app.fetch(
+        new Request(`${BASE_URL}${path}`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Origin: BASE_URL,
+            "X-Bitig-Request": "true",
+            "cf-connecting-ip": uniqueIp(),
+          },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        }),
+        env,
+      ),
+    );
+  }
+
+  it("explains a missing SESSION_SECRET on password login", async () => {
+    const res = await appRequest({ SESSION_SECRET: "" }, "/api/auth/login", { username: TEST_AUTH_USER, password: TEST_AUTH_PASS });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toMatchObject({ error: "sessions_not_configured", message: expect.stringContaining("SESSION_SECRET") as unknown });
+  });
+
+  it("explains a missing allowlist on Nostr challenge", async () => {
+    const res = await appRequest({ NOSTR_AUTH_PUBKEYS: "" }, "/api/auth/challenge");
+    expect(res.status).toBe(503);
+    expect(await res.json()).toMatchObject({ error: "sessions_not_configured", message: expect.stringContaining("NOSTR_AUTH_PUBKEYS") as unknown });
   });
 });

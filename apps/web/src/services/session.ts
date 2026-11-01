@@ -5,6 +5,7 @@
  */
 
 const SESSION_PATH = "/api/auth/session";
+const PASSWORD_LOGIN_PATH = "/api/auth/login";
 const CHALLENGE_PATH = "/api/auth/challenge";
 const NOSTR_LOGIN_PATH = "/api/auth/nostr";
 const LOGOUT_PATH = "/api/auth/logout";
@@ -57,7 +58,44 @@ interface ChallengeResponse {
   readonly event: { readonly kind: number; readonly created_at: number; readonly content: string; readonly tags: string[][] };
 }
 
-export async function login(): Promise<LoginResult> {
+async function readErrorMessage(response: Response): Promise<string | null> {
+  try {
+    const body = (await response.json()) as unknown;
+    if (typeof body === "object" && body !== null && typeof (body as { message?: unknown }).message === "string") {
+      return (body as { message: string }).message;
+    }
+  } catch {
+    // Fall through: callers retain their status-based message for unreadable responses.
+  }
+  return null;
+}
+
+export async function loginWithPassword(username: string, password: string): Promise<LoginResult> {
+  let response: Response;
+  try {
+    response = await fetch(PASSWORD_LOGIN_PATH, {
+      method: "POST",
+      headers: { ...BASE_HEADERS, "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({ username, password }),
+    });
+  } catch {
+    return { ok: false, error: "Could not reach the Worker. Check your connection and try again." };
+  }
+
+  if (response.ok) {
+    const user = await readUser(response);
+    return user === null ? { ok: false, error: "Unexpected response from the Worker" } : { ok: true, user };
+  }
+  if (response.status === HTTP_UNAUTHORIZED) return { ok: false, error: "Invalid username or password" };
+  if (response.status === 429) return { ok: false, error: "Too many failed attempts. Try again later." };
+  if (response.status === HTTP_SERVICE_UNAVAILABLE) {
+    return { ok: false, error: (await readErrorMessage(response)) ?? "Password sign-in is not configured on this Worker." };
+  }
+  return { ok: false, error: `Sign-in failed (HTTP ${String(response.status)})` };
+}
+
+export async function loginWithNostr(): Promise<LoginResult> {
   const provider = (globalThis as unknown as { nostr?: NostrProvider }).nostr;
   if (!provider) return { ok: false, error: "Install or enable a NIP-07 Nostr extension to sign in." };
   let response: Response;
@@ -67,7 +105,13 @@ export async function login(): Promise<LoginResult> {
       headers: BASE_HEADERS,
       credentials: "same-origin",
     });
-    if (!challenge.ok) return { ok: false, error: `Could not create sign-in challenge (HTTP ${String(challenge.status)})` };
+    if (!challenge.ok) {
+      const reason = await readErrorMessage(challenge);
+      return {
+        ok: false,
+        error: reason ?? `Could not create sign-in challenge (HTTP ${String(challenge.status)})`,
+      };
+    }
     const body = (await challenge.json()) as ChallengeResponse;
     const signedEvent = await provider.signEvent(body.event);
     response = await fetch(NOSTR_LOGIN_PATH, {
@@ -87,7 +131,7 @@ export async function login(): Promise<LoginResult> {
   if (response.status === HTTP_UNAUTHORIZED) return { ok: false, error: "This Nostr identity is not authorized or the challenge expired." };
   if (response.status === 429) return { ok: false, error: "Too many failed attempts. Try again later." };
   if (response.status === HTTP_SERVICE_UNAVAILABLE) {
-    return { ok: false, error: "Sign-in is not configured on this Worker (SESSION_SECRET is missing)." };
+    return { ok: false, error: (await readErrorMessage(response)) ?? "Nostr sign-in is not configured on this Worker." };
   }
   return { ok: false, error: `Sign-in failed (HTTP ${String(response.status)})` };
 }

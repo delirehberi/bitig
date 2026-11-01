@@ -10,7 +10,8 @@ export type AuthStatus = "disabled" | "checking" | "authenticated" | "unauthenti
 export interface AuthContextValue {
   readonly status: AuthStatus;
   readonly user: string | null;
-  login: () => Promise<LoginResult>;
+  loginWithPassword: (username: string, password: string) => Promise<LoginResult>;
+  loginWithNostr: () => Promise<LoginResult>;
   logout: () => Promise<void>;
   /** Marks the session as gone, e.g. after the API answered 401. */
   expire: () => void;

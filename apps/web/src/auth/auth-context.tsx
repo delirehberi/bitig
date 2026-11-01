@@ -38,14 +38,20 @@ export function AuthProvider({ enabled, children }: AuthProviderProps) {
     };
   }, [enabled]);
 
-  const login = useCallback(async () => {
-    const result = await sessionApi.login();
+  const applyLogin = useCallback((result: sessionApi.LoginResult) => {
     if (result.ok) {
       setUser(result.user);
       setStatus("authenticated");
     }
     return result;
   }, []);
+
+  const loginWithPassword = useCallback(
+    async (username: string, password: string) => applyLogin(await sessionApi.loginWithPassword(username, password)),
+    [applyLogin],
+  );
+
+  const loginWithNostr = useCallback(async () => applyLogin(await sessionApi.loginWithNostr()), [applyLogin]);
 
   const expire = useCallback(() => {
     setUser(null);
@@ -58,8 +64,8 @@ export function AuthProvider({ enabled, children }: AuthProviderProps) {
   }, [expire]);
 
   const value = useMemo<AuthContextValue>(
-    () => ({ status, user, login, logout, expire }),
-    [status, user, login, logout, expire],
+    () => ({ status, user, loginWithPassword, loginWithNostr, logout, expire }),
+    [status, user, loginWithPassword, loginWithNostr, logout, expire],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

@@ -49,7 +49,7 @@
     // Empty means same-origin only (the dashboard is served by this Worker).
     "ALLOWED_ORIGINS": "",
     // Comma-separated lowercase hex public keys allowed to sign in via NIP-07.
-    "NOSTR_AUTH_PUBKEYS": "",
+    "NOSTR_AUTH_PUBKEYS": "46f3c7bb33cc3019049b76dc89dbb96e34c247bdda68b6ad8632682793ff8a1a",
     // Storage backend the dashboard uses: "cloudflare" (D1 via this Worker)
     // or "local" (in-memory placeholder).
     "STORAGE_MODE": "cloudflare"

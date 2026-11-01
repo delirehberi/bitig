@@ -69,6 +69,8 @@ export async function readSession(c: Context<AppEnv>): Promise<SessionLookup> {
   const expiresAt = Number(value.slice(0, separator));
   const user = value.slice(separator + 1);
   if (separator === -1 || !Number.isInteger(expiresAt)) return { kind: "forged" };
-  if (expiresAt <= nowSeconds() || !config.NOSTR_AUTH_PUBKEYS.includes(user)) return { kind: "stale" };
+  const isPasswordUser = config.BASIC_AUTH_PASS.length > 0 && user === config.BASIC_AUTH_USER;
+  const isNostrUser = config.NOSTR_AUTH_PUBKEYS.includes(user);
+  if (expiresAt <= nowSeconds() || (!isPasswordUser && !isNostrUser)) return { kind: "stale" };
   return { kind: "valid", user };
 }
