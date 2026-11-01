@@ -58,14 +58,6 @@ function renderModal(mode: StorageMode) {
 }
 
 describe("task visibility controls", () => {
-  it("shows the public badge and checkbox in nostr mode", () => {
-    renderCard("nostr");
-    renderModal("nostr");
-
-    expect(screen.getByTitle("Public task (visible on Nostr relays)")).toBeInTheDocument();
-    expect(screen.getByLabelText(/public task/i)).toBeChecked();
-  });
-
   it.each<StorageMode>(["cloudflare", "local"])("hides them in %s mode", (mode) => {
     renderCard(mode);
     renderModal(mode);

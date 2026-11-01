@@ -12,7 +12,6 @@
   "dependencies": {
     "@bitig/api-client": "workspace:*",
     "@bitig/core": "workspace:*",
-    "@bitig/storage-nostr": "workspace:*",
     "@fontsource-variable/atkinson-hyperlegible-next": "^5.3.0",
     "@fontsource-variable/jetbrains-mono": "^5.3.0",
     "@fontsource-variable/plus-jakarta-sans": "^5.3.0",

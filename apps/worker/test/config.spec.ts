@@ -25,12 +25,23 @@ describe("parseConfig", () => {
     expect(parseConfig({}).STORAGE_MODE).toBe("cloudflare");
   });
 
-  it.each(["local", "cloudflare", "nostr"] as const)("accepts STORAGE_MODE %s", (mode) => {
+  it.each(["local", "cloudflare"] as const)("accepts STORAGE_MODE %s", (mode) => {
     expect(parseConfig({ STORAGE_MODE: mode }).STORAGE_MODE).toBe(mode);
   });
 
   it("rejects an unknown STORAGE_MODE", () => {
     expect(() => parseConfig({ STORAGE_MODE: "bogus" })).toThrow(ConfigError);
+    expect(() => parseConfig({ STORAGE_MODE: "nostr" })).toThrow(ConfigError);
+  });
+
+  it("normalizes and validates the Nostr login allowlist", () => {
+    const first = "a".repeat(64);
+    const second = "b".repeat(64);
+    expect(parseConfig({ NOSTR_AUTH_PUBKEYS: ` ${first.toUpperCase()}, ${second} ` }).NOSTR_AUTH_PUBKEYS).toEqual([
+      first,
+      second,
+    ]);
+    expect(() => parseConfig({ NOSTR_AUTH_PUBKEYS: "npub-invalid" })).toThrow(ConfigError);
   });
 
   it("leaves sessions off when SESSION_SECRET is empty", () => {

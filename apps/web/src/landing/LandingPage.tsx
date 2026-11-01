@@ -26,7 +26,7 @@ const NAV_LINKS = [
 const MOCK_TASKS = [
   { title: "Refactor storage contract tests", owner: "claude-code", state: "in_progress" },
   { title: "Fix CSRF check on /api/tasks", owner: "cursor", state: "todo" },
-  { title: "Write Nostr backup docs", owner: "codex", state: "todo" },
+  { title: "Verify Nostr sign-in", owner: "codex", state: "todo" },
   { title: "Review landing page copy", owner: "you", state: "todo" },
   { title: "Ship D1 migration 0004", owner: "claude-code", state: "done" },
 ] as const;
@@ -69,7 +69,7 @@ const STATS = [
 const BACKENDS = [
   { name: "Markdown files", detail: "Plain .md on disk, local CLI and STDIO MCP" },
   { name: "Cloudflare D1", detail: "Deploy the Worker to your own account" },
-  { name: "Nostr relays", detail: "Decentralised, with encrypted private tasks" },
+  { name: "Nostr identity", detail: "Allowlisted NIP-07 sign-in" },
 ] as const;
 
 interface Plan {
@@ -97,7 +97,7 @@ const PLANS: readonly Plan[] = [
     price: "$0",
     note: "Forever",
     description: "Run Bitig on your own machine or Cloudflare account.",
-    features: ["Unlimited MCP requests", "Markdown, D1 or Nostr storage", "Open source"],
+    features: ["Unlimited MCP requests", "Markdown and D1 storage", "Open source"],
     cta: { label: "View on GitHub", href: REPO_URL, external: true },
     featured: false,
   },
@@ -106,7 +106,6 @@ const PLANS: readonly Plan[] = [
 const FOOTER_LINKS = [
   { label: "Docs", href: DOCS_URL },
   { label: "GitHub", href: REPO_URL },
-  { label: "Nostr spec", href: `${REPO_URL}/blob/master/docs/nostr-spec.md` },
   { label: "Security", href: `${REPO_URL}/blob/master/docs/security.md` },
 ] as const;
 
@@ -306,7 +305,7 @@ export function LandingPage() {
               </ButtonLink>
             </div>
             <p className="text-sm text-ink-3">
-              No credit card. Open source. Your tasks stay in Markdown, D1 or Nostr.
+              No credit card. Open source. Your tasks stay in Markdown or D1.
             </p>
           </div>
           <ProductMock />

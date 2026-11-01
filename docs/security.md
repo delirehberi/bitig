@@ -29,11 +29,12 @@ All authentication mechanisms (HTTP Basic Auth for REST API, Bearer Token for re
 A token in a URL leaks more easily than a header: Cloudflare's request logs record the full URL, and the client stores it as part of the connector address. The URL token is a separate secret so it can be rotated (`wrangler secret put MCP_URL_TOKEN`) without breaking header clients. Bitig's own logging records only the path. This is a stopgap until `/mcp` supports OAuth.
 
 ### 2.3 Dashboard Sessions
-The dashboard signs in on its own `/login` page instead of the browser's native Basic Auth prompt:
+The dashboard signs in on its own `/login` page with an allowlisted NIP-07 identity:
 
-- `POST /api/auth/login` takes `{ username, password }` (JSON), checks them against `BASIC_AUTH_USER` / `BASIC_AUTH_PASS` in constant time, and sets a `__Host-bitig_session` cookie: `HttpOnly`, `Secure`, `SameSite=Strict`, `Path=/`, valid for 7 days. `GET /api/auth/session` reports the signed-in user; `POST /api/auth/logout` clears the cookie.
-- The cookie is stateless: `<expiry>:<user>` signed with HMAC-SHA256 under `SESSION_SECRET` (a Worker secret, at least 32 characters). The Worker rejects cookies with a bad signature, a past expiry, or a user other than `BASIC_AUTH_USER`. Rotating `SESSION_SECRET` signs everyone out. Logout clears the cookie in the browser; a copied cookie stays valid until it expires or the secret rotates.
-- Without `SESSION_SECRET`, login answers `503` and the dashboard says so; Basic Auth API access keeps working.
+- `POST /api/auth/challenge` creates an unpredictable five-minute nonce in a dedicated Durable Object, bound to the Worker's origin. The browser asks its NIP-07 extension to sign the explicit Bitig login event and submits it to `POST /api/auth/nostr`.
+- The Worker verifies the event signature, exact origin/action/challenge tags and the `NOSTR_AUTH_PUBKEYS` allowlist, then atomically consumes the nonce. Expired, wrong-origin and replayed challenges fail.
+- A successful proof sets a `__Host-bitig_session` cookie: `HttpOnly`, `Secure`, `SameSite=Strict`, `Path=/`, valid for 7 days. The stateless value is `<expiry>:<pubkey>`, signed with HMAC-SHA256 under `SESSION_SECRET`; rotation signs everyone out.
+- Without `SESSION_SECRET` or an allowed public key, login answers `503`; Basic Auth API access keeps working.
 - No credential is stored in browser storage; JavaScript never sees the cookie.
 - `/api/*` 401 responses no longer carry `WWW-Authenticate: Basic`, so browsers never show their native prompt. Scripts can still send `Authorization: Basic`.
 - Failed logins and cookies with a forged signature count toward the failed-login budget (section 3.1). Login requests pass the same CSRF check as other mutations, and `SameSite=Strict` keeps the cookie off cross-site requests.
@@ -47,8 +48,8 @@ A sliding-window rate limiter is implemented at the Cloudflare Worker edge. Coun
 
 ### 3.1 Rate Limit Tiers
 - **Authentication Failure Protection:** Max 10 failed login attempts per 15 minutes per IP. Mitigates brute-force attacks against the dashboard login, Basic Auth and MCP tokens.
-  - Login (`/api/auth/login`), Basic Auth (`/api/*`) and Bearer or URL token (`/mcp`) failures share one budget per IP.
-  - Only attempts that present credentials count (wrong password or token, malformed or wrong-scheme `Authorization` header). Requests without credentials, such as the dashboard's session check before sign-in, do not, and neither do expired session cookies.
+  - Nostr proof (`/api/auth/nostr`), Basic Auth (`/api/*`) and Bearer or URL token (`/mcp`) failures share one budget per IP.
+  - Only attempts that present credentials count (invalid/unauthorized signatures or wrong tokens). Requests without credentials, such as the dashboard's session check before sign-in, do not, and neither do expired session cookies.
   - Once the budget is used up, every request from that IP to `/api/*` and `/mcp` gets `429` before credentials are checked, including requests with valid credentials, until the window passes. Other clients are not affected. A successful login does not reset the counter.
 - **REST API Routes (`/api/*`):** Max 1,000 requests per minute per IP.
 - **MCP Endpoint (`/mcp`):** Max 1,000 requests per minute per IP.
@@ -108,19 +109,6 @@ In local mode (`storage-markdown`), files are stored as:
 
 ---
 
-## 6. Nostr Privacy & Cryptographic Analysis
-
-### 6.1 Private Task Payload Encryption (NIP-44)
-- **Encryption Scheme:** NIP-44 self-encryption (ChaCha20-Poly1305 with HKDF key derivation).
-- **Encrypted Fields:** Task title and description are packed into a JSON payload and encrypted before broadcast.
-- **Metadata Visibility:** Relays can observe event kinds (30001), tags (`status`, `priority`, `dueDate`, `order`, `labels`), and timestamps (`created_at_iso`). Users requiring zero metadata exposure should run Local or Cloudflare D1 mode.
-
-### 6.2 Checkpoint Events (kind 30335)
-- Checkpoint content (step index, status and the whole snapshot) is always NIP-44 self-encrypted, whatever the task's `is_public`, and none of it appears in tags.
-- **Metadata Visibility:** relays see the event kind, the task a checkpoint belongs to (`a` and `task` tags), its creation time and how often it is rewritten. They cannot see the step, status or text.
-
----
-
 ## 6a. Execution Checkpoints
 
 Checkpoints hold working notes written by agents, so treat them as sensitive and as untrusted input.
@@ -128,11 +116,11 @@ Checkpoints hold working notes written by agents, so treat them as sensitive and
 **What is enforced**
 - Routes sit behind the same `/api/*` session or Basic Auth, CSRF and rate-limit middleware as every other mutation, and `/mcp` behind its Bearer token; there is no unauthenticated path.
 - Input is validated by one Zod schema on every path (REST, MCP, storage): strict objects, bounded lengths and counts, flat metadata only, no nested objects. The URL step segment must be plain digits.
-- Storage paths and Nostr tags are built only from validated UUIDs and integers; snapshot text never reaches a file name, query or tag.
+- Storage paths are built only from validated UUIDs and integers; snapshot text never reaches a file name or query.
 - Saving a checkpoint cannot approve, unblock or move a task. `resume_from_checkpoint` derives the gates from live task state, so a stale snapshot cannot hide a pending approval, a `needsHuman` question or an unfinished dependency.
 
 **What is not**
-- **Confidentiality at rest.** Markdown (plain JSON in the data directory) and D1 store snapshots unencrypted, like task descriptions. Only Nostr mode encrypts them. Do not put secrets in a snapshot; nothing scans for them.
+- **Confidentiality at rest.** Markdown and D1 store snapshots unencrypted, like task descriptions. Do not put secrets in a snapshot; nothing scans for them.
 - **Prompt injection.** A resumed snapshot is text an earlier session wrote, possibly after reading untrusted content. Agents should treat `nextStepInstructions` as notes to verify against the task, not as authority.
 - **Attribution and integrity.** A checkpoint does not record which agent wrote it, and any holder of a valid token can overwrite any step of any task. Writes are last-write-wins with no versioning.
 - **Visibility.** Checkpoints are not broadcast as realtime events and no dashboard screen shows them yet; they are reachable only through the authenticated REST routes and MCP tools.

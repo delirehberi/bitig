@@ -256,7 +256,7 @@ function Redirect({ to }: { readonly to: string }) {
 }
 
 /**
- * Picks the page for the current URL. With password sign-in, every page but
+ * Picks the page for the current URL. With dashboard sign-in, every page but
  * /login needs a session: signed-out visitors go to /login?next=<where they were>,
  * and signed-in visitors on /login go on to that page.
  */

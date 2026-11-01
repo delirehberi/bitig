@@ -5,7 +5,8 @@
  */
 
 const SESSION_PATH = "/api/auth/session";
-const LOGIN_PATH = "/api/auth/login";
+const CHALLENGE_PATH = "/api/auth/challenge";
+const NOSTR_LOGIN_PATH = "/api/auth/nostr";
 const LOGOUT_PATH = "/api/auth/logout";
 
 const HTTP_UNAUTHORIZED = 401;
@@ -48,24 +49,42 @@ export async function checkSession(signal?: AbortSignal): Promise<SessionCheck> 
   return user === null ? { kind: "unknown" } : { kind: "signed_in", user };
 }
 
-export async function login(username: string, password: string): Promise<LoginResult> {
+interface NostrProvider {
+  signEvent(event: { readonly kind: number; readonly created_at: number; readonly content: string; readonly tags: string[][] }): Promise<unknown>;
+}
+
+interface ChallengeResponse {
+  readonly event: { readonly kind: number; readonly created_at: number; readonly content: string; readonly tags: string[][] };
+}
+
+export async function login(): Promise<LoginResult> {
+  const provider = (globalThis as unknown as { nostr?: NostrProvider }).nostr;
+  if (!provider) return { ok: false, error: "Install or enable a NIP-07 Nostr extension to sign in." };
   let response: Response;
   try {
-    response = await fetch(LOGIN_PATH, {
+    const challenge = await fetch(CHALLENGE_PATH, {
+      method: "POST",
+      headers: BASE_HEADERS,
+      credentials: "same-origin",
+    });
+    if (!challenge.ok) return { ok: false, error: `Could not create sign-in challenge (HTTP ${String(challenge.status)})` };
+    const body = (await challenge.json()) as ChallengeResponse;
+    const signedEvent = await provider.signEvent(body.event);
+    response = await fetch(NOSTR_LOGIN_PATH, {
       method: "POST",
       headers: { ...BASE_HEADERS, "Content-Type": "application/json" },
       credentials: "same-origin",
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify(signedEvent),
     });
   } catch {
-    return { ok: false, error: "Could not reach the Worker. Check your connection and try again." };
+    return { ok: false, error: "Nostr sign-in failed. Check your extension and connection, then try again." };
   }
 
   if (response.ok) {
     const user = await readUser(response);
     return user === null ? { ok: false, error: "Unexpected response from the Worker" } : { ok: true, user };
   }
-  if (response.status === HTTP_UNAUTHORIZED) return { ok: false, error: "Invalid username or password" };
+  if (response.status === HTTP_UNAUTHORIZED) return { ok: false, error: "This Nostr identity is not authorized or the challenge expired." };
   if (response.status === 429) return { ok: false, error: "Too many failed attempts. Try again later." };
   if (response.status === HTTP_SERVICE_UNAVAILABLE) {
     return { ok: false, error: "Sign-in is not configured on this Worker (SESSION_SECRET is missing)." };

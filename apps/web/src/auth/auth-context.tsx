@@ -3,7 +3,7 @@ import * as sessionApi from "../services/session";
 import { AuthContext, type AuthContextValue, type AuthStatus } from "./auth-types";
 
 interface AuthProviderProps {
-  /** Whether this deployment signs in with a password (the passwordLogin feature flag). */
+  /** Whether this deployment requires dashboard sign-in. */
   readonly enabled: boolean;
   readonly children: ReactNode;
 }
@@ -38,8 +38,8 @@ export function AuthProvider({ enabled, children }: AuthProviderProps) {
     };
   }, [enabled]);
 
-  const login = useCallback(async (username: string, password: string) => {
-    const result = await sessionApi.login(username, password);
+  const login = useCallback(async () => {
+    const result = await sessionApi.login();
     if (result.ok) {
       setUser(result.user);
       setStatus("authenticated");

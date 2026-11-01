@@ -7,7 +7,7 @@
  * production bundles.
  */
 
-export const STORAGE_MODES = ["local", "cloudflare", "nostr"] as const;
+export const STORAGE_MODES = ["local", "cloudflare"] as const;
 
 export type StorageMode = (typeof STORAGE_MODES)[number];
 

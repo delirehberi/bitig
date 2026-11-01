@@ -11,13 +11,13 @@ function jsonResponse(body: unknown, status = 200): Response {
 describe("fetchHealth", () => {
   it("returns the payload when the worker is healthy", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      jsonResponse({ status: "ok", version: "1.2.3", storageMode: "nostr" }),
+      jsonResponse({ status: "ok", version: "1.2.3", storageMode: "cloudflare" }),
     );
 
     await expect(fetchHealth(new AbortController().signal, fetchImpl)).resolves.toEqual({
       status: "ok",
       version: "1.2.3",
-      storageMode: "nostr",
+      storageMode: "cloudflare",
     });
     expect(fetchImpl).toHaveBeenCalledWith(HEALTH_PATH, expect.anything());
   });

@@ -44,7 +44,7 @@ async function setup({ signupDependsOnSchema = false } = {}) {
     ...(signupDependsOnSchema ? { dependsOn: [schema.id] } : {}),
   });
   render(
-    <FeatureFlagsProvider mode="nostr">
+    <FeatureFlagsProvider mode="cloudflare">
       <Harness storage={storage} projects={[project]} />
     </FeatureFlagsProvider>,
   );

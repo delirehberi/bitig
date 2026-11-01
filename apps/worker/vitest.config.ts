@@ -1,6 +1,6 @@
 import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import { defineConfig } from "vitest/config";
-import { TEST_ALLOWED_ORIGIN, TEST_AUTH_PASS, TEST_AUTH_USER, TEST_MCP_TOKEN, TEST_MCP_URL_TOKEN, TEST_SESSION_SECRET } from "./test/constants.ts";
+import { TEST_ALLOWED_ORIGIN, TEST_AUTH_PASS, TEST_AUTH_USER, TEST_MCP_TOKEN, TEST_MCP_URL_TOKEN, TEST_NOSTR_PUBKEY, TEST_SESSION_SECRET } from "./test/constants.ts";
 
 // The Workers runtime cold-starts per test file; with several files starting in
 // parallel, a file's first request can wait well past Vitest's 5s default.
@@ -21,6 +21,7 @@ export default defineConfig({
           MCP_AUTH_TOKEN: TEST_MCP_TOKEN,
           MCP_URL_TOKEN: TEST_MCP_URL_TOKEN,
           SESSION_SECRET: TEST_SESSION_SECRET,
+          NOSTR_AUTH_PUBKEYS: TEST_NOSTR_PUBKEY,
         },
       },
     }),

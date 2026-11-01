@@ -57,17 +57,21 @@ describe("App", () => {
     expect(screen.queryByRole("navigation", { name: "Primary" })).not.toBeInTheDocument();
   });
 
-  it("uses the storage mode the worker reports, with no switcher", async () => {
-    stubFetch(() =>
-      Promise.resolve(Response.json({ status: "ok", version: "0.4.1", storageMode: "nostr" })),
+  it("uses the D1 storage mode the worker reports, with no switcher", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>((input) => Promise.resolve(
+        urlOf(input).includes("/api/auth/session")
+          ? Response.json({ error: "unauthorized" }, { status: 401 })
+          : Response.json({ status: "ok", version: "0.4.1", storageMode: "cloudflare" }),
+      )),
     );
 
     render(<App />);
 
-    expect(await screen.findByText(MODE_COPY.nostr.summary)).toBeInTheDocument();
-    expect(screen.queryByText(MODE_COPY.cloudflare.summary)).not.toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 1, name: "Sign In" })).toBeInTheDocument();
     expect(screen.queryByRole("radio")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /sign in/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /sign in with nostr/i })).toBeInTheDocument();
   });
 
   it("asks for sign-in on its own page in cloudflare mode", async () => {
@@ -89,16 +93,4 @@ describe("App", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
-  it("never asks nostr deployments to sign in", async () => {
-    window.history.replaceState(null, "", "/login");
-    stubFetch(() =>
-      Promise.resolve(Response.json({ status: "ok", version: "0.4.1", storageMode: "nostr" })),
-    );
-
-    render(<App />);
-
-    expect(await screen.findByText(MODE_COPY.nostr.summary)).toBeInTheDocument();
-    expect(window.location.pathname).toBe("/app");
-    expect(vi.mocked(fetch).mock.calls.some(([input]) => urlOf(input).includes("/api/auth"))).toBe(false);
-  });
 });

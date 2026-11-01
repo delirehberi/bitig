@@ -34,7 +34,7 @@ async function setup() {
   const dependency = await storage.saveTask({ projectId: project.id, title: "Schema" });
   const blocked = await storage.saveTask({ projectId: project.id, title: "Signup", dependsOn: [dependency.id] });
   render(
-    <FeatureFlagsProvider mode="nostr">
+    <FeatureFlagsProvider mode="cloudflare">
       <Harness storage={storage} projects={[project]} />
     </FeatureFlagsProvider>,
   );

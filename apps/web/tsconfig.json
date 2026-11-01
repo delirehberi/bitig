@@ -9,8 +9,7 @@
   "include": ["src"],
   "references": [
     { "path": "../../packages/core" },
-    { "path": "../../packages/api-client" },
-    { "path": "../../packages/storage-nostr" }
+    { "path": "../../packages/api-client" }
   ]
 }
 

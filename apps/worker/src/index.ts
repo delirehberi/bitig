@@ -155,6 +155,7 @@ const app = createApp();
 // Durable Object classes must be exported from the Worker's main module.
 export { RateLimiter } from "./rate-limiter-do";
 export { RealtimeHub } from "./realtime-do";
+export { LoginChallenge } from "./login-challenge-do";
 
 export default {
   fetch: app.fetch,

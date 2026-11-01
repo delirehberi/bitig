@@ -6,9 +6,7 @@ import { createContext } from "react";
  * fixed per deployment, so these flags are derived from it rather than toggled.
  */
 export interface FeatureFlags {
-  /** Public/private task visibility: Nostr publishes public tasks and NIP-44 encrypts the rest. */
-  readonly taskVisibility: boolean;
-  /** Password sign-in on /login, backed by the Worker's session cookie. */
+  /** Dashboard sign-in on /login, backed by the Worker's session cookie. */
   readonly passwordLogin: boolean;
   /** Live WebSocket updates from the Worker's RealtimeHub Durable Object (/api/realtime). */
   readonly realtimeSync: boolean;
@@ -16,7 +14,6 @@ export interface FeatureFlags {
 
 export function featuresFor(mode: StorageMode): FeatureFlags {
   return {
-    taskVisibility: mode === "nostr",
     passwordLogin: mode === "cloudflare",
     realtimeSync: mode === "cloudflare",
   };

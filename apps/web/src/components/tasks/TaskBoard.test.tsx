@@ -1,5 +1,5 @@
 import type { Project, Task } from "@bitig/core";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { FeatureFlagsProvider } from "../../domain/feature-context";
@@ -60,6 +60,40 @@ function summary(onMove: ReturnType<typeof vi.fn>) {
 const dataTransfer = { setData: vi.fn(), dropEffect: "", effectAllowed: "" };
 
 describe("TaskBoard reordering", () => {
+  it("keeps pending-approval tasks in Backlog and promotes them to Todo on drop", () => {
+    const onMove = vi.fn();
+    const backlogTask: Task = { ...FIRST, pendingApproval: true };
+    render(
+      <FeatureFlagsProvider mode="cloudflare">
+        <TaskBoard
+          tasks={[backlogTask]}
+          projects={[PROJECT]}
+          onView={vi.fn()}
+          onEdit={vi.fn()}
+          onDelete={vi.fn()}
+          onComplete={vi.fn()}
+          onStatusChange={vi.fn()}
+          onMove={onMove}
+        />
+      </FeatureFlagsProvider>,
+    );
+
+    const backlog = screen.getByTestId("column-backlog");
+    const todo = screen.getByTestId("column-todo");
+    expect(within(backlog).getByText("Task 1")).toBeInTheDocument();
+    expect(within(todo).queryByText("Task 1")).not.toBeInTheDocument();
+
+    const card = within(backlog).getByText("Task 1").closest("[data-task-id]");
+    if (!card) throw new Error("backlog card not found");
+    fireEvent.dragStart(card, { dataTransfer });
+    fireEvent.dragOver(todo, { dataTransfer });
+    fireEvent.drop(todo, { dataTransfer });
+
+    expect(summary(onMove)).toEqual([
+      ["Task 1", { status: "todo", pendingApproval: null, order: 0 }],
+    ]);
+  });
+
   it("moves a card down with the arrow keys on its handle", async () => {
     const onMove = vi.fn();
     renderBoard(onMove);

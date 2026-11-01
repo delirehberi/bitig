@@ -206,7 +206,7 @@ export function TasksView({
   }
 
   function handleApprove(task: Task) {
-    void onUpdateTask(task.id, { pendingApproval: null });
+    void onUpdateTask(task.id, { pendingApproval: null, status: "todo" });
   }
 
   async function handleStatusChange(task: Task, status: TaskStatus) {

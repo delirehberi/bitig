@@ -136,4 +136,21 @@ describe("whereYouLeftOff", () => {
     expect(result.inProgress.map((entry) => entry.task)).toEqual([kept]);
     expect(result.recent.map((entry) => entry.task)).toEqual([kept]);
   });
+
+  it("leaves pending-approval backlog tasks out of every summary", () => {
+    const quiet = project(1, { updatedAt: "2026-10-15T00:00:00.000Z" });
+    const backlogProject = project(2);
+    const kept = task(quiet.id, "2026-10-20T09:00:00.000Z", { status: "in_progress" });
+    const backlog = task(backlogProject.id, "2026-10-22T09:00:00.000Z", {
+      pendingApproval: true,
+    });
+
+    const result = whereYouLeftOff([quiet, backlogProject], [kept, backlog]);
+
+    expect(result.lastProject?.project).toBe(quiet);
+    expect(result.lastProject?.openCount).toBe(1);
+    expect(result.inProgress.map((entry) => entry.task)).toEqual([kept]);
+    expect(result.inProgressCount).toBe(1);
+    expect(result.recent.map((entry) => entry.task)).toEqual([kept]);
+  });
 });

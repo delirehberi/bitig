@@ -29,12 +29,14 @@
   "durable_objects": {
     "bindings": [
       { "name": "RATE_LIMITER", "class_name": "RateLimiter" },
-      { "name": "REALTIME_HUB", "class_name": "RealtimeHub" }
+      { "name": "REALTIME_HUB", "class_name": "RealtimeHub" },
+      { "name": "LOGIN_CHALLENGE", "class_name": "LoginChallenge" }
     ]
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["RateLimiter"] },
-    { "tag": "v2", "new_sqlite_classes": ["RealtimeHub"] }
+    { "tag": "v2", "new_sqlite_classes": ["RealtimeHub"] },
+    { "tag": "v3", "new_sqlite_classes": ["LoginChallenge"] }
   ],
   "assets": {
     "directory": "../web/dist",
@@ -46,8 +48,10 @@
     // Comma-separated list of extra origins allowed to call /api/* cross-origin.
     // Empty means same-origin only (the dashboard is served by this Worker).
     "ALLOWED_ORIGINS": "",
-    // Storage backend the dashboard uses: "cloudflare" (D1 via this Worker),
-    // "nostr" (browser-only, NIP-07 signer) or "local" (in-memory placeholder).
+    // Comma-separated lowercase hex public keys allowed to sign in via NIP-07.
+    "NOSTR_AUTH_PUBKEYS": "",
+    // Storage backend the dashboard uses: "cloudflare" (D1 via this Worker)
+    // or "local" (in-memory placeholder).
     "STORAGE_MODE": "cloudflare"
   }
 }

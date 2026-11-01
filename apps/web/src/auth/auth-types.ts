@@ -2,7 +2,7 @@ import { createContext } from "react";
 import type { LoginResult } from "../services/session";
 
 /**
- * - `disabled`: this deployment has no password sign-in (Nostr or local mode).
+ * - `disabled`: this deployment has no dashboard sign-in (local mode).
  * - `unknown`: the Worker could not be asked; the workspace renders and its own requests report errors.
  */
 export type AuthStatus = "disabled" | "checking" | "authenticated" | "unauthenticated" | "unknown";
@@ -10,7 +10,7 @@ export type AuthStatus = "disabled" | "checking" | "authenticated" | "unauthenti
 export interface AuthContextValue {
   readonly status: AuthStatus;
   readonly user: string | null;
-  login: (username: string, password: string) => Promise<LoginResult>;
+  login: () => Promise<LoginResult>;
   logout: () => Promise<void>;
   /** Marks the session as gone, e.g. after the API answered 401. */
   expire: () => void;

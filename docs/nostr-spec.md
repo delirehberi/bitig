@@ -1,4 +1,6 @@
-# Bitig Nostr Event Specification
+# Legacy Bitig Nostr Event Specification
+
+> Nostr relay storage is retired. This document is retained only for exporting and interpreting data created by older Bitig releases; current deployments use D1 and use Nostr solely for NIP-07 identity.
 
 This document defines the Nostr event kinds, tag schemas, encryption standards, and deletion semantics used by Bitig for decentralized project and task management. Any third-party Nostr client, agent, or explorer can parse, display, and manage Bitig entities by following this specification.
 

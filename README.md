@@ -1,6 +1,6 @@
 # Bitig
 
-Bitig (Old Turkic for *record* or *document*) is a flexible, edge-ready task and project manager designed for humans and AI agents. It decouples core business logic and UI from storage through a unified `StorageProvider` interface, enabling local-first Markdown storage, Cloudflare edge storage (D1 + Hono), and decentralized storage (Nostr).
+Bitig (Old Turkic for *record* or *document*) is a flexible, edge-ready task and project manager designed for humans and AI agents. It uses local-first Markdown storage for the CLI and Cloudflare D1 for the deployed dashboard.
 
 ## Features
 
@@ -22,7 +22,7 @@ bitig/
     storage-markdown/  MarkdownStorage engine (fs abstraction, YAML frontmatter, locking)
     mcp-tools/         MCP tool definitions, schema annotations, .bitig discovery
     storage-d1/        D1 / Drizzle ORM storage adapter
-    storage-nostr/     Nostr decentralized storage adapter (NIP-33, NIP-44, NIP-09)
+    storage-nostr/     Legacy migration adapter; not used by supported runtimes
     api-client/        StorageProvider implementation over Hono REST API
   apps/
     cli/               Local CLI (`bitig`) and STDIO MCP server (`bitig mcp`)
@@ -194,7 +194,7 @@ Numbers are never reused while their task exists. Deleting the newest task frees
 
 ### Export, Import, Backup & Restore
 
-Bitig enables complete data portability across all storage backends (Markdown, D1, Nostr):
+Bitig enables data portability between Markdown and D1:
 
 ```bash
 # Export a project and all its tasks to a JSON bundle
@@ -321,17 +321,9 @@ make build      # Builds all packages and bundles apps/cli
 
 ---
 
-## Nostr Storage Mode
+## Nostr Identity
 
-Bitig can store projects and tasks directly on Nostr relays:
-- **Addressable Events:** Kind `30331` for projects, kind `30332` for tasks.
-- **Privacy & Encryption:** Private tasks are encrypted end-to-end using NIP-44 self-encryption; public tasks are published in cleartext.
-- **Signing:** Supports browser extensions (NIP-07), remote signers/bunkers (NIP-46), and raw keys.
-- **Specification:** Full event schemas, tags, and deletion protocols are documented in [`docs/nostr-spec.md`](./docs/nostr-spec.md).
-
-### Choosing the dashboard's storage mode
-
-The web dashboard has no storage switch. Each deployment picks its mode with the Worker's `STORAGE_MODE` var (`cloudflare`, `nostr`, or `local`; defaults to `cloudflare`). Set it under `vars` in `apps/worker/wrangler.jsonc`, or in `apps/worker/.dev.vars` for local development. The dashboard reads it from `GET /health` and shows only the UI that mode supports. For example, the public/private task toggle appears only in `nostr` mode, and the `/login` page appears only in `cloudflare` mode. An unknown value makes the Worker fail its config check.
+The deployed dashboard stores data in D1 and uses an allowlisted NIP-07 public key for sign-in. Configure `NOSTR_AUTH_PUBKEYS` as comma-separated 64-character hex public keys and set `SESSION_SECRET`. Nostr relay storage is retired; see [the migration guide](./docs/interop-and-backup.md#retiring-nostr-storage) before upgrading an older deployment.
 
 ---
 

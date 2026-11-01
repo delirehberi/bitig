@@ -1,9 +1,8 @@
 # Interoperability & Backup Specification
 
-Bitig supports three distinct storage modes:
+Bitig supports two storage modes:
 1. **Local Markdown (`storage-markdown`)**: Projects as directories, tasks as markdown files with YAML frontmatter.
 2. **Cloudflare D1 (`storage-d1`)**: Relational edge SQL database with Drizzle ORM.
-3. **Decentralized Nostr (`storage-nostr`)**: Relays with NIP-44 self-encryption for private tasks and addressable replaceable events.
 
 To enable seamless data portability, backup, and cross-mode synchronization, Bitig provides canonical interchange bundle formats and automated import/export tooling.
 
@@ -123,24 +122,20 @@ bitig restore bitig-backup-2026-10-12.json
 
 ## 3. Cross-Mode Migration & Interoperability
 
-Projects and tasks round-trip across **Markdown ↔ D1 ↔ Nostr** with 100% fidelity:
+Projects and tasks round-trip across **Markdown ↔ D1** through the canonical bundle format.
 
 +------------------+         Export         +-------------------+         Import         +------------------+
 | Local Markdown   |  ------------------->  |  ProjectBundle    |  ------------------->  | Cloudflare D1    |
 | (Filesystem)     |                        |  (Standard JSON)  |                        | (Relational SQL) |
 +------------------+                        +-------------------+                        +------------------+
-         ^                                            ^                                            |
-         |                                            | Export                                     |
-         | Import                                     v                                            v
-+------------------+         Export         +-------------------+         Import         +------------------+
-| Fresh Markdown   |  <-------------------  |  ProjectBundle    |  <-------------------  | Nostr Relays     |
-| (Clean Folder)   |                        |  (Decrypted Text) |                        | (NIP-44 Encrypt) |
-+------------------+                        +-------------------+                        +------------------+
 
 ### Field Preservation Guarantees:
 - **Project IDs & Task IDs:** Immutable UUIDv7 identifiers preserved across all storage media.
 - **Timestamps (`createdAt`, `updatedAt`):** Preserved exactly to the millisecond.
-- **Encrypted Privacy (`isPublic: false`):** Encrypted with NIP-44 under author key when exported/imported into Nostr, and restored into cleartext in local or D1 storage.
-- **Comments:** IDs, authors and timestamps are preserved; on Nostr their content is always NIP-44 encrypted.
+- **Comments:** IDs, authors and timestamps are preserved.
 - **Optional Metadata:** `dueDate`, `priority`, `order`, and `labels` retain their exact types, values, and order.
+
+## Retiring Nostr storage
+
+Before upgrading a deployment that used `STORAGE_MODE=nostr`, open the old dashboard and download a full JSON backup. After deploying the D1-backed release, sign in with an allowlisted NIP-07 key and restore that backup from the dashboard. Keep the backup until project, task, comment and checkpoint counts have been verified. The legacy `storage-nostr` package remains only to validate old bundle compatibility; supported runtimes no longer read or write relay data.
 

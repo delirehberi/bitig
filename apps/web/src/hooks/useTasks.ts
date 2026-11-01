@@ -17,7 +17,7 @@ export interface StatusChangeChoice {
 }
 
 /**
- * Checked here as well as on the server, so Nostr mode (which has no server) refuses a blocked
+ * Checked here as well as on the server, so every storage implementation refuses a blocked
  * change too. The refusal carries the blockers (`blockedByFromError`) for the confirmation.
  */
 async function statusChangeOptions(

@@ -70,13 +70,15 @@ export function lastTouch(task: Task): Pick<LeftOffTouch, "at" | "kind" | "actor
 }
 
 /**
- * Summarizes where work stopped. Archived projects, their tasks and archived
- * tasks are left out.
+ * Summarizes where work stopped. Archived projects, their tasks, archived
+ * tasks and pending-approval backlog tasks are left out.
  */
 export function whereYouLeftOff(projects: readonly Project[], tasks: readonly Task[]): WhereYouLeftOff {
   const activeProjects = projects.filter((project) => project.archived !== true);
   const projectsById = new Map(activeProjects.map((project) => [project.id, project]));
-  const liveTasks = tasks.filter((task) => task.status !== "archived" && projectsById.has(task.projectId));
+  const liveTasks = tasks.filter(
+    (task) => task.status !== "archived" && task.pendingApproval !== true && projectsById.has(task.projectId),
+  );
 
   const inProgressTasks = liveTasks.filter((task) => task.status === "in_progress").sort(compareByLastTouch);
   const inProgress = inProgressTasks.slice(0, LEFT_OFF_IN_PROGRESS_LIMIT).map((task): LeftOffTask => ({

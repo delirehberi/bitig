@@ -5,7 +5,6 @@ import { App } from "./App";
 import { MockWebSocket } from "./test/setup";
 
 const TEST_USER = "admin";
-const TEST_PASSWORD = "secret123";
 
 function stubApi(responses: {
   health?: { status: string; version: string; storageMode: string };
@@ -15,6 +14,11 @@ function stubApi(responses: {
   /** Whether the browser starts with a valid session cookie; defaults to signed in. */
   signedIn?: boolean;
 }) {
+  vi.stubGlobal("nostr", {
+    signEvent: vi.fn((event: Record<string, unknown>) =>
+      Promise.resolve({ ...event, id: "a".repeat(64), pubkey: TEST_USER, sig: "b".repeat(128) }),
+    ),
+  });
   let signedIn = responses.signedIn ?? true;
   const healthData = responses.health ?? { status: "ok", version: "0.4.1", storageMode: "cloudflare" };
   const projectsData = responses.projects ?? [];
@@ -37,14 +41,14 @@ function stubApi(responses: {
             : Response.json({ error: "unauthorized" }, { status: 401 }),
         );
       }
-      if (url.includes("/api/auth/login")) {
-        const body = JSON.parse(init?.body as string) as { username: string; password: string };
-        signedIn = body.username === TEST_USER && body.password === TEST_PASSWORD;
-        return Promise.resolve(
-          signedIn
-            ? Response.json({ user: TEST_USER })
-            : Response.json({ error: "unauthorized" }, { status: 401 }),
-        );
+      if (url.includes("/api/auth/challenge")) {
+        return Promise.resolve(Response.json({
+          event: { kind: 22242, created_at: 1, content: "Sign in to Bitig", tags: [["challenge", "nonce"]] },
+        }));
+      }
+      if (url.includes("/api/auth/nostr")) {
+        signedIn = true;
+        return Promise.resolve(Response.json({ user: TEST_USER }));
       }
       if (url.includes("/api/auth/logout")) {
         signedIn = false;
@@ -245,9 +249,7 @@ describe("Dashboard Phase 4 Integration", () => {
     expect(new URLSearchParams(window.location.search).get("next")).toBe("/projects");
     expect(screen.queryByRole("navigation", { name: "Primary" })).not.toBeInTheDocument();
 
-    await user.type(screen.getByLabelText(/username/i), TEST_USER);
-    await user.type(screen.getByLabelText(/password/i), TEST_PASSWORD);
-    await user.click(screen.getByRole("button", { name: /^sign in$/i }));
+    await user.click(screen.getByRole("button", { name: /sign in with nostr/i }));
 
     expect(await screen.findByRole("heading", { level: 1, name: "Projects" })).toBeInTheDocument();
     expect(window.location.pathname).toBe("/projects");
@@ -259,17 +261,16 @@ describe("Dashboard Phase 4 Integration", () => {
     expect(window.location.pathname).toBe("/login");
   });
 
-  it("shows an error for wrong credentials", async () => {
+  it("shows an error when no NIP-07 extension is available", async () => {
     window.history.replaceState(null, "", "/login");
     stubApi({ signedIn: false });
+    vi.stubGlobal("nostr", undefined);
     const user = userEvent.setup();
     render(<App />);
 
-    await user.type(await screen.findByLabelText(/username/i), TEST_USER);
-    await user.type(screen.getByLabelText(/password/i), "wrong");
-    await user.click(screen.getByRole("button", { name: /^sign in$/i }));
+    await user.click(await screen.findByRole("button", { name: /sign in with nostr/i }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("Invalid username or password");
+    expect(await screen.findByRole("alert")).toHaveTextContent("NIP-07 Nostr extension");
     expect(window.location.pathname).toBe("/login");
   });
 
@@ -752,7 +753,7 @@ describe("Dashboard routing", () => {
     await waitFor(() => {
       const patchCall = vi.mocked(fetch).mock.calls.find(([, init]) => init?.method === "PATCH");
       expect(patchCall?.[0]).toContain(`/api/tasks/${TASK_B.id}`);
-      expect(JSON.parse(patchCall?.[1]?.body as string)).toEqual({ pendingApproval: null });
+      expect(JSON.parse(patchCall?.[1]?.body as string)).toEqual({ pendingApproval: null, status: "todo" });
     });
 
     const toggle = screen.getByRole("button", { name: /awaiting approval \(\d\)/i });

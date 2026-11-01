@@ -10,7 +10,7 @@ bitig/
     core/              Domain entities, Zod schemas, StorageProvider contract, in-memory double
     storage-markdown/  MarkdownStorage (FileSystemPort, FileLock, YAML frontmatter codec)
     storage-d1/        D1Storage (Drizzle ORM schema, SQL migrations, D1 driver)
-    storage-nostr/     NostrStorage (Nostr-tools, NIP-44 crypto, RelayManager, tombstone resolver)
+    storage-nostr/     Legacy migration adapter, excluded from supported runtimes
     mcp-tools/         MCP tool definitions and schema registrations
     api-client/        ApiStorage (HTTP REST StorageProvider client)
   apps/
@@ -34,12 +34,11 @@ The architecture enforces strict runtime boundaries:
 2. **Storage Adapters** depend only on `@bitig/core`:
    - `storage-markdown` abstracts the filesystem behind `FileSystemPort`.
    - `storage-d1` interacts with D1 via Drizzle ORM.
-   - `storage-nostr` manages relay pools and cryptographic signers.
 
 3. **Applications** consume storage through the `StorageProvider` interface:
    - `apps/cli` instantiates `MarkdownStorage`.
    - `apps/worker` instantiates `D1Storage`.
-   - `apps/web` instantiates `ApiStorage` (Cloudflare mode) or `NostrStorage` (Nostr mode).
+   - `apps/web` instantiates `ApiStorage` for D1-backed deployments.
 
 ---
 
@@ -129,7 +128,7 @@ Guarantees (enforced by the shared contract suite and the MCP/REST tests):
 - **Lifecycle.** Checkpoints stay with their task when it moves to another project, and are deleted with the task or its project. A missing task reads as an empty list; saving to one is `not_found`.
 - **Backups.** `ProjectBundle.checkpoints` is optional; bundles made before checkpoints import as before.
 
-Storage: Markdown keeps `<projectId>/<taskId>.checkpoints/<checkpointId>.json`; D1 has a `checkpoints` table with a unique `(task_id, step_index)` index (migration `0012_task_checkpoints.sql`); Nostr uses kind `30335` (see `nostr-spec.md`).
+Storage: Markdown keeps `<projectId>/<taskId>.checkpoints/<checkpointId>.json`; D1 has a `checkpoints` table with a unique `(task_id, step_index)` index (migration `0012_task_checkpoints.sql`).
 
 ---
 
@@ -140,12 +139,10 @@ Bitig (Turkic for "record/document") is a flexible, edge-ready task and project 
 ### Storage modes
 1. **Local (Markdown as DB):** offline, no network. Projects are directories; tasks are `.md` files (YAML frontmatter + body). Node `fs` for CLI/desktop; File System Access API in the browser (Chromium only).
 2. **Cloudflare (Hono + D1 + Durable Objects):** relational storage via Drizzle ORM, web dashboard with a `/login` page and session cookie (Basic Auth still accepted for API clients), and live WebSocket push updates (`/api/realtime`) coordinated by the `RealtimeHub` Durable Object whenever `/mcp` or `/api/*` mutates projects, tasks, or comments.
-3. **Nostr (decentralized):** browser-only SPA using `nostr-tools` with NIP-07 login. The Worker is not involved in this mode.
-
-MCP is available in every mode: STDIO (local CLI) and Streamable HTTP (Cloudflare). The web UI picks its provider at runtime from the deployment's `STORAGE_MODE` Worker var, which `GET /health` reports: `ApiStorage` (Cloudflare), `NostrStorage` (Nostr), or a local adapter (local web; currently an in-memory placeholder until the FS Access API adapter lands). Users cannot switch modes in the UI, and mode-specific controls are gated by feature flags derived from the mode (`apps/web/src/domain/features.ts`).
+MCP is available over STDIO (local CLI) and Streamable HTTP (Cloudflare). The deployed web UI uses `ApiStorage`; `local` remains an in-memory placeholder until the FS Access API adapter lands.
 
 ### Non-goals (initial release)
-- Real-time multi-user collaboration, OAuth for MCP, mobile apps, a Worker-side Nostr relay proxy.
+- Real-time multi-user collaboration, OAuth for MCP, and mobile apps.
 
 ---
 
@@ -163,18 +160,15 @@ MCP is available in every mode: STDIO (local CLI) and Streamable HTTP (Cloudflar
 - **ID strategy:** domain IDs are opaque strings (UUIDv7 or user-defined slug identifiers).
   - Markdown: directory name is `<projectId>`, task filename is `<taskId>.md`. IDs and project IDs are derived from the filesystem path and omitted from file frontmatter/body.
   - D1: ID is the primary key.
-  - Nostr: ID is the `d` tag.
-- `isPublic` is meaningful only in Nostr mode (public vs encrypted). In other modes it is stored but has no effect and defaults to `false`.
-- `deleteProject` cascades to tasks, comments, and webhooks (D1: FK `ON DELETE CASCADE`; Markdown: remove directory; Nostr: NIP-09 deletion of project and task events).
+- `isPublic` is retained for bundle compatibility but has no runtime effect and defaults to `false`.
+- `deleteProject` cascades to tasks, comments, and webhooks (D1: FK `ON DELETE CASCADE`; Markdown: remove directory).
 
 ---
 
 ## 7. Security Checklist
 
-- Dashboard sign-in: `/login` posts to `/api/auth/login`, which sets an HMAC-signed `__Host-` session cookie (`SESSION_SECRET`). Basic Auth headers still work for API clients. Secrets via `wrangler secret`, constant-time comparison, rate limiting, HTTPS only.
-- Dashboard NIP-07 against the Worker (if ever enabled) requires server-verified signing (NIP-98 or signed challenge), a session cookie and a pubkey allowlist. NIP-07 alone is not authentication.
+- Dashboard sign-in: the Worker issues a short-lived single-use challenge, verifies an allowlisted NIP-07 signature, then sets an HMAC-signed `__Host-` session cookie. Basic Auth remains for API clients only.
 - MCP: Bearer token, or a separate URL token for header-less clients; no credentials in Bitig's own logs.
-- Private Nostr tasks: encrypted content; note that tags are visible to relays.
 - Input validation with zod at every boundary; path traversal protection in `MarkdownStorage`.
 
 See `docs/security.md` for details.
@@ -184,7 +178,6 @@ See `docs/security.md` for details.
 ## 8. Risks
 
 - File System Access API is Chromium-only; Firefox/Safari need CLI or download/upload fallback.
-- Nostr relays may drop or reorder events; conflict resolution is last-write-wins and can lose edits.
 
 ---
 

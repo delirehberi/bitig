@@ -5,9 +5,7 @@ import {
   Circle,
   Clock,
   Edit2,
-  Globe,
   GripVertical,
-  Lock,
   MessageSquare,
   Tag,
   Trash2,
@@ -21,7 +19,6 @@ import {
   type TaskPriority,
   type TaskStatus,
 } from "@bitig/core";
-import { useFeatureFlags } from "../../hooks/useFeatureFlags";
 import { ChecklistProgressBadge } from "./Checklist";
 import { ApprovalNote } from "./Approval";
 import { BlockedBadge } from "./Blocked";
@@ -66,7 +63,6 @@ export function TaskCard({
   onReorder,
   showProject = true,
 }: TaskCardProps) {
-  const { taskVisibility } = useFeatureFlags();
   const project = projects.find((p) => p.id === task.projectId);
   const isDone = task.status === "done";
   const isArchived = task.status === "archived";
@@ -99,24 +95,6 @@ export function TaskCard({
                 {project.name}
               </span>
             )}
-            {taskVisibility &&
-              (task.isPublic ? (
-                <span
-                  className="flex items-center gap-1 rounded-pill border border-rule bg-paper-2 px-1.5 py-0.5 text-2xs text-ink-3"
-                  title="Public task (visible on Nostr relays)"
-                >
-                  <Globe size={11} aria-hidden="true" />
-                  public
-                </span>
-              ) : (
-                <span
-                  className="flex items-center gap-1 rounded-pill border border-rule bg-paper-2 px-1.5 py-0.5 text-2xs text-ink-3"
-                  title="Private task (NIP-44 encrypted)"
-                >
-                  <Lock size={11} aria-hidden="true" />
-                  private
-                </span>
-              ))}
             {task.priority && (
               <span
                 className={`rounded-pill border px-2 py-0.5 text-2xs uppercase tracking-wider ${

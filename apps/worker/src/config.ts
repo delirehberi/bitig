@@ -3,6 +3,7 @@ import { z } from "zod";
 
 const ORIGIN_SEPARATOR = ",";
 const MIN_SESSION_SECRET_LENGTH = 32;
+const NOSTR_PUBKEY_PATTERN = /^[0-9a-f]{64}$/;
 
 const configSchema = z.object({
   ALLOWED_ORIGINS: z
@@ -27,6 +28,11 @@ const configSchema = z.object({
     .refine((secret) => secret.length === 0 || secret.length >= MIN_SESSION_SECRET_LENGTH, {
       message: `must be at least ${String(MIN_SESSION_SECRET_LENGTH)} characters`,
     }),
+  NOSTR_AUTH_PUBKEYS: z
+    .string()
+    .default("")
+    .transform((raw) => raw.split(ORIGIN_SEPARATOR).map((key) => key.trim().toLowerCase()).filter(Boolean))
+    .pipe(z.array(z.string().regex(NOSTR_PUBKEY_PATTERN))),
   // Chosen per deployment; the dashboard reads it from /health instead of offering a switch.
   STORAGE_MODE: z.enum(STORAGE_MODES).default("cloudflare"),
 });

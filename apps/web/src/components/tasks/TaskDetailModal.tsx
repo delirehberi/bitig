@@ -5,8 +5,6 @@ import {
   CheckCircle2,
   Clock,
   Edit2,
-  Globe,
-  Lock,
   PlayCircle,
   Tag,
   Trash2,
@@ -26,7 +24,6 @@ import {
   type TaskLinks,
   type TaskStatus,
 } from "@bitig/core";
-import { useFeatureFlags } from "../../hooks/useFeatureFlags";
 import { useFocusTrap } from "../../hooks/useFocusTrap";
 import { Markdown } from "../Markdown";
 import { ChecklistProgressBadge, ChecklistView } from "./Checklist";
@@ -135,7 +132,6 @@ export function TaskDetailModal({
   links,
   dependencies,
 }: TaskDetailModalProps) {
-  const { taskVisibility } = useFeatureFlags();
   const isOpen = task !== null;
   // A toggled checklist shows at once and gives way to the saved task once the save settles
   // (or reverts if it fails). Only the latest toggle clears it, so quick clicks don't flicker.
@@ -313,11 +309,6 @@ export function TaskDetailModal({
           <Field label="Due date" icon={Calendar}>
             {task.dueDate ? <span className="font-mono">{task.dueDate}</span> : "—"}
           </Field>
-          {taskVisibility && (
-            <Field label="Visibility" icon={task.isPublic ? Globe : Lock}>
-              {task.isPublic ? "Public (visible on Nostr relays)" : "Private (NIP-44 encrypted)"}
-            </Field>
-          )}
           <Field label="Labels" icon={Tag}>
             {task.labels && task.labels.length > 0 ? (
               <span className="flex flex-wrap gap-1">

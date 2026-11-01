@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type DragEvent } from "react";
-import { Archive, X } from "lucide-react";
+import { Archive, Inbox, X } from "lucide-react";
 import {
   TASK_STATUSES,
   type Project,
@@ -73,9 +73,10 @@ export function TaskBoard({
   const columns = new Map(
     TASK_STATUSES.map((status) => [
       status,
-      tasks.filter((t) => t.status === status),
+      tasks.filter((t) => t.pendingApproval !== true && t.status === status),
     ]),
   );
+  const backlogTasks = tasks.filter((task) => task.pendingApproval === true);
   const archivedTasks = columns.get("archived") ?? [];
 
   useEffect(() => {
@@ -90,15 +91,28 @@ export function TaskBoard({
   }, [tasks]);
 
   function move(task: Task, status: TaskStatus, index: number) {
+    if (task.pendingApproval === true && status !== "todo") return;
     const column = columns.get(status) ?? [];
     const changes = planMove(column, task, index);
     const statusChanged = task.status !== status;
+    const promotedFromBacklog = task.pendingApproval === true;
     if (changes.length === 0 && !statusChanged) return;
     const moves = changes.map(({ task: t, order }): TaskMove => ({
       task: t,
-      patch: t.id === task.id && statusChanged ? { status, order } : { order },
+      patch:
+        t.id === task.id && promotedFromBacklog
+          ? { status: "todo", pendingApproval: null, order }
+          : t.id === task.id && statusChanged
+            ? { status, order }
+            : { order },
     }));
     onMove(moves);
+  }
+
+  function reorderBacklog(task: Task, index: number) {
+    const changes = planMove(backlogTasks, task, index);
+    if (changes.length === 0) return;
+    onMove(changes.map(({ task: changedTask, order }) => ({ task: changedTask, patch: { order } })));
   }
 
   function dropIndex(event: DragEvent<HTMLElement>, status: TaskStatus): number {
@@ -119,6 +133,57 @@ export function TaskBoard({
 
   return (
     <div ref={boardRef} className="flex flex-col gap-5">
+      <div data-testid="column-backlog" className="flex flex-col rounded-lg border border-rule bg-paper-2/60 p-4">
+        <div className="mb-3 flex items-center gap-2">
+          <Inbox size={ARCHIVE_ICON_SIZE} className="text-ink-3" aria-hidden="true" />
+          <h3 className="m-0 font-display text-sm font-bold text-ink">Backlog</h3>
+          <span className="rounded-pill bg-paper px-2 py-0.5 font-mono text-2xs font-semibold text-ink-2">
+            {backlogTasks.length}
+          </span>
+        </div>
+
+        {backlogTasks.length === 0 ? (
+          <div className="flex min-h-[120px] items-center justify-center rounded-md border border-dashed border-rule p-4 text-center text-xs text-ink-3">
+            No tasks awaiting approval
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
+            {backlogTasks.map((task) => (
+              <div
+                key={task.id}
+                data-task-id={task.id}
+                draggable
+                onDragStart={(event) => {
+                  event.dataTransfer.effectAllowed = "move";
+                  event.dataTransfer.setData("text/plain", task.title);
+                  setDraggedId(task.id);
+                }}
+                onDragEnd={endDrag}
+                className={task.id === draggedId ? "opacity-40" : ""}
+              >
+                <TaskCard
+                  task={task}
+                  projects={projects}
+                  showProject={showProject}
+                  onView={onView}
+                  onEdit={onEdit}
+                  onDelete={onDelete}
+                  onComplete={onComplete}
+                  onStatusChange={onStatusChange}
+                  onApprove={onApprove}
+                  onReorder={(direction) => {
+                    const index = backlogTasks.indexOf(task) + direction;
+                    if (index < 0 || index >= backlogTasks.length) return;
+                    refocusId.current = task.id;
+                    reorderBacklog(task, index);
+                  }}
+                />
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
       <div className="grid grid-cols-1 gap-5 md:grid-cols-3">
         {ACTIVE_STATUSES.map((status) => {
           const colTasks = columns.get(status) ?? [];
@@ -132,6 +197,8 @@ export function TaskBoard({
               data-testid={`column-${status}`}
               onDragOver={(e) => {
                 if (!draggedId) return;
+                const draggedTask = tasks.find((task) => task.id === draggedId);
+                if (draggedTask?.pendingApproval === true && status !== "todo") return;
                 e.preventDefault();
                 e.dataTransfer.dropEffect = "move";
                 const index = dropIndex(e, status);

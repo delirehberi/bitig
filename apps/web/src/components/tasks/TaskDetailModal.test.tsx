@@ -237,12 +237,7 @@ describe("TaskDetailModal", () => {
     expect(screen.queryByRole("note", { name: "Needs you" })).not.toBeInTheDocument();
   });
 
-  it("shows visibility only in nostr mode", () => {
-    renderModal(TASK, "nostr");
-    expect(screen.getByText(/private \(nip-44 encrypted\)/i)).toBeInTheDocument();
-  });
-
-  it("hides visibility outside nostr mode", () => {
+  it("hides retired Nostr visibility details", () => {
     renderModal(TASK, "cloudflare");
     expect(screen.queryByText(/nip-44/i)).not.toBeInTheDocument();
   });

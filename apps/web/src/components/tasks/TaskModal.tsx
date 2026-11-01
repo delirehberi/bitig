@@ -10,7 +10,6 @@ import {
   type TaskStatus,
 } from "@bitig/core";
 import { CheckSquare, X } from "lucide-react";
-import { useFeatureFlags } from "../../hooks/useFeatureFlags";
 import { useFocusTrap } from "../../hooks/useFocusTrap";
 import { ChecklistEditor } from "./Checklist";
 import { DependsOnPicker } from "./DependsOnPicker";
@@ -52,7 +51,6 @@ export function TaskModal({
   defaultProjectId,
   tasks,
 }: TaskModalProps) {
-  const { taskVisibility } = useFeatureFlags();
   const initialProjectId =
     task?.projectId ?? defaultProjectId ?? (projects.length > 0 ? (projects[0]?.id ?? "") : "");
 
@@ -63,7 +61,7 @@ export function TaskModal({
   const [priority, setPriority] = useState<TaskPriority | "">(task?.priority ?? "");
   const [dueDate, setDueDate] = useState(task?.dueDate ?? "");
   const [labelsInput, setLabelsInput] = useState(task?.labels ? task.labels.join(", ") : "");
-  const [isPublic, setIsPublic] = useState(task?.isPublic ?? false);
+  const isPublic = task?.isPublic ?? false;
   const [needsHuman, setNeedsHuman] = useState(task?.needsHuman ?? "");
   const [checklist, setChecklist] = useState<ChecklistItem[]>(() => task?.checklist?.map((item) => ({ ...item })) ?? []);
   const [dependsOn, setDependsOn] = useState<string[]>(() => [...(task?.dependsOn ?? [])]);
@@ -286,25 +284,6 @@ export function TaskModal({
               disabled={isSubmitting}
             />
           </div>
-
-          {/* Hidden outside Nostr mode; isPublic is still submitted so stored values survive edits. */}
-          {taskVisibility && (
-            <div className="flex items-center gap-2">
-              <input
-                id="task-public"
-                type="checkbox"
-                checked={isPublic}
-                onChange={(e) => {
-                  setIsPublic(e.target.checked);
-                }}
-                className="rounded border-rule text-accent focus-visible:outline-focus"
-                disabled={isSubmitting}
-              />
-              <label htmlFor="task-public" className="text-xs font-semibold text-ink-2">
-                Public Task <span className="font-normal text-ink-3">(visible on Nostr relays; unchecked means NIP-44 encrypted)</span>
-              </label>
-            </div>
-          )}
 
           <div>
             <label htmlFor="task-description" className="block text-xs font-semibold text-ink-2">
