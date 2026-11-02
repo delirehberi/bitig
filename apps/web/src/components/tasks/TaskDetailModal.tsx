@@ -24,6 +24,7 @@ import {
   type TaskLinks,
   type TaskStatus,
 } from "@bitig/core";
+import { formatFullTimestamp, formatTimeAgo } from "../../domain/time-ago";
 import { useFocusTrap } from "../../hooks/useFocusTrap";
 import { Markdown } from "../Markdown";
 import { ChecklistProgressBadge, ChecklistView } from "./Checklist";
@@ -74,11 +75,6 @@ const PRIORITY_BADGES: Record<TaskPriority, string> = {
   low: "bg-paper-3 text-ink-2 border-rule",
   trivial: "bg-paper-3 text-ink-3 border-rule",
 };
-
-function formatTimestamp(iso: string): string {
-  const date = new Date(iso);
-  return Number.isNaN(date.getTime()) ? iso : date.toLocaleString();
-}
 
 function formatActivityAction(entry: TaskActivityEntry): string {
   switch (entry.action) {
@@ -357,7 +353,13 @@ export function TaskDetailModal({
           </Field>
           <Field label="Created">
             <div className="flex flex-col gap-0.5">
-              <span className="text-xs">{formatTimestamp(task.createdAt)}</span>
+              <time
+                dateTime={task.createdAt}
+                title={formatFullTimestamp(task.createdAt)}
+                className="text-xs"
+              >
+                {formatTimeAgo(task.createdAt)}
+              </time>
               {task.createdBy && (
                 <span className="inline-flex items-center gap-1 text-2xs text-ink-3">
                   <Bot size={11} aria-hidden="true" />
@@ -371,7 +373,13 @@ export function TaskDetailModal({
           <Field label="Started" icon={PlayCircle}>
             {task.startedAt ? (
               <div className="flex flex-col gap-0.5">
-                <span className="text-xs">{formatTimestamp(task.startedAt)}</span>
+                <time
+                  dateTime={task.startedAt}
+                  title={formatFullTimestamp(task.startedAt)}
+                  className="text-xs"
+                >
+                  {formatTimeAgo(task.startedAt)}
+                </time>
                 {task.startedBy && (
                   <span className="inline-flex items-center gap-1 text-2xs text-ink-3">
                     <Bot size={11} aria-hidden="true" />
@@ -393,7 +401,13 @@ export function TaskDetailModal({
           <Field label="Completed" icon={CheckCircle2}>
             {task.completedAt ? (
               <div className="flex flex-col gap-0.5">
-                <span className="text-xs">{formatTimestamp(task.completedAt)}</span>
+                <time
+                  dateTime={task.completedAt}
+                  title={formatFullTimestamp(task.completedAt)}
+                  className="text-xs"
+                >
+                  {formatTimeAgo(task.completedAt)}
+                </time>
                 {task.completedBy && (
                   <span className="inline-flex items-center gap-1 text-2xs text-ink-3">
                     <Bot size={11} aria-hidden="true" />
@@ -414,7 +428,13 @@ export function TaskDetailModal({
           </Field>
           <Field label="Updated">
             <div className="flex flex-col gap-0.5">
-              <span className="text-xs">{formatTimestamp(task.updatedAt)}</span>
+              <time
+                dateTime={task.updatedAt}
+                title={formatFullTimestamp(task.updatedAt)}
+                className="text-xs"
+              >
+                {formatTimeAgo(task.updatedAt)}
+              </time>
               {task.updatedBy && (
                 <span className="inline-flex items-center gap-1 text-2xs text-ink-3">
                   <Bot size={11} aria-hidden="true" />
@@ -447,8 +467,12 @@ export function TaskDetailModal({
                     <span className="font-semibold text-ink">{entry.actor}</span>
                     <span>{formatActivityAction(entry)}</span>
                   </span>
-                  <time dateTime={entry.timestamp} className="font-mono text-2xs text-ink-3">
-                    {formatTimestamp(entry.timestamp)}
+                  <time
+                    dateTime={entry.timestamp}
+                    title={formatFullTimestamp(entry.timestamp)}
+                    className="font-mono text-2xs text-ink-3"
+                  >
+                    {formatTimeAgo(entry.timestamp)}
                   </time>
                 </li>
               ))}

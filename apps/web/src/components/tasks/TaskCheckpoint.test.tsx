@@ -32,6 +32,7 @@ describe("TaskCheckpoint", () => {
     expect(screen.getByText("codex")).toBeInTheDocument();
     expect(screen.getByText("In progress")).toBeInTheDocument();
     expect(screen.getByText("Step 1")).toBeInTheDocument();
+    expect(screen.getByText("just now")).toBeInTheDocument();
     expect(screen.getByText("Do step 2")).toBeInTheDocument();
   });
 

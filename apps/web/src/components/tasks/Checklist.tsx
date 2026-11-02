@@ -13,20 +13,10 @@ import {
   type Task,
 } from "@bitig/core";
 import { ArrowDown, ArrowUp, Clock, ListChecks, Play, Plus, X } from "lucide-react";
+import { formatTimeAgo } from "../../domain/time-ago";
 import { InlineMarkdown } from "../Markdown";
 
 const ICON_SIZE = 14;
-
-function formatShortTimestamp(iso: string): string {
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return iso;
-  return date.toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
 
 /** `2/5` badge for cards and rows; renders nothing for a task without a checklist. */
 export function ChecklistProgressBadge({ checklist }: { readonly checklist: readonly ChecklistItem[] | undefined }) {
@@ -116,7 +106,7 @@ export function ChecklistView({ checklist, onToggle, task }: ChecklistViewProps)
                   )}
                   {item.done && item.completedAt && (
                     <span title={`Completed at ${item.completedAt}`}>
-                      {formatShortTimestamp(item.completedAt)}
+                      {formatTimeAgo(item.completedAt)}
                     </span>
                   )}
                   {!item.done && item.startedAt && (
@@ -125,7 +115,7 @@ export function ChecklistView({ checklist, onToggle, task }: ChecklistViewProps)
                       className="inline-flex items-center gap-1 rounded-pill bg-accent-soft px-2 py-0.5 font-medium text-accent-ink"
                     >
                       <Clock size={10} aria-hidden="true" />
-                      Started {formatShortTimestamp(item.startedAt)}
+                      Started {formatTimeAgo(item.startedAt)}
                     </span>
                   )}
                   {!item.done && !item.startedAt && onToggle && (

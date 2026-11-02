@@ -26,6 +26,7 @@ describe("TaskComments", () => {
     ]);
     expect(screen.getByText("claude")).toBeInTheDocument();
     expect(screen.getByText("(agent)")).toBeInTheDocument();
+    expect(screen.getAllByText("just now")).toHaveLength(2);
     expect(screen.getByRole("heading", { name: /comments \(2\)/i })).toBeInTheDocument();
   });
 

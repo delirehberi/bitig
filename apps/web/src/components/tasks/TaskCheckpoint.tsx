@@ -1,5 +1,6 @@
 import { Bot, Flag } from "lucide-react";
 import type { CheckpointStatus, StorageProvider } from "@bitig/core";
+import { formatFullTimestamp, formatTimeAgo } from "../../domain/time-ago";
 import { useCheckpoints } from "../../hooks/useCheckpoints";
 
 const ICON_SIZE = 12;
@@ -11,11 +12,6 @@ const STATUS_LABELS: Record<CheckpointStatus, string> = {
   COMPLETED: "Completed",
   FAILED: "Failed",
 };
-
-function formatTimestamp(iso: string): string {
-  const date = new Date(iso);
-  return Number.isNaN(date.getTime()) ? iso : date.toLocaleString();
-}
 
 interface TaskCheckpointProps {
   readonly storage: StorageProvider;
@@ -57,8 +53,12 @@ export function TaskCheckpoint({ storage, taskId }: TaskCheckpointProps) {
               by <strong className="font-semibold text-ink-2">{latest.createdBy}</strong>
             </span>
           )}
-          <time dateTime={latest.createdAt} className="ml-auto font-mono">
-            {formatTimestamp(latest.createdAt)}
+          <time
+            dateTime={latest.createdAt}
+            title={formatFullTimestamp(latest.createdAt)}
+            className="ml-auto font-mono"
+          >
+            {formatTimeAgo(latest.createdAt)}
           </time>
         </div>
         <p className="m-0 text-sm text-ink">{latest.stateSnapshot.summary}</p>

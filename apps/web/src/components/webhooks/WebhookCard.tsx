@@ -13,6 +13,7 @@ import {
   Trash2,
 } from "lucide-react";
 import type { Project, TaskPriority, Webhook, WebhookProvider } from "@bitig/core";
+import { formatFullTimestamp, formatTimeAgo } from "../../domain/time-ago";
 
 interface WebhookCardProps {
   readonly webhook: Webhook;
@@ -254,9 +255,19 @@ export function WebhookCard({
           </span>
         </div>
         <span>
-          {webhook.lastTriggeredAt
-            ? `Last triggered ${new Date(webhook.lastTriggeredAt).toLocaleDateString()}`
-            : "Never triggered"}
+          {webhook.lastTriggeredAt ? (
+            <>
+              Last triggered{" "}
+              <time
+                dateTime={webhook.lastTriggeredAt}
+                title={formatFullTimestamp(webhook.lastTriggeredAt)}
+              >
+                {formatTimeAgo(webhook.lastTriggeredAt)}
+              </time>
+            </>
+          ) : (
+            "Never triggered"
+          )}
         </span>
       </div>
     </article>

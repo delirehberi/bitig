@@ -12,6 +12,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import type { Project, ProjectKind, Task } from "@bitig/core";
+import { formatFullTimestamp, formatTimeAgo } from "../../domain/time-ago";
 import { useFocusTrap } from "../../hooks/useFocusTrap";
 import { Markdown } from "../Markdown";
 import { ResourceLinks } from "./Resources";
@@ -36,11 +37,6 @@ const KIND_COLORS: Record<ProjectKind, string> = {
   personal: "bg-paper-3 text-ink",
   internal: "bg-rule-strong text-ink",
 };
-
-function formatTimestamp(iso: string): string {
-  const date = new Date(iso);
-  return Number.isNaN(date.getTime()) ? iso : date.toLocaleString();
-}
 
 function Field({
   label,
@@ -177,10 +173,22 @@ export function ProjectDetailModal({
             </Field>
           )}
           <Field label="Created">
-            <span className="text-xs">{formatTimestamp(project.createdAt)}</span>
+            <time
+              dateTime={project.createdAt}
+              title={formatFullTimestamp(project.createdAt)}
+              className="text-xs"
+            >
+              {formatTimeAgo(project.createdAt)}
+            </time>
           </Field>
           <Field label="Updated">
-            <span className="text-xs">{formatTimestamp(project.updatedAt)}</span>
+            <time
+              dateTime={project.updatedAt}
+              title={formatFullTimestamp(project.updatedAt)}
+              className="text-xs"
+            >
+              {formatTimeAgo(project.updatedAt)}
+            </time>
           </Field>
         </dl>
 

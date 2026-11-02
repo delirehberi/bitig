@@ -22,17 +22,13 @@ import {
   type OperationOptions,
   type StorageProvider,
 } from "@bitig/core";
+import { formatFullTimestamp, formatTimeAgo } from "../../domain/time-ago";
 import { useAttachments } from "../../hooks/useAttachments";
 import { Markdown } from "../Markdown";
 
 const ICON_SIZE = 12;
 const BYTES_PER_KB = 1024;
 const BYTES_PER_MB = 1024 * 1024;
-
-function formatTimestamp(iso: string): string {
-  const date = new Date(iso);
-  return Number.isNaN(date.getTime()) ? iso : date.toLocaleString();
-}
 
 function formatByteSize(bytes: number): string {
   if (bytes < BYTES_PER_KB) return `${String(bytes)} B`;
@@ -137,7 +133,9 @@ function AttachmentItem({ attachment, loadContent, onDelete }: AttachmentItemPro
             <span>{attachment.createdBy}</span>
           </span>
         )}
-        <time dateTime={attachment.createdAt}>{formatTimestamp(attachment.createdAt)}</time>
+        <time dateTime={attachment.createdAt} title={formatFullTimestamp(attachment.createdAt)}>
+          {formatTimeAgo(attachment.createdAt)}
+        </time>
         <div className="ml-auto flex items-center gap-2">
           <button
             type="button"

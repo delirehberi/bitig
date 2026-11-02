@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { MCP_TOKEN_ACTIVE_LIMIT, MCP_TOKEN_LABEL_MAX_LENGTH, type McpTokenTransport } from "@bitig/core";
 import { KeyRound, RefreshCw, ShieldCheck } from "lucide-react";
+import { formatFullTimestamp, formatTimeAgo } from "../../domain/time-ago";
 import { useMcpTokens } from "../../hooks/useMcpTokens";
 
 const INPUT_CLASS = "w-full rounded-md border border-rule bg-paper px-3 py-2 text-sm text-ink focus:outline-none focus:ring-2 focus:ring-accent";
@@ -90,7 +91,12 @@ export function McpTokensPanel() {
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-0 text-sm">
                       <p className="m-0 break-words font-semibold text-ink">{token.label} <span className="ml-2 text-xs font-normal text-ink-3">{status}</span></p>
-                      <p className="my-1 text-xs text-ink-2">{token.transport === "bearer" ? "Bearer header" : "URL query"} · Created {new Date(token.createdAt).toLocaleString()}</p>
+                      <p className="my-1 text-xs text-ink-2">
+                        {token.transport === "bearer" ? "Bearer header" : "URL query"} · Created{" "}
+                        <time dateTime={token.createdAt} title={formatFullTimestamp(token.createdAt)}>
+                          {formatTimeAgo(token.createdAt, new Date(state.now))}
+                        </time>
+                      </p>
                       <p className="m-0 text-xs text-ink-3">{token.expiresAt === null ? "No expiry" : `Expires ${new Date(token.expiresAt).toLocaleString()}`}</p>
                     </div>
                     {token.revokedAt === null && <button type="button" aria-label={`Revoke ${token.label}`} disabled={state.isPending || state.isLoading} className={BUTTON_CLASS} onClick={() => { setConfirmId(token.id); }}>Revoke</button>}

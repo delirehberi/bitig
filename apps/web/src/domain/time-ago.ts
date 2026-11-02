@@ -7,13 +7,21 @@ const HOURS_PER_DAY = 24;
 const relativeTime = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
 
 /** "just now", "5 minutes ago", "3 hours ago", "yesterday", "4 days ago". */
-export function formatTimeAgo(iso: string, now: Date): string {
-  const minutes = Math.round((Date.parse(iso) - now.getTime()) / MS_PER_MINUTE);
+export function formatTimeAgo(iso: string, now: Date = new Date()): string {
+  const parsed = Date.parse(iso);
+  if (Number.isNaN(parsed)) return iso;
+  const minutes = Math.round((parsed - now.getTime()) / MS_PER_MINUTE);
   if (minutes > -1) return "just now";
   if (minutes > -MINUTES_PER_HOUR) return relativeTime.format(minutes, "minute");
   const hours = Math.round(minutes / MINUTES_PER_HOUR);
   if (hours > -HOURS_PER_DAY) return relativeTime.format(hours, "hour");
-  return relativeTime.format(-daysBetween(new Date(iso), now), "day");
+  return relativeTime.format(-daysBetween(new Date(parsed), now), "day");
+}
+
+/** Full local date and time string for tooltip (`title`) attributes, or raw `iso` if invalid. */
+export function formatFullTimestamp(iso: string): string {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? iso : date.toLocaleString();
 }
 
 function startOfDay(date: Date): number {

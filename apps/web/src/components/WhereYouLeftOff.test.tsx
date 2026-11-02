@@ -1,7 +1,7 @@
 import type { Project, Task } from "@bitig/core";
 import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { formatDayLabel, formatTimeAgo } from "../domain/time-ago";
+import { formatDayLabel, formatFullTimestamp, formatTimeAgo } from "../domain/time-ago";
 import { WhereYouLeftOff } from "./WhereYouLeftOff";
 
 const NOW = new Date(2026, 9, 22, 15, 0);
@@ -38,12 +38,15 @@ function task(n: number, project: Project, updatedAt: string, overrides: Partial
 }
 
 describe("formatTimeAgo", () => {
-  it("reads minutes, hours and calendar days", () => {
+  it("reads minutes, hours and calendar days, and falls back for invalid dates", () => {
     expect(formatTimeAgo(NOW.toISOString(), NOW)).toBe("just now");
     expect(formatTimeAgo(localIso(22, 14, 55), NOW)).toBe("5 minutes ago");
     expect(formatTimeAgo(localIso(22, 12), NOW)).toBe("3 hours ago");
     expect(formatTimeAgo(localIso(21, 9), NOW)).toBe("yesterday");
     expect(formatTimeAgo(localIso(18, 9), NOW)).toBe("4 days ago");
+    expect(formatTimeAgo( new Date().toISOString())).toBe("just now");
+    expect(formatTimeAgo("not-a-date", NOW)).toBe("not-a-date");
+    expect(formatFullTimestamp("not-a-date")).toBe("not-a-date");
   });
 });
 

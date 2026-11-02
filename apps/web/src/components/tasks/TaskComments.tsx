@@ -2,14 +2,10 @@ import { useState } from "react";
 import { Bot, MessageSquare, Trash2, User } from "lucide-react";
 import type { Comment, StorageProvider } from "@bitig/core";
 import { useComments } from "../../hooks/useComments";
+import { formatFullTimestamp, formatTimeAgo } from "../../domain/time-ago";
 import { Markdown } from "../Markdown";
 
 const ICON_SIZE = 12;
-
-function formatTimestamp(iso: string): string {
-  const date = new Date(iso);
-  return Number.isNaN(date.getTime()) ? iso : date.toLocaleString();
-}
 
 function CommentItem({ comment, onDelete }: { readonly comment: Comment; readonly onDelete: () => void }) {
   const isAgent = comment.authorType === "agent";
@@ -21,7 +17,9 @@ function CommentItem({ comment, onDelete }: { readonly comment: Comment; readonl
         <Icon size={ICON_SIZE} aria-hidden="true" />
         <span className="font-semibold text-ink-2">{name}</span>
         {isAgent && comment.author !== undefined && <span>(agent)</span>}
-        <time dateTime={comment.createdAt}>{formatTimestamp(comment.createdAt)}</time>
+        <time dateTime={comment.createdAt} title={formatFullTimestamp(comment.createdAt)}>
+          {formatTimeAgo(comment.createdAt)}
+        </time>
         <button
           type="button"
           onClick={onDelete}
