@@ -90,7 +90,7 @@ describe("Bitig CLI STDIO MCP Server E2E", () => {
 
   it("completes full MCP project and task lifecycle over STDIO", async () => {
     const { tools } = await client.listTools();
-    expect(tools.length).toBe(25);
+    expect(tools.length).toBe(26);
 
     // 1. Create project
     const proj = await callToolJson<ProjectResult & { bitig_file_content: string }>("create_project", {
@@ -144,6 +144,7 @@ describe("Bitig CLI STDIO MCP Server E2E", () => {
       "next_task",
       "resume_from_checkpoint",
       "save_checkpoint",
+      "start_t3_thread",
       "update_project",
       "update_task",
       "update_webhook",
@@ -224,6 +225,11 @@ describe("Bitig CLI STDIO MCP Server E2E", () => {
       context: { checkpoint: null, comments: [] },
       counts: { pendingApproval: 0, actionableTodo: 1 },
     });
+    // T3 launches need the worker's T3 connection; the STDIO server registers the shared tool but refuses it
+    const t3Refused = await client.callTool({ name: "start_t3_thread", arguments: { taskId: "ALL-1" } });
+    expect(t3Refused.isError).toBe(true);
+    expect(JSON.stringify(t3Refused.content)).toContain("T3 integration is not configured on this server");
+    expect(await callToolJson("get_task", { id: "ALL-1" })).toMatchObject({ status: "todo" });
     const completed = await callToolJson<TaskResult>("complete_task", { id: "all-1" });
     expect(completed).toMatchObject({ id: task.id, status: "done", code: "ALL-1" });
     expect(await callToolJson("backfill_ticket_codes")).toEqual({ keyedProjects: 0, numberedTasks: 0 });
