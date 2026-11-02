@@ -3,15 +3,19 @@ import {
   aggregateTimeByProjectAndWeek,
   exportTimeSpentCsv,
   formatDuration,
+  taskCode,
   type Project,
   type StorageMode,
   type Task,
   type TimeCsvExportMode,
 } from "@bitig/core";
-import { Clock, Download, FolderKanban, Hand, ListTodo, ShieldQuestionMark } from "lucide-react";
+import { Bell, Clock, Download, FolderKanban, Hand, ListTodo, ShieldQuestionMark } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
 import { MODE_COPY } from "../domain/modes";
+import { formatTimeAgo } from "../domain/time-ago";
 import type { HealthState } from "../hooks/useHealth";
+import { Link } from "../routing/Link";
+import { hrefFor } from "../routing/router";
 import { WhereYouLeftOff } from "./WhereYouLeftOff";
 
 interface OverviewProps {
@@ -34,6 +38,7 @@ const FULL_BAR_PERCENT = 100;
 const MIN_VISIBLE_BAR_PERCENT = 4;
 const EXPORT_BY_WEEK_FILENAME = "bitig-time-by-week.csv";
 const EXPORT_BY_PROJECT_FILENAME = "bitig-time-by-project.csv";
+const RECENT_COMPLETIONS_LIMIT = 5;
 
 function triggerBrowserCsvDownload(filename: string, csvContent: string): void {
   if (typeof document === "undefined" || typeof URL.createObjectURL !== "function") {
@@ -105,6 +110,18 @@ export function Overview({
 
   const effectiveProjectsCount = projectsCount ?? projects.length;
   const effectiveTasksCount = tasksCount ?? tasks.length;
+  const projectsById = useMemo(() => new Map(projects.map((project) => [project.id, project])), [projects]);
+  const awaitingReview = useMemo(
+    () =>
+      tasks
+        .filter((task) => task.status === "done")
+        .sort((a, b) => {
+          const byCompletion = (b.completedAt ?? b.updatedAt).localeCompare(a.completedAt ?? a.updatedAt);
+          return byCompletion || a.id.localeCompare(b.id);
+        }),
+    [tasks],
+  );
+  const recentCompletions = awaitingReview.slice(0, RECENT_COMPLETIONS_LIMIT);
 
   const filteredProjects = useMemo(
     () =>
@@ -163,6 +180,51 @@ export function Overview({
           Bitig is meant to be driven over MCP. Open this page now and then to check what your
           agents have written down.
         </p>
+      </section>
+
+      <section aria-labelledby="awaiting-review-heading" className="flex flex-col gap-4 rounded-lg border border-rule bg-paper p-6 shadow-xs">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <Bell size={18} className="text-accent-ink" aria-hidden="true" />
+            <h2 id="awaiting-review-heading" className="m-0 font-display text-lg font-semibold text-ink">
+              Completed, awaiting review
+            </h2>
+            <span className="rounded-pill bg-accent-soft px-2 py-0.5 font-mono text-xs font-semibold text-accent-ink">
+              {awaitingReview.length}
+            </span>
+          </div>
+          <Link href={hrefFor({ name: "tasks" })} className="text-sm font-semibold text-accent-ink hover:underline">
+            View all tasks
+          </Link>
+        </div>
+        {recentCompletions.length === 0 ? (
+          <p className="m-0 rounded-md border border-dashed border-rule bg-paper-2 p-4 text-sm text-ink-3">
+            No completed tasks awaiting review.
+          </p>
+        ) : (
+          <ul className="m-0 flex list-none flex-col gap-2 p-0">
+            {recentCompletions.map((task) => {
+              const project = projectsById.get(task.projectId);
+              const code = taskCode(task, project);
+              const completedAt = task.completedAt ?? task.updatedAt;
+              return (
+                <li key={task.id} className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 rounded-md border border-rule bg-paper-2 p-3">
+                  <Link
+                    href={hrefFor({ name: "tasks", projectId: task.projectId, taskRef: code ?? task.id })}
+                    aria-label={code ? `${code} ${task.title}` : task.title}
+                    className="flex min-w-0 items-baseline gap-2 text-sm font-semibold text-ink hover:text-accent-ink hover:underline"
+                  >
+                    {code && <span className="shrink-0 font-mono text-xs text-ink-3">{code}</span>}
+                    <span className="truncate">{task.title}</span>
+                  </Link>
+                  <span className="text-xs text-ink-3">
+                    {project?.name ?? "Unknown project"} · <time dateTime={completedAt}>{formatTimeAgo(completedAt, new Date())}</time>
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        )}
       </section>
 
       {effectiveProjectsCount > 0 && <WhereYouLeftOff projects={projects} tasks={tasks} />}

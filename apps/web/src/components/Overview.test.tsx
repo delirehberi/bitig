@@ -24,7 +24,7 @@ const PROJECT_BETA: Project = {
   updatedAt: "2026-03-01T00:00:00.000Z",
 };
 
-const TASKS: readonly Task[] = [
+const TASKS: readonly [Task, Task] = [
   {
     id: "01940000-0000-7000-8000-000000000011",
     projectId: PROJECT_ALPHA.id,
@@ -128,3 +128,58 @@ describe("Overview time analytics and CSV export", () => {
   });
 });
 
+describe("Overview completed tasks awaiting review", () => {
+  const health = { kind: "online", version: "0.4.1", storageMode: "cloudflare" } as const;
+
+  it("shows the latest five done tasks in completion order and links to their details", () => {
+    const tasks: Task[] = [
+      ...TASKS,
+      ...Array.from({ length: 5 }, (_, index): Task => ({
+        ...TASKS[0],
+        id: `01940000-0000-7000-8000-${String(index + 20).padStart(12, "0")}`,
+        title: `Recent task ${String(index + 1)}`,
+        number: index + 1,
+        completedAt: `2026-04-0${String(index + 1)}T10:00:00.000Z`,
+        updatedAt: `2026-04-0${String(index + 1)}T10:00:00.000Z`,
+      })),
+      { ...TASKS[0], id: "01940000-0000-7000-8000-000000000030", title: "Archived task", status: "archived" },
+      { ...TASKS[0], id: "01940000-0000-7000-8000-000000000031", title: "Open task", status: "in_progress" },
+    ];
+    render(<Overview mode="cloudflare" health={health} projects={[PROJECT_ALPHA, PROJECT_BETA]} tasks={tasks} />);
+
+    const review = screen.getByRole("region", { name: "Completed, awaiting review" });
+    expect(within(review).getByText("7")).toBeInTheDocument();
+    expect(within(review).getAllByRole("listitem")).toHaveLength(5);
+    expect(within(review).getAllByRole("link").map((link) => link.textContent)).toEqual([
+      "View all tasks",
+      "ALP-5Recent task 5",
+      "ALP-4Recent task 4",
+      "ALP-3Recent task 3",
+      "ALP-2Recent task 2",
+      "ALP-1Recent task 1",
+    ]);
+    expect(within(review).getByRole("link", { name: "ALP-5 Recent task 5" })).toHaveAttribute(
+      "href",
+      `/tasks?project=${PROJECT_ALPHA.id}&task=ALP-5`,
+    );
+    expect(within(review).queryByText("Archived task")).not.toBeInTheDocument();
+    expect(within(review).queryByText("Open task")).not.toBeInTheDocument();
+  });
+
+  it("shows an empty state and updates when a task is completed or archived", () => {
+    const openTask: Task = { ...TASKS[0], status: "in_progress" };
+    const { rerender } = render(<Overview mode="cloudflare" health={health} projects={[PROJECT_ALPHA]} tasks={[openTask]} />);
+    const review = screen.getByRole("region", { name: "Completed, awaiting review" });
+    expect(within(review).getByText("No completed tasks awaiting review.")).toBeInTheDocument();
+
+    rerender(<Overview mode="cloudflare" health={health} projects={[PROJECT_ALPHA]} tasks={[TASKS[0]]} />);
+    expect(within(review).getByRole("link", { name: "Build API" })).toHaveAttribute(
+      "href",
+      `/tasks?project=${PROJECT_ALPHA.id}&task=${TASKS[0].id}`,
+    );
+    expect(within(review).queryByText("No completed tasks awaiting review.")).not.toBeInTheDocument();
+
+    rerender(<Overview mode="cloudflare" health={health} projects={[PROJECT_ALPHA]} tasks={[{ ...TASKS[0], status: "archived" }]} />);
+    expect(within(review).getByText("No completed tasks awaiting review.")).toBeInTheDocument();
+  });
+});

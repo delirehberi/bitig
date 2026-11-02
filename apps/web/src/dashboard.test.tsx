@@ -238,6 +238,26 @@ describe("Dashboard Phase 4 Integration", () => {
     ).toBeInTheDocument();
   });
 
+  it("opens a completed task from the overview review section", async () => {
+    const projectId = "01940000-0000-7000-8000-000000000041";
+    const taskId = "01940000-0000-7000-8000-000000000042";
+    const createdAt = "2026-10-01T10:00:00.000Z";
+    stubApi({
+      projects: [{ id: projectId, key: "REV", name: "Review project", description: "", kind: "hobby", createdAt, updatedAt: createdAt }],
+      tasks: [{ id: taskId, projectId, number: 7, title: "Check completed work", description: "", status: "done", isPublic: false, createdAt, updatedAt: createdAt, completedAt: createdAt }],
+    });
+    const user = userEvent.setup();
+    render(<App />);
+
+    const review = await screen.findByRole("region", { name: "Completed, awaiting review" });
+    const link = await within(review).findByRole("link", { name: "REV-7 Check completed work" });
+    await user.click(link);
+
+    expect(window.location.pathname).toBe("/tasks");
+    expect(new URLSearchParams(window.location.search).get("task")).toBe("REV-7");
+    expect(await screen.findByRole("dialog", { name: "Check completed work" })).toBeInTheDocument();
+  });
+
   it("sends signed-out visitors to /login and back to where they were", async () => {
     window.history.replaceState(null, "", "/projects");
     stubApi({ signedIn: false });
