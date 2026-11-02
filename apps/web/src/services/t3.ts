@@ -189,25 +189,6 @@ export async function startTaskT3Run(
   return (await response.json()) as { run: AgentRun; task: Task; code?: string | undefined };
 }
 
-export async function sendTaskT3Message(
-  taskId: string,
-  message: string,
-): Promise<T3TaskRunLiveResponse> {
-  const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/t3-run/message`, {
-    method: "POST",
-    headers: {
-      ...BASE_HEADERS,
-      "Content-Type": "application/json",
-    },
-    credentials: "same-origin",
-    body: JSON.stringify({ message }),
-  });
-  if (!response.ok) {
-    throw new T3ApiError(response.status, await parseErrorMessage(response, "Could not send message to T3 thread"));
-  }
-  return (await response.json()) as T3TaskRunLiveResponse;
-}
-
 export async function stopTaskT3Run(taskId: string): Promise<T3TaskRunLiveResponse> {
   const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/t3-run/stop`, {
     method: "POST",

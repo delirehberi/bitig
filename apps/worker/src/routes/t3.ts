@@ -3,7 +3,6 @@ import { zValidator } from "@hono/zod-validator";
 import {
   NotFoundError,
   RespondT3PendingRequestInputSchema,
-  SendT3ThreadMessageInputSchema,
   StartT3ThreadInputSchema,
   T3StartOAuthInputSchema,
   UpsertT3ProjectMappingInputSchema,
@@ -21,7 +20,6 @@ import {
   getTaskT3RunLiveStatus,
   launchTaskInT3,
   respondToTaskT3Request,
-  sendTaskT3Message,
   stopTaskT3Run,
   type T3ServiceDeps,
 } from "../t3/service";
@@ -33,7 +31,7 @@ const HTTP_BAD_REQUEST = 400;
 const HTTP_BAD_GATEWAY = 502;
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 
-function buildServiceDeps(c: Context<AppEnv>): T3ServiceDeps {
+export function buildServiceDeps(c: Context<AppEnv>): T3ServiceDeps {
   return {
     store: new T3D1Store(c.env.DB),
     storage: c.get("storage"),
@@ -291,25 +289,6 @@ export const t3TaskRunsRouter = new Hono<AppEnv>()
           actor,
         });
         return c.json(result, HTTP_CREATED);
-      } catch (err) {
-        return handleT3RouteError(err, c);
-      }
-    },
-  )
-  .post(
-    "/:id/t3-run/message",
-    zValidator("json", SendT3ThreadMessageInputSchema, (result, c) => {
-      if (!result.success) {
-        return c.json({ error: "validation_error", details: result.error.issues }, HTTP_BAD_REQUEST);
-      }
-      return undefined;
-    }),
-    async (c) => {
-      const id = c.req.param("id");
-      const { message } = c.req.valid("json");
-      try {
-        const result = await sendTaskT3Message(buildServiceDeps(c), id, message);
-        return c.json(result);
       } catch (err) {
         return handleT3RouteError(err, c);
       }

@@ -10,14 +10,43 @@ import {
   checkNewTaskStatus,
   checkStatusChange,
   decodeBase64,
+  type Comment,
   type OperationOptions,
 } from "@bitig/core";
 import type { Context } from "hono";
 import type { AppEnv } from "../index";
+import { forwardCommentToT3Run } from "../t3/service";
+import { buildServiceDeps } from "./t3";
 
 const HTTP_CREATED = 201;
 const HTTP_NO_CONTENT = 204;
 const HTTP_BAD_REQUEST = 400;
+
+/**
+ * Forwards a new comment to the task's T3 thread (#BIT-112). Comment creation never fails because
+ * of T3: errors are logged with context. On Workers this runs after the response via `waitUntil`;
+ * without an execution context (e.g. `app.request` in tests) it is awaited instead.
+ */
+async function forwardCommentInBackground(c: Context<AppEnv>, comment: Comment): Promise<void> {
+  const work = forwardCommentToT3Run(buildServiceDeps(c), comment).then(
+    () => undefined,
+    (error: unknown) => {
+      console.error("forwarding comment to T3 run failed", { commentId: comment.id, taskId: comment.taskId, error });
+    },
+  );
+  let executionCtx: Context<AppEnv>["executionCtx"] | undefined;
+  try {
+    executionCtx = c.executionCtx;
+  } catch {
+    // Hono throws when the request has no execution context; fall back to awaiting the work.
+    executionCtx = undefined;
+  }
+  if (executionCtx) {
+    executionCtx.waitUntil(work);
+    return;
+  }
+  await work;
+}
 
 /** A step index in a URL is plain decimal digits; anything else (signs, exponents, spaces) is refused. */
 const STEP_INDEX_PATTERN = /^\d+$/;
@@ -144,6 +173,7 @@ export const tasksRouter = new Hono<AppEnv>()
         { ...c.req.valid("json"), taskId: c.req.param("id") },
         { actor: c.req.header("X-Bitig-Actor") ?? c.req.header("X-Bitig-Agent") ?? "you" },
       );
+      await forwardCommentInBackground(c, comment);
       return c.json(comment, HTTP_CREATED);
     },
   )

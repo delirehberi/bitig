@@ -9,6 +9,8 @@ import {
   resolveTaskRef,
   taskCode,
   type AgentRun,
+  type AgentRunState,
+  type Comment,
   type RealtimeEvent,
   type StorageProvider,
   type T3ConnectionStatus,
@@ -289,15 +291,18 @@ export async function getTaskT3RunLiveStatus(
   }
 }
 
-export async function sendTaskT3Message(
+/** Run states in which a new comment is not forwarded: the T3 host cannot be reached. */
+const COMMENT_FORWARD_SKIPPED_STATES: ReadonlySet<AgentRunState> = new Set<AgentRunState>(["offline"]);
+
+/** Shown as the comment author in the T3 prompt when the comment has no explicit author. */
+const DEFAULT_COMMENT_AUTHOR_LABEL = "a person";
+
+/** Sends a prompt to the run's T3 thread, marks the run as working, and broadcasts the change. */
+async function sendPromptToT3Run(
   deps: T3ServiceDeps,
-  taskId: string,
-  message: string,
+  existingRun: AgentRun,
+  prompt: string,
 ): Promise<T3TaskRunLiveResponse> {
-  const existingRun = await deps.store.getAgentRunByTaskId(taskId);
-  if (!existingRun) {
-    throw new NotFoundError("task", taskId);
-  }
   const now = deps.now ? deps.now() : Date.now();
   const mcpClient = await createActiveT3McpClient({
     store: deps.store,
@@ -308,11 +313,11 @@ export async function sendTaskT3Message(
 
   await mcpClient.sendThreadMessage({
     threadId: existingRun.threadId,
-    prompt: message,
+    prompt,
   });
 
   const updatedRun =
-    (await deps.store.updateAgentRunState(taskId, { state: "working", now })) ?? existingRun;
+    (await deps.store.updateAgentRunState(existingRun.taskId, { state: "working", now })) ?? existingRun;
   if (deps.publishRealtime) {
     await deps.publishRealtime({ type: "agent_run.updated", run: updatedRun }).catch(() => undefined);
   }
@@ -320,6 +325,39 @@ export async function sendTaskT3Message(
     run: updatedRun,
     pendingQuestions: [],
   };
+}
+
+/** Builds the follow-up prompt a T3 agent receives for a new comment on its task. */
+export function buildT3CommentPrompt(input: { taskLabel: string; author: string; body: string }): string {
+  return `New comment on ${input.taskLabel} from ${input.author}:\n\n${input.body}`;
+}
+
+/**
+ * Forwards a person's comment to the task's T3 thread so a waiting agent continues with it.
+ * Agent comments are never forwarded, so an agent cannot wake itself up. Returns whether the
+ * comment was sent; it is skipped when T3 is not configured, the task has no run, or the run is offline.
+ */
+export async function forwardCommentToT3Run(deps: T3ServiceDeps, comment: Comment): Promise<boolean> {
+  if (comment.authorType !== "human") return false;
+  if (!deps.encryptionKey) return false;
+
+  const existingRun = await deps.store.getAgentRunByTaskId(comment.taskId);
+  if (!existingRun) return false;
+  if (COMMENT_FORWARD_SKIPPED_STATES.has(existingRun.state)) return false;
+
+  const task = await deps.storage.getTask(comment.taskId);
+  if (!task) {
+    throw new NotFoundError("task", comment.taskId);
+  }
+  const project = await deps.storage.getProject(task.projectId);
+  const prompt = buildT3CommentPrompt({
+    taskLabel: taskCode(task, project ?? undefined) ?? `"${task.title}"`,
+    author: comment.author ?? DEFAULT_COMMENT_AUTHOR_LABEL,
+    body: comment.body,
+  });
+
+  await sendPromptToT3Run(deps, existingRun, prompt);
+  return true;
 }
 
 export async function stopTaskT3Run(

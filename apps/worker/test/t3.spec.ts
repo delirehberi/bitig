@@ -623,7 +623,7 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
     });
   });
 
-  it("checks live T3 thread status without auto-transitioning task status, and supports message, respond, and stop", async () => {
+  it("checks live T3 thread status without auto-transitioning task status, and supports comment follow-ups, respond, and stop", async () => {
     await connectT3Host();
 
     const projRes = await request("/api/projects", {
@@ -689,14 +689,28 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
     const afterRespond = await respondRes.json<T3TaskRunLiveResponse>();
     expect(afterRespond.run?.state).toBe("working");
 
-    // Send a follow-up message
+    // A person's comment is forwarded to the T3 thread as a follow-up
+    const sendCallsBefore = mockState.toolCalls.filter((c) => c.name === "t3_thread_send").length;
+    const commentRes = await request(`/api/tasks/${task.id}/comments`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ body: "Please also update docs/security.md" }),
+    });
+    expect(commentRes.status).toBe(201);
+    const sendCalls = mockState.toolCalls.filter((c) => c.name === "t3_thread_send");
+    expect(sendCalls).toHaveLength(sendCallsBefore + 1);
+    expect(sendCalls.at(-1)?.arguments).toMatchObject({
+      threadId: "thread-abc-123",
+      message: expect.stringContaining("Please also update docs/security.md") as unknown,
+    });
+
+    // The old follow-up endpoint is gone
     const msgRes = await request(`/api/tasks/${task.id}/t3-run/message`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: "Please also update docs/security.md" }),
+      body: JSON.stringify({ message: "hello" }),
     });
-    expect(msgRes.status).toBe(200);
-    expect(mockState.toolCalls.some((c) => c.name === "t3_thread_send")).toBe(true);
+    expect(msgRes.status).toBe(404);
 
     // Simulate thread finished in T3: live check updates agent_runs.state to "finished"
     // but NEVER auto-transitions the Bitig task to "done"
@@ -726,6 +740,87 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
     const offlineRes = await request(`/api/tasks/${task.id}/t3-run`);
     const offline = await offlineRes.json<T3TaskRunLiveResponse>();
     expect(offline.run?.state).toBe("offline");
+  });
+
+  it("forwards only people's comments on reachable runs to T3, and keeps the comment when T3 fails", async () => {
+    await connectT3Host();
+    const project = await (
+      await request("/api/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Bitig", key: "BIT" }),
+      })
+    ).json<Project>();
+    await request(`/api/t3/mappings/${project.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ t3ProjectId: "t3-proj-bitig", t3ProjectTitle: "Bitig Workspace" }),
+    });
+
+    async function createTask(title: string): Promise<Task> {
+      const res = await request("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: project.id, title }),
+      });
+      return res.json<Task>();
+    }
+    async function postComment(taskId: string, payload: Record<string, unknown>): Promise<Response> {
+      return request(`/api/tasks/${taskId}/comments`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    }
+    const sendCount = (): number => mockState.toolCalls.filter((c) => c.name === "t3_thread_send").length;
+
+    // A task without a T3 run: the comment is stored, nothing is sent
+    const noRunTask = await createTask("No run");
+    expect((await postComment(noRunTask.id, { body: "Any update?" })).status).toBe(201);
+    expect(sendCount()).toBe(0);
+
+    const task = await createTask("Has run");
+    await request(`/api/tasks/${task.id}/t3-run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+
+    // Agent comments never wake the agent
+    expect((await postComment(task.id, { body: "Progress note", authorType: "agent", author: "claude" })).status).toBe(201);
+    expect(sendCount()).toBe(0);
+
+    // A person's comment on a finished run is sent with the task code and author, and the run resumes
+    mockState.threadStatus = "idle";
+    mockState.recentRunStatus = "completed";
+    const finished = await (await request(`/api/tasks/${task.id}/t3-run`)).json<T3TaskRunLiveResponse>();
+    expect(finished.run?.state).toBe("finished");
+    expect((await postComment(task.id, { body: "Looks good, now add tests.", author: "emre" })).status).toBe(201);
+    expect(sendCount()).toBe(1);
+    const sent = mockState.toolCalls.filter((c) => c.name === "t3_thread_send").at(-1);
+    expect(sent?.arguments).toMatchObject({
+      threadId: "thread-abc-123",
+      message: `New comment on BIT-${String(task.number)} from emre:\n\nLooks good, now add tests.`,
+    });
+    const storedRun = await env.DB.prepare("SELECT state FROM agent_runs WHERE task_id = ?")
+      .bind(task.id)
+      .first<{ state: string }>();
+    expect(storedRun?.state).toBe("working");
+
+    // T3 failure: the comment is still created and listed
+    mockState.failMcpConnection = true;
+    const failedRes = await postComment(task.id, { body: "Are you there?" });
+    expect(failedRes.status).toBe(201);
+    const comments = await (await request(`/api/tasks/${task.id}/comments`)).json<{ body: string }[]>();
+    expect(comments.map((c) => c.body)).toContain("Are you there?");
+
+    // An offline run is skipped without contacting T3
+    const offline = await (await request(`/api/tasks/${task.id}/t3-run`)).json<T3TaskRunLiveResponse>();
+    expect(offline.run?.state).toBe("offline");
+    mockState.failMcpConnection = false;
+    const callsBefore = mockState.toolCalls.length;
+    expect((await postComment(task.id, { body: "Ping while offline" })).status).toBe(201);
+    expect(mockState.toolCalls).toHaveLength(callsBefore);
   });
 
   it("attaches CF-Access-Client-Id and CF-Access-Client-Secret headers when configured and surfaces a clear error when Cloudflare Access redirects to login", async () => {

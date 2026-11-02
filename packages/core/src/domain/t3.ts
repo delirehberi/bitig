@@ -191,12 +191,6 @@ export const SendT3MessageInputSchema = z.strictObject({
 
 export type SendT3MessageInput = z.input<typeof SendT3MessageInputSchema>;
 
-export const SendT3ThreadMessageInputSchema = z.strictObject({
-  message: z.string().trim().min(1).max(20_000),
-});
-
-export type SendT3ThreadMessageInput = z.input<typeof SendT3ThreadMessageInputSchema>;
-
 export const StopT3RunInputSchema = z.strictObject({
   reason: z.string().trim().min(1).max(2000).exactOptional(),
 });

@@ -31,7 +31,6 @@ import {
   fetchT3ProjectMappings,
   fetchTaskT3Run,
   respondToTaskT3PendingRequest,
-  sendTaskT3Message,
   startTaskT3Run,
   stopTaskT3Run,
 } from "../../services/t3";
@@ -76,7 +75,6 @@ export function TaskT3Section({
   const [capabilities, setCapabilities] = useState<T3ModelCapability[]>([]);
   const [selectedModelKey, setSelectedModelKey] = useState("");
   const [useWorktree, setUseWorktree] = useState(true);
-  const [messageInput, setMessageInput] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isBusy, setIsBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -194,23 +192,6 @@ export function TaskT3Section({
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not start T3 thread.");
-    } finally {
-      setIsBusy(false);
-    }
-  }
-
-  async function handleSendMessage(e: React.SyntheticEvent<HTMLFormElement>) {
-    e.preventDefault();
-    const trimmed = messageInput.trim();
-    if (!trimmed) return;
-    setIsBusy(true);
-    setError(null);
-    try {
-      const updated = await sendTaskT3Message(task.id, trimmed);
-      setRun(updated.run);
-      setMessageInput("");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not send message to T3.");
     } finally {
       setIsBusy(false);
     }
@@ -406,33 +387,12 @@ export function TaskT3Section({
             </p>
           )}
 
-          <form
-            onSubmit={(e) => {
-              void handleSendMessage(e);
-            }}
-            className="flex items-center gap-2"
-          >
-            <MessageSquare size={14} aria-hidden="true" className="shrink-0 text-ink-3" />
-            <input
-              type="text"
-              aria-label="Message T3 thread"
-              placeholder="Send a follow-up message to the T3 thread…"
-              value={messageInput}
-              onChange={(e) => {
-                setMessageInput(e.target.value);
-              }}
-              disabled={isBusy || run.state === "offline"}
-              className="flex-1 rounded-md border border-rule bg-paper px-2.5 py-1.5 text-xs text-ink focus-visible:outline-focus disabled:opacity-50"
-            />
-            <button
-              type="submit"
-              disabled={isBusy || !messageInput.trim() || run.state === "offline"}
-              className="inline-flex items-center gap-1 rounded-md border border-rule bg-paper px-2.5 py-1.5 text-xs font-semibold text-ink-2 hover:bg-paper-3 disabled:opacity-50"
-            >
-              <Send size={12} aria-hidden="true" />
-              Send
-            </button>
-          </form>
+          {run.state !== "offline" && (
+            <p className="m-0 flex items-center gap-1.5 text-2xs text-ink-3">
+              <MessageSquare size={12} aria-hidden="true" className="shrink-0" />
+              Add a comment to send the agent a follow-up.
+            </p>
+          )}
         </div>
       ) : (
         <div className="flex flex-col gap-2.5">
