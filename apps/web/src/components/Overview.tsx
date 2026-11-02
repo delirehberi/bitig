@@ -15,7 +15,7 @@ import { MODE_COPY } from "../domain/modes";
 import { formatTimeAgo } from "../domain/time-ago";
 import type { HealthState } from "../hooks/useHealth";
 import { Link } from "../routing/Link";
-import { hrefFor } from "../routing/router";
+import { hrefFor, taskHref, useLocationHref } from "../routing/router";
 import { WhereYouLeftOff } from "./WhereYouLeftOff";
 
 interface OverviewProps {
@@ -106,6 +106,7 @@ export function Overview({
   onExportCsv,
 }: OverviewProps) {
   const modeCopy = MODE_COPY[mode];
+  const locationHref = useLocationHref();
   const [selectedProjectId, setSelectedProjectId] = useState<string>(ALL_PROJECTS_FILTER);
 
   const effectiveProjectsCount = projectsCount ?? projects.length;
@@ -210,7 +211,7 @@ export function Overview({
               return (
                 <li key={task.id} className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 rounded-md border border-rule bg-paper-2 p-3">
                   <Link
-                    href={hrefFor({ name: "tasks", projectId: task.projectId, taskRef: code ?? task.id })}
+                    href={taskHref(code ?? task.id, locationHref)}
                     aria-label={code ? `${code} ${task.title}` : task.title}
                     className="flex min-w-0 items-baseline gap-2 text-sm font-semibold text-ink hover:text-accent-ink hover:underline"
                   >

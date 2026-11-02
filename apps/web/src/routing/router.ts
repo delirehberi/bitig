@@ -9,8 +9,8 @@ import { useSyncExternalStore } from "react";
 
 export type Route =
   | { readonly name: "landing" }
-  | { readonly name: "overview" }
-  | { readonly name: "projects"; readonly archived?: true }
+  | { readonly name: "overview"; readonly taskRef?: string }
+  | { readonly name: "projects"; readonly archived?: true; readonly taskRef?: string }
   | {
       readonly name: "tasks";
       readonly projectId?: string;
@@ -21,8 +21,8 @@ export type Route =
       /** The task open in the detail view: its ticket code (`BIT-64`), or its ID while it has none. */
       readonly taskRef?: string;
     }
-  | { readonly name: "webhooks"; readonly projectId?: string }
-  | { readonly name: "settings" }
+  | { readonly name: "webhooks"; readonly projectId?: string; readonly taskRef?: string }
+  | { readonly name: "settings"; readonly taskRef?: string }
   | { readonly name: "login"; readonly next?: string }
   | { readonly name: "not_found" };
 
@@ -60,25 +60,28 @@ export function safeNextPath(next: string | null | undefined): string | undefine
 
 export function parseRoute(pathname: string, search: string): Route {
   const params = new URLSearchParams(search);
+  const taskRef = params.get(TASK_PARAM)?.trim();
+  const task = taskRef ? { taskRef } : {};
   switch (trimTrailingSlash(pathname)) {
     case "/":
       return { name: "landing" };
     case APP_PATH:
-      return { name: "overview" };
+      return { name: "overview", ...task };
     case "/projects":
-      return params.get(ARCHIVED_PARAM) === "true"
-        ? { name: "projects", archived: true as const }
-        : { name: "projects" };
+      return {
+        name: "projects",
+        ...(params.get(ARCHIVED_PARAM) === "true" ? { archived: true as const } : {}),
+        ...task,
+      };
     case "/tasks": {
       const projectId = params.get(PROJECT_PARAM);
-      const taskRef = params.get(TASK_PARAM)?.trim();
       return {
         name: "tasks",
         ...(projectId ? { projectId } : {}),
         ...(params.get(NEEDS_PARAM) === NEEDS_HUMAN_VALUE ? { needsHuman: true as const } : {}),
         ...(params.get(AWAITING_PARAM) === AWAITING_APPROVAL_VALUE ? { awaitingApproval: true as const } : {}),
         ...(params.get(BLOCKED_PARAM) === "true" ? { blocked: true as const } : {}),
-        ...(taskRef ? { taskRef } : {}),
+        ...task,
       };
     }
     case "/webhooks": {
@@ -86,10 +89,11 @@ export function parseRoute(pathname: string, search: string): Route {
       return {
         name: "webhooks",
         ...(projectId ? { projectId } : {}),
+        ...task,
       };
     }
     case "/settings":
-      return { name: "settings" };
+      return { name: "settings", ...task };
     case LOGIN_PATH: {
       const next = safeNextPath(params.get(NEXT_PARAM));
       return next ? { name: "login", next } : { name: "login" };
@@ -99,15 +103,28 @@ export function parseRoute(pathname: string, search: string): Route {
   }
 }
 
+function withQuery(pathname: string, params: URLSearchParams): string {
+  const query = params.toString();
+  return query ? `${pathname}?${query}` : pathname;
+}
+
 export function hrefFor(route: Route): string {
   switch (route.name) {
     case "landing":
       return "/";
-    case "overview":
     case "not_found":
       return APP_PATH;
-    case "projects":
-      return route.archived ? `/projects?${ARCHIVED_PARAM}=true` : "/projects";
+    case "overview": {
+      const params = new URLSearchParams();
+      if (route.taskRef) params.set(TASK_PARAM, route.taskRef);
+      return withQuery(APP_PATH, params);
+    }
+    case "projects": {
+      const params = new URLSearchParams();
+      if (route.archived) params.set(ARCHIVED_PARAM, "true");
+      if (route.taskRef) params.set(TASK_PARAM, route.taskRef);
+      return withQuery("/projects", params);
+    }
     case "tasks": {
       const params = new URLSearchParams();
       if (route.projectId) params.set(PROJECT_PARAM, route.projectId);
@@ -115,20 +132,47 @@ export function hrefFor(route: Route): string {
       if (route.awaitingApproval) params.set(AWAITING_PARAM, AWAITING_APPROVAL_VALUE);
       if (route.blocked) params.set(BLOCKED_PARAM, "true");
       if (route.taskRef) params.set(TASK_PARAM, route.taskRef);
-      const query = params.toString();
-      return query ? `/tasks?${query}` : "/tasks";
+      return withQuery("/tasks", params);
     }
     case "webhooks": {
       const params = new URLSearchParams();
       if (route.projectId) params.set(PROJECT_PARAM, route.projectId);
-      const query = params.toString();
-      return query ? `/webhooks?${query}` : "/webhooks";
+      if (route.taskRef) params.set(TASK_PARAM, route.taskRef);
+      return withQuery("/webhooks", params);
     }
-    case "settings":
-      return "/settings";
+    case "settings": {
+      const params = new URLSearchParams();
+      if (route.taskRef) params.set(TASK_PARAM, route.taskRef);
+      return withQuery("/settings", params);
+    }
     case "login":
       return route.next ? `${LOGIN_PATH}?${new URLSearchParams({ [NEXT_PARAM]: route.next }).toString()}` : LOGIN_PATH;
   }
+}
+
+/**
+ * Builds an href that opens (or closes when `taskRef` is `undefined`) the task detail modal on
+ * the current workspace page while keeping the current route and query filters intact.
+ */
+export function taskHref(
+  taskRef: string | undefined,
+  locationHref = `${window.location.pathname}${window.location.search}`,
+): string {
+  const url = new URL(locationHref, "http://bitig.local");
+  const route = parseRoute(url.pathname, url.search);
+  if (
+    route.name === "overview" ||
+    route.name === "projects" ||
+    route.name === "tasks" ||
+    route.name === "webhooks" ||
+    route.name === "settings"
+  ) {
+    const params = new URLSearchParams(url.search);
+    if (taskRef) params.set(TASK_PARAM, taskRef);
+    else params.delete(TASK_PARAM);
+    return withQuery(trimTrailingSlash(url.pathname), params);
+  }
+  return hrefFor(taskRef ? { name: "tasks", taskRef } : { name: "tasks" });
 }
 
 export function navigate(href: string, options: { readonly replace?: boolean } = {}): void {

@@ -49,6 +49,21 @@ describe("task mentions", () => {
     expect(`${window.location.pathname}${window.location.search}`).toBe("/tasks?task=BIT-64");
   });
 
+  it("keeps the current workspace page when clicking a mention on Overview or Projects", async () => {
+    window.history.replaceState(null, "", "/app");
+    const { rerender } = render(withMentions(<Markdown content="See #BIT-64" />));
+
+    const linkOnOverview = screen.getByRole("link", { name: "#BIT-64" });
+    expect(linkOnOverview).toHaveAttribute("href", "/app?task=BIT-64");
+    await userEvent.setup().click(linkOnOverview);
+    expect(`${window.location.pathname}${window.location.search}`).toBe("/app?task=BIT-64");
+
+    window.history.replaceState(null, "", "/projects?archived=true");
+    rerender(withMentions(<Markdown content="See #BIT-64" />));
+    const linkOnProjects = screen.getByRole("link", { name: "#BIT-64" });
+    expect(linkOnProjects).toHaveAttribute("href", "/projects?archived=true&task=BIT-64");
+  });
+
   it("leaves unknown codes, code spans, links and URLs as text", () => {
     render(
       withMentions(

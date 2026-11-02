@@ -238,7 +238,7 @@ describe("Dashboard Phase 4 Integration", () => {
     ).toBeInTheDocument();
   });
 
-  it("opens a completed task from the overview review section", async () => {
+  it("opens a completed task from the overview review section without leaving the overview", async () => {
     const projectId = "01940000-0000-7000-8000-000000000041";
     const taskId = "01940000-0000-7000-8000-000000000042";
     const createdAt = "2026-10-01T10:00:00.000Z";
@@ -253,9 +253,18 @@ describe("Dashboard Phase 4 Integration", () => {
     const link = await within(review).findByRole("link", { name: "REV-7 Check completed work" });
     await user.click(link);
 
-    expect(window.location.pathname).toBe("/tasks");
+    expect(window.location.pathname).toBe("/app");
     expect(new URLSearchParams(window.location.search).get("task")).toBe("REV-7");
-    expect(await screen.findByRole("dialog", { name: "Check completed work" })).toBeInTheDocument();
+    const dialog = await screen.findByRole("dialog", { name: "Check completed work" });
+    expect(dialog).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "Your agents keep the record." })).toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole("button", { name: /close/i }));
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
+    expect(window.location.pathname).toBe("/app");
+    expect(new URLSearchParams(window.location.search).get("task")).toBeNull();
   });
 
   it("sends signed-out visitors to /login and back to where they were", async () => {
@@ -814,7 +823,7 @@ describe("Dashboard routing", () => {
     expect(new URLSearchParams(window.location.search).get("project")).toBe(PROJECT_B.id);
   });
 
-  it("opens a task from its code in the URL and keeps the URL in sync", async () => {
+  it("opens a task from its code in the URL without forcing a project filter, and keeps the URL in sync", async () => {
     const coded = { ...PROJECT_B, key: "BET" };
     window.history.replaceState(null, "", "/tasks?task=bet-7");
     stubApi({ projects: [PROJECT_A, coded], tasks: [TASK_A, { ...TASK_B, number: 7, description: "Beta details" }] });
@@ -823,9 +832,9 @@ describe("Dashboard routing", () => {
 
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByText("Beta details")).toBeInTheDocument();
-    // The list behind it is the task's own project.
-    expect(screen.queryByText("Alpha task")).not.toBeInTheDocument();
-    expect(screen.getByLabelText(/project:/i)).toHaveValue(coded.id);
+    // Opening a task without ?project= keeps the All Projects view behind it.
+    expect(screen.getByText("Alpha task")).toBeInTheDocument();
+    expect(screen.getByLabelText(/project:/i)).toHaveValue("");
 
     await user.click(within(dialog).getByRole("button", { name: /close/i }));
     await waitFor(() => {
@@ -833,11 +842,55 @@ describe("Dashboard routing", () => {
     });
     const params = new URLSearchParams(window.location.search);
     expect(params.get("task")).toBeNull();
-    expect(params.get("project")).toBe(coded.id);
+    expect(params.get("project")).toBeNull();
 
     await user.click(screen.getByText("Beta task"));
     expect(await screen.findByRole("dialog")).toBeInTheDocument();
     expect(new URLSearchParams(window.location.search).get("task")).toBe("BET-7");
+  });
+
+  it("opens and edits a task from Pick up where you left off while staying on Overview", async () => {
+    const coded = { ...PROJECT_B, key: "BET" };
+    stubApi({
+      projects: [PROJECT_A, coded],
+      tasks: [
+        TASK_A,
+        {
+          ...TASK_B,
+          number: 7,
+          status: "in_progress",
+          description: "Beta details",
+          startedAt: new Date().toISOString(),
+        },
+      ],
+    });
+    const user = userEvent.setup();
+    render(<App />);
+
+    const inProgress = await screen.findByTestId("left-off-in-progress");
+    await user.click(within(inProgress).getByRole("link", { name: /BET-7\s*Beta task/ }));
+
+    expect(window.location.pathname).toBe("/app");
+    expect(new URLSearchParams(window.location.search).get("task")).toBe("BET-7");
+    const detailDialog = await screen.findByRole("dialog", { name: "Beta task" });
+    expect(within(detailDialog).getByText("Beta details")).toBeInTheDocument();
+
+    // Clicking Edit opens the Edit Task modal on Overview
+    await user.click(within(detailDialog).getByRole("button", { name: "Edit" }));
+    const editDialog = await screen.findByRole("dialog", { name: "Edit Task" });
+    expect(window.location.pathname).toBe("/app");
+    expect(new URLSearchParams(window.location.search).get("task")).toBeNull();
+
+    const titleInput = within(editDialog).getByLabelText(/title/i);
+    await user.clear(titleInput);
+    await user.type(titleInput, "Beta task updated");
+    await user.click(within(editDialog).getByRole("button", { name: "Save Changes" }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
+    expect(window.location.pathname).toBe("/app");
+    expect(await within(inProgress).findByRole("link", { name: /BET-7\s*Beta task updated/ })).toBeInTheDocument();
   });
 
   it("links a task without a code by its ID", async () => {

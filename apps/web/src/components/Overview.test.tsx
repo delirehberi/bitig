@@ -132,6 +132,7 @@ describe("Overview completed tasks awaiting review", () => {
   const health = { kind: "online", version: "0.4.1", storageMode: "cloudflare" } as const;
 
   it("shows the latest five done tasks in completion order and links to their details", () => {
+    window.history.replaceState(null, "", "/app");
     const tasks: Task[] = [
       ...TASKS,
       ...Array.from({ length: 5 }, (_, index): Task => ({
@@ -160,13 +161,14 @@ describe("Overview completed tasks awaiting review", () => {
     ]);
     expect(within(review).getByRole("link", { name: "ALP-5 Recent task 5" })).toHaveAttribute(
       "href",
-      `/tasks?project=${PROJECT_ALPHA.id}&task=ALP-5`,
+      "/app?task=ALP-5",
     );
     expect(within(review).queryByText("Archived task")).not.toBeInTheDocument();
     expect(within(review).queryByText("Open task")).not.toBeInTheDocument();
   });
 
   it("shows an empty state and updates when a task is completed or archived", () => {
+    window.history.replaceState(null, "", "/app");
     const openTask: Task = { ...TASKS[0], status: "in_progress" };
     const { rerender } = render(<Overview mode="cloudflare" health={health} projects={[PROJECT_ALPHA]} tasks={[openTask]} />);
     const review = screen.getByRole("region", { name: "Completed, awaiting review" });
@@ -175,7 +177,7 @@ describe("Overview completed tasks awaiting review", () => {
     rerender(<Overview mode="cloudflare" health={health} projects={[PROJECT_ALPHA]} tasks={[TASKS[0]]} />);
     expect(within(review).getByRole("link", { name: "Build API" })).toHaveAttribute(
       "href",
-      `/tasks?project=${PROJECT_ALPHA.id}&task=${TASKS[0].id}`,
+      `/app?task=${TASKS[0].id}`,
     );
     expect(within(review).queryByText("No completed tasks awaiting review.")).not.toBeInTheDocument();
 

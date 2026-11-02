@@ -1,4 +1,15 @@
-import { sortProjectsByActivity, type StorageMode } from "@bitig/core";
+import {
+  blockedByFromError,
+  buildMentionIndex,
+  dependencyLinks,
+  sortProjectsByActivity,
+  type CreateTaskInput,
+  type StorageMode,
+  type Task,
+  type TaskStatus,
+  type UpdateTaskInput,
+} from "@bitig/core";
+import { X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { AuthProvider } from "./auth/auth-context";
 import { LoginPage } from "./auth/LoginPage";
@@ -8,6 +19,10 @@ import { Overview } from "./components/Overview";
 import { ProjectsView } from "./components/projects/ProjectsView";
 import { Rail, type NavigationTab } from "./components/Rail";
 import { SettingsView } from "./components/settings/SettingsView";
+import { BlockedTaskDialog, type BlockedStatusChange } from "./components/tasks/BlockedTaskDialog";
+import { DeleteTaskDialog } from "./components/tasks/DeleteTaskDialog";
+import { TaskDetailModal } from "./components/tasks/TaskDetailModal";
+import { TaskModal } from "./components/tasks/TaskModal";
 import { TasksView } from "./components/tasks/TasksView";
 import { WebhooksView } from "./components/webhooks/WebhooksView";
 import { FeatureFlagsProvider } from "./domain/feature-context";
@@ -17,12 +32,12 @@ import { useHealth, type HealthState } from "./hooks/useHealth";
 import { useProjects } from "./hooks/useProjects";
 import { useRealtime } from "./hooks/useRealtime";
 import { useStorage } from "./hooks/useStorage";
-import { useTasks } from "./hooks/useTasks";
+import { useTasks, type StatusChangeChoice } from "./hooks/useTasks";
 import { useWebhooks } from "./hooks/useWebhooks";
 import { LandingPage } from "./landing/LandingPage";
 import { findTaskByRef } from "./domain/task-ref";
 import { TaskMentionsProvider } from "./domain/task-mentions-context";
-import { hrefFor, navigate, useLocationHref, useRoute, type Route } from "./routing/router";
+import { hrefFor, navigate, taskHref, useLocationHref, useRoute, type Route } from "./routing/router";
 
 type WorkspaceRoute = Extract<Route, { name: NavigationTab }>;
 
@@ -53,9 +68,10 @@ interface WorkspaceProps {
 
 function Workspace({ mode, health, route }: WorkspaceProps) {
   const [searchQuery, setSearchQuery] = useState("");
+  const locationHref = useLocationHref();
   const activeTab = route.name;
   const routeProjectId = route.name === "tasks" || route.name === "webhooks" ? route.projectId : undefined;
-  const viewTaskRef = route.name === "tasks" ? route.taskRef : undefined;
+  const viewTaskRef = route.taskRef;
   const needsHumanOnly = route.name === "tasks" && route.needsHuman === true;
   const awaitingApprovalOnly = route.name === "tasks" && route.awaitingApproval === true;
   const blockedOnly = route.name === "tasks" && route.blocked === true;
@@ -97,10 +113,7 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
   // Most recently worked on first, wherever projects are listed.
   const recentProjects = useMemo(() => sortProjectsByActivity(projects, tasks), [projects, tasks]);
 
-  // A shared task link without a project opens the task over its own project's list.
-  const selectedProjectId =
-    routeProjectId ??
-    (viewTaskRef === undefined ? undefined : findTaskByRef(viewTaskRef, projects, tasks)?.projectId);
+  const selectedProjectId = routeProjectId;
 
   function handleSelectProject(projectId: string | undefined) {
     navigate(hrefFor(projectId ? { name: "tasks", projectId } : { name: "tasks" }));
@@ -113,6 +126,7 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
       needsHuman: needsHumanOnly,
       awaitingApproval: awaitingApprovalOnly,
       blocked: blockedOnly,
+      taskRef: viewTaskRef,
     };
     navigate(tasksHref({ ...current, ...change }), { replace: true });
   }
@@ -133,16 +147,78 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
     refineTasks({ blocked: only });
   }
 
-  // Opening or closing a task keeps the list's filters, so the URL can be copied either way.
+  // Opening or closing a task keeps the current page and filters, so the URL can be copied either way.
   function handleViewTask(taskRef: string | undefined) {
-    refineTasks({ taskRef });
+    navigate(taskHref(taskRef, locationHref), { replace: true });
   }
 
   function handleFilterWebhooksProject(projectId: string | undefined) {
     navigate(
-      hrefFor(projectId ? { name: "webhooks", projectId } : { name: "webhooks" }),
+      hrefFor({
+        name: "webhooks",
+        ...(projectId ? { projectId } : {}),
+        ...(viewTaskRef ? { taskRef: viewTaskRef } : {}),
+      }),
       { replace: true },
     );
+  }
+
+  const [editModalState, setEditModalState] = useState<{
+    isOpen: boolean;
+    task: Task | null;
+    openKey: number;
+  }>({
+    isOpen: false,
+    task: null,
+    openKey: 0,
+  });
+  const [deleteTarget, setDeleteTarget] = useState<Task | null>(null);
+  const [blockedChange, setBlockedChange] = useState<BlockedStatusChange | null>(null);
+
+  const viewTask =
+    activeTab !== "tasks" && viewTaskRef !== undefined
+      ? (findTaskByRef(viewTaskRef, recentProjects, tasks) ?? null)
+      : null;
+  const viewTaskMissing =
+    activeTab !== "tasks" &&
+    viewTaskRef !== undefined &&
+    viewTask === null &&
+    !isTasksLoading &&
+    tasksError === null;
+  const mentionIndex = useMemo(
+    () => (activeTab === "tasks" ? undefined : buildMentionIndex(tasks, recentProjects)),
+    [activeTab, tasks, recentProjects],
+  );
+
+  async function confirmIfBlocked(
+    task: Task,
+    status: TaskStatus,
+    change: (choice: StatusChangeChoice) => Promise<Task>,
+  ): Promise<void> {
+    try {
+      await change({});
+    } catch (err: unknown) {
+      const blockedBy = blockedByFromError(err);
+      if (blockedBy === undefined) throw err;
+      setBlockedChange({ task, status, blockedBy, override: () => change({ overrideBlocked: true }) });
+    }
+  }
+
+  async function handleEditModalSubmit(input: CreateTaskInput) {
+    const editing = editModalState.task;
+    if (editing) {
+      const patch: UpdateTaskInput = {
+        ...input,
+        needsHuman: input.needsHuman ?? null,
+        dependsOn: input.dependsOn ?? null,
+        pendingApproval: undefined,
+      };
+      await confirmIfBlocked(editing, input.status ?? editing.status, (choice) =>
+        updateTask(editing.id, patch, choice),
+      );
+    } else {
+      await saveTask(input);
+    }
   }
 
   return (
@@ -157,6 +233,28 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
 
         <TaskMentionsProvider projects={projects} tasks={tasks}>
           <main className="px-5 pt-8 pb-16 md:px-10 md:pt-10">
+            {viewTaskMissing && (
+              <div
+                role="alert"
+                className="mb-6 flex items-center justify-between gap-3 rounded-md border border-rule bg-paper-2 p-4 text-sm text-ink-2"
+              >
+                <span>
+                  No task <span className="font-mono font-semibold text-ink">{viewTaskRef}</span> was found. It may have
+                  been deleted, or its project key changed.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    handleViewTask(undefined);
+                  }}
+                  aria-label="Dismiss"
+                  className="rounded-md p-1 text-ink-3 hover:text-ink focus-visible:outline-focus"
+                >
+                  <X size={16} aria-hidden="true" />
+                </button>
+              </div>
+            )}
+
             {activeTab === "overview" && (
               <Overview
                 mode={mode}
@@ -188,7 +286,13 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
                 searchQuery={searchQuery}
                 archivedView={archivedProjectsOnly}
                 onArchivedViewChange={(archived) => {
-                  navigate(hrefFor(archived ? { name: "projects", archived: true } : { name: "projects" }));
+                  navigate(
+                    hrefFor({
+                      name: "projects",
+                      ...(archived ? { archived: true as const } : {}),
+                      ...(viewTaskRef ? { taskRef: viewTaskRef } : {}),
+                    }),
+                  );
                 }}
               />
             )}
@@ -240,6 +344,79 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
                 projects={recentProjects}
               />
             )}
+
+            {activeTab !== "tasks" && (
+              <>
+                <TaskDetailModal
+                  task={viewTask}
+                  projects={recentProjects}
+                  onClose={() => {
+                    handleViewTask(undefined);
+                  }}
+                  onEdit={(t) => {
+                    handleViewTask(undefined);
+                    setEditModalState((prev) => ({
+                      isOpen: true,
+                      task: t,
+                      openKey: prev.openKey + 1,
+                    }));
+                  }}
+                  onDelete={(t) => {
+                    handleViewTask(undefined);
+                    setDeleteTarget(t);
+                  }}
+                  onComplete={(t) => {
+                    void confirmIfBlocked(t, "done", (choice) => completeTask(t.id, choice));
+                  }}
+                  onChecklistChange={(t, checklist) => updateTask(t.id, { checklist })}
+                  onNeedsHumanResolve={(t) => {
+                    void updateTask(t.id, { needsHuman: null });
+                  }}
+                  onApprove={(t) => {
+                    void updateTask(t.id, { pendingApproval: null, status: "todo" });
+                  }}
+                  onMoveToBacklog={(t) => {
+                    void updateTask(t.id, { pendingApproval: true, status: "todo" });
+                  }}
+                  storage={storage}
+                  links={viewTask && mentionIndex ? mentionIndex.linksFor(viewTask) : undefined}
+                  dependencies={viewTask ? dependencyLinks(viewTask, tasks, recentProjects) : undefined}
+                />
+
+                <TaskModal
+                  key={`${editModalState.task?.id ?? "new"}-${String(editModalState.openKey)}`}
+                  isOpen={editModalState.isOpen}
+                  task={editModalState.task}
+                  projects={recentProjects}
+                  defaultProjectId={selectedProjectId}
+                  tasks={tasks}
+                  onClose={() => {
+                    setEditModalState((prev) => ({
+                      ...prev,
+                      isOpen: false,
+                      task: null,
+                    }));
+                  }}
+                  onSubmit={handleEditModalSubmit}
+                />
+
+                <BlockedTaskDialog
+                  change={blockedChange}
+                  onClose={() => {
+                    setBlockedChange(null);
+                  }}
+                />
+
+                <DeleteTaskDialog
+                  isOpen={Boolean(deleteTarget)}
+                  task={deleteTarget}
+                  onClose={() => {
+                    setDeleteTarget(null);
+                  }}
+                  onConfirm={deleteTask}
+                />
+              </>
+            )}
           </main>
         </TaskMentionsProvider>
       </div>
@@ -290,7 +467,7 @@ function Pages({ mode, health }: { readonly mode: StorageMode; readonly health: 
   }
 
   if (status === "unauthenticated") {
-    const next = route.name === "overview" ? undefined : href;
+    const next = route.name === "overview" && route.taskRef === undefined ? undefined : href;
     return <Redirect to={hrefFor(next ? { name: "login", next } : { name: "login" })} />;
   }
 

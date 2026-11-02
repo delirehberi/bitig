@@ -65,6 +65,7 @@ describe("WhereYouLeftOff", () => {
   });
 
   it("shows the last project, in-progress tasks with their next subtask, and recent activity by day", () => {
+    window.history.replaceState(null, "", "/app");
     const tasks = [
       task(1, ALPHA, localIso(20, 10), { status: "done", startedAt: localIso(19, 10), completedAt: localIso(20, 10) }),
       task(2, BETA, localIso(21, 16), {
@@ -90,7 +91,7 @@ describe("WhereYouLeftOff", () => {
     const inProgress = screen.getByTestId("left-off-in-progress");
     expect(within(inProgress).getByRole("link", { name: /BET-2\s*Task 2/ })).toHaveAttribute(
       "href",
-      `/tasks?project=${BETA.id}&task=BET-2`,
+      "/app?task=BET-2",
     );
     expect(inProgress).toHaveTextContent("Next: Write migration");
     expect(within(inProgress).getByTitle("1 of 2 subtasks done")).toBeInTheDocument();

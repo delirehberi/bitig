@@ -9,7 +9,7 @@ import {
 import { History } from "lucide-react";
 import { useMemo } from "react";
 import { Link } from "../routing/Link";
-import { hrefFor } from "../routing/router";
+import { hrefFor, taskHref, useLocationHref } from "../routing/router";
 import { formatDayLabel, formatTimeAgo } from "../domain/time-ago";
 import { ChecklistProgressBadge } from "./tasks/Checklist";
 
@@ -38,15 +38,19 @@ function groupByDay(touches: readonly LeftOffTouch[], now: Date): { label: strin
   return groups;
 }
 
-function taskHref(task: Task, project: Project | undefined): string {
-  return hrefFor({ name: "tasks", projectId: task.projectId, taskRef: taskCode(task, project) ?? task.id });
-}
-
-function TaskTitleLink({ task, project }: { readonly task: Task; readonly project: Project | undefined }) {
+function TaskTitleLink({
+  task,
+  project,
+  locationHref,
+}: {
+  readonly task: Task;
+  readonly project: Project | undefined;
+  readonly locationHref: string;
+}) {
   const code = taskCode(task, project);
   return (
     <Link
-      href={taskHref(task, project)}
+      href={taskHref(code ?? task.id, locationHref)}
       className="flex min-w-0 items-baseline gap-2 text-ink hover:text-accent-ink hover:underline"
     >
       {code !== undefined && <span className="shrink-0 font-mono text-xs font-semibold text-ink-3">{code}</span>}
@@ -57,6 +61,7 @@ function TaskTitleLink({ task, project }: { readonly task: Task; readonly projec
 
 /** The project and tasks touched most recently, so a person can pick up where they stopped. */
 export function WhereYouLeftOff({ projects, tasks, now = new Date() }: WhereYouLeftOffProps) {
+  const locationHref = useLocationHref();
   const summary = useMemo(() => whereYouLeftOff(projects, tasks), [projects, tasks]);
   const { lastProject, inProgress, inProgressCount, recent } = summary;
   if (lastProject === undefined) return null;
@@ -115,7 +120,7 @@ export function WhereYouLeftOff({ projects, tasks, now = new Date() }: WhereYouL
                 {inProgress.map(({ task, project, nextSubtask }) => (
                   <li key={task.id} className="flex flex-col gap-1 rounded-md border border-rule bg-paper-2 p-3">
                     <div className="flex min-w-0 items-center justify-between gap-3">
-                      <TaskTitleLink task={task} project={project} />
+                      <TaskTitleLink task={task} project={project} locationHref={locationHref} />
                       <ChecklistProgressBadge checklist={task.checklist} />
                     </div>
                     <div className="flex flex-wrap items-baseline gap-x-2 text-xs text-ink-3">
@@ -154,7 +159,7 @@ export function WhereYouLeftOff({ projects, tasks, now = new Date() }: WhereYouL
                       key={task.id}
                       className="flex flex-col gap-0.5 border-t border-rule py-2 first:border-t-0"
                     >
-                      <TaskTitleLink task={task} project={project} />
+                      <TaskTitleLink task={task} project={project} locationHref={locationHref} />
                       <span className="text-xs text-ink-3">
                         {TOUCH_LABELS[kind]}
                         {actor !== undefined && ` by ${actor}`}

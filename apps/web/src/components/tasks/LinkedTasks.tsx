@@ -1,6 +1,6 @@
 import type { DependencyLinks, TaskLinks, TaskLinkSummary } from "@bitig/core";
 import { Link } from "../../routing/Link";
-import { hrefFor } from "../../routing/router";
+import { taskHref, useLocationHref } from "../../routing/router";
 
 const STATUS_LABELS: Record<TaskLinkSummary["status"], string> = {
   todo: "To do",
@@ -10,6 +10,7 @@ const STATUS_LABELS: Record<TaskLinkSummary["status"], string> = {
 };
 
 function LinkedTaskList({ label, tasks }: { readonly label: string; readonly tasks: readonly TaskLinkSummary[] }) {
+  const locationHref = useLocationHref();
   if (tasks.length === 0) return null;
   return (
     <div>
@@ -20,7 +21,7 @@ function LinkedTaskList({ label, tasks }: { readonly label: string; readonly tas
           return (
             <li key={task.id} className="flex min-w-0 items-baseline gap-2 text-sm">
               <Link
-                href={hrefFor({ name: "tasks", taskRef: task.code ?? task.id })}
+                href={taskHref(task.code ?? task.id, locationHref)}
                 className={`min-w-0 truncate text-ink hover:text-accent-ink focus-visible:outline-focus ${
                   closed ? "text-ink-3 line-through" : ""
                 }`}
