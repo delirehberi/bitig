@@ -197,6 +197,9 @@ export const agentRuns = sqliteTable(
     link: text("link"),
     state: text("state").$type<AgentRunState>().notNull(),
     model: text("model"),
+    providerInstanceId: text("provider_instance_id"),
+    /** JSON array of `{ id, value }` model options chosen on the last switch (#BIT-119). */
+    modelOptions: text("model_options"),
     workspaceStrategy: text("workspace_strategy").$type<T3WorkspaceStrategy>(),
     startedBy: text("started_by").$type<TaskActor>(),
     startedAt: integer("started_at").notNull(),

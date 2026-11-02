@@ -4,11 +4,15 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
   T3_ALLOWED_MCP_TOOLS,
   T3ModelCapabilitySchema,
+  T3ModelOptionSchema,
+  T3ModelSelectionOptionsSchema,
   T3PendingQuestionSchema,
   T3RemoteProjectSchema,
   normalizeT3McpUrl,
   type T3AllowedMcpTool,
   type T3ModelCapability,
+  type T3ModelOption,
+  type T3ModelSelection,
   type T3PendingQuestion,
   type T3RemoteProject,
   type T3RunSummary,
@@ -432,6 +436,43 @@ function extractToolPayload(result: {
   return {};
 }
 
+/** Keeps the model options T3 lists (`[{ id, values, default? }]`), dropping malformed entries. */
+function parseModelOptions(raw: unknown): T3ModelOption[] {
+  if (!Array.isArray(raw)) return [];
+  const options: T3ModelOption[] = [];
+  for (const item of raw) {
+    const parsed = T3ModelOptionSchema.safeParse(item);
+    if (parsed.success) {
+      options.push(parsed.data);
+    }
+  }
+  return options;
+}
+
+/**
+ * Reads `modelSelection` from a `t3_thread_configure` result. T3 names the provider instance
+ * `instanceId`; options come as `[{ id, value }]`.
+ */
+function parseThreadModelSelection(payload: Record<string, unknown>): T3ModelSelection | undefined {
+  const raw = payload.modelSelection;
+  if (!raw || typeof raw !== "object") return undefined;
+  const rec = raw as Record<string, unknown>;
+  const model = typeof rec.model === "string" ? rec.model.trim() : "";
+  const instanceId =
+    typeof rec.instanceId === "string"
+      ? rec.instanceId.trim()
+      : typeof rec.provider === "string"
+        ? rec.provider.trim()
+        : "";
+  if (!model || !instanceId) return undefined;
+  const options = T3ModelSelectionOptionsSchema.safeParse(rec.options);
+  return {
+    providerInstanceId: instanceId,
+    model,
+    ...(options.success && options.data.length > 0 ? { options: options.data } : {}),
+  };
+}
+
 export class T3McpClient {
   private readonly mcpUrl: string;
   private readonly accessToken: string;
@@ -579,12 +620,14 @@ export class T3McpClient {
             if (!modelSlug) {
               continue;
             }
+            const options = parseModelOptions(mRec.options);
             const parsed = T3ModelCapabilitySchema.safeParse({
               providerInstanceId,
               ...(driverKind ? { driverKind } : {}),
               ...(displayName ? { displayName } : {}),
               model: modelSlug,
               ...(label ? { label } : {}),
+              ...(options.length > 0 ? { options } : {}),
             });
             if (parsed.success) {
               capabilities.push(parsed.data);
@@ -740,6 +783,33 @@ export class T3McpClient {
         threadId: input.threadId,
         message: input.prompt,
         mode: "auto",
+      });
+    });
+  }
+
+  /** The thread's current provider instance, model and options, or `undefined` when T3 does not say. */
+  async readThreadModel(threadId: string): Promise<T3ModelSelection | undefined> {
+    return this.withSession(async (callTool) => {
+      const payload = await callTool("t3_thread_configure", { threadId });
+      return parseThreadModelSelection(payload);
+    });
+  }
+
+  /**
+   * Switches the thread's provider instance, model and options. T3 keeps the thread's permission
+   * modes and hands the new model a bounded history of the thread.
+   */
+  async configureThreadModel(threadId: string, selection: T3ModelSelection): Promise<void> {
+    await this.withSession(async (callTool) => {
+      await callTool("t3_thread_configure", {
+        threadId,
+        modelSelection: {
+          instanceId: selection.providerInstanceId,
+          model: selection.model,
+          ...(selection.options && selection.options.length > 0
+            ? { options: selection.options.map((opt) => ({ id: opt.id, value: opt.value })) }
+            : {}),
+        },
       });
     });
   }

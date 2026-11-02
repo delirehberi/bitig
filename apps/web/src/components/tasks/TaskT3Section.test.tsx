@@ -54,4 +54,16 @@ describe("TaskT3Section", () => {
     expect(await screen.findByText("thread-1")).toBeInTheDocument();
     expect(screen.queryByText(COMMENT_HINT)).not.toBeInTheDocument();
   });
+
+  it("shows the current model on the T3 chip and reports the run for the comment box (BIT-119)", async () => {
+    const run = { ...makeRun(task.id, "waiting_for_approval"), model: "gpt-6-sol" };
+    vi.mocked(fetchTaskT3Run).mockResolvedValue({ run, pendingQuestions: [] });
+    const onT3ContextChange = vi.fn();
+    render(
+      <TaskT3Section task={task} project={project} hasUnfinishedDependencies={false} onT3ContextChange={onT3ContextChange} />,
+    );
+
+    expect(await screen.findByTestId("t3-thread-chip")).toHaveTextContent("T3 thread · waiting for approval · gpt-6-sol");
+    expect(onT3ContextChange).toHaveBeenLastCalledWith({ run, capabilities: [] });
+  });
 });

@@ -40,6 +40,8 @@ interface TaskT3SectionProps {
   readonly project: Project | undefined;
   readonly hasUnfinishedDependencies: boolean;
   readonly onTaskUpdated?: ((task: Task) => void) | undefined;
+  /** Reports the task's run and the T3 model list, so the comment box can switch models (#BIT-119). */
+  readonly onT3ContextChange?: ((context: { run: AgentRun | null; capabilities: T3ModelCapability[] }) => void) | undefined;
 }
 
 const STATE_LABELS: Record<AgentRunState, string> = {
@@ -65,6 +67,7 @@ export function TaskT3Section({
   project,
   hasUnfinishedDependencies,
   onTaskUpdated,
+  onT3ContextChange,
 }: TaskT3SectionProps) {
   const [run, setRun] = useState<AgentRun | null>(null);
   const [pendingRequestId, setPendingRequestId] = useState<string | undefined>(undefined);
@@ -139,6 +142,10 @@ export function TaskT3Section({
       controller.abort();
     };
   }, [task.id, task.projectId]);
+
+  useEffect(() => {
+    onT3ContextChange?.({ run, capabilities });
+  }, [onT3ContextChange, run, capabilities]);
 
   useRealtimeEvent((event) => {
     if (event.type === "agent_run.updated" && event.run.taskId === task.id) {
@@ -251,7 +258,10 @@ export function TaskT3Section({
               data-testid="t3-thread-chip"
               className={`inline-flex items-center gap-1.5 rounded-pill border px-2.5 py-0.5 text-2xs font-semibold ${STATE_BADGE_CLASSES[run.state]}`}
             >
-              <span>T3 thread · {STATE_LABELS[run.state]}</span>
+              <span>
+                T3 thread · {STATE_LABELS[run.state]}
+                {run.model ? ` · ${run.model}` : ""}
+              </span>
             </span>
 
             {run.link && (

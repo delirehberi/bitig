@@ -1,7 +1,17 @@
 import { useState } from "react";
 import { Bot, MessageSquare, Trash2, User } from "lucide-react";
-import type { Comment, StorageProvider } from "@bitig/core";
+import {
+  canSwitchT3Model,
+  type AgentRun,
+  type Comment,
+  type StorageProvider,
+  type T3ModelCapability,
+  type T3ModelSelection,
+} from "@bitig/core";
 import { useComments } from "../../hooks/useComments";
+import { dispatchRealtimeEvent } from "../../hooks/useRealtime";
+import { replyToTaskT3Run } from "../../services/t3";
+import { T3ModelPicker } from "./T3ModelPicker";
 import { formatFullTimestamp, formatTimeAgo } from "../../domain/time-ago";
 import { Markdown } from "../Markdown";
 
@@ -34,26 +44,54 @@ function CommentItem({ comment, onDelete }: { readonly comment: Comment; readonl
   );
 }
 
+/** The task's T3 thread, when it has one, so a reply can switch the thread's model (#BIT-119). */
+export interface TaskCommentsT3Context {
+  readonly run: AgentRun;
+  readonly capabilities: readonly T3ModelCapability[];
+}
+
 interface TaskCommentsProps {
   readonly storage: StorageProvider;
   readonly taskId: string;
   /** Provided when the task has needsHuman set; lets the user explicitly resolve while commenting. */
   readonly onResolve?: (() => void) | undefined;
+  readonly t3?: TaskCommentsT3Context | undefined;
 }
 
 /** A task's comments, oldest first, with a box to add one. */
-export function TaskComments({ storage, taskId, onResolve }: TaskCommentsProps) {
+export function TaskComments({ storage, taskId, onResolve, t3 }: TaskCommentsProps) {
   const { comments, isLoading, error, addComment, deleteComment } = useComments(storage, taskId);
   const [draft, setDraft] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [modelSelection, setModelSelection] = useState<T3ModelSelection | null>(null);
+
+  // Offline runs cannot be reached; without a model list there is nothing to pick.
+  const showModelPicker = t3 !== undefined && t3.run.state !== "offline" && t3.capabilities.length > 0;
+  const canSwitch = t3 !== undefined && canSwitchT3Model(t3.run.state);
+  const switchSelection = showModelPicker && canSwitch ? modelSelection : null;
+
+  async function sendWithModelSwitch(body: string, selection: T3ModelSelection): Promise<void> {
+    const result = await replyToTaskT3Run(taskId, { body, modelSelection: selection });
+    // Show the saved comments and the run's new model at once; the server's realtime events follow.
+    if (result.switchComment) {
+      dispatchRealtimeEvent({ type: "comment.created", comment: result.switchComment });
+    }
+    dispatchRealtimeEvent({ type: "comment.created", comment: result.comment });
+    dispatchRealtimeEvent({ type: "agent_run.updated", run: result.run });
+    setModelSelection(null);
+  }
 
   async function submit(resolveNeedsHuman = false) {
     if (draft.trim() === "" || isSaving) return;
     setIsSaving(true);
     setSaveError(null);
     try {
-      await addComment(draft);
+      if (switchSelection) {
+        await sendWithModelSwitch(draft, switchSelection);
+      } else {
+        await addComment(draft);
+      }
       setDraft("");
       if (resolveNeedsHuman) {
         onResolve?.();
@@ -132,6 +170,23 @@ export function TaskComments({ storage, taskId, onResolve }: TaskCommentsProps) 
           placeholder="Add a comment or answer a question…"
           className="w-full rounded-md border border-rule bg-paper px-3 py-2 text-sm text-ink placeholder:text-ink-3 focus-visible:outline-focus"
         />
+        {showModelPicker && (
+          <div className="mt-2 flex flex-col gap-1">
+            <T3ModelPicker
+              taskId={taskId}
+              run={t3.run}
+              capabilities={t3.capabilities}
+              value={switchSelection}
+              onChange={setModelSelection}
+              disabled={isSaving || !canSwitch}
+            />
+            {!canSwitch && (
+              <p className="m-0 text-2xs text-ink-3">
+                The model can change once the T3 thread waits for you or its turn ends.
+              </p>
+            )}
+          </div>
+        )}
         {saveError && (
           <p role="alert" className="m-0 mt-1 text-xs text-danger">
             {saveError}

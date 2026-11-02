@@ -1,5 +1,7 @@
 import type {
   AgentRun,
+  Comment,
+  ReplyToT3RunInput,
   StartT3ThreadInput,
   T3ConnectionStatus,
   T3ModelCapability,
@@ -218,4 +220,30 @@ export async function respondToTaskT3PendingRequest(
     throw new T3ApiError(response.status, await parseErrorMessage(response, "Could not send answer to T3 thread"));
   }
   return (await response.json()) as T3TaskRunLiveResponse;
+}
+
+export interface ReplyToTaskT3RunResult {
+  readonly comment: Comment;
+  readonly switchComment?: Comment | undefined;
+  readonly run: AgentRun;
+}
+
+/**
+ * Saves a reply as a comment and sends it to the task's T3 thread, switching the thread's model first
+ * when `modelSelection` differs from it (#BIT-119). A 409 means the thread is mid-turn.
+ */
+export async function replyToTaskT3Run(taskId: string, input: ReplyToT3RunInput): Promise<ReplyToTaskT3RunResult> {
+  const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/t3-run/reply`, {
+    method: "POST",
+    headers: {
+      ...BASE_HEADERS,
+      "Content-Type": "application/json",
+    },
+    credentials: "same-origin",
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) {
+    throw new T3ApiError(response.status, await parseErrorMessage(response, "Could not send reply to T3 thread"));
+  }
+  return (await response.json()) as ReplyToTaskT3RunResult;
 }

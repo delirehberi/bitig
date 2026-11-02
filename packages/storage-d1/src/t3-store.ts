@@ -2,10 +2,13 @@ import { eq, lt } from "drizzle-orm";
 import { drizzle, type DrizzleD1Database } from "drizzle-orm/d1";
 import {
   AgentRunSchema,
+  T3ModelSelectionOptionsSchema,
   T3ProjectMappingSchema,
   toTimestamp,
   type AgentRun,
   type AgentRunState,
+  type T3ModelSelection,
+  type T3ModelSelectionOption,
   type T3ProjectMapping,
   type T3WorkspaceStrategy,
   type TaskActor,
@@ -55,13 +58,32 @@ export interface SaveAgentRunInput {
   link?: string | undefined;
   state: AgentRunState;
   model?: string | undefined;
+  providerInstanceId?: string | undefined;
   workspaceStrategy?: T3WorkspaceStrategy | undefined;
   startedBy?: TaskActor | undefined;
   startedAt: number;
   updatedAt: number;
 }
 
+/**
+ * Reads the `model_options` JSON column. A value that is not valid JSON or not a list of
+ * `{ id, value }` options is treated as absent: it only labels the run's model, so the run stays readable.
+ */
+function parseModelOptions(raw: string | null): T3ModelSelectionOption[] | undefined {
+  if (raw === null) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    console.warn("ignoring unreadable agent_runs.model_options", err);
+    return undefined;
+  }
+  const result = T3ModelSelectionOptionsSchema.safeParse(parsed);
+  return result.success && result.data.length > 0 ? result.data : undefined;
+}
+
 function toAgentRun(row: AgentRunRecord): AgentRun {
+  const modelOptions = parseModelOptions(row.modelOptions);
   return AgentRunSchema.parse({
     id: row.id,
     taskId: row.taskId,
@@ -70,6 +92,8 @@ function toAgentRun(row: AgentRunRecord): AgentRun {
     ...(row.link !== null ? { link: row.link } : {}),
     state: row.state,
     ...(row.model !== null ? { model: row.model } : {}),
+    ...(row.providerInstanceId !== null ? { providerInstanceId: row.providerInstanceId } : {}),
+    ...(modelOptions ? { modelOptions } : {}),
     ...(row.workspaceStrategy !== null ? { workspaceStrategy: row.workspaceStrategy } : {}),
     ...(row.startedBy !== null ? { startedBy: row.startedBy } : {}),
     startedAt: toTimestamp(new Date(row.startedAt)),
@@ -234,6 +258,8 @@ export class T3D1Store {
       link: input.link ?? null,
       state: input.state,
       model: input.model ?? null,
+      providerInstanceId: input.providerInstanceId ?? null,
+      modelOptions: null,
       workspaceStrategy: input.workspaceStrategy ?? null,
       startedBy: input.startedBy ?? null,
       startedAt: input.startedAt,
@@ -252,6 +278,8 @@ export class T3D1Store {
           link: record.link,
           state: record.state,
           model: record.model,
+          providerInstanceId: record.providerInstanceId,
+          modelOptions: record.modelOptions,
           workspaceStrategy: record.workspaceStrategy,
           startedBy: record.startedBy,
           startedAt: record.startedAt,
@@ -286,5 +314,39 @@ export class T3D1Store {
       state: patch.state,
       updatedAt: toTimestamp(new Date(updatedAt)),
     };
+  }
+
+  /** Records the model a thread switched to (#BIT-119). Resolves to `undefined` when the task has no run. */
+  async updateAgentRunModel(
+    taskId: string,
+    patch: { selection: T3ModelSelection; now?: number },
+  ): Promise<AgentRun | undefined> {
+    const existing = await this.getAgentRunByTaskId(taskId);
+    if (!existing) {
+      return undefined;
+    }
+    const updatedAt = patch.now ?? Date.now();
+    const options = patch.selection.options ?? [];
+    await this.db
+      .update(agentRuns)
+      .set({
+        model: patch.selection.model,
+        providerInstanceId: patch.selection.providerInstanceId,
+        modelOptions: options.length > 0 ? JSON.stringify(options) : null,
+        updatedAt,
+      })
+      .where(eq(agentRuns.taskId, taskId));
+    const updated: AgentRun = {
+      ...existing,
+      model: patch.selection.model,
+      providerInstanceId: patch.selection.providerInstanceId,
+      updatedAt: toTimestamp(new Date(updatedAt)),
+    };
+    if (options.length > 0) {
+      updated.modelOptions = options.map((opt) => ({ ...opt }));
+    } else {
+      delete updated.modelOptions;
+    }
+    return updated;
   }
 }

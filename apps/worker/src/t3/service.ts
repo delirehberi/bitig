@@ -2,10 +2,15 @@ import {
   NotFoundError,
   ValidationError,
   buildT3LaunchPrompt,
+  buildT3ModelSwitchComment,
+  buildT3ModelSwitchNotice,
+  canSwitchT3Model,
   checkStatusChange,
   computeT3ConnectionStatus,
   defaultIdGenerator,
   deriveLiveAgentRunState,
+  formatT3ModelSelection,
+  isSameT3ModelSelection,
   resolveTaskRef,
   taskCode,
   type AgentRun,
@@ -14,6 +19,8 @@ import {
   type RealtimeEvent,
   type StorageProvider,
   type T3ConnectionStatus,
+  type T3ModelCapability,
+  type T3ModelSelection,
   type T3TaskRunLiveResponse,
   type T3WorkspaceStrategy,
   type Task,
@@ -21,6 +28,29 @@ import {
 import type { T3D1Store } from "@bitig/storage-d1";
 import { T3McpClient, T3McpError } from "./client";
 import { decryptT3Token } from "./crypto";
+
+/** How long the model list from `orchestrator_capabilities` is reused before T3 is asked again. */
+export const T3_CAPABILITIES_CACHE_TTL_SECONDS = 5 * 60;
+
+/** Synthetic origin for Cache API keys; it is never fetched. */
+const T3_CAPABILITIES_CACHE_ORIGIN = "https://t3-capabilities.bitig.internal";
+
+/**
+ * A model switch was refused because the thread is mid-turn or unreachable (#BIT-119).
+ * The route maps it to HTTP 409.
+ */
+export class T3ModelSwitchConflictError extends Error {
+  override readonly name = "T3ModelSwitchConflictError";
+  readonly code = "thread_busy";
+  readonly state: AgentRunState;
+
+  constructor(state: AgentRunState) {
+    super(
+      `The T3 thread is ${state.replaceAll("_", " ")}. Switch models only while it waits for you or after its turn ends.`,
+    );
+    this.state = state;
+  }
+}
 
 export interface T3ServiceDeps {
   store: T3D1Store;
@@ -194,6 +224,7 @@ export async function launchTaskInT3(
     link: launched.link,
     state: "working",
     model: options.model,
+    ...(options.model && options.providerInstanceId ? { providerInstanceId: options.providerInstanceId } : {}),
     workspaceStrategy,
     startedBy: actor,
     startedAt: now,
@@ -456,5 +487,184 @@ export async function respondToTaskT3Request(
   return {
     run: updatedRun,
     pendingQuestions: [],
+  };
+}
+
+async function capabilitiesCacheKey(connection: { mcpUrl: string; connectedAt: number }): Promise<Request> {
+  // Hash so the cache key carries no T3 host details; a reconnect (new connectedAt) starts a new entry.
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(`${connection.mcpUrl}\n${String(connection.connectedAt)}`),
+  );
+  const hex = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  return new Request(`${T3_CAPABILITIES_CACHE_ORIGIN}/${hex}`);
+}
+
+/**
+ * Lists the models the connected T3 host offers (`orchestrator_capabilities`), reusing the list for
+ * `T3_CAPABILITIES_CACHE_TTL_SECONDS` through the Workers Cache API when a cache is given. A cache
+ * failure only costs a fresh call to T3; it never fails the request.
+ */
+export async function listT3ModelCapabilities(
+  deps: Pick<T3ServiceDeps, "store" | "encryptionKey" | "fetchFn">,
+  cache: Cache | undefined,
+): Promise<T3ModelCapability[]> {
+  const mcpClient = await createActiveT3McpClient({
+    store: deps.store,
+    encryptionKey: deps.encryptionKey,
+    fetchFn: deps.fetchFn,
+  });
+  const connection = await deps.store.getConnection();
+  const cacheKey = cache && connection ? await capabilitiesCacheKey(connection) : undefined;
+
+  if (cache && cacheKey) {
+    const cached = await cache.match(cacheKey).catch((err: unknown) => {
+      console.warn("reading cached T3 capabilities failed", err);
+      return undefined;
+    });
+    if (cached) {
+      const body: unknown = await cached.json();
+      if (Array.isArray(body)) {
+        return body as T3ModelCapability[];
+      }
+    }
+  }
+
+  const capabilities = await mcpClient.listModelCapabilities();
+
+  if (cache && cacheKey) {
+    const response = Response.json(capabilities, {
+      headers: { "Cache-Control": `max-age=${String(T3_CAPABILITIES_CACHE_TTL_SECONDS)}` },
+    });
+    await cache.put(cacheKey, response).catch((err: unknown) => {
+      console.warn("caching T3 capabilities failed", err);
+    });
+  }
+  return capabilities;
+}
+
+/** Author of the comment Bitig records when a thread switches models. */
+export const T3_MODEL_SWITCH_COMMENT_AUTHOR = "bitig";
+
+export interface ReplyToTaskT3RunInput {
+  body: string;
+  author?: string | undefined;
+  modelSelection?: T3ModelSelection | undefined;
+  actor: string;
+}
+
+export interface ReplyToTaskT3RunResult {
+  comment: Comment;
+  /** The "Model switched from X to Y" comment, when the reply switched the thread's model. */
+  switchComment?: Comment | undefined;
+  run: AgentRun;
+}
+
+/**
+ * A person's reply to a task's T3 thread (#BIT-119). When `modelSelection` differs from the thread's
+ * current model, the thread must be waiting or past its turn (see `canSwitchT3Model`); it is switched
+ * with `t3_thread_configure` and the switch is recorded on the run and as an agent comment. The reply
+ * is then saved as a comment and sent with `t3_thread_send`, prefixed after a switch with a line
+ * asking the new model to restore context from the task's checkpoint.
+ *
+ * Throws `T3ModelSwitchConflictError` before anything is saved when the switch is not allowed. If
+ * T3 fails after the switch, the comments stay saved and the error reaches the caller.
+ */
+export async function replyToTaskT3Run(
+  deps: T3ServiceDeps,
+  taskRef: string,
+  input: ReplyToTaskT3RunInput,
+): Promise<ReplyToTaskT3RunResult> {
+  const taskId = await resolveTaskRef(deps.storage, taskRef);
+  const task = await deps.storage.getTask(taskId);
+  if (!task) {
+    throw new NotFoundError("task", taskId);
+  }
+  const existingRun = await deps.store.getAgentRunByTaskId(task.id);
+  if (!existingRun) {
+    makeValidationIssue("taskId", "This task has no T3 thread. Start it in T3 first.");
+  }
+
+  const now = deps.now ? deps.now() : Date.now();
+  const mcpClient = await createActiveT3McpClient({
+    store: deps.store,
+    encryptionKey: deps.encryptionKey,
+    fetchFn: deps.fetchFn,
+    now,
+  });
+
+  let run = existingRun;
+  let switchedTo: string | undefined;
+  let switchComment: Comment | undefined;
+  if (input.modelSelection) {
+    const selection = input.modelSelection;
+    const current = await mcpClient.readThreadModel(existingRun.threadId);
+    const known: T3ModelSelection | undefined =
+      current ??
+      (existingRun.model && existingRun.providerInstanceId
+        ? {
+            providerInstanceId: existingRun.providerInstanceId,
+            model: existingRun.model,
+            ...(existingRun.modelOptions ? { options: existingRun.modelOptions } : {}),
+          }
+        : undefined);
+
+    if (!known || !isSameT3ModelSelection(known, selection)) {
+      const live = await mcpClient.readThreadLiveStatus(existingRun.threadId);
+      const liveState = deriveLiveAgentRunState({
+        thread: live.thread,
+        recentRuns: live.recentRuns,
+        pendingRequestIds: live.pendingRequestIds,
+      });
+      // A pending request keeps a run id open while the thread waits on a person, so only an
+      // active run outside the waiting state counts as mid-turn.
+      const midTurn = Boolean(live.thread?.activeRunId) && liveState !== "waiting_for_approval";
+      if (!canSwitchT3Model(liveState) || midTurn) {
+        throw new T3ModelSwitchConflictError(midTurn ? "working" : liveState);
+      }
+
+      await mcpClient.configureThreadModel(existingRun.threadId, selection);
+      run = (await deps.store.updateAgentRunModel(task.id, { selection, now })) ?? existingRun;
+
+      const fromLabel = formatT3ModelSelection(
+        known ?? { ...(existingRun.model ? { model: existingRun.model } : {}) },
+      );
+      switchedTo = formatT3ModelSelection(selection);
+      switchComment = await deps.storage.addComment(
+        {
+          taskId: task.id,
+          body: buildT3ModelSwitchComment(fromLabel, switchedTo),
+          authorType: "agent",
+          author: T3_MODEL_SWITCH_COMMENT_AUTHOR,
+        },
+        { actor: input.actor },
+      );
+    }
+  }
+
+  const comment = await deps.storage.addComment(
+    {
+      taskId: task.id,
+      body: input.body,
+      authorType: "human",
+      ...(input.author ? { author: input.author } : {}),
+    },
+    { actor: input.actor },
+  );
+
+  const project = await deps.storage.getProject(task.projectId);
+  const taskLabel = taskCode(task, project ?? undefined) ?? `"${task.title}"`;
+  const replyPrompt = buildT3CommentPrompt({
+    taskLabel,
+    author: comment.author ?? DEFAULT_COMMENT_AUTHOR_LABEL,
+    body: comment.body,
+  });
+  const prompt = switchedTo ? `${buildT3ModelSwitchNotice(taskLabel, switchedTo)}\n\n${replyPrompt}` : replyPrompt;
+
+  const sent = await sendPromptToT3Run(deps, run, prompt);
+  return {
+    comment,
+    ...(switchComment ? { switchComment } : {}),
+    run: sent.run ?? run,
   };
 }

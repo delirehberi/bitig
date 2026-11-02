@@ -150,6 +150,8 @@ const STATEMENTS = [
     \`link\` text,
     \`state\` text NOT NULL,
     \`model\` text,
+    \`provider_instance_id\` text,
+    \`model_options\` text,
     \`workspace_strategy\` text,
     \`started_by\` text,
     \`started_at\` integer NOT NULL,
@@ -178,6 +180,8 @@ interface MockT3ServerState {
     options?: { label: string; description?: string }[];
   }[];
   recentRunStatus: string;
+  activeRunId: string | null;
+  threadModelSelection: Record<string, unknown>;
   toolCalls: RecordedToolCall[];
 }
 
@@ -295,7 +299,28 @@ function createMockT3Fetch(state: MockT3ServerState): typeof fetch {
                     driverKind: "claude",
                     displayName: "Claude Code",
                     canRunChildTask: true,
-                    models: [{ id: "claude-opus-4-7", label: "Claude Opus 4.7" }],
+                    models: [
+                      {
+                        id: "claude-opus-4-7",
+                        label: "Claude Opus 4.7",
+                        options: [
+                          { id: "effort", values: ["low", "medium", "high"], default: "medium" },
+                          { id: "fastMode", values: [false, true] },
+                        ],
+                      },
+                    ],
+                  },
+                  {
+                    providerInstanceId: "prov-codex",
+                    driverKind: "codex",
+                    displayName: "Codex",
+                    canRunChildTask: true,
+                    models: [
+                      {
+                        id: "gpt-6-sol",
+                        options: [{ id: "reasoningEffort", values: ["low", "high"], default: "low" }],
+                      },
+                    ],
                   },
                   {
                     providerInstanceId: "prov-disabled",
@@ -317,6 +342,7 @@ function createMockT3Fetch(state: MockT3ServerState): typeof fetch {
                   id: "thread-abc-123",
                   status: state.threadStatus,
                   pendingRequestCount: state.pendingRequestCount,
+                  activeRunId: state.activeRunId,
                 },
                 recentRuns: [{ status: state.recentRunStatus }],
               };
@@ -337,6 +363,16 @@ function createMockT3Fetch(state: MockT3ServerState): typeof fetch {
               payload = { ok: true };
             } else if (toolName === "t3_thread_organize") {
               payload = { ok: true };
+            } else if (toolName === "t3_thread_configure") {
+              if (toolArgs.modelSelection && typeof toolArgs.modelSelection === "object") {
+                state.threadModelSelection = toolArgs.modelSelection as Record<string, unknown>;
+              }
+              payload = {
+                threadId: toolArgs.threadId,
+                modelSelection: state.threadModelSelection,
+                runtimeMode: "auto",
+                interactionMode: "default",
+              };
             }
 
             return Response.json(
@@ -375,6 +411,8 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
       pendingRequestIds: [],
       pendingQuestions: [],
       recentRunStatus: "running",
+      activeRunId: null,
+      threadModelSelection: { instanceId: "prov-claude", model: "claude-opus-4-7" },
       toolCalls: [],
     };
     app = createApp({ t3Fetch: createMockT3Fetch(mockState) });
@@ -495,8 +533,26 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
         displayName: "Claude Code",
         model: "claude-opus-4-7",
         label: "Claude Opus 4.7",
+        options: [
+          { id: "effort", values: ["low", "medium", "high"], default: "medium" },
+          { id: "fastMode", values: [false, true] },
+        ],
+      },
+      {
+        providerInstanceId: "prov-codex",
+        driverKind: "codex",
+        displayName: "Codex",
+        model: "gpt-6-sol",
+        options: [{ id: "reasoningEffort", values: ["low", "high"], default: "low" }],
       },
     ]);
+
+    // The model list is cached: a second request does not call orchestrator_capabilities again
+    const capCalls = (): number => mockState.toolCalls.filter((call) => call.name === "orchestrator_capabilities").length;
+    expect(capCalls()).toBe(1);
+    const cachedRes = await request("/api/t3/capabilities");
+    expect(await cachedRes.json<{ capabilities: T3ModelCapability[] }>()).toEqual({ capabilities });
+    expect(capCalls()).toBe(1);
 
     const mapRes = await request(`/api/t3/mappings/${project.id}`, {
       method: "PUT",
@@ -901,6 +957,160 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
     const failedArchiveRes = await patchTask(failingTask.id, { status: "archived" });
     expect(failedArchiveRes.status).toBe(200);
     expect((await failedArchiveRes.json<Task>()).status).toBe("archived");
+  });
+
+  it("replies to a waiting thread and switches its model first, only while the thread is not mid-turn (BIT-119)", async () => {
+    await connectT3Host();
+    const project = await (
+      await request("/api/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Bitig", key: "BIT" }),
+      })
+    ).json<Project>();
+    await request(`/api/t3/mappings/${project.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ t3ProjectId: "t3-proj-bitig", t3ProjectTitle: "Bitig Workspace" }),
+    });
+    const task = await (
+      await request("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: project.id, title: "Switch models" }),
+      })
+    ).json<Task>();
+
+    function reply(taskId: string, payload: Record<string, unknown>): Promise<Response> {
+      return request(`/api/tasks/${taskId}/t3-run/reply`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    }
+    const codexSelection = {
+      providerInstanceId: "prov-codex",
+      model: "gpt-6-sol",
+      options: [{ id: "reasoningEffort", value: "high" }],
+    };
+    const listComments = async (): Promise<{ body: string; authorType: string; author?: string }[]> =>
+      (await request(`/api/tasks/${task.id}/comments`)).json();
+
+    // No run yet: the reply is refused and nothing is saved
+    const noRunRes = await reply(task.id, { body: "Hello" });
+    expect(noRunRes.status).toBe(400);
+    expect(await listComments()).toHaveLength(0);
+
+    await request(`/api/tasks/${task.id}/t3-run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+
+    // Mid-turn: the switch is refused with 409, T3 is not reconfigured, no comment is saved
+    mockState.threadStatus = "running";
+    mockState.recentRunStatus = "running";
+    mockState.activeRunId = "run-1";
+    const busyRes = await reply(task.id, { body: "Use Codex", modelSelection: codexSelection });
+    expect(busyRes.status).toBe(409);
+    expect(await busyRes.json<{ error: string; state: string }>()).toMatchObject({ error: "thread_busy", state: "working" });
+    expect(mockState.toolCalls.some((call) => call.name === "t3_thread_configure" && call.arguments.modelSelection)).toBe(false);
+    expect(mockState.toolCalls.some((call) => call.name === "t3_thread_send")).toBe(false);
+    expect(await listComments()).toHaveLength(0);
+
+    // Waiting on a person (usage limit or question): configure first, then send with a resume notice
+    mockState.threadStatus = "waiting";
+    mockState.pendingRequestCount = 1;
+    mockState.pendingRequestIds = ["req-limit"];
+    const switchRes = await reply(task.id, { body: "Out of budget, continue on Codex.", author: "emre", modelSelection: codexSelection });
+    expect(switchRes.status).toBe(201);
+    const switched = await switchRes.json<{ comment: { body: string }; switchComment?: { body: string; author?: string }; run: AgentRun }>();
+
+    const configureIndex = mockState.toolCalls.findIndex((call) => call.name === "t3_thread_configure" && call.arguments.modelSelection);
+    const sendIndex = mockState.toolCalls.findIndex((call) => call.name === "t3_thread_send");
+    expect(configureIndex).toBeGreaterThanOrEqual(0);
+    expect(sendIndex).toBeGreaterThan(configureIndex);
+    expect(mockState.toolCalls[configureIndex]?.arguments).toEqual({
+      threadId: "thread-abc-123",
+      modelSelection: { instanceId: "prov-codex", model: "gpt-6-sol", options: [{ id: "reasoningEffort", value: "high" }] },
+    });
+    const sentMessage = String(mockState.toolCalls[sendIndex]?.arguments.message);
+    expect(mockState.toolCalls[sendIndex]?.arguments.mode).toBe("auto");
+    expect(sentMessage).toMatch(/^The thread switched to gpt-6-sol \(prov-codex, reasoningEffort: high\)\./);
+    expect(sentMessage).toContain(`resume_from_checkpoint for BIT-${String(task.number)}`);
+    expect(sentMessage).toContain(`New comment on BIT-${String(task.number)} from emre:\n\nOut of budget, continue on Codex.`);
+
+    expect(switched.switchComment?.body).toBe(
+      "Model switched from claude-opus-4-7 (prov-claude) to gpt-6-sol (prov-codex, reasoningEffort: high).",
+    );
+    expect(switched.switchComment?.author).toBe("bitig");
+    expect(switched.run).toMatchObject({
+      state: "working",
+      model: "gpt-6-sol",
+      providerInstanceId: "prov-codex",
+      modelOptions: [{ id: "reasoningEffort", value: "high" }],
+    });
+    const comments = await listComments();
+    expect(comments.map((c) => [c.authorType, c.body])).toEqual([
+      ["agent", "Model switched from claude-opus-4-7 (prov-claude) to gpt-6-sol (prov-codex, reasoningEffort: high)."],
+      ["human", "Out of budget, continue on Codex."],
+    ]);
+    const stored = await env.DB.prepare(
+      "SELECT model, provider_instance_id, model_options FROM agent_runs WHERE task_id = ?",
+    )
+      .bind(task.id)
+      .first<{ model: string; provider_instance_id: string; model_options: string }>();
+    expect(stored).toEqual({
+      model: "gpt-6-sol",
+      provider_instance_id: "prov-codex",
+      model_options: JSON.stringify([{ id: "reasoningEffort", value: "high" }]),
+    });
+    const liveRun = await (await request(`/api/tasks/${task.id}/t3-run`)).json<T3TaskRunLiveResponse>();
+    expect(liveRun.run?.model).toBe("gpt-6-sol");
+
+    // The switch shows in the task's activity through the comments
+    const taskAfter = await (await request(`/api/tasks/${task.id}`)).json<Task>();
+    expect(taskAfter.updatedBy).toBe("you");
+
+    // Same model again: no switch, the reply is only sent
+    mockState.threadStatus = "idle";
+    mockState.pendingRequestCount = 0;
+    mockState.pendingRequestIds = [];
+    mockState.recentRunStatus = "completed";
+    mockState.activeRunId = null;
+    const configureCalls = (): number =>
+      mockState.toolCalls.filter((call) => call.name === "t3_thread_configure" && call.arguments.modelSelection).length;
+    const sameRes = await reply(task.id, { body: "One more thing", modelSelection: codexSelection });
+    expect(sameRes.status).toBe(201);
+    const same = await sameRes.json<{ switchComment?: unknown }>();
+    expect(same.switchComment).toBeUndefined();
+    expect(configureCalls()).toBe(1);
+    expect(String(mockState.toolCalls.filter((call) => call.name === "t3_thread_send").at(-1)?.arguments.message)).toMatch(
+      /^New comment on BIT-/,
+    );
+
+    // Finished turn: switching again is allowed
+    const backRes = await reply(task.id, {
+      body: "Back to Claude",
+      modelSelection: { providerInstanceId: "prov-claude", model: "claude-opus-4-7" },
+    });
+    expect(backRes.status).toBe(201);
+    expect(configureCalls()).toBe(2);
+    const back = await backRes.json<{ run: AgentRun }>();
+    expect(back.run.model).toBe("claude-opus-4-7");
+    expect(back.run.modelOptions).toBeUndefined();
+
+    // T3 unreachable: a 502 and nothing is saved
+    mockState.failMcpConnection = true;
+    const commentCount = (await listComments()).length;
+    const downRes = await reply(task.id, { body: "Anyone?", modelSelection: codexSelection });
+    expect(downRes.status).toBe(502);
+    expect(await listComments()).toHaveLength(commentCount);
+
+    // Invalid input is rejected
+    mockState.failMcpConnection = false;
+    expect((await reply(task.id, { body: "  " })).status).toBe(400);
+    expect((await reply(task.id, { body: "x", modelSelection: { model: "gpt-6-sol" } })).status).toBe(400);
   });
 
   it("attaches CF-Access-Client-Id and CF-Access-Client-Secret headers when configured and surfaces a clear error when Cloudflare Access redirects to login", async () => {

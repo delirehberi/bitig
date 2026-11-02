@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Bot,
   Calendar,
@@ -14,6 +14,7 @@ import {
 import {
   formatDuration,
   getTaskTiming,
+  type AgentRun,
   type ChecklistItem,
   type Project,
   type StorageProvider,
@@ -23,6 +24,7 @@ import {
   type DependencyLinks,
   type TaskLinks,
   type TaskStatus,
+  type T3ModelCapability,
 } from "@bitig/core";
 import { formatFullTimestamp, formatTimeAgo } from "../../domain/time-ago";
 import { useFocusTrap } from "../../hooks/useFocusTrap";
@@ -33,7 +35,7 @@ import { NeedsHumanNote } from "./NeedsHuman";
 import { TaskCode } from "./TaskCode";
 import { TaskCheckpoint } from "./TaskCheckpoint";
 import { TaskAttachments } from "./TaskAttachments";
-import { TaskComments } from "./TaskComments";
+import { TaskComments, type TaskCommentsT3Context } from "./TaskComments";
 import { TaskT3Section } from "./TaskT3Section";
 import { LinkedTasks, TaskDependencies } from "./LinkedTasks";
 
@@ -142,6 +144,17 @@ export function TaskDetailModal({
   } | null>(null);
   const latestToggle = useRef(0);
   const panelRef = useRef<HTMLDivElement>(null);
+  // The T3 run and model list, reported by TaskT3Section for the comment box's model picker.
+  const [t3Context, setT3Context] = useState<
+    (TaskCommentsT3Context & { readonly taskId: string }) | null
+  >(null);
+  const handleT3ContextChange = useCallback(
+    (context: { run: AgentRun | null; capabilities: T3ModelCapability[] }) => {
+      const run = context.run;
+      setT3Context(run ? { taskId: run.taskId, run, capabilities: context.capabilities } : null);
+    },
+    [],
+  );
   useFocusTrap(panelRef, isOpen);
 
   useEffect(() => {
@@ -315,6 +328,7 @@ export function TaskDetailModal({
                 (dep) => dep.status !== "done" && dep.status !== "archived",
               ),
             )}
+            onT3ContextChange={handleT3ContextChange}
           />
         )}
 
@@ -488,6 +502,7 @@ export function TaskDetailModal({
             key={task.id}
             storage={storage}
             taskId={task.id}
+            t3={t3Context?.taskId === task.id ? t3Context : undefined}
             onResolve={
               task.needsHuman !== undefined && onNeedsHumanResolve
                 ? () => {

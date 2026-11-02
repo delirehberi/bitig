@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import {
   NotFoundError,
+  ReplyToT3RunInputSchema,
   RespondT3PendingRequestInputSchema,
   StartT3ThreadInputSchema,
   T3StartOAuthInputSchema,
@@ -19,8 +20,11 @@ import {
   getT3ConnectionStatus,
   getTaskT3RunLiveStatus,
   launchTaskInT3,
+  listT3ModelCapabilities,
+  replyToTaskT3Run,
   respondToTaskT3Request,
   stopTaskT3Run,
+  T3ModelSwitchConflictError,
   type T3ServiceDeps,
 } from "../t3/service";
 
@@ -28,6 +32,7 @@ const HTTP_CREATED = 201;
 const HTTP_NO_CONTENT = 204;
 const HTTP_FOUND = 302;
 const HTTP_BAD_REQUEST = 400;
+const HTTP_CONFLICT = 409;
 const HTTP_BAD_GATEWAY = 502;
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 
@@ -42,6 +47,9 @@ export function buildServiceDeps(c: Context<AppEnv>): T3ServiceDeps {
 }
 
 function handleT3RouteError(err: unknown, c: Context<AppEnv>): Response {
+  if (err instanceof T3ModelSwitchConflictError) {
+    return c.json({ error: err.code, message: err.message, state: err.state }, HTTP_CONFLICT);
+  }
   if (err instanceof T3OAuthError || err instanceof T3McpError) {
     return c.json(
       {
@@ -210,12 +218,14 @@ export const t3ApiRouter = new Hono<AppEnv>()
   .get("/capabilities", async (c) => {
     const store = new T3D1Store(c.env.DB);
     try {
-      const client = await createActiveT3McpClient({
-        store,
-        encryptionKey: c.get("config").T3_ENCRYPTION_KEY,
-        fetchFn: c.get("t3Fetch"),
-      });
-      const capabilities = await client.listModelCapabilities();
+      const capabilities = await listT3ModelCapabilities(
+        {
+          store,
+          encryptionKey: c.get("config").T3_ENCRYPTION_KEY,
+          fetchFn: c.get("t3Fetch"),
+        },
+        caches.default,
+      );
       return c.json({ capabilities });
     } catch (err) {
       return handleT3RouteError(err, c);
@@ -286,6 +296,31 @@ export const t3TaskRunsRouter = new Hono<AppEnv>()
           workspaceStrategy: input.workspaceStrategy,
           providerInstanceId: input.providerInstanceId,
           model: input.model,
+          actor,
+        });
+        return c.json(result, HTTP_CREATED);
+      } catch (err) {
+        return handleT3RouteError(err, c);
+      }
+    },
+  )
+  .post(
+    "/:id/t3-run/reply",
+    zValidator("json", ReplyToT3RunInputSchema, (result, c) => {
+      if (!result.success) {
+        return c.json({ error: "validation_error", details: result.error.issues }, HTTP_BAD_REQUEST);
+      }
+      return undefined;
+    }),
+    async (c) => {
+      const id = c.req.param("id");
+      const input = c.req.valid("json");
+      const actor = c.req.header("X-Bitig-Actor") ?? c.req.header("X-Bitig-Agent") ?? "you";
+      try {
+        const result = await replyToTaskT3Run(buildServiceDeps(c), id, {
+          body: input.body,
+          author: input.author,
+          modelSelection: input.modelSelection,
           actor,
         });
         return c.json(result, HTTP_CREATED);

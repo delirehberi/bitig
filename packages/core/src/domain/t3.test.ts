@@ -1,9 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
+  ReplyToT3RunInputSchema,
+  T3ModelCapabilitySchema,
   T3_ALLOWED_MCP_TOOLS,
   buildT3LaunchPrompt,
+  buildT3ModelSwitchComment,
+  buildT3ModelSwitchNotice,
+  canSwitchT3Model,
   computeT3ConnectionStatus,
   deriveLiveAgentRunState,
+  formatT3ModelSelection,
+  isSameT3ModelSelection,
   normalizeT3McpUrl,
 } from "./t3";
 import type { Comment, Task } from "./types";
@@ -161,9 +168,74 @@ describe("T3_ALLOWED_MCP_TOOLS", () => {
   it("never includes project mutation tools and allows thread organization", () => {
     const allowed = new Set<string>(T3_ALLOWED_MCP_TOOLS);
     expect(allowed.has("t3_thread_organize")).toBe(true);
+    expect(allowed.has("t3_thread_configure")).toBe(true);
     expect(allowed.has("t3_project_create")).toBe(false);
     expect(allowed.has("t3_project_update")).toBe(false);
     expect(allowed.has("t3_project_delete")).toBe(false);
     expect(allowed.has("t3_project_clone")).toBe(false);
+  });
+});
+
+describe("T3 model switching (BIT-119)", () => {
+  it("allows a switch only when the thread waits or its turn has ended", () => {
+    expect(canSwitchT3Model("waiting_for_approval")).toBe(true);
+    expect(canSwitchT3Model("finished")).toBe(true);
+    expect(canSwitchT3Model("stopped")).toBe(true);
+    expect(canSwitchT3Model("failed")).toBe(true);
+    expect(canSwitchT3Model("working")).toBe(false);
+    expect(canSwitchT3Model("offline")).toBe(false);
+  });
+
+  it("compares selections by provider, model and option values in any order", () => {
+    const base = {
+      providerInstanceId: "claudeAgent",
+      model: "claude-opus-5-5",
+      options: [
+        { id: "effort", value: "high" },
+        { id: "fastMode", value: false },
+      ],
+    };
+    expect(isSameT3ModelSelection(base, { ...base, options: [...base.options].reverse() })).toBe(true);
+    expect(isSameT3ModelSelection(base, { ...base, model: "claude-sonnet-5-5" })).toBe(false);
+    expect(isSameT3ModelSelection(base, { ...base, providerInstanceId: "antigravity" })).toBe(false);
+    expect(isSameT3ModelSelection(base, { ...base, options: [{ id: "effort", value: "high" }] })).toBe(false);
+    expect(
+      isSameT3ModelSelection(base, {
+        ...base,
+        options: [
+          { id: "effort", value: "low" },
+          { id: "fastMode", value: false },
+        ],
+      }),
+    ).toBe(false);
+    expect(isSameT3ModelSelection({ providerInstanceId: "codex", model: "gpt-6-sol" }, { providerInstanceId: "codex", model: "gpt-6-sol", options: [] })).toBe(true);
+  });
+
+  it("formats selections and builds the switch comment and notice", () => {
+    expect(
+      formatT3ModelSelection({ providerInstanceId: "codex", model: "gpt-6-sol", options: [{ id: "reasoningEffort", value: "high" }] }),
+    ).toBe("gpt-6-sol (codex, reasoningEffort: high)");
+    expect(formatT3ModelSelection({ model: "claude-opus-5-5" })).toBe("claude-opus-5-5");
+    expect(formatT3ModelSelection({})).toBe("the default model");
+    expect(buildT3ModelSwitchComment("a", "b")).toBe("Model switched from a to b.");
+    expect(buildT3ModelSwitchNotice("BIT-119", "gpt-6-sol")).toContain("resume_from_checkpoint for BIT-119");
+  });
+
+  it("validates reply input and capability options", () => {
+    expect(ReplyToT3RunInputSchema.safeParse({ body: "  " }).success).toBe(false);
+    expect(
+      ReplyToT3RunInputSchema.safeParse({
+        body: "Go on",
+        modelSelection: { providerInstanceId: "codex", model: "gpt-6-sol", options: [{ id: "reasoningEffort", value: "high" }] },
+      }).success,
+    ).toBe(true);
+    expect(ReplyToT3RunInputSchema.safeParse({ body: "Go on", modelSelection: { model: "x" } }).success).toBe(false);
+    expect(
+      T3ModelCapabilitySchema.safeParse({
+        providerInstanceId: "claudeAgent",
+        model: "claude-opus-5-5",
+        options: [{ id: "fastMode", values: [false, true] }],
+      }).success,
+    ).toBe(true);
   });
 });

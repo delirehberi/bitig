@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { IdSchema, TaskActorSchema, TimestampSchema } from "./schemas";
+import { CommentAuthorSchema, CommentBodySchema, IdSchema, TaskActorSchema, TimestampSchema } from "./schemas";
 import type { Comment, Task } from "./types";
 import { ValidationError } from "./errors";
 
@@ -32,6 +32,7 @@ export const T3_ALLOWED_MCP_TOOLS = [
   "t3_thread_send",
   "t3_thread_interrupt",
   "t3_thread_organize",
+  "t3_thread_configure",
 ] as const;
 
 export type T3AllowedMcpTool = (typeof T3_ALLOWED_MCP_TOOLS)[number];
@@ -43,6 +44,40 @@ export const T3_PROMPT_COMMENTS_LIMIT = 5;
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
+const T3_MODEL_OPTION_ID_MAX = 100;
+const T3_MODEL_OPTION_VALUE_MAX = 100;
+const T3_MODEL_OPTION_VALUES_MAX = 50;
+const T3_MODEL_OPTIONS_MAX = 20;
+
+/** One model option value from `orchestrator_capabilities` (e.g. an effort level, or a fast-mode flag). */
+export const T3ModelOptionValueSchema = z.union([z.string().trim().min(1).max(T3_MODEL_OPTION_VALUE_MAX), z.boolean()]);
+export type T3ModelOptionValue = z.output<typeof T3ModelOptionValueSchema>;
+
+/** A model option a T3 provider offers, e.g. `{ id: "effort", values: ["low", "high"], default: "low" }`. */
+export const T3ModelOptionSchema = z.strictObject({
+  id: z.string().trim().min(1).max(T3_MODEL_OPTION_ID_MAX),
+  values: z.array(T3ModelOptionValueSchema).max(T3_MODEL_OPTION_VALUES_MAX),
+  default: T3ModelOptionValueSchema.exactOptional(),
+});
+export type T3ModelOption = z.output<typeof T3ModelOptionSchema>;
+
+/** A chosen option value, in the `[{ id, value }]` shape T3 uses for `modelSelection.options`. */
+export const T3ModelSelectionOptionSchema = z.strictObject({
+  id: z.string().trim().min(1).max(T3_MODEL_OPTION_ID_MAX),
+  value: T3ModelOptionValueSchema,
+});
+export type T3ModelSelectionOption = z.output<typeof T3ModelSelectionOptionSchema>;
+
+export const T3ModelSelectionOptionsSchema = z.array(T3ModelSelectionOptionSchema).max(T3_MODEL_OPTIONS_MAX);
+
+/** A provider instance, model and options for a T3 thread (`t3_thread_configure` `modelSelection`). */
+export const T3ModelSelectionSchema = z.strictObject({
+  providerInstanceId: z.string().trim().min(1).max(200),
+  model: z.string().trim().min(1).max(200),
+  options: T3ModelSelectionOptionsSchema.exactOptional(),
+});
+export type T3ModelSelection = z.output<typeof T3ModelSelectionSchema>;
+
 export const AgentRunSchema = z.strictObject({
   id: IdSchema,
   taskId: IdSchema,
@@ -51,6 +86,10 @@ export const AgentRunSchema = z.strictObject({
   link: z.string().trim().min(1).max(2048).exactOptional(),
   state: AgentRunStateSchema,
   model: z.string().trim().min(1).max(200).exactOptional(),
+  /** The provider instance the thread runs on, when known (set at launch with a model, or on a switch). */
+  providerInstanceId: z.string().trim().min(1).max(200).exactOptional(),
+  /** Model options chosen on the last switch (#BIT-119), e.g. the effort level. */
+  modelOptions: T3ModelSelectionOptionsSchema.exactOptional(),
   workspaceStrategy: T3WorkspaceStrategySchema.exactOptional(),
   startedBy: TaskActorSchema.exactOptional(),
   startedAt: TimestampSchema,
@@ -110,6 +149,7 @@ export const T3ModelCapabilitySchema = z.strictObject({
   displayName: z.string().trim().min(1).max(200).exactOptional(),
   model: z.string().trim().min(1).max(200),
   label: z.string().trim().min(1).max(200).exactOptional(),
+  options: z.array(T3ModelOptionSchema).max(T3_MODEL_OPTIONS_MAX).exactOptional(),
 });
 
 export type T3ModelCapability = z.output<typeof T3ModelCapabilitySchema>;
@@ -191,6 +231,82 @@ export const SendT3MessageInputSchema = z.strictObject({
 });
 
 export type SendT3MessageInput = z.input<typeof SendT3MessageInputSchema>;
+
+/**
+ * A person's reply to a waiting T3 thread (#BIT-119): saved as a Bitig comment and sent to the thread.
+ * With `modelSelection`, the thread switches to that model first.
+ */
+export const ReplyToT3RunInputSchema = z.strictObject({
+  body: CommentBodySchema,
+  author: CommentAuthorSchema.exactOptional(),
+  modelSelection: T3ModelSelectionSchema.exactOptional(),
+});
+
+export type ReplyToT3RunInput = z.input<typeof ReplyToT3RunInputSchema>;
+
+/**
+ * Run states in which a thread may switch models: it waits on a person, or its turn has ended
+ * (finished, stopped, or failed, which covers usage-limit stops). Never mid-turn (`working`), and
+ * never `offline`, where the host cannot be reached.
+ */
+export const T3_MODEL_SWITCH_ALLOWED_STATES: readonly AgentRunState[] = [
+  "waiting_for_approval",
+  "finished",
+  "stopped",
+  "failed",
+];
+
+export function canSwitchT3Model(state: AgentRunState): boolean {
+  return T3_MODEL_SWITCH_ALLOWED_STATES.includes(state);
+}
+
+function sortedOptions(options: readonly T3ModelSelectionOption[] | undefined): T3ModelSelectionOption[] {
+  return [...(options ?? [])].sort((a, b) => a.id.localeCompare(b.id));
+}
+
+/** Whether two model selections name the same provider instance, model and option values. */
+export function isSameT3ModelSelection(a: T3ModelSelection, b: T3ModelSelection): boolean {
+  if (a.providerInstanceId !== b.providerInstanceId || a.model !== b.model) return false;
+  const left = sortedOptions(a.options);
+  const right = sortedOptions(b.options);
+  return (
+    left.length === right.length &&
+    left.every((opt, i) => {
+      const other = right[i];
+      return opt.id === other?.id && opt.value === other.value;
+    })
+  );
+}
+
+/** A short label for a model selection, e.g. `claude-opus-5-5 (claudeAgent, effort: high)`. */
+export function formatT3ModelSelection(selection: {
+  readonly providerInstanceId?: string | undefined;
+  readonly model?: string | undefined;
+  readonly options?: readonly T3ModelSelectionOption[] | undefined;
+}): string {
+  const model = selection.model ?? "the default model";
+  const details = [
+    ...(selection.providerInstanceId ? [selection.providerInstanceId] : []),
+    ...sortedOptions(selection.options).map((opt) => `${opt.id}: ${String(opt.value)}`),
+  ];
+  return details.length > 0 ? `${model} (${details.join(", ")})` : model;
+}
+
+/** The comment recorded on a task when its thread switches models. */
+export function buildT3ModelSwitchComment(from: string, to: string): string {
+  return `Model switched from ${from} to ${to}.`;
+}
+
+/**
+ * The line put before a person's reply after a model switch. The new model receives only a bounded
+ * history from T3, so it is told to restore context from the task's Bitig checkpoint first.
+ */
+export function buildT3ModelSwitchNotice(taskLabel: string, to: string): string {
+  return (
+    `The thread switched to ${to}. Before continuing, call resume_from_checkpoint for ${taskLabel} ` +
+    "and read the task's comments to restore context."
+  );
+}
 
 export const StopT3RunInputSchema = z.strictObject({
   reason: z.string().trim().min(1).max(2000).exactOptional(),
