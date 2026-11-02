@@ -527,13 +527,20 @@ export class T3McpClient {
   async listModelCapabilities(): Promise<T3ModelCapability[]> {
     return this.withSession(async (callTool) => {
       const payload = await callTool("orchestrator_capabilities", {});
-      const rawTargets = Array.isArray(payload.targets) ? payload.targets : [];
+      const rawTargets = Array.isArray(payload.providers)
+        ? payload.providers
+        : Array.isArray(payload.targets)
+          ? payload.targets
+          : [];
       const capabilities: T3ModelCapability[] = [];
       for (const target of rawTargets) {
         if (!target || typeof target !== "object") {
           continue;
         }
         const rec = target as Record<string, unknown>;
+        if (rec.canRunChildTask === false) {
+          continue;
+        }
         const providerInstanceId =
           typeof rec.providerInstanceId === "string" ? rec.providerInstanceId.trim() : "";
         if (!providerInstanceId) {
@@ -602,7 +609,7 @@ export class T3McpClient {
       const args: Record<string, unknown> = {
         projectId: input.projectId,
         title: input.title,
-        prompt: input.prompt,
+        message: input.prompt,
         clientRequestId: input.clientRequestId,
       };
       if (input.workspaceStrategy === "worktree") {
@@ -614,7 +621,7 @@ export class T3McpClient {
       if (input.model) {
         args.modelSelection = {
           model: input.model,
-          ...(input.providerInstanceId ? { providerInstanceId: input.providerInstanceId } : {}),
+          ...(input.providerInstanceId ? { instanceId: input.providerInstanceId } : {}),
         };
       }
 
@@ -731,7 +738,7 @@ export class T3McpClient {
     await this.withSession(async (callTool) => {
       await callTool("t3_thread_send", {
         threadId: input.threadId,
-        prompt: input.prompt,
+        message: input.prompt,
         mode: "auto",
       });
     });

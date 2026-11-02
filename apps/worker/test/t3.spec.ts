@@ -289,12 +289,20 @@ function createMockT3Fetch(state: MockT3ServerState): typeof fetch {
               };
             } else if (toolName === "orchestrator_capabilities") {
               payload = {
-                targets: [
+                providers: [
                   {
                     providerInstanceId: "prov-claude",
                     driverKind: "claude",
                     displayName: "Claude Code",
-                    models: [{ model: "claude-opus-4-7", label: "Claude Opus 4.7" }],
+                    canRunChildTask: true,
+                    models: [{ id: "claude-opus-4-7", label: "Claude Opus 4.7" }],
+                  },
+                  {
+                    providerInstanceId: "prov-disabled",
+                    driverKind: "cursor",
+                    displayName: "Cursor",
+                    canRunChildTask: false,
+                    models: [{ id: "cursor-model", label: "Cursor Model" }],
                   },
                 ],
               };
@@ -611,7 +619,7 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
       title: "BIT-1 Prerequisite task",
       clientRequestId: "BIT-1",
       workspaceStrategy: { type: "worktree", baseRef: "HEAD" },
-      modelSelection: { providerInstanceId: "prov-claude", model: "claude-opus-4-7" },
+      modelSelection: { instanceId: "prov-claude", model: "claude-opus-4-7" },
     });
   });
 
