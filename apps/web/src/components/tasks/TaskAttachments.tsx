@@ -12,18 +12,24 @@ import {
   Upload,
 } from "lucide-react";
 import {
+  ATTACHMENT_MAX_BYTES,
+  AttachmentNameSchema,
+  assertTaskAttachmentQuota,
   decodeUtf8,
   encodeBase64,
+  inferAttachmentMimeType,
   isImageAttachmentMimeType,
   isMarkdownAttachment,
   isTextAttachmentMimeType,
+  normalizeAttachmentMimeType,
   type Attachment,
   type AttachmentContent,
+  type AttachmentMimeType,
   type OperationOptions,
   type StorageProvider,
 } from "@bitig/core";
 import { formatFullTimestamp, formatTimeAgo } from "../../domain/time-ago";
-import { useAttachments } from "../../hooks/useAttachments";
+import { useAttachments, type AddAttachmentFileInput } from "../../hooks/useAttachments";
 import { Markdown } from "../Markdown";
 
 const ICON_SIZE = 12;
@@ -42,6 +48,36 @@ function isPreviewable(attachment: Attachment): boolean {
     isTextAttachmentMimeType(attachment.mimeType) ||
     isImageAttachmentMimeType(attachment.mimeType)
   );
+}
+
+/**
+ * Reads a browser `File` into an attachment payload, normalizing its MIME type or falling back
+ * to extension inference when the OS/browser reports a non-standard type (e.g. `video/mp2t` for `.ts`).
+ */
+async function fileToAttachmentInput(file: File): Promise<{
+  readonly name: string;
+  readonly mimeType: AttachmentMimeType;
+  readonly data: Uint8Array;
+}> {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const fallbackExt = file.type.startsWith("image/")
+    ? `.${file.type.slice("image/".length).split(";")[0] ?? "png"}`
+    : "";
+  const name =
+    file.name && file.name.trim().length > 0
+      ? file.name.trim()
+      : `pasted-${String(Date.now())}${fallbackExt}`;
+  let mimeType: AttachmentMimeType;
+  if (file.type) {
+    try {
+      mimeType = normalizeAttachmentMimeType(file.type, name);
+    } catch {
+      mimeType = inferAttachmentMimeType(name);
+    }
+  } else {
+    mimeType = inferAttachmentMimeType(name);
+  }
+  return { name, mimeType, data: bytes };
 }
 
 interface AttachmentItemProps {
@@ -218,19 +254,8 @@ export function TaskAttachments({ storage, taskId }: TaskAttachmentsProps) {
       setActionError(null);
       try {
         for (const file of list) {
-          const bytes = new Uint8Array(await file.arrayBuffer());
-          const fallbackExt = file.type.startsWith("image/")
-            ? `.${file.type.slice("image/".length).split(";")[0] ?? "png"}`
-            : "";
-          const name =
-            file.name && file.name.trim().length > 0
-              ? file.name
-              : `pasted-${String(Date.now())}${fallbackExt}`;
-          await addAttachment({
-            name,
-            ...(file.type ? { mimeType: file.type } : {}),
-            data: bytes,
-          });
+          const payload = await fileToAttachmentInput(file);
+          await addAttachment(payload);
         }
       } catch (err: unknown) {
         setActionError(err instanceof Error ? err.message : "Failed to upload attachment");
@@ -306,8 +331,9 @@ export function TaskAttachments({ storage, taskId }: TaskAttachmentsProps) {
             aria-label="Attach files"
             onChange={(e) => {
               if (e.target.files && e.target.files.length > 0) {
-                void uploadFiles(e.target.files);
+                const selected = Array.from(e.target.files);
                 e.target.value = "";
+                void uploadFiles(selected);
               }
             }}
             className="sr-only"
@@ -359,3 +385,192 @@ export function TaskAttachments({ storage, taskId }: TaskAttachmentsProps) {
     </section>
   );
 }
+
+export interface StagedAttachmentItem extends AddAttachmentFileInput {
+  readonly id: string;
+  readonly name: string;
+  readonly mimeType: AttachmentMimeType;
+  readonly size: number;
+  readonly createdAt: string;
+  readonly data: Uint8Array;
+}
+
+interface StagedTaskAttachmentsProps {
+  readonly items: readonly StagedAttachmentItem[];
+  readonly onChange: (items: StagedAttachmentItem[]) => void;
+  readonly disabled?: boolean | undefined;
+}
+
+/**
+ * Stages file attachments on a task form before the task exists in storage (e.g. in `TaskModal`
+ * when creating a new task). Supports file picker, drag-and-drop, clipboard paste, inline preview,
+ * and removal.
+ */
+export function StagedTaskAttachments({ items, onChange, disabled = false }: StagedTaskAttachmentsProps) {
+  const [isReading, setIsReading] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const nextIdRef = useRef(0);
+
+  const stageFiles = useCallback(
+    async (files: Iterable<File>) => {
+      const list = Array.from(files);
+      if (list.length === 0 || disabled) return;
+      setIsReading(true);
+      setActionError(null);
+      try {
+        const next = [...items];
+        for (const file of list) {
+          const payload = await fileToAttachmentInput(file);
+          const parsedName = AttachmentNameSchema.safeParse(payload.name);
+          if (!parsedName.success) {
+            throw new Error(parsedName.error.issues[0]?.message ?? "Invalid attachment name");
+          }
+          if (payload.data.byteLength === 0) {
+            throw new Error("Attachment must not be empty");
+          }
+          if (payload.data.byteLength > ATTACHMENT_MAX_BYTES) {
+            throw new Error(`Attachment exceeds maximum size of ${String(ATTACHMENT_MAX_BYTES)} bytes`);
+          }
+          assertTaskAttachmentQuota(next, payload.data.byteLength, "addAttachment");
+          const seq = ++nextIdRef.current;
+          next.push({
+            id: `staged-${String(Date.now())}-${String(seq)}`,
+            name: parsedName.data,
+            mimeType: payload.mimeType,
+            size: payload.data.byteLength,
+            createdAt: new Date().toISOString(),
+            data: payload.data,
+          });
+        }
+        onChange(next);
+      } catch (err: unknown) {
+        setActionError(err instanceof Error ? err.message : "Failed to stage attachment");
+      } finally {
+        setIsReading(false);
+      }
+    },
+    [disabled, items, onChange],
+  );
+
+  useEffect(() => {
+    if (disabled) return;
+    function handlePaste(e: ClipboardEvent) {
+      const files = e.clipboardData?.files;
+      if (!files || files.length === 0) return;
+      e.preventDefault();
+      void stageFiles(files);
+    }
+    document.addEventListener("paste", handlePaste);
+    return () => {
+      document.removeEventListener("paste", handlePaste);
+    };
+  }, [disabled, stageFiles]);
+
+  return (
+    <section
+      aria-labelledby="task-modal-attachments"
+      onDragOver={(e) => {
+        e.preventDefault();
+        if (!disabled) setIsDragging(true);
+      }}
+      onDragLeave={() => {
+        setIsDragging(false);
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        setIsDragging(false);
+        if (!disabled && e.dataTransfer.files.length > 0) {
+          void stageFiles(e.dataTransfer.files);
+        }
+      }}
+      className={`rounded-md transition-colors ${
+        isDragging ? "border border-dashed border-accent bg-accent-soft/20 p-2" : ""
+      }`}
+    >
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <h3
+          id="task-modal-attachments"
+          className="m-0 flex items-center gap-1 text-xs font-semibold text-ink-2"
+        >
+          <Paperclip size={ICON_SIZE} aria-hidden="true" />
+          Attachments{items.length > 0 ? ` (${String(items.length)})` : ""}
+        </h3>
+
+        <div>
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            disabled={disabled || isReading}
+            aria-label="Attach files"
+            onChange={(e) => {
+              if (e.target.files && e.target.files.length > 0) {
+                const selected = Array.from(e.target.files);
+                e.target.value = "";
+                void stageFiles(selected);
+              }
+            }}
+            className="sr-only"
+          />
+          <button
+            type="button"
+            disabled={disabled || isReading}
+            onClick={() => {
+              fileInputRef.current?.click();
+            }}
+            className="inline-flex items-center gap-1 rounded-md border border-rule px-2.5 py-1 text-2xs font-medium text-ink-2 transition-colors hover:bg-paper-2 hover:text-ink disabled:opacity-50"
+          >
+            <Upload size={ICON_SIZE} aria-hidden="true" />
+            {isReading ? "Attaching\u2026" : "Attach file"}
+          </button>
+        </div>
+      </div>
+
+      {actionError && (
+        <p role="alert" className="m-0 mb-2 text-xs text-danger">
+          {actionError}
+        </p>
+      )}
+      {items.length === 0 && (
+        <p className="m-0 text-xs text-ink-3">
+          No attachments yet. Drop files here, paste an image, or click Attach file.
+        </p>
+      )}
+      {items.length > 0 && (
+        <ul className="m-0 flex list-none flex-col gap-2 p-0">
+          {items.map((item) => (
+            <AttachmentItem
+              key={item.id}
+              attachment={{
+                id: item.id,
+                taskId: "staged",
+                name: item.name,
+                mimeType: item.mimeType,
+                size: item.size,
+                createdAt: item.createdAt,
+              }}
+              loadContent={() =>
+                Promise.resolve({
+                  id: item.id,
+                  taskId: "staged",
+                  name: item.name,
+                  mimeType: item.mimeType,
+                  size: item.size,
+                  createdAt: item.createdAt,
+                  data: item.data,
+                })
+              }
+              onDelete={() => {
+                setActionError(null);
+                onChange(items.filter((entry) => entry.id !== item.id));
+              }}
+            />
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+

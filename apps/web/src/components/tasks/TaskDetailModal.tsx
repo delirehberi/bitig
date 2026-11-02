@@ -316,6 +316,8 @@ export function TaskDetailModal({
           </section>
         )}
 
+        {storage && <TaskAttachments key={`attachments-${task.id}`} storage={storage} taskId={task.id} />}
+
         {/* Prefixed: sibling keys must be unique, and TaskComments already uses the bare task ID (#BIT-120). */}
         {storage && <TaskCheckpoint key={`checkpoint-${task.id}`} storage={storage} taskId={task.id} />}
 
@@ -494,8 +496,6 @@ export function TaskDetailModal({
             </ol>
           </section>
         )}
-
-        {storage && <TaskAttachments key={`attachments-${task.id}`} storage={storage} taskId={task.id} />}
 
         {/* Keyed so a draft never carries over to another task. */}
         {storage && (

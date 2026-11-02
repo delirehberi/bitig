@@ -19,11 +19,16 @@ const ALLOWED_MIME_TYPES = new Set<string>(ATTACHMENT_MIME_TYPES);
 
 const MIME_ALIASES: Readonly<Record<string, AttachmentMimeType>> = {
   "text/x-markdown": "text/markdown",
+  "application/markdown": "text/markdown",
   "text/x-log": "text/plain",
   "text/yaml": "application/yaml",
   "text/x-yaml": "application/yaml",
   "application/x-yaml": "application/yaml",
   "application/x-gzip": "application/gzip",
+  "application/gzip-compressed": "application/gzip",
+  "application/x-tgz": "application/gzip",
+  "application/x-compressed-tar": "application/gzip",
+  "application/x-zip-compressed": "application/zip",
   "image/jpg": "image/jpeg",
 };
 

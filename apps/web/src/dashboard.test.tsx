@@ -84,7 +84,29 @@ function stubApi(responses: {
       }
 
       if (url.includes("/api/tasks")) {
-        if (url.endsWith("/comments")) {
+        if (url.endsWith("/comments") || url.endsWith("/checkpoints")) {
+          return Promise.resolve(Response.json([], { status: 200 }));
+        }
+        if (url.endsWith("/attachments")) {
+          if (init?.method === "POST") {
+            const parts = url.split("/");
+            const taskId = decodeURIComponent(parts[parts.length - 2] ?? "");
+            const body = JSON.parse(init.body as string) as { name: string; mimeType?: string; data: string };
+            return Promise.resolve(
+              Response.json(
+                {
+                  id: "01940000-0000-7000-8000-000000000088",
+                  taskId,
+                  name: body.name,
+                  mimeType: body.mimeType ?? "text/plain",
+                  size: Math.max(1, body.data.length),
+                  createdAt: new Date().toISOString(),
+                  createdBy: "you",
+                },
+                { status: 201 },
+              ),
+            );
+          }
           return Promise.resolve(Response.json([], { status: 200 }));
         }
         if (init?.method === "PATCH") {
@@ -429,6 +451,38 @@ describe("Dashboard Phase 4 Integration", () => {
     const freshDialog = await screen.findByRole("dialog");
     expect(within(freshDialog).getByLabelText(/title/i)).toHaveValue("");
     expect(within(freshDialog).getByLabelText(/description/i)).toHaveValue("");
+  });
+
+  it("uploads staged attachments when creating a task from the New Task modal", async () => {
+    const existingProject = {
+      id: "01940000-0000-7000-8000-000000000001",
+      name: "Bitig App",
+      description: "App description",
+      kind: "hobby",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    stubApi({ projects: [existingProject] });
+    const user = userEvent.setup();
+    render(<App />);
+
+    const nav = await screen.findByRole("navigation", { name: "Primary" });
+    await user.click(within(nav).getByRole("link", { name: "Tasks" }));
+
+    await user.click(await screen.findByRole("button", { name: /new task/i }));
+    const dialog = await screen.findByRole("dialog");
+
+    await user.type(within(dialog).getByLabelText(/title/i), "Task with Spec");
+    const fileInput = within(dialog).getByLabelText("Attach files");
+    const specFile = new File(["# Spec\n\nDetails.\n"], "spec.md", { type: "text/markdown" });
+    await user.upload(fileInput, specFile);
+
+    expect(await within(dialog).findByText("spec.md")).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Create Task" }));
+
+    expect(await screen.findByText("Task with Spec")).toBeInTheDocument();
+    expect(await screen.findByTitle("1 attachment")).toBeInTheDocument();
   });
 
   it("supports editing a project", async () => {

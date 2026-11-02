@@ -27,10 +27,11 @@ import { TasksView } from "./components/tasks/TasksView";
 import { WebhooksView } from "./components/webhooks/WebhooksView";
 import { FeatureFlagsProvider } from "./domain/feature-context";
 import { DEFAULT_MODE } from "./domain/modes";
+import type { AddAttachmentFileInput } from "./hooks/useAttachments";
 import { useFeatureFlags } from "./hooks/useFeatureFlags";
 import { useHealth, type HealthState } from "./hooks/useHealth";
 import { useProjects } from "./hooks/useProjects";
-import { useRealtime } from "./hooks/useRealtime";
+import { dispatchRealtimeEvent, useRealtime } from "./hooks/useRealtime";
 import { useStorage } from "./hooks/useStorage";
 import { useTasks, type StatusChangeChoice } from "./hooks/useTasks";
 import { useWebhooks } from "./hooks/useWebhooks";
@@ -204,7 +205,21 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
     }
   }
 
-  async function handleEditModalSubmit(input: CreateTaskInput) {
+  async function uploadStagedAttachments(
+    taskId: string,
+    attachments: readonly AddAttachmentFileInput[] | undefined,
+  ) {
+    if (!attachments || attachments.length === 0) return;
+    for (const file of attachments) {
+      const added = await storage.addAttachment({ ...file, taskId }, { actor: "you" });
+      dispatchRealtimeEvent({ type: "attachment.created", attachment: added });
+    }
+  }
+
+  async function handleEditModalSubmit(
+    input: CreateTaskInput,
+    attachments?: readonly AddAttachmentFileInput[],
+  ) {
     const editing = editModalState.task;
     if (editing) {
       const patch: UpdateTaskInput = {
@@ -216,8 +231,10 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
       await confirmIfBlocked(editing, input.status ?? editing.status, (choice) =>
         updateTask(editing.id, patch, choice),
       );
+      await uploadStagedAttachments(editing.id, attachments);
     } else {
-      await saveTask(input);
+      const created = await saveTask(input);
+      await uploadStagedAttachments(created.id, attachments);
     }
   }
 
@@ -390,6 +407,7 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
                   projects={recentProjects}
                   defaultProjectId={selectedProjectId}
                   tasks={tasks}
+                  storage={storage}
                   onClose={() => {
                     setEditModalState((prev) => ({
                       ...prev,

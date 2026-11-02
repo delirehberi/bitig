@@ -5,24 +5,36 @@ import {
   type ChecklistItem,
   type CreateTaskInput,
   type Project,
+  type StorageProvider,
   type Task,
   type TaskPriority,
   type TaskStatus,
 } from "@bitig/core";
 import { CheckSquare, X } from "lucide-react";
+import type { AddAttachmentFileInput } from "../../hooks/useAttachments";
 import { useFocusTrap } from "../../hooks/useFocusTrap";
 import { ChecklistEditor } from "./Checklist";
 import { DependsOnPicker } from "./DependsOnPicker";
+import {
+  StagedTaskAttachments,
+  TaskAttachments,
+  type StagedAttachmentItem,
+} from "./TaskAttachments";
 
 interface TaskModalProps {
   readonly isOpen: boolean;
   readonly onClose: () => void;
-  readonly onSubmit: (input: CreateTaskInput) => Promise<void>;
+  readonly onSubmit: (
+    input: CreateTaskInput,
+    attachments?: readonly AddAttachmentFileInput[],
+  ) => Promise<void>;
   readonly task?: Task | null | undefined;
   readonly projects: Project[];
   readonly defaultProjectId?: string | undefined;
   /** The tasks the dependency picker offers; omit to hide it. */
   readonly tasks?: readonly Task[] | undefined;
+  /** Loads and saves existing attachments when editing a task. */
+  readonly storage?: StorageProvider | undefined;
 }
 
 const ICON_SIZE = 16;
@@ -50,6 +62,7 @@ export function TaskModal({
   projects,
   defaultProjectId,
   tasks,
+  storage,
 }: TaskModalProps) {
   const initialProjectId =
     task?.projectId ?? defaultProjectId ?? (projects.length > 0 ? (projects[0]?.id ?? "") : "");
@@ -65,6 +78,7 @@ export function TaskModal({
   const [needsHuman, setNeedsHuman] = useState(task?.needsHuman ?? "");
   const [checklist, setChecklist] = useState<ChecklistItem[]>(() => task?.checklist?.map((item) => ({ ...item })) ?? []);
   const [dependsOn, setDependsOn] = useState<string[]>(() => [...(task?.dependsOn ?? [])]);
+  const [stagedAttachments, setStagedAttachments] = useState<StagedAttachmentItem[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -113,8 +127,16 @@ export function TaskModal({
       ...(dependsOn.length > 0 ? { dependsOn } : {}),
     };
 
+    const attachments: AddAttachmentFileInput[] = stagedAttachments.map(
+      ({ name, mimeType, data }) => ({ name, mimeType, data }),
+    );
+
     try {
-      await onSubmit(payload);
+      if (attachments.length > 0) {
+        await onSubmit(payload, attachments);
+      } else {
+        await onSubmit(payload);
+      }
       onClose();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to save task");
@@ -340,6 +362,16 @@ export function TaskModal({
                 disabled={isSubmitting}
               />
             </fieldset>
+          )}
+
+          {isEditing && task && storage ? (
+            <TaskAttachments key={`modal-attachments-${task.id}`} storage={storage} taskId={task.id} />
+          ) : (
+            <StagedTaskAttachments
+              items={stagedAttachments}
+              onChange={setStagedAttachments}
+              disabled={isSubmitting}
+            />
           )}
 
           <div className="mt-2 flex items-center justify-end gap-2">

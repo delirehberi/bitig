@@ -19,6 +19,8 @@ import { TaskDetailModal } from "./TaskDetailModal";
 import { TaskModal } from "./TaskModal";
 import { DeleteTaskDialog } from "./DeleteTaskDialog";
 import { BlockedTaskDialog, type BlockedStatusChange } from "./BlockedTaskDialog";
+import type { AddAttachmentFileInput } from "../../hooks/useAttachments";
+import { dispatchRealtimeEvent } from "../../hooks/useRealtime";
 import type { StatusChangeChoice } from "../../hooks/useTasks";
 import { findTaskByRef, taskRef } from "../../domain/task-ref";
 import { buildBlockersResolver } from "../../domain/task-mentions";
@@ -186,7 +188,21 @@ export function TasksView({
     void confirmIfBlocked(task, "done", (choice) => onCompleteTask(task.id, choice));
   }
 
-  async function handleModalSubmit(input: CreateTaskInput) {
+  async function uploadStagedAttachments(
+    taskId: string,
+    attachments: readonly AddAttachmentFileInput[] | undefined,
+  ) {
+    if (!storage || !attachments || attachments.length === 0) return;
+    for (const file of attachments) {
+      const added = await storage.addAttachment({ ...file, taskId }, { actor: "you" });
+      dispatchRealtimeEvent({ type: "attachment.created", attachment: added });
+    }
+  }
+
+  async function handleModalSubmit(
+    input: CreateTaskInput,
+    attachments?: readonly AddAttachmentFileInput[],
+  ) {
     const editing = modalState.task;
     if (editing) {
       // The form leaves needsHuman out when its field is empty; null clears a flag the task had.
@@ -200,8 +216,10 @@ export function TasksView({
       await confirmIfBlocked(editing, input.status ?? editing.status, (choice) =>
         onUpdateTask(editing.id, patch, choice),
       );
+      await uploadStagedAttachments(editing.id, attachments);
     } else {
-      await onSaveTask(input);
+      const created = await onSaveTask(input);
+      await uploadStagedAttachments(created.id, attachments);
     }
   }
 
@@ -489,6 +507,7 @@ export function TasksView({
         projects={projects}
         defaultProjectId={selectedProjectId}
         tasks={tasks}
+        storage={storage}
         onClose={closeTaskModal}
         onSubmit={handleModalSubmit}
       />
