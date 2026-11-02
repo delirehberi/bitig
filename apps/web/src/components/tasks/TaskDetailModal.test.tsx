@@ -1,4 +1,4 @@
-import type { Project, StorageMode, Task } from "@bitig/core";
+import { InMemoryStorage, type DependencyLinks, type Project, type StorageMode, type Task } from "@bitig/core";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
@@ -328,6 +328,57 @@ function ModalHarness({ task }: { readonly task: Task }) {
     </FeatureFlagsProvider>
   );
 }
+
+describe("TaskDetailModal checkpoint section", () => {
+  const DUPLICATE_KEY_WARNING = "Encountered two children with the same key";
+
+  it("renders one checkpoint section across re-renders that add and remove sibling sections (#BIT-120)", async () => {
+    const consoleError = vi.spyOn(console, "error");
+    const storage = new InMemoryStorage();
+    const project = await storage.createProject({ name: "Bitig" });
+    const task = await storage.saveTask({ projectId: project.id, title: "Long job" });
+    await storage.saveCheckpoint({
+      taskId: task.id,
+      stepIndex: 0,
+      status: "IN_PROGRESS",
+      stateSnapshot: { summary: "Read the code", modifiedArtifacts: [], decisionsMade: [], nextStepInstructions: "Fix it" },
+    });
+    const dependencies: DependencyLinks = {
+      dependsOn: [{ id: TASK.id, title: TASK.title, status: "todo" }],
+      dependents: [],
+    };
+    const modal = (props: { readonly current: Task; readonly deps?: DependencyLinks }) => (
+      <FeatureFlagsProvider mode="local">
+        <TaskDetailModal
+          task={props.current}
+          projects={[project]}
+          onClose={vi.fn()}
+          onEdit={vi.fn()}
+          onDelete={vi.fn()}
+          onComplete={vi.fn()}
+          storage={storage}
+          dependencies={props.deps}
+        />
+      </FeatureFlagsProvider>
+    );
+
+    const { rerender } = render(modal({ current: task }));
+    expect(await screen.findByText("Read the code")).toBeInTheDocument();
+
+    // Sections appearing and disappearing shift the modal's children, which is when colliding keys leave stale copies.
+    rerender(modal({ current: { ...task, needsHuman: "Approve the plan" }, deps: dependencies }));
+    rerender(modal({ current: task }));
+    rerender(modal({ current: { ...task, needsHuman: "Approve the fix" }, deps: dependencies }));
+
+    expect(await screen.findByText("Read the code")).toBeInTheDocument();
+    expect(screen.getAllByRole("heading", { name: "Checkpoint" })).toHaveLength(1);
+    const duplicateKeyWarnings = consoleError.mock.calls.filter((args) =>
+      args.some((arg) => typeof arg === "string" && arg.includes(DUPLICATE_KEY_WARNING)),
+    );
+    expect(duplicateKeyWarnings).toEqual([]);
+    consoleError.mockRestore();
+  });
+});
 
 describe("TaskDetailModal focus", () => {
   async function openFromButton() {

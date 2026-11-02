@@ -316,7 +316,8 @@ export function TaskDetailModal({
           </section>
         )}
 
-        {storage && <TaskCheckpoint key={task.id} storage={storage} taskId={task.id} />}
+        {/* Prefixed: sibling keys must be unique, and TaskComments already uses the bare task ID (#BIT-120). */}
+        {storage && <TaskCheckpoint key={`checkpoint-${task.id}`} storage={storage} taskId={task.id} />}
 
         {storage && (
           <TaskT3Section
