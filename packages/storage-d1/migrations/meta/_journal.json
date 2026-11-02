@@ -120,6 +120,13 @@
       "when": 1793570873910,
       "tag": "0016_condemned_siren",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1793581200000,
+      "tag": "0017_mcp_tokens",
+      "breakpoints": true
     }
   ]
 }

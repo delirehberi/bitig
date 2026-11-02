@@ -16,16 +16,29 @@ Bitig is an edge-ready task and project manager deployed on local filesystems an
 All authentication mechanisms (HTTP Basic Auth for REST API, Bearer Token for remote MCP) utilize cryptographic constant-time comparison via Web Crypto `crypto.subtle.timingSafeEqual`:
 
 - Passwords and tokens are hashed with SHA-256 before comparison to prevent string length side-channel leakage.
-- If no credentials are configured in environment secrets (`BASIC_AUTH_PASS`, `MCP_AUTH_TOKEN`, `MCP_URL_TOKEN`), all incoming requests are rejected by default with `401 Unauthorized`.
+- Without a valid dashboard session or Basic credentials, protected API requests are rejected. MCP requests require a matching legacy secret or an active managed credential; no configured or stored matching credential means `401 Unauthorized`.
 - Credentials and secrets are never logged or exposed in client error payloads.
 
 ### 2.2 Remote MCP Tokens
-`/mcp` accepts two separate secrets:
+`/mcp` continues to accept two separate legacy environment secrets:
 
 - `Authorization: Bearer <MCP_AUTH_TOKEN>` for clients that can send headers (Claude Code, the CLI, scripts).
 - `/mcp?token=<MCP_URL_TOKEN>` for clients that cannot, such as ChatGPT connectors set to "No authentication". The URL token is checked only when the request has no `Authorization` header, and the header token is never accepted in the URL. Leave `MCP_URL_TOKEN` empty to turn this off.
 
 A token in a URL leaks more easily than a header: Cloudflare's request logs record the full URL, and the client stores it as part of the connector address. The URL token is a separate secret so it can be rotated (`wrangler secret put MCP_URL_TOKEN`) without breaking header clients. Bitig's own logging records only the path. This is a stopgap until `/mcp` supports OAuth.
+
+#### Managed per-client credentials
+
+In Cloudflare storage mode, **Settings → MCP Tokens** generates separately named credentials for clients connecting to Bitig. These are not credentials issued by external MCP servers. Each credential grants the same full MCP access as a legacy token; labels are not authorization scopes. Choose Bearer headers whenever possible. A generated credential is bound to either Bearer or query transport, never both; an `Authorization` header always takes precedence over a query token, even if that header is invalid.
+
+- Generation uses 32 cryptographically random bytes. D1 stores only the SHA-256 digest, metadata, optional expiry, and revocation timestamp. The random secret cannot be recovered from the database or listed by the API.
+- The authenticated creation response reveals the secret once with `Cache-Control: no-store`. The browser keeps it only in the mounted MCP tab, clears it on dismissal or navigation, and never saves it in local/session storage. Copying writes it to the system clipboard, where it remains under the user's control; save it securely and clear the clipboard when appropriate.
+- `GET /api/mcp-tokens` lists metadata; `POST /api/mcp-tokens` creates one credential; `DELETE /api/mcp-tokens/:id` idempotently revokes that generated credential. All routes require dashboard-session or Basic authentication and use existing CSRF/rate-limit middleware. An MCP credential cannot manage credentials. Inputs and request size are bounded, creation is atomically limited to 100 active credentials, and listings include all active credentials plus recent inactive history up to 200 rows. Revoked/expired records are retained; expiry also frees active capacity.
+- Revocation and expiry are checked from D1 on each managed-token request; no acceptance cache delays revocation. They affect subsequent requests, not operations already authenticated. A storage failure rejects managed-token verification with a sanitized `503`, without recording it as an authentication failure or logging database errors containing parameters.
+- The UI offers no rotation/revocation action for `MCP_AUTH_TOKEN` or `MCP_URL_TOKEN`. Their environment values are never read into the UI, migrated, or overwritten. Legacy authentication runs first and needs no managed-token table, so those clients continue working even before migration or during token-storage failure. Managed credentials also work when legacy secrets are empty.
+- Do not automatically retry a creation after an interrupted request: it may have committed without delivering the secret. Reload the list, identify and revoke any credential whose secret was not received, then create a replacement. Never reuse the original client label as a substitute for the credential ID when revoking.
+
+Migration `0017_mcp_tokens.sql` is additive. Apply it through the established local/production migration process before using managed credentials; production migration and deployment require operator authorization. This change does not rotate either legacy secret. Without that migration, management/managed verification return safe unavailable errors while matching legacy credentials remain usable.
 
 ### 2.3 Dashboard Sessions
 The dashboard signs in on its own `/login` page with an allowlisted NIP-07 identity:
@@ -148,4 +161,3 @@ The following edge headers are enforced across all Worker endpoints:
 - `X-Content-Type-Options`: `nosniff`
 - `Referrer-Policy`: `no-referrer`
 - `Content-Security-Policy`: `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'`
-
