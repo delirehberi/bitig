@@ -37,8 +37,8 @@ migrate-local: ## Apply pending D1 migrations to the local (miniflare) database
 build: ## Build every package and app
 	@$(NODE_ENV_SETUP) pnpm run build
 
-test: ## Run all test suites
-	@$(NODE_ENV_SETUP) pnpm run test
+test: ## Run all tests, or one package with TEST_FILTER=@bitig/package
+	@$(NODE_ENV_SETUP) $(if $(TEST_FILTER),pnpm --filter '$(TEST_FILTER)' run test $(TEST_ARGS),pnpm run test)
 
 # Not part of `check`/CI: drives Chromium against `make dev` (Playwright starts it,
 # or reuses one already running) and writes to the local D1 database.
@@ -71,5 +71,4 @@ deploy: migrate-remote ## Apply remote migrations, build the web app and deploy 
 
 clean: ## Remove build output and caches
 	@rm -rf apps/*/dist packages/*/dist apps/*/.tsbuild packages/*/.tsbuild apps/*/.wrangler
-
 

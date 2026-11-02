@@ -1,4 +1,5 @@
-import { sqliteTable, text, integer, real, index, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, real, index, uniqueIndex, check } from "drizzle-orm/sqlite-core";
+import { sql } from "drizzle-orm";
 import {
   DEFAULT_DESCRIPTION,
   DEFAULT_IS_PUBLIC,
@@ -206,6 +207,16 @@ export const agentRuns = sqliteTable(
     index("agent_runs_thread_id_idx").on(table.threadId),
   ],
 );
+
+export const mcpTokens = sqliteTable("mcp_tokens", {
+  id: text("id").primaryKey(),
+  label: text("label").notNull(),
+  transport: text("transport", { enum: ["bearer", "query"] }).notNull(),
+  digest: text("digest").notNull().unique(),
+  createdAt: text("created_at").notNull(),
+  expiresAt: text("expires_at"),
+  revokedAt: text("revoked_at"),
+}, (table) => [check("mcp_tokens_transport_check", sql`${table.transport} IN ('bearer', 'query')`)]);
 
 export type ProjectRecord = typeof projects.$inferSelect;
 export type InsertProjectRecord = typeof projects.$inferInsert;

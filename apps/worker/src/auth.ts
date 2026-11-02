@@ -1,8 +1,11 @@
 import type { MiddlewareHandler } from "hono";
+import type { McpTokenTransport } from "@bitig/core";
+import { McpTokenStore } from "@bitig/storage-d1";
 import type { AppEnv } from "./index";
 import type { AppConfig } from "./config";
 import { recordAuthFailure } from "./rate-limit";
 import { readSession } from "./session";
+import { digestMcpToken, MANAGED_MCP_TOKEN_PATTERN } from "./mcp-token-crypto";
 
 const BASIC_PREFIX = "Basic ";
 const HTTP_UNAUTHORIZED = 401;
@@ -78,13 +81,26 @@ export function apiAuth(): MiddlewareHandler<AppEnv> {
 const BEARER_PREFIX = "Bearer ";
 const MCP_REALM_HEADER_VALUE = 'Bearer realm="bitig-mcp"';
 const URL_TOKEN_PARAM = "token";
+const HTTP_UNAVAILABLE = 503;
+
+async function acceptsMcpToken(
+  db: D1Database,
+  token: string,
+  legacyToken: string,
+  transport: McpTokenTransport,
+): Promise<boolean> {
+  if (legacyToken && await timingSafeEqualString(token, legacyToken)) return true;
+  if (!MANAGED_MCP_TOKEN_PATTERN.test(token)) return false;
+  return new McpTokenStore(db).accepts(await digestMcpToken(token), transport, new Date().toISOString());
+}
 
 /*
  * Guards /mcp. Clients send `Authorization: Bearer <MCP_AUTH_TOKEN>`. Clients
  * that cannot set headers (ChatGPT connectors with "No authentication") may
  * instead call `/mcp?token=<MCP_URL_TOKEN>`. The URL token is a separate secret
  * so it can be rotated without touching header clients, and it is only checked
- * when no Authorization header is present. Empty secrets accept nothing.
+ * when no Authorization header is present. Managed credentials are checked only
+ * after legacy verification, so legacy clients never depend on token storage.
  */
 export function bearerAuth(): MiddlewareHandler<AppEnv> {
   return async (c, next) => {
@@ -98,23 +114,33 @@ export function bearerAuth(): MiddlewareHandler<AppEnv> {
     if (authHeader === undefined) {
       const urlToken = c.req.query(URL_TOKEN_PARAM);
       if (urlToken === undefined) return unauthorized();
-      if (!config.MCP_URL_TOKEN || !(await timingSafeEqualString(urlToken, config.MCP_URL_TOKEN))) {
+      let accepted: boolean;
+      try {
+        accepted = await acceptsMcpToken(c.env.DB, urlToken, config.MCP_URL_TOKEN, "query");
+      } catch {
+        return c.json({ error: "unavailable", message: "MCP token verification is temporarily unavailable." }, HTTP_UNAVAILABLE);
+      }
+      if (!accepted) {
         await recordAuthFailure(c);
         return unauthorized();
       }
       return next();
     }
 
-    // If no MCP auth token is configured, reject all header requests for safety.
-    if (!config.MCP_AUTH_TOKEN) return unauthorized();
-
     if (!authHeader.startsWith(BEARER_PREFIX)) {
-      await recordAuthFailure(c);
+      if (config.MCP_AUTH_TOKEN) await recordAuthFailure(c);
       return unauthorized();
     }
 
     const token = authHeader.slice(BEARER_PREFIX.length).trim();
-    if (!token || !(await timingSafeEqualString(token, config.MCP_AUTH_TOKEN))) {
+    if (!config.MCP_AUTH_TOKEN && !MANAGED_MCP_TOKEN_PATTERN.test(token)) return unauthorized();
+    let accepted: boolean;
+    try {
+      accepted = token.length > 0 && await acceptsMcpToken(c.env.DB, token, config.MCP_AUTH_TOKEN, "bearer");
+    } catch {
+      return c.json({ error: "unavailable", message: "MCP token verification is temporarily unavailable." }, HTTP_UNAVAILABLE);
+    }
+    if (!accepted) {
       await recordAuthFailure(c);
       return unauthorized();
     }

@@ -12,6 +12,7 @@ import { commentsRouter } from "./routes/comments";
 import { attachmentsRouter } from "./routes/attachments";
 import { backupRouter } from "./routes/backup";
 import { mcpRouter } from "./routes/mcp";
+import { mcpTokensRouter } from "./routes/mcp-tokens";
 import { sessionRouter } from "./routes/session";
 import { t3ApiRouter, t3OauthCallbackRouter, t3TaskRunsRouter } from "./routes/t3";
 import { webhookReceiverRouter, webhooksApiRouter } from "./routes/webhooks";
@@ -134,6 +135,7 @@ export function createApp(options?: CreateAppOptions): Hono<AppEnv> {
   app.route("/api/backup", backupRouter);
   app.route("/api/realtime", realtimeRouter);
   app.route("/api/t3", t3ApiRouter);
+  app.route("/api/mcp-tokens", mcpTokensRouter);
 
   // Incoming webhook receiver endpoint guarded by secret token in the URL and rate limiting
   app.use("/webhooks/*", rateLimit(WEBHOOK_POLICY));

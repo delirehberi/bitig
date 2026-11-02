@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { McpTokensPanel } from "./McpTokensPanel";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -37,6 +38,42 @@ function formatExpiryDate(iso: string | undefined): string {
 }
 
 export function SettingsView({ mode, projects }: SettingsViewProps) {
+  const [tab, setTab] = useState<"t3" | "mcp">("t3");
+  const tabs = [{ id: "t3", label: "T3 Code" }, { id: "mcp", label: "MCP Tokens" }] as const;
+
+  return (
+    <div className="mx-auto flex max-w-4xl flex-col gap-6">
+      <header className="flex flex-col gap-1">
+        <h1 className="m-0 font-display text-2xl font-bold text-ink">Settings</h1>
+        <p className="m-0 text-sm text-ink-2">Manage MCP client access and your T3 Code integration.</p>
+      </header>
+      <div role="tablist" aria-label="Settings" className="flex gap-2 border-b border-rule pb-2">
+        {tabs.map((item) => (
+          <button key={item.id} id={`settings-tab-${item.id}`} type="button" role="tab"
+            aria-selected={tab === item.id} aria-controls={`settings-panel-${item.id}`} tabIndex={tab === item.id ? 0 : -1}
+            className={`rounded-md px-4 py-2 text-sm font-semibold ${tab === item.id ? "bg-accent-soft text-accent-ink" : "text-ink-2 hover:bg-paper-2"}`}
+            onClick={() => { setTab(item.id); }}
+            onKeyDown={(event) => {
+              if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+              event.preventDefault();
+              const next = event.key === "Home" ? "t3" : event.key === "End" ? "mcp" : tab === "t3" ? "mcp" : "t3";
+              setTab(next);
+              document.getElementById(`settings-tab-${next}`)?.focus();
+            }}>
+            {item.label}
+          </button>
+        ))}
+      </div>
+      <div role="tabpanel" id={`settings-panel-${tab}`} aria-labelledby={`settings-tab-${tab}`} tabIndex={0}>
+        {tab === "t3" ? <T3SettingsPanel mode={mode} projects={projects} /> : mode === "cloudflare" ? <McpTokensPanel /> : (
+          <p role="note" className="rounded-lg border border-rule bg-paper-2 p-5 text-sm text-ink-2">MCP token management requires the Cloudflare Worker storage mode.</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function T3SettingsPanel({ mode, projects }: SettingsViewProps) {
   const [connection, setConnection] = useState<T3ConnectionStatus | null>(null);
   const [mcpUrlInput, setMcpUrlInput] = useState("");
   const [mappings, setMappings] = useState<T3ProjectMapping[]>([]);
@@ -192,14 +229,7 @@ export function SettingsView({ mode, projects }: SettingsViewProps) {
   const activeProjects = projects.filter((project) => !project.archived);
 
   return (
-    <div className="mx-auto flex max-w-4xl flex-col gap-8">
-      <header className="flex flex-col gap-1">
-        <h1 className="m-0 font-display text-2xl font-bold text-ink">Settings</h1>
-        <p className="m-0 text-sm text-ink-2">
-          Connect a T3 Code host over OAuth and map Bitig projects to existing T3 workspaces.
-        </p>
-      </header>
-
+    <div className="flex flex-col gap-8">
       {mode !== "cloudflare" ? (
         <div
           role="note"

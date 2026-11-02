@@ -320,6 +320,8 @@ make check
 
 # Individual commands
 make test       # Runs vitest across all packages
+make test TEST_FILTER=@bitig/worker # Runs one package without unrelated suites
+make test TEST_FILTER=@bitig/web TEST_ARGS=src/components/settings # Focused tests
 make typecheck  # Runs tsc --noEmit
 make lint       # Runs oxlint / eslint
 make build      # Builds all packages and bundles apps/cli
@@ -336,4 +338,3 @@ The deployed dashboard stores data in D1 and uses an allowlisted NIP-07 public k
 ## License
 
 MIT
-
