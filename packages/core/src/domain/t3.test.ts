@@ -123,6 +123,15 @@ describe("buildT3LaunchPrompt", () => {
     expect(built.prompt).toContain("resume_from_checkpoint");
     expect(built.prompt).toContain("save_checkpoint");
     expect(built.prompt).toContain("needsHuman");
+    expect(built.prompt).toContain("Use Bitig MCP commands for task state, comments, and checkpoints");
+    expect(built.prompt).toContain("Use project commands only when they are needed to implement or verify");
+    expect(built.prompt).toContain("post a comment on BIT-107 that states the exact question and current progress");
+    expect(built.prompt).toContain('update_task({ id: "BIT-107", needsHuman: "<what you need>" })');
+    expect(built.prompt).toContain("Stop the run without polling or waiting for a reply");
+    expect(built.prompt).toContain("Before every final response in T3, post that same substantive response as a comment on BIT-107");
+    expect(built.prompt).toContain("completion, partial progress, failure, and blocked work");
+    expect(built.prompt).toContain("If Bitig MCP cannot post the comment, say so explicitly in the T3 response");
+    expect(built.prompt).toContain("post the final comment first, then move the task to `done`");
     expect(built.prompt).toContain("complete_task");
     expect(built.prompt).toContain("Never move the task to `archived`");
   });

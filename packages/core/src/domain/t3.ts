@@ -357,9 +357,11 @@ export function buildT3LaunchPrompt({
       `1. Call \`get_task({ id: "${code}" })\` and \`resume_from_checkpoint({ taskId: "${code}" })\` first to inspect current state and any prior checkpoint.`,
       `2. Call \`save_checkpoint\` after each completed step and keep \`checklist\` items updated via \`update_task({ id: "${code}", checklist: ... })\`.`,
       `3. Call \`add_comment({ taskId: "${code}", body: ... })\` to record key findings, decisions, or verification output.`,
-      `4. If you are blocked on a person (need a decision, approval, credentials, or clarification), set \`needsHuman\` via \`update_task({ id: "${code}", needsHuman: "<what you need>" })\` and stop waiting.`,
-      `5. When the work is finished and verified, move the task to \`done\` via \`complete_task({ id: "${code}" })\`.`,
-      "6. Never move the task to `archived` — a human reviews `done` tasks and archives them.",
+      "4. Use Bitig MCP commands for task state, comments, and checkpoints. Use project commands only when they are needed to implement or verify the task; report command failures and do not claim unverified work is complete.",
+      `5. If you need a person's decision, approval, credentials, or clarification, post a comment on ${code} that states the exact question and current progress, then set \`needsHuman\` via \`update_task({ id: "${code}", needsHuman: "<what you need>" })\`. Stop the run without polling or waiting for a reply. On a later follow-up, read the person's comment and task state before continuing; clear \`needsHuman\` only after the request is resolved.`,
+      `6. Before every final response in T3, post that same substantive response as a comment on ${code} with the outcome, work done, verification, and any next action. Do this for completion, partial progress, failure, and blocked work; the comment in step 5 can satisfy this rule. If Bitig MCP cannot post the comment, say so explicitly in the T3 response.`,
+      `7. When the work is finished and verified, post the final comment first, then move the task to \`done\` via \`complete_task({ id: "${code}" })\`. Leave unfinished or unverified work in progress.`,
+      "8. Never move the task to `archived` — a human reviews `done` tasks and archives them.",
     ].join("\n"),
   );
 
