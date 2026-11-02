@@ -15,12 +15,31 @@ import {
 } from "@bitig/core";
 import type { Context } from "hono";
 import type { AppEnv } from "../index";
-import { forwardCommentToT3Run } from "../t3/service";
+import { forwardCommentToT3Run, settleTaskT3Run } from "../t3/service";
 import { buildServiceDeps } from "./t3";
 
 const HTTP_CREATED = 201;
 const HTTP_NO_CONTENT = 204;
 const HTTP_BAD_REQUEST = 400;
+
+/**
+ * Runs background work via `executionCtx.waitUntil` on Workers, or awaits it directly when no
+ * execution context exists (e.g. `app.request` in tests).
+ */
+async function runInBackground(c: Context<AppEnv>, work: Promise<unknown>): Promise<void> {
+  let executionCtx: Context<AppEnv>["executionCtx"] | undefined;
+  try {
+    executionCtx = c.executionCtx;
+  } catch {
+    // Hono throws when the request has no execution context; fall back to awaiting the work.
+    executionCtx = undefined;
+  }
+  if (executionCtx) {
+    executionCtx.waitUntil(work);
+    return;
+  }
+  await work;
+}
 
 /**
  * Forwards a new comment to the task's T3 thread (#BIT-112). Comment creation never fails because
@@ -34,18 +53,21 @@ async function forwardCommentInBackground(c: Context<AppEnv>, comment: Comment):
       console.error("forwarding comment to T3 run failed", { commentId: comment.id, taskId: comment.taskId, error });
     },
   );
-  let executionCtx: Context<AppEnv>["executionCtx"] | undefined;
-  try {
-    executionCtx = c.executionCtx;
-  } catch {
-    // Hono throws when the request has no execution context; fall back to awaiting the work.
-    executionCtx = undefined;
-  }
-  if (executionCtx) {
-    executionCtx.waitUntil(work);
-    return;
-  }
-  await work;
+  await runInBackground(c, work);
+}
+
+/**
+ * Marks the task's T3 thread as settled when the task transitions to `archived` (#BIT-117).
+ * Archiving a task never fails because of T3: errors are logged with context.
+ */
+async function settleArchivedTaskInBackground(c: Context<AppEnv>, taskId: string): Promise<void> {
+  const work = settleTaskT3Run(buildServiceDeps(c), taskId).then(
+    () => undefined,
+    (error: unknown) => {
+      console.error("settling T3 run for archived task failed", { taskId, error });
+    },
+  );
+  await runInBackground(c, work);
 }
 
 /** A step index in a URL is plain decimal digits; anything else (signs, exponents, spaces) is refused. */
@@ -123,7 +145,11 @@ export const tasksRouter = new Hono<AppEnv>()
       const storage = c.get("storage");
       const id = c.req.param("id");
       const patch = c.req.valid("json");
+      const previous = patch.status === "archived" ? await storage.getTask(id) : null;
       const updated = await storage.updateTask(id, patch, await statusChangeOptions(c, id, patch.status, "updateTask"));
+      if (patch.status === "archived" && previous?.status !== "archived") {
+        await settleArchivedTaskInBackground(c, updated.id);
+      }
       return c.json(updated);
     },
   )

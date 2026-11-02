@@ -158,8 +158,9 @@ describe("deriveLiveAgentRunState", () => {
 });
 
 describe("T3_ALLOWED_MCP_TOOLS", () => {
-  it("never includes project mutation tools", () => {
+  it("never includes project mutation tools and allows thread organization", () => {
     const allowed = new Set<string>(T3_ALLOWED_MCP_TOOLS);
+    expect(allowed.has("t3_thread_organize")).toBe(true);
     expect(allowed.has("t3_project_create")).toBe(false);
     expect(allowed.has("t3_project_update")).toBe(false);
     expect(allowed.has("t3_project_delete")).toBe(false);

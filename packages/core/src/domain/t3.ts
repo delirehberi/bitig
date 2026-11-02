@@ -31,6 +31,7 @@ export const T3_ALLOWED_MCP_TOOLS = [
   "t3_pending_request",
   "t3_thread_send",
   "t3_thread_interrupt",
+  "t3_thread_organize",
 ] as const;
 
 export type T3AllowedMcpTool = (typeof T3_ALLOWED_MCP_TOOLS)[number];

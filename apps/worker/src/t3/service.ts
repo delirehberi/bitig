@@ -360,6 +360,39 @@ export async function forwardCommentToT3Run(deps: T3ServiceDeps, comment: Commen
   return true;
 }
 
+/**
+ * Marks the task's T3 thread as settled (`t3_thread_organize` with `action: "settle"`)
+ * when a task is archived (#BIT-117). Returns whether the thread was settled; it is skipped
+ * when T3 is not configured, the task has no run, or the run is offline.
+ */
+export async function settleTaskT3Run(deps: T3ServiceDeps, taskId: string): Promise<boolean> {
+  if (!deps.encryptionKey) return false;
+
+  const existingRun = await deps.store.getAgentRunByTaskId(taskId);
+  if (!existingRun) return false;
+  if (COMMENT_FORWARD_SKIPPED_STATES.has(existingRun.state)) return false;
+
+  const now = deps.now ? deps.now() : Date.now();
+  const mcpClient = await createActiveT3McpClient({
+    store: deps.store,
+    encryptionKey: deps.encryptionKey,
+    fetchFn: deps.fetchFn,
+    now,
+  });
+
+  await mcpClient.settleThread(existingRun.threadId);
+
+  if (existingRun.state !== "finished") {
+    const updatedRun =
+      (await deps.store.updateAgentRunState(taskId, { state: "finished", now })) ?? existingRun;
+    if (updatedRun.state !== existingRun.state && deps.publishRealtime) {
+      await deps.publishRealtime({ type: "agent_run.updated", run: updatedRun }).catch(() => undefined);
+    }
+  }
+
+  return true;
+}
+
 export async function stopTaskT3Run(
   deps: T3ServiceDeps,
   taskId: string,

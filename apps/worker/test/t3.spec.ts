@@ -335,6 +335,8 @@ function createMockT3Fetch(state: MockT3ServerState): typeof fetch {
               payload = { ok: true };
             } else if (toolName === "t3_thread_interrupt") {
               payload = { ok: true };
+            } else if (toolName === "t3_thread_organize") {
+              payload = { ok: true };
             }
 
             return Response.json(
@@ -821,6 +823,84 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
     const callsBefore = mockState.toolCalls.length;
     expect((await postComment(task.id, { body: "Ping while offline" })).status).toBe(201);
     expect(mockState.toolCalls).toHaveLength(callsBefore);
+  });
+
+  it("marks the T3 thread as settled when archiving a task, and still archives when T3 is unreachable", async () => {
+    await connectT3Host();
+    const project = await (
+      await request("/api/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Bitig", key: "BIT" }),
+      })
+    ).json<Project>();
+    await request(`/api/t3/mappings/${project.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ t3ProjectId: "t3-proj-bitig", t3ProjectTitle: "Bitig Workspace" }),
+    });
+
+    async function createTask(title: string): Promise<Task> {
+      const res = await request("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: project.id, title }),
+      });
+      return res.json<Task>();
+    }
+    async function patchTask(taskId: string, payload: Record<string, unknown>): Promise<Response> {
+      return request(`/api/tasks/${taskId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    }
+    const organizeCalls = () => mockState.toolCalls.filter((c) => c.name === "t3_thread_organize");
+
+    // A task without a T3 run: archiving succeeds, no T3 organize call is made
+    const noRunTask = await createTask("No T3 run");
+    expect((await patchTask(noRunTask.id, { status: "archived" })).status).toBe(200);
+    expect(organizeCalls()).toHaveLength(0);
+
+    // A task with a T3 run: moving to done does not settle, moving to archived settles the T3 thread
+    const task = await createTask("Has T3 run");
+    await request(`/api/tasks/${task.id}/t3-run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect((await patchTask(task.id, { status: "done" })).status).toBe(200);
+    expect(organizeCalls()).toHaveLength(0);
+
+    const archiveRes = await patchTask(task.id, { status: "archived" });
+    expect(archiveRes.status).toBe(200);
+    const archivedTask = await archiveRes.json<Task>();
+    expect(archivedTask.status).toBe("archived");
+    expect(organizeCalls()).toHaveLength(1);
+    expect(organizeCalls().at(-1)?.arguments).toEqual({
+      action: "settle",
+      threadId: "thread-abc-123",
+    });
+    const storedRun = await env.DB.prepare("SELECT state FROM agent_runs WHERE task_id = ?")
+      .bind(task.id)
+      .first<{ state: string }>();
+    expect(storedRun?.state).toBe("finished");
+
+    // Editing an already-archived task (even with status: "archived" in payload) does not re-settle
+    expect((await patchTask(task.id, { title: "Renamed while archived", status: "archived" })).status).toBe(200);
+    expect(organizeCalls()).toHaveLength(1);
+
+    // T3 failure: archiving still succeeds in Bitig
+    const failingTask = await createTask("T3 fails on archive");
+    await request(`/api/tasks/${failingTask.id}/t3-run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    mockState.failMcpConnection = true;
+    const failedArchiveRes = await patchTask(failingTask.id, { status: "archived" });
+    expect(failedArchiveRes.status).toBe(200);
+    expect((await failedArchiveRes.json<Task>()).status).toBe("archived");
   });
 
   it("attaches CF-Access-Client-Id and CF-Access-Client-Secret headers when configured and surfaces a clear error when Cloudflare Access redirects to login", async () => {

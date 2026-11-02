@@ -753,6 +753,15 @@ export class T3McpClient {
     });
   }
 
+  async settleThread(threadId: string): Promise<void> {
+    await this.withSession(async (callTool) => {
+      await callTool("t3_thread_organize", {
+        action: "settle",
+        threadId,
+      });
+    });
+  }
+
   async respondToPendingRequest(input: {
     threadId: string;
     requestId: string;
