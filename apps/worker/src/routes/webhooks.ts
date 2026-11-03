@@ -4,7 +4,9 @@ import {
   CreateWebhookInputSchema,
   UpdateWebhookInputSchema,
   WebhookTokenSchema,
+  classifyWebhookPayload,
   extractTaskFromWebhookPayload,
+  resolveSentryTasks,
   withTaskCodes,
 } from "@bitig/core";
 import type { AppEnv } from "../index";
@@ -109,6 +111,13 @@ export const webhookReceiverRouter = new Hono<AppEnv>().post("/:token", async (c
     );
   }
 
+  const action = classifyWebhookPayload(webhook, payload);
+  if (action === "ignore") return c.json({ status: "ignored" });
+  if (action === "resolve") {
+    const result = await resolveSentryTasks(storage, webhook, payload, { signal: c.req.raw.signal });
+    return c.json(result);
+  }
+
   const taskInput = extractTaskFromWebhookPayload(webhook, payload);
   const task = await storage.saveTask(taskInput);
   await storage.recordWebhookTrigger(webhook.id);
@@ -117,4 +126,3 @@ export const webhookReceiverRouter = new Hono<AppEnv>().post("/:token", async (c
 
   return c.json(taskWithCode, HTTP_CREATED);
 });
-

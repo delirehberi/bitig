@@ -82,10 +82,12 @@ export {
   withTaskCommentCount,
 } from "./domain/entities";
 export {
+  classifyWebhookPayload,
   extractTaskFromWebhookPayload,
   normalizeExternalPriority,
   resolveJsonPath,
 } from "./domain/webhooks";
+export { resolveSentryTasks } from "./domain/webhook-resolution";
 export {
   assertProjectKeyAvailable,
   assignMissingTicketCodes,

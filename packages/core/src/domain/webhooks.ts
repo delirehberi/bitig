@@ -17,6 +17,49 @@ import { CreateTaskInputSchema } from "./schemas";
 import type { CreateTaskInput, TaskPriority, Webhook } from "./types";
 
 const FORBIDDEN_PATH_SEGMENTS = new Set(["__proto__", "prototype", "constructor"]);
+const SENTRY_CREATE_ACTIONS: ReadonlySet<string> = new Set(["created", "regressed", "triggered"]);
+const SENTRY_ISSUE_LINK_PREFIX = "- **Sentry Issue:** ";
+const SENTRY_REFERENCE_PREFIX = "- **Sentry Reference:** ";
+
+export type WebhookAction = "create" | "resolve" | "ignore";
+
+function sentryIssue(payload: Readonly<Record<string, unknown>>): Readonly<Record<string, unknown>> | undefined {
+  const data = isRecord(payload.data) ? payload.data : undefined;
+  return isRecord(data?.issue) ? data.issue : isRecord(payload.issue) ? payload.issue : undefined;
+}
+
+/** Classify before extracting a title: lifecycle notifications need not contain one. */
+export function classifyWebhookPayload(webhook: Webhook, payload: unknown): WebhookAction {
+  if (!isRecord(payload)) {
+    throw new ValidationError("webhookPayload", [{ code: "custom", path: [], message: "Webhook payload must be a JSON object" }]);
+  }
+  if (webhook.provider !== "sentry") return "create";
+  const action = payload.action;
+  if (action !== undefined && (typeof action !== "string" || action.trim().length === 0)) {
+    throw new ValidationError("webhookPayload", [{ code: "custom", path: ["action"], message: "Sentry action must be a non-empty string" }]);
+  }
+  const status = sentryIssue(payload)?.status ?? payload.status;
+  if (action === "resolved" || status === "resolved") return "resolve";
+  if (status === "ignored") return "ignore";
+  if (action === undefined) return "create";
+  return SENTRY_CREATE_ACTIONS.has(action) ? "create" : "ignore";
+}
+
+/** Exact metadata lines, scoped by webhook for IDs; URLs also support previously created tasks. */
+export function sentryTaskReferences(webhook: Webhook, payload: unknown): string[] {
+  if (webhook.provider !== "sentry" || !isRecord(payload)) return [];
+  const issue = sentryIssue(payload);
+  const references: string[] = [];
+  const id = issue?.id;
+  if ((typeof id === "string" && /^\d+$/.test(id)) || (typeof id === "number" && Number.isSafeInteger(id) && id >= 0)) {
+    references.push(`${SENTRY_REFERENCE_PREFIX}${webhook.id}/${String(id)}`);
+  }
+  const link = issue?.permalink ?? payload.url;
+  if (typeof link === "string" && /^https?:\/\/[^\s]+$/.test(link)) {
+    references.push(`${SENTRY_ISSUE_LINK_PREFIX}${link}`);
+  }
+  return references;
+}
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -394,7 +437,11 @@ export function extractTaskFromWebhookPayload(webhook: Webhook, payload: unknown
 
   const title = rawTitle.slice(0, TASK_TITLE_MAX);
   const rawDescription = mappedDescription ?? providerFields.description ?? "";
-  const description = rawDescription.slice(0, DESCRIPTION_MAX);
+  const references = sentryTaskReferences(webhook, payload);
+  const content = rawDescription.split("\n").filter((line) => !references.includes(line)).join("\n").trimEnd();
+  const suffix = references.length > 0 ? `\n\n${references.join("\n")}` : "";
+  // Reserve space for identity metadata even when a custom description reaches the limit.
+  const description = `${(references.length > 0 ? content : rawDescription).slice(0, Math.max(0, DESCRIPTION_MAX - suffix.length))}${suffix}`;
   const priority = mappedPriority ?? providerFields.priority ?? webhook.defaultPriority;
   const labels = mergeUniqueLabels(
     webhook.defaultLabels,
@@ -420,4 +467,3 @@ export function extractTaskFromWebhookPayload(webhook: Webhook, payload: unknown
 
   return parseOrThrow(CreateTaskInputSchema, input, "extractTaskFromWebhookPayload");
 }
-

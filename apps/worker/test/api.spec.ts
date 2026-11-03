@@ -563,6 +563,43 @@ describe("REST API & Incoming Receiver: Webhooks", () => {
     });
   }
 
+  it("resolves existing Sentry tasks once and never creates tasks from lifecycle notifications", async () => {
+    const project = await (await postJson("/api/projects", { name: "Resolution", key: "RES" })).json<Project>();
+    const webhook = await (await postJson("/api/webhooks", {
+      projectId: project.id, name: "Sentry", provider: "sentry",
+    })).json<Webhook>();
+    const issue = { id: "42", title: "An error", permalink: "https://sentry.io/issues/42/" };
+    async function deliver(payload: unknown): Promise<Response> {
+      return exports.default.fetch(new Request(`${BASE_URL}/webhooks/${webhook.token}`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+      }));
+    }
+    const created = await deliver({ action: "created", data: { issue } });
+    expect(created.status).toBe(201);
+    const task = await created.json<TaskWithCode>();
+    expect(task.pendingApproval).toBe(true);
+    const resolution = await deliver({ action: "resolved", data: { issue } });
+    expect(resolution.status).toBe(200);
+    expect(await resolution.json()).toEqual({ status: "resolved", completedTaskIds: [task.id], blockedTaskIds: [] });
+    const completed = await (await apiRequest(`/api/tasks/${task.id}`)).json<Task>();
+    expect(completed.status).toBe("done");
+    expect(completed.pendingApproval).toBeUndefined();
+    const comments = await (await apiRequest(`/api/tasks/${task.id}/comments`)).json<Comment[]>();
+    expect(comments).toHaveLength(1);
+    expect(comments[0]).toMatchObject({ author: "sentry", body: "Marked done because the linked issue was resolved in Sentry." });
+    for (const action of ["resolved", "resolved", "assigned", "ignored", "deleted", "unknown"]) {
+      expect((await deliver({ action, data: { issue } })).status).toBe(200);
+    }
+    expect((await deliver({ action: "resolved", data: { issue: { id: "999" } } })).status).toBe(200);
+    expect(await (await apiRequest(`/api/tasks/${task.id}`)).json()).toEqual(completed);
+    expect(await (await apiRequest(`/api/tasks/${task.id}/comments`)).json()).toEqual(comments);
+    expect(await (await apiRequest(`/api/tasks?projectId=${project.id}`)).json<Task[]>()).toHaveLength(1);
+    const hook = await (await apiRequest(`/api/webhooks/${webhook.id}`)).json<Webhook>();
+    expect(hook.triggerCount).toBe(1);
+    expect((await deliver({ action: null })).status).toBe(400);
+    expect((await deliver(null)).status).toBe(400);
+  });
+
   it("creates a webhook and saves tasks from incoming Sentry and mapped payloads via POST /webhooks/:token", async () => {
     const project = await (await postJson("/api/projects", { name: "Bitig", key: "BIT" })).json<Project>();
 
