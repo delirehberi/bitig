@@ -287,6 +287,9 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
                   else if (tab === "awaiting_approval") navigate(tasksHref({ awaitingApproval: true }));
                   else navigate(hrefFor({ name: tab }));
                 }}
+                onArchiveTask={(t) => {
+                  void updateTask(t.id, { status: "archived" });
+                }}
               />
             )}
 
@@ -384,6 +387,10 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
                   }}
                   onComplete={(t) => {
                     void confirmIfBlocked(t, "done", (choice) => completeTask(t.id, choice));
+                  }}
+                  onArchive={(t) => {
+                    handleViewTask(undefined);
+                    void updateTask(t.id, { status: "archived" });
                   }}
                   onChecklistChange={(t, checklist) => updateTask(t.id, { checklist })}
                   onNeedsHumanResolve={(t) => {

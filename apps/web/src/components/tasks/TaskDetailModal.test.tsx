@@ -39,6 +39,7 @@ function renderModal(task: Task | null = TASK, mode: StorageMode = "local") {
     onEdit: vi.fn(),
     onDelete: vi.fn(),
     onComplete: vi.fn(),
+    onArchive: vi.fn(),
     onMoveToBacklog: vi.fn(),
   };
   render(
@@ -50,6 +51,18 @@ function renderModal(task: Task | null = TASK, mode: StorageMode = "local") {
 }
 
 describe("TaskDetailModal", () => {
+  it.each(["todo", "in_progress", "done"] as const)("archives %s tasks", async (status) => {
+    const task = { ...TASK, status };
+    const handlers = renderModal(task);
+    await userEvent.click(screen.getByRole("button", { name: "Archive" }));
+    expect(handlers.onArchive).toHaveBeenCalledWith(task);
+  });
+
+  it("hides Archive for already archived tasks", () => {
+    renderModal({ ...TASK, status: "archived" });
+    expect(screen.queryByRole("button", { name: "Archive" })).not.toBeInTheDocument();
+  });
+
   it.each(["todo", "in_progress", "done", "archived"] as const)("moves %s tasks to Backlog", async (status) => {
     const task = { ...TASK, status };
     const handlers = renderModal(task);

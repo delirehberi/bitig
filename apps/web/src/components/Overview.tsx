@@ -9,7 +9,7 @@ import {
   type Task,
   type TimeCsvExportMode,
 } from "@bitig/core";
-import { Bell, Clock, Download, FolderKanban, Hand, ListTodo, ShieldQuestionMark } from "lucide-react";
+import { Archive, Bell, Clock, Download, FolderKanban, Hand, ListTodo, ShieldQuestionMark } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
 import { MODE_COPY } from "../domain/modes";
 import { formatTimeAgo } from "../domain/time-ago";
@@ -30,6 +30,7 @@ interface OverviewProps {
   /** Tasks an agent or webhook created that wait for a person's approval. */
   readonly awaitingApprovalCount?: number;
   readonly onNavigate?: (tab: "projects" | "tasks" | "needs_human" | "awaiting_approval") => void;
+  readonly onArchiveTask?: (task: Task) => void;
   readonly onExportCsv?: (filename: string, csvContent: string, kind: TimeCsvExportMode) => void;
 }
 
@@ -103,6 +104,7 @@ export function Overview({
   needsHumanCount = 0,
   awaitingApprovalCount = 0,
   onNavigate,
+  onArchiveTask,
   onExportCsv,
 }: OverviewProps) {
   const modeCopy = MODE_COPY[mode];
@@ -218,9 +220,24 @@ export function Overview({
                     {code && <span className="shrink-0 font-mono text-xs text-ink-3">{code}</span>}
                     <span className="truncate">{task.title}</span>
                   </Link>
-                  <span className="text-xs text-ink-3">
-                    {project?.name ?? "Unknown project"} · <time dateTime={completedAt}>{formatTimeAgo(completedAt, new Date())}</time>
-                  </span>
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs text-ink-3">
+                      {project?.name ?? "Unknown project"} · <time dateTime={completedAt}>{formatTimeAgo(completedAt, new Date())}</time>
+                    </span>
+                    {onArchiveTask && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onArchiveTask(task);
+                        }}
+                        aria-label={`Archive ${task.title}`}
+                        className="inline-flex items-center gap-1 rounded-md border border-rule bg-paper px-2 py-1 text-2xs font-semibold text-ink-2 transition-colors hover:bg-paper-3 hover:text-ink focus-visible:outline-focus"
+                      >
+                        <Archive size={12} aria-hidden="true" />
+                        <span>Archive</span>
+                      </button>
+                    )}
+                  </div>
                 </li>
               );
             })}

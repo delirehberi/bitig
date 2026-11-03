@@ -260,13 +260,17 @@ describe("Dashboard Phase 4 Integration", () => {
     ).toBeInTheDocument();
   });
 
-  it("opens a completed task from the overview review section without leaving the overview", async () => {
+  it("opens a completed task from the overview review section without leaving the overview and archives it", async () => {
     const projectId = "01940000-0000-7000-8000-000000000041";
     const taskId = "01940000-0000-7000-8000-000000000042";
+    const secondTaskId = "01940000-0000-7000-8000-000000000043";
     const createdAt = "2026-10-01T10:00:00.000Z";
     stubApi({
       projects: [{ id: projectId, key: "REV", name: "Review project", description: "", kind: "hobby", createdAt, updatedAt: createdAt }],
-      tasks: [{ id: taskId, projectId, number: 7, title: "Check completed work", description: "", status: "done", isPublic: false, createdAt, updatedAt: createdAt, completedAt: createdAt }],
+      tasks: [
+        { id: taskId, projectId, number: 7, title: "Check completed work", description: "", status: "done", isPublic: false, createdAt, updatedAt: createdAt, completedAt: createdAt },
+        { id: secondTaskId, projectId, number: 8, title: "Second completed work", description: "", status: "done", isPublic: false, createdAt, updatedAt: createdAt, completedAt: createdAt },
+      ],
     });
     const user = userEvent.setup();
     render(<App />);
@@ -281,12 +285,22 @@ describe("Dashboard Phase 4 Integration", () => {
     expect(dialog).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 1, name: "Your agents keep the record." })).toBeInTheDocument();
 
-    await user.click(within(dialog).getByRole("button", { name: /close/i }));
+    // Archive from the task detail modal
+    await user.click(within(dialog).getByRole("button", { name: "Archive" }));
     await waitFor(() => {
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     });
     expect(window.location.pathname).toBe("/app");
     expect(new URLSearchParams(window.location.search).get("task")).toBeNull();
+    await waitFor(() => {
+      expect(within(review).queryByText("Check completed work")).not.toBeInTheDocument();
+    });
+
+    // Archive directly from the overview review list
+    await user.click(within(review).getByRole("button", { name: "Archive Second completed work" }));
+    await waitFor(() => {
+      expect(within(review).getByText("No completed tasks awaiting review.")).toBeInTheDocument();
+    });
   });
 
   it("sends signed-out visitors to /login and back to where they were", async () => {

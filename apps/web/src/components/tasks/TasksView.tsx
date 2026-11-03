@@ -488,6 +488,10 @@ export function TasksView({
           setDeleteTarget(t);
         }}
         onComplete={handleComplete}
+        onArchive={(t) => {
+          closeTask();
+          void handleStatusChange(t, "archived");
+        }}
         onChecklistChange={(t, checklist) => onUpdateTask(t.id, { checklist })}
         onNeedsHumanResolve={(t) => {
           void onUpdateTask(t.id, { needsHuman: null });

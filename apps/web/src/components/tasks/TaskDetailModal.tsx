@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  Archive,
   Bot,
   Calendar,
   CheckCircle2,
@@ -46,6 +47,7 @@ interface TaskDetailModalProps {
   readonly onEdit: (task: Task) => void;
   readonly onDelete: (task: Task) => void;
   readonly onComplete: (task: Task) => void;
+  readonly onArchive?: ((task: Task) => void) | undefined;
   readonly onMoveToBacklog?: ((task: Task) => void) | undefined;
   /** Saves a checked or unchecked subtask; omit to show the checklist read-only. */
   readonly onChecklistChange?: ((task: Task, checklist: ChecklistItem[]) => Promise<unknown>) | undefined;
@@ -127,6 +129,7 @@ export function TaskDetailModal({
   onEdit,
   onDelete,
   onComplete,
+  onArchive,
   onMoveToBacklog,
   onChecklistChange,
   onNeedsHumanResolve,
@@ -546,6 +549,18 @@ export function TaskDetailModal({
             >
               <CheckCircle2 size={14} aria-hidden="true" />
               Complete
+            </button>
+          )}
+          {task.status !== "archived" && onArchive && (
+            <button
+              type="button"
+              onClick={() => {
+                onArchive(task);
+              }}
+              className="inline-flex items-center gap-1.5 rounded-md border border-rule px-3 py-2 text-xs font-medium text-ink-2 transition-colors hover:bg-paper-2 hover:text-ink focus-visible:outline-focus"
+            >
+              <Archive size={14} aria-hidden="true" />
+              Archive
             </button>
           )}
           <button

@@ -184,4 +184,23 @@ describe("Overview completed tasks awaiting review", () => {
     rerender(<Overview mode="cloudflare" health={health} projects={[PROJECT_ALPHA]} tasks={[{ ...TASKS[0], status: "archived" }]} />);
     expect(within(review).getByText("No completed tasks awaiting review.")).toBeInTheDocument();
   });
+
+  it("renders an Archive button per task when onArchiveTask is provided and calls it", async () => {
+    window.history.replaceState(null, "", "/app");
+    const user = userEvent.setup();
+    const onArchiveTask = vi.fn();
+    render(
+      <Overview
+        mode="cloudflare"
+        health={health}
+        projects={[PROJECT_ALPHA, PROJECT_BETA]}
+        tasks={TASKS}
+        onArchiveTask={onArchiveTask}
+      />,
+    );
+
+    const review = screen.getByRole("region", { name: "Completed, awaiting review" });
+    await user.click(within(review).getByRole("button", { name: "Archive Write docs" }));
+    expect(onArchiveTask).toHaveBeenCalledWith(TASKS[1]);
+  });
 });
