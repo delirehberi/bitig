@@ -66,4 +66,19 @@ describe("TaskT3Section", () => {
     expect(await screen.findByTestId("t3-thread-chip")).toHaveTextContent("T3 thread · waiting for approval · gpt-6-sol");
     expect(onT3ContextChange).toHaveBeenLastCalledWith({ run, capabilities: [] });
   });
+
+  it("displays stopReason when a run is failed or stopped (BIT-132)", async () => {
+    const run = { ...makeRun(task.id, "failed"), model: "claude-opus-4-7" };
+    vi.mocked(fetchTaskT3Run).mockResolvedValue({
+      run,
+      pendingQuestions: [],
+      stopReason: "Usage limit reached: Claude API rate limit reached. Try again later.",
+    });
+    render(<TaskT3Section task={task} project={project} hasUnfinishedDependencies={false} />);
+
+    expect(await screen.findByTestId("t3-thread-stop-reason")).toHaveTextContent(
+      "Usage limit reached: Claude API rate limit reached. Try again later.",
+    );
+  });
 });
+

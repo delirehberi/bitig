@@ -126,7 +126,8 @@ function ProjectT3ThreadItem({ projectId, thread, capabilities, onUpdated }: Thr
             signal: options.signal,
           });
           if (options.signal?.aborted) return;
-          latestThread = res.thread;
+          const nextStopReason = res.stopReason ?? res.thread.stopReason;
+          latestThread = nextStopReason ? { ...res.thread, stopReason: nextStopReason } : res.thread;
           collected.push(...res.messages);
 
           const nextCursor =
@@ -272,6 +273,16 @@ function ProjectT3ThreadItem({ projectId, thread, capabilities, onUpdated }: Thr
           )}
         </div>
       </div>
+
+      {(thread.state === "failed" || thread.state === "stopped") && thread.stopReason && (
+        <div
+          data-testid="project-t3-thread-stop-reason"
+          className="flex items-start gap-2 rounded-md border border-danger/30 bg-danger-soft px-2.5 py-1.5 text-xs text-danger"
+        >
+          <AlertTriangle size={13} aria-hidden="true" className="mt-0.5 shrink-0" />
+          <span>{thread.stopReason}</span>
+        </div>
+      )}
 
       {isExpanded && (
         <div

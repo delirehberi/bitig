@@ -370,5 +370,21 @@ describe("ProjectT3Panel (BIT-127)", () => {
     });
     expect(fetchProjectT3ThreadMessages).toHaveBeenCalledTimes(2);
   });
+
+  it("displays stopReason when a project thread is failed or stopped (BIT-132)", async () => {
+    mockReady([
+      makeThread({
+        state: "failed",
+        stopReason: "Usage limit reached: Claude API rate limit reached. Try again later.",
+      }),
+    ]);
+
+    render(<ProjectT3Panel project={PROJECT} />);
+
+    expect(await screen.findByTestId("project-t3-thread-stop-reason")).toHaveTextContent(
+      "Usage limit reached: Claude API rate limit reached. Try again later.",
+    );
+  });
 });
+
 

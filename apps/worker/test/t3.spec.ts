@@ -374,12 +374,20 @@ function createMockT3Fetch(state: MockT3ServerState): typeof fetch {
               };
             } else if (toolName === "t3_thread_read") {
               const rawItems = state.threadItems ?? [];
+              const viewFiltered =
+                toolArgs.view === "messages"
+                  ? rawItems.filter((item) => {
+                      if (!item || typeof item !== "object") return true;
+                      const itemType = (item as Record<string, unknown>).type;
+                      return itemType !== "error" && itemType !== "system_notice";
+                    })
+                  : rawItems;
               const afterPos =
                 typeof toolArgs.afterPosition === "number" ? toolArgs.afterPosition : undefined;
               const filteredItems =
                 afterPos === undefined
-                  ? rawItems
-                  : rawItems.filter((item) => {
+                  ? viewFiltered
+                  : viewFiltered.filter((item) => {
                       if (!item || typeof item !== "object") return true;
                       const pos = (item as Record<string, unknown>).position;
                       return typeof pos === "number" ? pos > afterPos : true;
@@ -399,6 +407,7 @@ function createMockT3Fetch(state: MockT3ServerState): typeof fetch {
                   status: state.threadStatus,
                   pendingRequestCount: state.pendingRequestCount,
                   activeRunId: state.activeRunId,
+                  itemCount: rawItems.length,
                 },
                 recentRuns: [{ status: state.recentRunStatus }],
                 items: filteredItems,
@@ -1621,5 +1630,103 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
       maxCharsPerItem: 20_000,
     });
   });
+
+  it("surfaces stopReason from T3 activity error and system_notice items when a task run or project thread fails (#BIT-132)", async () => {
+    await connectT3Host();
+    const project = await (
+      await request("/api/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Bitig", key: "BIT" }),
+      })
+    ).json<Project>();
+    await request(`/api/t3/mappings/${project.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        t3ProjectId: "t3-proj-bitig",
+        t3ProjectTitle: "Bitig Workspace",
+      }),
+    });
+
+    const task = await (
+      await request("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: project.id, title: "Implement BIT-132" }),
+      })
+    ).json<Task>();
+    mockState.launchThreadId = "thread-fail-task";
+    const startTaskRes = await request(`/api/tasks/${task.id}/t3-run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workspaceStrategy: "worktree" }),
+    });
+    expect(startTaskRes.status).toBe(201);
+
+    mockState.launchThreadId = "thread-fail-proj";
+    const startProjRes = await request(`/api/t3/projects/${project.id}/threads`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: "Run check" }),
+    });
+    expect(startProjRes.status).toBe(201);
+
+    // Simulate Claude 5-hour usage limit failure on the latest turn
+    mockState.threadStatus = "failed";
+    mockState.activeRunId = null;
+    mockState.recentRunStatus = "failed";
+    mockState.threadItems = [
+      {
+        position: 0,
+        type: "user_message",
+        text: "Run check",
+      },
+      {
+        position: 1,
+        type: "system_notice",
+        title: "Claude usage limit reached. This turn is paused until the 5-hour limit resets in 2h 29m.",
+      },
+      {
+        position: 2,
+        type: "error",
+        title: "Usage limit reached",
+        text: "Claude API rate limit reached. Try again later.",
+      },
+    ];
+    mockState.threadList = [
+      {
+        threadId: "thread-fail-proj",
+        projectId: "t3-proj-bitig",
+        status: "failed",
+        pendingRequestCount: 0,
+        activeRunId: null,
+        settled: false,
+      },
+    ];
+
+    const expectedReason =
+      "Usage limit reached: Claude API rate limit reached. Try again later. \u2014 Claude usage limit reached. This turn is paused until the 5-hour limit resets in 2h 29m.";
+
+    const taskLiveRes = await request(`/api/tasks/${task.id}/t3-run`);
+    expect(taskLiveRes.status).toBe(200);
+    const taskLiveBody = await taskLiveRes.json<T3TaskRunLiveResponse>();
+    expect(taskLiveBody.run?.state).toBe("failed");
+    expect(taskLiveBody.stopReason).toBe(expectedReason);
+
+    const listProjRes = await request(`/api/t3/projects/${project.id}/threads`);
+    expect(listProjRes.status).toBe(200);
+    const listProjBody = await listProjRes.json<ProjectT3ThreadsResponse>();
+    expect(listProjBody.threads[0]?.state).toBe("failed");
+    expect(listProjBody.threads[0]?.stopReason).toBe(expectedReason);
+
+    const msgProjRes = await request(`/api/t3/projects/${project.id}/threads/thread-fail-proj/messages`);
+    expect(msgProjRes.status).toBe(200);
+    const msgProjBody = await msgProjRes.json<ProjectT3ThreadMessagesResponse>();
+    expect(msgProjBody.thread.state).toBe("failed");
+    expect(msgProjBody.thread.stopReason).toBe(expectedReason);
+    expect(msgProjBody.stopReason).toBe(expectedReason);
+  });
 });
+
 

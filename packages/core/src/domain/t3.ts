@@ -188,6 +188,7 @@ export interface T3ThreadSummary {
   readonly status?: string | undefined;
   readonly pendingRequestCount?: number | undefined;
   readonly activeRunId?: string | null | undefined;
+  readonly itemCount?: number | undefined;
 }
 
 export interface T3RunSummary {
@@ -195,10 +196,15 @@ export interface T3RunSummary {
   readonly state?: string | undefined;
 }
 
+/** Max length of a thread stop/failure reason summary extracted from T3 (#BIT-132). */
+export const T3_STOP_REASON_MAX = 500;
+
 export interface T3TaskRunLiveResponse {
   readonly run: AgentRun | null;
   readonly pendingRequestId?: string | undefined;
   readonly pendingQuestions: T3PendingQuestion[];
+  /** Why the thread stopped or failed (e.g. usage limit, credit exhaustion, runtime error, #BIT-132). */
+  readonly stopReason?: string | undefined;
 }
 
 export interface T3ThreadListItem {
@@ -302,6 +308,8 @@ export const ProjectT3ThreadSchema = z.strictObject({
   title: z.string().trim().min(1).max(PROJECT_T3_THREAD_TITLE_MAX),
   link: z.string().trim().min(1).max(2048).exactOptional(),
   state: AgentRunStateSchema,
+  /** Why the thread stopped or failed (e.g. usage limit, credit exhaustion, runtime error, #BIT-132). */
+  stopReason: z.string().trim().min(1).max(T3_STOP_REASON_MAX).exactOptional(),
   model: z.string().trim().min(1).max(200).exactOptional(),
   providerInstanceId: z.string().trim().min(1).max(200).exactOptional(),
   modelOptions: T3ModelSelectionOptionsSchema.exactOptional(),
@@ -417,6 +425,8 @@ export interface ProjectT3ThreadMessagesResponse {
   readonly messages: T3ThreadMessage[];
   readonly nextPosition: number | null;
   readonly hasMore: boolean;
+  /** Why the thread stopped or failed (e.g. usage limit, credit exhaustion, runtime error, #BIT-132). */
+  readonly stopReason?: string | undefined;
 }
 
 /**

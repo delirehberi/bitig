@@ -54,6 +54,7 @@ export function TaskT3Section({
   const [run, setRun] = useState<AgentRun | null>(null);
   const [pendingRequestId, setPendingRequestId] = useState<string | undefined>(undefined);
   const [pendingQuestions, setPendingQuestions] = useState<T3PendingQuestion[]>([]);
+  const [stopReason, setStopReason] = useState<string | undefined>(undefined);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [connection, setConnection] = useState<T3ConnectionStatus | null>(null);
   const [mapping, setMapping] = useState<T3ProjectMapping | undefined>(undefined);
@@ -71,6 +72,7 @@ export function TaskT3Section({
         setRun(live.run);
         setPendingRequestId(live.pendingRequestId);
         setPendingQuestions(live.pendingQuestions);
+        setStopReason(live.stopReason);
       } catch (err) {
         if (signal?.aborted) return;
         setError(err instanceof Error ? err.message : "Could not check T3 thread status.");
@@ -107,6 +109,7 @@ export function TaskT3Section({
         setRun(liveRun.run);
         setPendingRequestId(liveRun.pendingRequestId);
         setPendingQuestions(liveRun.pendingQuestions);
+        setStopReason(liveRun.stopReason);
         setConnection(conn);
         setMapping(mappings.find((m) => m.projectId === task.projectId));
 
@@ -176,6 +179,7 @@ export function TaskT3Section({
         ...(model ? { model } : {}),
       });
       setRun(launched.run);
+      setStopReason(undefined);
       if (onTaskUpdated) {
         onTaskUpdated(launched.task);
       }
@@ -212,6 +216,7 @@ export function TaskT3Section({
       setRun(updated.run);
       setPendingRequestId(undefined);
       setPendingQuestions([]);
+      setStopReason(undefined);
       setAnswers({});
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not submit answer to T3.");
@@ -377,6 +382,16 @@ export function TaskT3Section({
             <p className="m-0 rounded-md border border-danger/30 bg-danger-soft px-2.5 py-1.5 text-2xs text-danger">
               The thread is waiting for a tool approval or input in T3 Code.
             </p>
+          )}
+
+          {(run.state === "failed" || run.state === "stopped") && stopReason && (
+            <div
+              data-testid="t3-thread-stop-reason"
+              className="flex items-start gap-2 rounded-md border border-danger/30 bg-danger-soft px-2.5 py-2 text-xs text-danger"
+            >
+              <AlertTriangle size={14} aria-hidden="true" className="mt-0.5 shrink-0" />
+              <span>{stopReason}</span>
+            </div>
           )}
 
           {run.state !== "offline" && (

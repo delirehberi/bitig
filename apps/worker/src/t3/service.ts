@@ -318,6 +318,7 @@ export async function getTaskT3RunLiveStatus(
       run: updatedRun,
       ...(live.pendingRequestId ? { pendingRequestId: live.pendingRequestId } : {}),
       pendingQuestions: live.pendingQuestions,
+      ...(live.stopReason ? { stopReason: live.stopReason } : {}),
     };
   } catch (err) {
     if (err instanceof T3McpError) {
@@ -1035,9 +1036,10 @@ export async function listProjectT3ThreadsLive(
   }
 
   const now = deps.now ? deps.now() : Date.now();
+  let mcpClient: T3McpClient | undefined;
   let listed: T3ThreadListItem[] | undefined;
   try {
-    const mcpClient = await createActiveT3McpClient({
+    mcpClient = await createActiveT3McpClient({
       store: deps.store,
       encryptionKey: deps.encryptionKey,
       fetchFn: deps.fetchFn,
@@ -1072,17 +1074,21 @@ export async function listProjectT3ThreadsLive(
       nextState = thread.state;
     }
 
-    if (nextState === thread.state && nextLink === thread.link) {
-      threads.push(thread);
-      continue;
-    }
-    threads.push(
-      (await deps.store.updateProjectThreadState(projectId, thread.threadId, {
-        state: nextState,
-        ...(nextLink ? { link: nextLink } : {}),
-        now,
-      })) ?? thread,
-    );
+    const reconciled =
+      nextState === thread.state && nextLink === thread.link
+        ? thread
+        : ((await deps.store.updateProjectThreadState(projectId, thread.threadId, {
+            state: nextState,
+            ...(nextLink ? { link: nextLink } : {}),
+            now,
+          })) ?? thread);
+
+    const stopReason =
+      mcpClient && listed && (reconciled.state === "failed" || reconciled.state === "stopped")
+        ? await mcpClient.readThreadStopReason(reconciled.threadId).catch(() => undefined)
+        : undefined;
+
+    threads.push(stopReason ? { ...reconciled, stopReason } : reconciled);
   }
   return { threads };
 }
@@ -1137,11 +1143,17 @@ export async function readProjectT3ThreadMessages(
     }
   }
 
+  const threadWithReason =
+    readout.stopReason && (thread.state === "failed" || thread.state === "stopped")
+      ? { ...thread, stopReason: readout.stopReason }
+      : thread;
+
   return {
-    thread,
+    thread: threadWithReason,
     messages: readout.messages,
     nextPosition: readout.nextPosition,
     hasMore: readout.hasMore,
+    ...(readout.stopReason ? { stopReason: readout.stopReason } : {}),
   };
 }
 

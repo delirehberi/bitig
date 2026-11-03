@@ -3,12 +3,14 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
   T3_ALLOWED_MCP_TOOLS,
+  T3_STOP_REASON_MAX,
   T3ModelCapabilitySchema,
   T3ModelOptionSchema,
   T3ModelSelectionOptionsSchema,
   T3PendingQuestionSchema,
   T3RemoteProjectSchema,
   T3ThreadMessageSchema,
+  deriveLiveAgentRunState,
   normalizeT3McpUrl,
   type T3AllowedMcpTool,
   type T3ModelCapability,
@@ -346,6 +348,8 @@ export interface T3LiveThreadReadout {
   pendingRequestIds: string[];
   pendingQuestions: T3PendingQuestion[];
   pendingRequestId?: string | undefined;
+  /** Why the thread stopped or failed (e.g. usage limit, credit exhaustion, runtime error, #BIT-132). */
+  stopReason?: string | undefined;
 }
 
 export interface T3McpClientOptions {
@@ -488,6 +492,9 @@ function parseThreadSummary(rawThread: unknown): T3ThreadSummary | undefined {
     ...(typeof rec.activeRunId === "string" || rec.activeRunId === null
       ? { activeRunId: rec.activeRunId }
       : {}),
+    ...(typeof rec.itemCount === "number" && Number.isInteger(rec.itemCount) && rec.itemCount >= 0
+      ? { itemCount: rec.itemCount }
+      : {}),
   };
 }
 
@@ -504,6 +511,80 @@ function parseRecentRuns(rawRuns: unknown): T3RunSummary[] {
     }
   }
   return recentRuns;
+}
+
+const STOP_REASON_TAIL_WINDOW = 30;
+const STOP_REASON_MAX_PAGES = 5;
+
+function formatStopItemReason(rec: Record<string, unknown>): string | undefined {
+  const title = typeof rec.title === "string" ? rec.title.trim() : "";
+  const text = typeof rec.text === "string" ? rec.text.trim() : "";
+  if (!title && !text) return undefined;
+  const combined =
+    !title || text === title || text.startsWith(title)
+      ? text || title
+      : !text || title.startsWith(text)
+        ? title
+        : `${title}: ${text}`;
+  const singleLine = combined.replace(/\s+/g, " ").trim();
+  if (!singleLine) return undefined;
+  return singleLine.length <= T3_STOP_REASON_MAX
+    ? singleLine
+    : `${singleLine.slice(0, T3_STOP_REASON_MAX - 1).trimEnd()}\u2026`;
+}
+
+/**
+ * Extracts why a T3 thread stopped or failed from `t3_thread_read` `items[]` (#BIT-132).
+ * Scans the latest turn (after the last `user_message`) for `error` or `system_notice` items
+ * (such as model usage limits, credit exhaustion, or terminal runtime errors) and falls back
+ * to a short final assistant message when present.
+ */
+export function parseThreadStopReason(rawItems: unknown): string | undefined {
+  if (!Array.isArray(rawItems) || rawItems.length === 0) return undefined;
+  const records: Record<string, unknown>[] = [];
+  for (const item of rawItems) {
+    if (item && typeof item === "object") {
+      records.push(item as Record<string, unknown>);
+    }
+  }
+  if (records.length === 0) return undefined;
+
+  let lastUserIdx = -1;
+  for (let i = records.length - 1; i >= 0; i--) {
+    if (records[i]?.type === "user_message") {
+      lastUserIdx = i;
+      break;
+    }
+  }
+  const latestTurn = lastUserIdx >= 0 ? records.slice(lastUserIdx + 1) : records;
+
+  let errorReason: string | undefined;
+  let noticeReason: string | undefined;
+  let assistantReason: string | undefined;
+
+  for (const rec of latestTurn) {
+    const type = typeof rec.type === "string" ? rec.type : "";
+    if (type === "error") {
+      const formatted = formatStopItemReason(rec);
+      if (formatted) errorReason = formatted;
+    } else if (type === "system_notice") {
+      const formatted = formatStopItemReason(rec);
+      if (formatted) noticeReason = formatted;
+    } else if (type === "assistant_message") {
+      const text = typeof rec.text === "string" ? rec.text.trim() : "";
+      if (text.length > 0 && text.length <= 300) {
+        assistantReason = text.replace(/\s+/g, " ");
+      }
+    }
+  }
+
+  if (errorReason && noticeReason && !errorReason.includes(noticeReason) && !noticeReason.includes(errorReason)) {
+    const combined = `${errorReason} \u2014 ${noticeReason}`;
+    return combined.length <= T3_STOP_REASON_MAX
+      ? combined
+      : `${combined.slice(0, T3_STOP_REASON_MAX - 1).trimEnd()}\u2026`;
+  }
+  return errorReason ?? noticeReason ?? assistantReason;
 }
 
 /**
@@ -557,6 +638,48 @@ export interface T3ThreadMessagesReadout {
   messages: T3ThreadMessage[];
   nextPosition: number | null;
   hasMore: boolean;
+  stopReason?: string | undefined;
+}
+
+async function fetchStopReasonFromActivity(
+  callTool: (name: T3AllowedMcpTool, args: Record<string, unknown>) => Promise<Record<string, unknown>>,
+  threadId: string,
+  threadSummary: T3ThreadSummary | undefined,
+  fallbackItems: unknown,
+): Promise<string | undefined> {
+  const itemCount = threadSummary?.itemCount;
+  let cursor =
+    typeof itemCount === "number" && itemCount > STOP_REASON_TAIL_WINDOW
+      ? Math.max(0, itemCount - STOP_REASON_TAIL_WINDOW - 1)
+      : undefined;
+  const collected: unknown[] = [];
+
+  for (let page = 0; page < STOP_REASON_MAX_PAGES; page++) {
+    const payload = await callTool("t3_thread_read", {
+      threadId,
+      view: "activity",
+      limit: STOP_REASON_TAIL_WINDOW,
+      runLimit: 1,
+      ...(cursor !== undefined ? { afterPosition: cursor } : {}),
+    }).catch((): Record<string, unknown> => ({}));
+
+    const pageItems: unknown[] = Array.isArray(payload.items) ? (payload.items as unknown[]) : [];
+    collected.push(...pageItems);
+
+    const nextPos =
+      typeof payload.nextPosition === "number" &&
+      Number.isInteger(payload.nextPosition) &&
+      payload.nextPosition >= 0
+        ? payload.nextPosition
+        : undefined;
+    const advanced = nextPos !== undefined && nextPos !== cursor;
+    cursor = nextPos;
+    if (payload.hasMore !== true || !advanced) {
+      break;
+    }
+  }
+
+  return parseThreadStopReason(collected) ?? parseThreadStopReason(fallbackItems);
 }
 
 export class T3McpClient {
@@ -897,13 +1020,45 @@ export class T3McpClient {
         }
       }
 
+      const liveState = deriveLiveAgentRunState({
+        thread,
+        recentRuns,
+        pendingRequestIds,
+      });
+      const stopReason =
+        liveState === "failed" || liveState === "stopped"
+          ? await fetchStopReasonFromActivity(callTool, threadId, thread, threadPayload.items)
+          : undefined;
+
       return {
         ...(thread ? { thread } : {}),
         recentRuns,
         pendingRequestIds,
         pendingQuestions,
         ...(pendingRequestId ? { pendingRequestId } : {}),
+        ...(stopReason ? { stopReason } : {}),
       };
+    });
+  }
+
+  /**
+   * Reads why a failed or stopped T3 thread ended (#BIT-132), using `t3_thread_read` (`view: "activity"`)
+   * on the tail of the timeline.
+   */
+  async readThreadStopReason(threadId: string): Promise<string | undefined> {
+    return this.withSession(async (callTool) => {
+      const payload = await callTool("t3_thread_read", {
+        threadId,
+        view: "activity",
+        limit: STOP_REASON_TAIL_WINDOW,
+        runLimit: 1,
+      });
+      const thread = parseThreadSummary(payload.thread);
+      const itemCount = thread?.itemCount;
+      if (typeof itemCount === "number" && itemCount > STOP_REASON_TAIL_WINDOW) {
+        return fetchStopReasonFromActivity(callTool, threadId, thread, payload.items);
+      }
+      return parseThreadStopReason(payload.items);
     });
   }
 
@@ -938,12 +1093,18 @@ export class T3McpClient {
           ? payload.nextPosition
           : messages.at(-1)?.position ?? null;
       const hasMore = payload.hasMore === true;
+      const liveState = deriveLiveAgentRunState({ thread, recentRuns });
+      const stopReason =
+        !hasMore && (liveState === "failed" || liveState === "stopped")
+          ? await fetchStopReasonFromActivity(callTool, threadId, thread, payload.items)
+          : undefined;
       return {
         ...(thread ? { thread } : {}),
         recentRuns,
         messages,
         nextPosition,
         hasMore,
+        ...(stopReason ? { stopReason } : {}),
       };
     });
   }
