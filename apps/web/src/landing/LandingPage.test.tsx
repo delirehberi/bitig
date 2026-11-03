@@ -24,15 +24,34 @@ describe("Landing page", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("covers the managed, self-hosted and free-tier messages", () => {
+  it("covers the managed, T3 Cloud Hosts, self-hosted and free-tier messages", () => {
     render(<App />);
 
     expect(screen.getByRole("heading", { level: 2, name: "Run it our way, or yours." })).toBeInTheDocument();
     expect(screen.getByText("“I built it for myself, and it can be yours.”")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Start free: 100 MCP requests" })).toHaveAttribute("href", "/app");
 
+    const hosting = screen.getByRole("region", { name: "Run it our way, or yours." });
+    expect(within(hosting).getByRole("heading", { level: 3, name: "T3 Cloud Hosts" })).toBeInTheDocument();
+    expect(within(hosting).getByText("Isolated execution environment per project")).toBeInTheDocument();
+    expect(
+      within(hosting).getByText("Clone your Git repository directly into the cloud host"),
+    ).toBeInTheDocument();
+    expect(
+      within(hosting).getByText("Configure ACP & T3 Code agents with your own credentials (BYOK)"),
+    ).toBeInTheDocument();
+
     const pricing = screen.getByRole("region", { name: "Free to start. Free forever to self-host." });
+    expect(within(pricing).getByRole("heading", { level: 3, name: "T3 Cloud Hosts" })).toBeInTheDocument();
+    expect(within(pricing).getByText("T3 Code Cloud")).toBeInTheDocument();
     expect(within(pricing).getByText("100 MCP requests a month")).toBeInTheDocument();
+    expect(within(pricing).getByText("Isolated execution environment per project")).toBeInTheDocument();
+    expect(
+      within(pricing).getByText("Clone your Git repository directly into the cloud host"),
+    ).toBeInTheDocument();
+    expect(
+      within(pricing).getByText("Configure ACP & T3 Code agents with your own credentials (BYOK)"),
+    ).toBeInTheDocument();
     expect(within(pricing).getByText("Unlimited MCP requests")).toBeInTheDocument();
   });
 

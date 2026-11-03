@@ -76,21 +76,39 @@ interface Plan {
   readonly name: string;
   readonly price: string;
   readonly note: string;
+  readonly badge?: string;
   readonly description: string;
   readonly features: readonly string[];
   readonly cta: { readonly label: string; readonly href: string; readonly external: boolean };
   readonly featured: boolean;
 }
 
+const CLOUD_HOST_FEATURES = [
+  "Isolated execution environment per project",
+  "Clone your Git repository directly into the cloud host",
+  "Configure ACP & T3 Code agents with your own credentials (BYOK)",
+] as const;
+
 const PLANS: readonly Plan[] = [
   {
     name: "Free",
     price: "$0",
     note: "Managed",
+    badge: "Most popular",
     description: "Everything you need to try Bitig with your agents.",
     features: [`${String(FREE_MCP_REQUESTS)} MCP requests a month`, "Unlimited projects and tasks", "Web dashboard"],
     cta: { label: "Start free", href: APP_HREF, external: false },
     featured: true,
+  },
+  {
+    name: "T3 Cloud Hosts",
+    price: "Cloud",
+    note: "T3 Code Cloud",
+    badge: "Upcoming",
+    description: "Managed T3 Code sandboxes that run your agents against your repos in the cloud.",
+    features: CLOUD_HOST_FEATURES,
+    cta: { label: "Connect in Settings", href: APP_HREF, external: false },
+    featured: false,
   },
   {
     name: "Self-hosted",
@@ -437,11 +455,11 @@ export function LandingPage() {
           <div className={`${CONTAINER} flex flex-col gap-12`}>
             <SectionHeading
               id="hosting-title"
-              eyebrow="Managed or self-hosted"
+              eyebrow="Managed, cloud hosts, or self-hosted"
               title="Run it our way, or yours."
-              lead="Same app, same MCP tools, same dashboard. Pick where your tasks live, and switch later. Export and backup work across every backend."
+              lead="Same app, same MCP tools, same dashboard. Pick where your tasks and agents live, and switch later. Export and backup work across every backend."
             />
-            <div className="grid gap-6 md:grid-cols-2">
+            <div className="grid gap-6 lg:grid-cols-3">
               <article className={`${CARD} items-start bg-paper p-8`}>
                 <Tag>Managed</Tag>
                 <h3 className="text-2xl font-bold tracking-tight">We run it for you</h3>
@@ -457,6 +475,18 @@ export function LandingPage() {
                 />
                 <ButtonLink href={APP_HREF} variant="primary" className="mt-auto">
                   Start free
+                </ButtonLink>
+              </article>
+              <article className={`${CARD} items-start bg-paper p-8`}>
+                <Tag>T3 Code Cloud</Tag>
+                <h3 className="text-2xl font-bold tracking-tight">T3 Cloud Hosts</h3>
+                <p className="leading-relaxed text-ink-2">
+                  Pair our hosted client with dedicated cloud hosts so T3 Code agents can pick up tasks and ship PRs
+                  without keeping your laptop awake.
+                </p>
+                <CheckList items={CLOUD_HOST_FEATURES} />
+                <ButtonLink href={APP_HREF} variant="secondary" className="mt-auto">
+                  Connect in Settings
                 </ButtonLink>
               </article>
               <article className={`${CARD} items-start bg-paper p-8`}>
@@ -492,7 +522,7 @@ export function LandingPage() {
               title="Free to start. Free forever to self-host."
               centered
             />
-            <ul className="mx-auto grid w-full max-w-[760px] gap-6 md:grid-cols-2">
+            <ul className="mx-auto grid w-full gap-6 lg:grid-cols-3">
               {PLANS.map((plan) => (
                 <li
                   key={plan.name}
@@ -500,7 +530,7 @@ export function LandingPage() {
                 >
                   <div className="flex items-center justify-between gap-3">
                     <h3 className="text-xl font-bold">{plan.name}</h3>
-                    {plan.featured && <Tag>Most popular</Tag>}
+                    {plan.badge && <Tag muted={!plan.featured}>{plan.badge}</Tag>}
                   </div>
                   <p className="flex items-baseline gap-2">
                     <span className="font-display text-[2.75rem] font-extrabold tracking-tight">{plan.price}</span>
