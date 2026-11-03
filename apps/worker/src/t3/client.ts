@@ -8,6 +8,7 @@ import {
   T3ModelSelectionOptionsSchema,
   T3PendingQuestionSchema,
   T3RemoteProjectSchema,
+  T3ThreadMessageSchema,
   normalizeT3McpUrl,
   type T3AllowedMcpTool,
   type T3ModelCapability,
@@ -18,6 +19,7 @@ import {
   type T3RemoteProject,
   type T3RunSummary,
   type T3ThreadListItem,
+  type T3ThreadMessage,
   type T3ThreadSummary,
   type T3WorkspaceStrategy,
 } from "@bitig/core";
@@ -475,6 +477,88 @@ function parseThreadModelSelection(payload: Record<string, unknown>): T3ModelSel
   };
 }
 
+function parseThreadSummary(rawThread: unknown): T3ThreadSummary | undefined {
+  if (!rawThread || typeof rawThread !== "object") return undefined;
+  const rec = rawThread as Record<string, unknown>;
+  return {
+    ...(typeof rec.status === "string" ? { status: rec.status } : {}),
+    ...(typeof rec.pendingRequestCount === "number"
+      ? { pendingRequestCount: rec.pendingRequestCount }
+      : {}),
+    ...(typeof rec.activeRunId === "string" || rec.activeRunId === null
+      ? { activeRunId: rec.activeRunId }
+      : {}),
+  };
+}
+
+function parseRecentRuns(rawRuns: unknown): T3RunSummary[] {
+  if (!Array.isArray(rawRuns)) return [];
+  const recentRuns: T3RunSummary[] = [];
+  for (const item of rawRuns) {
+    if (item && typeof item === "object") {
+      const rec = item as Record<string, unknown>;
+      recentRuns.push({
+        ...(typeof rec.status === "string" ? { status: rec.status } : {}),
+        ...(typeof rec.state === "string" ? { state: rec.state } : {}),
+      });
+    }
+  }
+  return recentRuns;
+}
+
+/**
+ * Extracts user and assistant messages from `t3_thread_read` `items[]`, ignoring tool calls,
+ * reasoning, or malformed entries (#BIT-131).
+ */
+export function parseThreadMessages(rawItems: unknown, maxCharsPerItem: number): T3ThreadMessage[] {
+  if (!Array.isArray(rawItems)) return [];
+  const messages: T3ThreadMessage[] = [];
+  for (const item of rawItems) {
+    if (!item || typeof item !== "object") continue;
+    const rec = item as Record<string, unknown>;
+    const role =
+      rec.type === "user_message"
+        ? "user"
+        : rec.type === "assistant_message"
+          ? "assistant"
+          : undefined;
+    if (!role) continue;
+    if (typeof rec.position !== "number" || !Number.isInteger(rec.position) || rec.position < 0) {
+      continue;
+    }
+    if (typeof rec.text !== "string") continue;
+
+    const overMax = maxCharsPerItem > 0 && rec.text.length > maxCharsPerItem;
+    const text = overMax ? rec.text.slice(0, maxCharsPerItem) : rec.text;
+    const truncated = rec.textTruncated === true || overMax;
+
+    const parsed = T3ThreadMessageSchema.safeParse({
+      position: rec.position,
+      role,
+      text,
+      truncated,
+      ...(typeof rec.status === "string" && rec.status.trim().length > 0
+        ? { status: rec.status.trim() }
+        : {}),
+      ...(typeof rec.updatedAt === "string" && rec.updatedAt.trim().length > 0
+        ? { updatedAt: rec.updatedAt.trim() }
+        : {}),
+    });
+    if (parsed.success) {
+      messages.push(parsed.data);
+    }
+  }
+  return messages;
+}
+
+export interface T3ThreadMessagesReadout {
+  thread?: T3ThreadSummary | undefined;
+  recentRuns: T3RunSummary[];
+  messages: T3ThreadMessage[];
+  nextPosition: number | null;
+  hasMore: boolean;
+}
+
 export class T3McpClient {
   private readonly mcpUrl: string;
   private readonly accessToken: string;
@@ -783,34 +867,8 @@ export class T3McpClient {
         }).catch((): Record<string, unknown> => ({})),
       ]);
 
-      const rawThread =
-        threadPayload.thread && typeof threadPayload.thread === "object"
-          ? (threadPayload.thread as Record<string, unknown>)
-          : undefined;
-
-      const thread: T3ThreadSummary | undefined = rawThread
-        ? {
-            ...(typeof rawThread.status === "string" ? { status: rawThread.status } : {}),
-            ...(typeof rawThread.pendingRequestCount === "number"
-              ? { pendingRequestCount: rawThread.pendingRequestCount }
-              : {}),
-            ...(typeof rawThread.activeRunId === "string" || rawThread.activeRunId === null
-              ? { activeRunId: rawThread.activeRunId }
-              : {}),
-          }
-        : undefined;
-
-      const rawRuns = Array.isArray(threadPayload.recentRuns) ? threadPayload.recentRuns : [];
-      const recentRuns: T3RunSummary[] = [];
-      for (const item of rawRuns) {
-        if (item && typeof item === "object") {
-          const rec = item as Record<string, unknown>;
-          recentRuns.push({
-            ...(typeof rec.status === "string" ? { status: rec.status } : {}),
-            ...(typeof rec.state === "string" ? { state: rec.state } : {}),
-          });
-        }
-      }
+      const thread = parseThreadSummary(threadPayload.thread);
+      const recentRuns = parseRecentRuns(threadPayload.recentRuns);
 
       const rawRequestIds: unknown[] = Array.isArray(pendingListPayload.requestIds)
         ? pendingListPayload.requestIds
@@ -845,6 +903,47 @@ export class T3McpClient {
         pendingRequestIds,
         pendingQuestions,
         ...(pendingRequestId ? { pendingRequestId } : {}),
+      };
+    });
+  }
+
+  /**
+   * Reads user and assistant messages from a T3 thread (`t3_thread_read` `view: "messages"`, #BIT-131),
+   * paged forward with `afterPosition` (exclusive).
+   */
+  async readThreadMessages(
+    threadId: string,
+    options: {
+      readonly afterPosition?: number | undefined;
+      readonly limit: number;
+      readonly maxCharsPerItem: number;
+    },
+  ): Promise<T3ThreadMessagesReadout> {
+    return this.withSession(async (callTool) => {
+      const payload = await callTool("t3_thread_read", {
+        threadId,
+        view: "messages",
+        limit: options.limit,
+        maxCharsPerItem: options.maxCharsPerItem,
+        runLimit: 5,
+        ...(options.afterPosition !== undefined ? { afterPosition: options.afterPosition } : {}),
+      });
+      const thread = parseThreadSummary(payload.thread);
+      const recentRuns = parseRecentRuns(payload.recentRuns);
+      const messages = parseThreadMessages(payload.items, options.maxCharsPerItem);
+      const nextPosition =
+        typeof payload.nextPosition === "number" &&
+        Number.isInteger(payload.nextPosition) &&
+        payload.nextPosition >= 0
+          ? payload.nextPosition
+          : messages.at(-1)?.position ?? null;
+      const hasMore = payload.hasMore === true;
+      return {
+        ...(thread ? { thread } : {}),
+        recentRuns,
+        messages,
+        nextPosition,
+        hasMore,
       };
     });
   }

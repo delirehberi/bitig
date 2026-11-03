@@ -375,6 +375,50 @@ export function buildProjectT3ModelSwitchNotice(to: string): string {
   return `The thread switched to ${to}. Continue from the conversation so far.`;
 }
 
+const PROJECT_LAUNCH_PROMPT_HEADER_PATTERN =
+  /^Project-level message from Bitig project [^\n]+\nThere is no Bitig task for this thread: do not create, update, or complete Bitig tasks unless asked to\.\n\n/;
+
+const PROJECT_MODEL_SWITCH_NOTICE_PATTERN =
+  /^The thread switched to [^\n]+\. Continue from the conversation so far\.\n\n/;
+
+/**
+ * Strips the synthetic Bitig launch header or model-switch notice from a person's project-level
+ * prompt so the conversation view shows only what the person wrote (#BIT-131).
+ */
+export function stripProjectT3PromptHeader(text: string): string {
+  return text
+    .replace(PROJECT_LAUNCH_PROMPT_HEADER_PATTERN, "")
+    .replace(PROJECT_MODEL_SWITCH_NOTICE_PATTERN, "");
+}
+
+export const T3_THREAD_MESSAGE_ROLES = ["user", "assistant"] as const;
+export type T3ThreadMessageRole = (typeof T3_THREAD_MESSAGE_ROLES)[number];
+export const T3ThreadMessageRoleSchema = z.enum(T3_THREAD_MESSAGE_ROLES);
+
+/** Max messages returned in a single page when reading a project T3 thread (#BIT-131). */
+export const PROJECT_T3_MESSAGES_PAGE_LIMIT = 100;
+/** Max characters kept per message when reading a project T3 thread (#BIT-131). */
+export const PROJECT_T3_MESSAGE_MAX_CHARS = 20_000;
+
+/** One user or assistant message from `t3_thread_read` (`view: "messages"`, #BIT-131). */
+export const T3ThreadMessageSchema = z.strictObject({
+  position: z.number().int().min(0),
+  role: T3ThreadMessageRoleSchema,
+  text: z.string(),
+  truncated: z.boolean(),
+  status: z.string().trim().min(1).max(100).exactOptional(),
+  updatedAt: z.string().trim().min(1).max(100).exactOptional(),
+});
+
+export type T3ThreadMessage = z.output<typeof T3ThreadMessageSchema>;
+
+export interface ProjectT3ThreadMessagesResponse {
+  readonly thread: ProjectT3Thread;
+  readonly messages: T3ThreadMessage[];
+  readonly nextPosition: number | null;
+  readonly hasMore: boolean;
+}
+
 /**
  * Run states in which a thread may switch models: it waits on a person, or its turn has ended
  * (finished, stopped, or failed, which covers usage-limit stops). Never mid-turn (`working`), and

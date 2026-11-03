@@ -1,9 +1,16 @@
-import type { Project, ProjectT3Thread, T3ConnectionStatus, T3ModelCapability } from "@bitig/core";
-import { render, screen, within } from "@testing-library/react";
+import {
+  buildProjectT3LaunchPrompt,
+  type Project,
+  type ProjectT3Thread,
+  type T3ConnectionStatus,
+  type T3ModelCapability,
+} from "@bitig/core";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   T3ApiError,
+  fetchProjectT3ThreadMessages,
   fetchProjectT3Threads,
   fetchT3Capabilities,
   fetchT3Connection,
@@ -11,12 +18,13 @@ import {
   sendProjectT3Message,
   startProjectT3Thread,
 } from "../../services/t3";
-import { ProjectT3Panel } from "./ProjectT3Panel";
+import { PROJECT_T3_POLL_INTERVAL_MS, ProjectT3Panel } from "./ProjectT3Panel";
 
 vi.mock("../../services/t3", async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return {
     T3ApiError: actual.T3ApiError,
+    fetchProjectT3ThreadMessages: vi.fn(),
     fetchProjectT3Threads: vi.fn(),
     fetchT3Capabilities: vi.fn(),
     fetchT3Connection: vi.fn(),
@@ -80,6 +88,10 @@ function mockReady(threads: ProjectT3Thread[] = []): void {
 describe("ProjectT3Panel (BIT-127)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("points to Settings when T3 is not connected", async () => {
@@ -224,4 +236,139 @@ describe("ProjectT3Panel (BIT-127)", () => {
     expect(screen.queryByRole("button", { name: 'Follow up on "Gone"' })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: 'Open "Gone" in T3' })).not.toBeInTheDocument();
   });
+
+  it("shows conversation, strips the Bitig launch header, and links truncated replies (BIT-131)", async () => {
+    const thread = makeThread();
+    mockReady([thread]);
+    vi.mocked(fetchProjectT3ThreadMessages)
+      .mockResolvedValueOnce({
+        thread,
+        messages: [
+          {
+            position: 0,
+            role: "user",
+            text: buildProjectT3LaunchPrompt({
+              project: PROJECT,
+              prompt: "Check node and wrangler versions",
+            }),
+            truncated: false,
+            updatedAt: TIMESTAMP,
+          },
+        ],
+        nextPosition: 0,
+        hasMore: true,
+      })
+      .mockResolvedValueOnce({
+        thread,
+        messages: [
+          {
+            position: 3,
+            role: "assistant",
+            text: "Node is **v22.11.0** and Wrangler is ready.",
+            truncated: true,
+            updatedAt: TIMESTAMP,
+          },
+        ],
+        nextPosition: 3,
+        hasMore: false,
+      });
+
+    const user = userEvent.setup();
+    render(<ProjectT3Panel project={PROJECT} />);
+
+    const showBtn = await screen.findByRole("button", {
+      name: 'Show conversation for "Check the environment"',
+    });
+    await user.click(showBtn);
+
+    const conv = await screen.findByLabelText("Conversation for Check the environment");
+    expect(within(conv).getByText("Check node and wrangler versions")).toBeInTheDocument();
+    expect(within(conv).queryByText(/There is no Bitig task for this thread/i)).not.toBeInTheDocument();
+    expect(within(conv).getByText("v22.11.0", { selector: "strong" })).toBeInTheDocument();
+    expect(within(conv).getByRole("link", { name: "Open in T3 for the full text" })).toHaveAttribute(
+      "href",
+      "https://t3.example/threads/thread-1",
+    );
+    expect(fetchProjectT3ThreadMessages).toHaveBeenCalledTimes(2);
+    expect(fetchProjectT3ThreadMessages).toHaveBeenNthCalledWith(
+      1,
+      PROJECT.id,
+      "thread-1",
+      expect.objectContaining({ afterPosition: undefined }),
+    );
+    expect(fetchProjectT3ThreadMessages).toHaveBeenNthCalledWith(
+      2,
+      PROJECT.id,
+      "thread-1",
+      expect.objectContaining({ afterPosition: 0 }),
+    );
+  });
+
+  it("polls for new messages while an expanded thread is working and stops once finished (BIT-131)", async () => {
+    const workingThread = makeThread({ state: "working" });
+    const finishedThread = makeThread({ state: "finished" });
+    mockReady([workingThread]);
+    vi.mocked(fetchProjectT3ThreadMessages)
+      .mockResolvedValueOnce({
+        thread: workingThread,
+        messages: [
+          {
+            position: 0,
+            role: "user",
+            text: "Check node",
+            truncated: false,
+            updatedAt: TIMESTAMP,
+          },
+        ],
+        nextPosition: 0,
+        hasMore: false,
+      })
+      .mockResolvedValueOnce({
+        thread: finishedThread,
+        messages: [
+          {
+            position: 2,
+            role: "assistant",
+            text: "All checks passed.",
+            truncated: false,
+            updatedAt: TIMESTAMP,
+          },
+        ],
+        nextPosition: 2,
+        hasMore: false,
+      });
+
+    const user = userEvent.setup();
+    render(<ProjectT3Panel project={PROJECT} />);
+
+    const showBtn = await screen.findByRole("button", {
+      name: 'Show conversation for "Check the environment"',
+    });
+
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    await user.click(showBtn);
+
+    const conv = await screen.findByLabelText("Conversation for Check the environment");
+    expect(within(conv).getByText("Check node")).toBeInTheDocument();
+    expect(screen.getByTestId("project-t3-thread-state")).toHaveTextContent("working · claude-opus-5-5");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(PROJECT_T3_POLL_INTERVAL_MS);
+    });
+
+    expect(await within(conv).findByText("All checks passed.")).toBeInTheDocument();
+    expect(screen.getByTestId("project-t3-thread-state")).toHaveTextContent("finished · claude-opus-5-5");
+    expect(fetchProjectT3ThreadMessages).toHaveBeenCalledTimes(2);
+    expect(fetchProjectT3ThreadMessages).toHaveBeenLastCalledWith(
+      PROJECT.id,
+      "thread-1",
+      expect.objectContaining({ afterPosition: 0 }),
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(PROJECT_T3_POLL_INTERVAL_MS * 2);
+    });
+    expect(fetchProjectT3ThreadMessages).toHaveBeenCalledTimes(2);
+  });
 });
+

@@ -1,20 +1,33 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, ExternalLink, GitBranch, MessageSquare, RefreshCw, Send, Terminal } from "lucide-react";
+import {
+  AlertTriangle,
+  ChevronDown,
+  ChevronUp,
+  ExternalLink,
+  GitBranch,
+  MessageSquare,
+  RefreshCw,
+  Send,
+  Terminal,
+} from "lucide-react";
 import {
   DEFAULT_PROJECT_T3_WORKSPACE_STRATEGY,
   canSwitchT3Model,
+  stripProjectT3PromptHeader,
   type Project,
   type ProjectT3Thread,
   type T3ConnectionStatus,
   type T3ModelCapability,
   type T3ModelSelection,
   type T3ProjectMapping,
+  type T3ThreadMessage,
   type T3WorkspaceStrategy,
 } from "@bitig/core";
 import { formatFullTimestamp, formatTimeAgo } from "../../domain/time-ago";
 import { Link } from "../../routing/Link";
 import { hrefFor } from "../../routing/router";
 import {
+  fetchProjectT3ThreadMessages,
   fetchProjectT3Threads,
   fetchT3Capabilities,
   fetchT3Connection,
@@ -22,11 +35,16 @@ import {
   sendProjectT3Message,
   startProjectT3Thread,
 } from "../../services/t3";
+import { Markdown } from "../Markdown";
 import { T3ModelPicker } from "../tasks/T3ModelPicker";
 import { STATE_BADGE_CLASSES, STATE_LABELS } from "../tasks/t3-run-state";
 
 const ICON_SIZE = 12;
 const HTTP_URL_PATTERN = /^https?:\/\//i;
+/** Polling interval (ms) while an expanded thread is working (#BIT-131). */
+export const PROJECT_T3_POLL_INTERVAL_MS = 4_000;
+/** Max forward pages read in a single load to prevent unbounded loops (#BIT-131). */
+const MAX_CONVERSATION_PAGES = 5;
 
 interface ProjectT3PanelProps {
   readonly project: Project;
@@ -49,6 +67,21 @@ function isSendShortcut(e: React.KeyboardEvent): boolean {
   return e.key === "Enter" && (e.ctrlKey || e.metaKey);
 }
 
+function mergeThreadMessages(
+  existing: readonly T3ThreadMessage[],
+  incoming: readonly T3ThreadMessage[],
+): T3ThreadMessage[] {
+  if (incoming.length === 0) return [...existing];
+  const byPosition = new Map<number, T3ThreadMessage>();
+  for (const msg of existing) {
+    byPosition.set(msg.position, msg);
+  }
+  for (const msg of incoming) {
+    byPosition.set(msg.position, msg);
+  }
+  return [...byPosition.values()].sort((a, b) => a.position - b.position);
+}
+
 interface ThreadItemProps {
   readonly projectId: string;
   readonly thread: ProjectT3Thread;
@@ -63,11 +96,93 @@ function ProjectT3ThreadItem({ projectId, thread, capabilities, onUpdated }: Thr
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const [isExpanded, setIsExpanded] = useState(false);
+  const [messages, setMessages] = useState<T3ThreadMessage[]>([]);
+  const [isLoadingMessages, setIsLoadingMessages] = useState(false);
+  const [messagesError, setMessagesError] = useState<string | null>(null);
+  const lastPositionRef = useRef<number | undefined>(undefined);
+  const hasLoadedInitialRef = useRef(false);
+
   const link = safeHttpUrl(thread.link);
   const isOffline = thread.state === "offline";
   const showPicker = !isOffline && capabilities.length > 0;
   const canSwitch = canSwitchT3Model(thread.state);
   const switchSelection = showPicker && canSwitch ? selection : null;
+
+  const loadMessages = useCallback(
+    async (options: { readonly initial: boolean; readonly signal?: AbortSignal | undefined }) => {
+      if (options.initial) {
+        setIsLoadingMessages(true);
+      }
+      setMessagesError(null);
+      try {
+        let cursor = options.initial ? undefined : lastPositionRef.current;
+        let latestThread: ProjectT3Thread | undefined;
+        const collected: T3ThreadMessage[] = [];
+
+        for (let page = 0; page < MAX_CONVERSATION_PAGES; page++) {
+          const res = await fetchProjectT3ThreadMessages(projectId, thread.threadId, {
+            afterPosition: cursor,
+            signal: options.signal,
+          });
+          if (options.signal?.aborted) return;
+          latestThread = res.thread;
+          collected.push(...res.messages);
+
+          const nextCursor =
+            res.nextPosition ?? res.messages.at(-1)?.position ?? cursor;
+          const advanced = nextCursor !== undefined && nextCursor !== cursor;
+          cursor = nextCursor ?? undefined;
+
+          if (!res.hasMore || !advanced) {
+            break;
+          }
+        }
+
+        if (options.signal?.aborted) return;
+        if (cursor !== undefined) {
+          lastPositionRef.current = cursor;
+        }
+        if (collected.length > 0 || options.initial) {
+          setMessages((prev) => (options.initial ? mergeThreadMessages([], collected) : mergeThreadMessages(prev, collected)));
+        }
+        hasLoadedInitialRef.current = true;
+        if (latestThread) {
+          onUpdated(latestThread);
+        }
+      } catch (err: unknown) {
+        if (options.signal?.aborted) return;
+        setMessagesError(errorMessage(err, "Could not load T3 thread messages."));
+      } finally {
+        if (options.initial && !options.signal?.aborted) {
+          setIsLoadingMessages(false);
+        }
+      }
+    },
+    [onUpdated, projectId, thread.threadId],
+  );
+
+  useEffect(() => {
+    if (!isExpanded) return;
+    const controller = new AbortController();
+    const initial = !hasLoadedInitialRef.current;
+    void loadMessages({ initial, signal: controller.signal });
+    return () => {
+      controller.abort();
+    };
+  }, [isExpanded, loadMessages]);
+
+  useEffect(() => {
+    if (!isExpanded || thread.state !== "working") return;
+    const controller = new AbortController();
+    const timer = setInterval(() => {
+      void loadMessages({ initial: false, signal: controller.signal });
+    }, PROJECT_T3_POLL_INTERVAL_MS);
+    return () => {
+      clearInterval(timer);
+      controller.abort();
+    };
+  }, [isExpanded, loadMessages, thread.state]);
 
   async function send() {
     const body = draft.trim();
@@ -83,6 +198,9 @@ function ProjectT3ThreadItem({ projectId, thread, capabilities, onUpdated }: Thr
       setDraft("");
       setSelection(null);
       setIsReplying(false);
+      if (isExpanded) {
+        void loadMessages({ initial: false });
+      }
     } catch (err: unknown) {
       setError(errorMessage(err, "Could not send message to T3 thread."));
     } finally {
@@ -127,6 +245,18 @@ function ProjectT3ThreadItem({ projectId, thread, capabilities, onUpdated }: Thr
               <ExternalLink size={11} aria-hidden="true" />
             </a>
           )}
+          <button
+            type="button"
+            aria-expanded={isExpanded}
+            aria-label={`${isExpanded ? "Hide" : "Show"} conversation for "${thread.title}"`}
+            onClick={() => {
+              setIsExpanded((prev) => !prev);
+            }}
+            className="inline-flex items-center gap-1 rounded-md border border-rule bg-paper px-2 py-0.5 text-2xs text-ink-2 hover:bg-paper-3"
+          >
+            {isExpanded ? <ChevronUp size={11} aria-hidden="true" /> : <ChevronDown size={11} aria-hidden="true" />}
+            {isExpanded ? "Hide conversation" : "Show conversation"}
+          </button>
           {!isOffline && !isReplying && (
             <button
               type="button"
@@ -142,6 +272,66 @@ function ProjectT3ThreadItem({ projectId, thread, capabilities, onUpdated }: Thr
           )}
         </div>
       </div>
+
+      {isExpanded && (
+        <div
+          aria-label={`Conversation for ${thread.title}`}
+          className="flex flex-col gap-2 rounded-md border border-rule bg-paper-2 p-2.5"
+        >
+          {isLoadingMessages && messages.length === 0 ? (
+            <p className="m-0 text-xs text-ink-3">Loading conversation…</p>
+          ) : messagesError ? (
+            <p role="alert" className="m-0 text-xs text-danger">
+              {messagesError}
+            </p>
+          ) : messages.length === 0 ? (
+            <p className="m-0 text-xs text-ink-3">
+              {thread.state === "working" ? "Waiting for agent reply…" : "No messages in this thread yet."}
+            </p>
+          ) : (
+            <ol className="m-0 flex max-h-80 list-none flex-col gap-2 overflow-y-auto p-0">
+              {messages.map((msg) => {
+                const isUser = msg.role === "user";
+                const displayBody = isUser ? stripProjectT3PromptHeader(msg.text) : msg.text;
+                return (
+                  <li
+                    key={msg.position}
+                    className={`flex flex-col gap-1 rounded-md border px-2.5 py-2 ${
+                      isUser ? "border-rule bg-paper text-ink" : "border-accent/25 bg-accent-soft/40 text-ink"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2 text-2xs text-ink-3">
+                      <span className="font-semibold text-ink-2">{isUser ? "You" : "Agent"}</span>
+                      {msg.updatedAt && (
+                        <time dateTime={msg.updatedAt} title={formatFullTimestamp(msg.updatedAt)}>
+                          {formatTimeAgo(msg.updatedAt)}
+                        </time>
+                      )}
+                    </div>
+                    {isUser ? (
+                      <p className="m-0 whitespace-pre-wrap text-xs text-ink">{displayBody}</p>
+                    ) : (
+                      <Markdown content={displayBody} className="text-xs text-ink" />
+                    )}
+                    {msg.truncated && (
+                      <p className="m-0 text-2xs italic text-ink-3">
+                        Message cut short.{" "}
+                        {link ? (
+                          <a href={link} target="_blank" rel="noreferrer" className="text-accent-ink underline">
+                            Open in T3 for the full text
+                          </a>
+                        ) : (
+                          "Open in T3 for the full text."
+                        )}
+                      </p>
+                    )}
+                  </li>
+                );
+              })}
+            </ol>
+          )}
+        </div>
+      )}
 
       {isReplying && (
         <div className="flex flex-col gap-2">

@@ -2,6 +2,7 @@ import type {
   AgentRun,
   Comment,
   ProjectT3Thread,
+  ProjectT3ThreadMessagesResponse,
   ProjectT3ThreadsResponse,
   ReplyToT3RunInput,
   SendProjectT3MessageInput,
@@ -328,3 +329,29 @@ export async function sendProjectT3Message(
   }
   return (await response.json()) as ProjectT3Thread;
 }
+
+/**
+ * Reads user and assistant messages from a project-level T3 thread (#BIT-131), paged forward with
+ * `afterPosition` (exclusive). Also returns the thread's reconciled live state.
+ */
+export async function fetchProjectT3ThreadMessages(
+  projectId: string,
+  threadId: string,
+  options: { readonly afterPosition?: number | undefined; readonly signal?: AbortSignal | undefined } = {},
+): Promise<ProjectT3ThreadMessagesResponse> {
+  const basePath = `${projectThreadsPath(projectId)}/${encodeURIComponent(threadId)}/messages`;
+  const url =
+    options.afterPosition !== undefined
+      ? `${basePath}?after=${encodeURIComponent(String(options.afterPosition))}`
+      : basePath;
+  const response = await fetch(url, {
+    headers: BASE_HEADERS,
+    credentials: "same-origin",
+    ...(options.signal ? { signal: options.signal } : {}),
+  });
+  if (!response.ok) {
+    throw new T3ApiError(response.status, await parseErrorMessage(response, "Could not load T3 thread messages"));
+  }
+  return (await response.json()) as ProjectT3ThreadMessagesResponse;
+}
+

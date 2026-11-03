@@ -4,6 +4,7 @@ import type {
   AgentRun,
   Project,
   ProjectT3Thread,
+  ProjectT3ThreadMessagesResponse,
   ProjectT3ThreadsResponse,
   T3ConnectionStatus,
   T3ModelCapability,
@@ -208,6 +209,10 @@ interface MockT3ServerState {
   threadList: Record<string, unknown>[];
   /** Thread ID the next `t3_thread_launch` returns; defaults to `thread-abc-123`. */
   launchThreadId?: string;
+  /** Raw `items` returned by `t3_thread_read` (#BIT-131). */
+  threadItems?: unknown[];
+  /** Override `hasMore` on `t3_thread_read` (#BIT-131). */
+  threadHasMore?: boolean;
   toolCalls: RecordedToolCall[];
 }
 
@@ -368,6 +373,26 @@ function createMockT3Fetch(state: MockT3ServerState): typeof fetch {
                 threads: state.threadList,
               };
             } else if (toolName === "t3_thread_read") {
+              const rawItems = state.threadItems ?? [];
+              const afterPos =
+                typeof toolArgs.afterPosition === "number" ? toolArgs.afterPosition : undefined;
+              const filteredItems =
+                afterPos === undefined
+                  ? rawItems
+                  : rawItems.filter((item) => {
+                      if (!item || typeof item !== "object") return true;
+                      const pos = (item as Record<string, unknown>).position;
+                      return typeof pos === "number" ? pos > afterPos : true;
+                    });
+              let lastPos: number | null = null;
+              for (const item of filteredItems) {
+                if (item && typeof item === "object") {
+                  const pos = (item as Record<string, unknown>).position;
+                  if (typeof pos === "number") {
+                    lastPos = pos;
+                  }
+                }
+              }
               payload = {
                 thread: {
                   id: "thread-abc-123",
@@ -376,6 +401,9 @@ function createMockT3Fetch(state: MockT3ServerState): typeof fetch {
                   activeRunId: state.activeRunId,
                 },
                 recentRuns: [{ status: state.recentRunStatus }],
+                items: filteredItems,
+                nextPosition: lastPos,
+                hasMore: state.threadHasMore ?? false,
               };
             } else if (toolName === "t3_pending_request") {
               if (toolArgs.action === "list") {
@@ -1484,4 +1512,114 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
     expect(offline.threads.find((t) => t.threadId === "thread-proj-1")?.state).toBe("offline");
     expect(offline.threads.find((t) => t.threadId === "thread-proj-2")?.state).toBe("finished");
   });
+
+  it("reads project-level T3 thread messages with paging and project scoping (BIT-131)", async () => {
+    await connectT3Host();
+    const createProject = async (name: string, key: string): Promise<Project> =>
+      (
+        await request("/api/projects", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name, key }),
+        })
+      ).json<Project>();
+
+    const project = await createProject("Bitig", "BIT");
+    const other = await createProject("Other", "OTH");
+    await request(`/api/t3/mappings/${project.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ t3ProjectId: "t3-proj-bitig", t3ProjectTitle: "Bitig Workspace" }),
+    });
+
+    mockState.launchThreadId = "thread-msg-1";
+    await request(`/api/t3/projects/${project.id}/threads`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: "Check node" }),
+    });
+
+    // Unknown project, unknown thread, or another project's thread -> 404
+    expect((await request("/api/t3/projects/01a14ecf-281e-7436-8c52-a524c5fabc99/threads/thread-msg-1/messages")).status).toBe(404);
+    expect((await request(`/api/t3/projects/${project.id}/threads/thread-unknown/messages`)).status).toBe(404);
+    expect((await request(`/api/t3/projects/${other.id}/threads/thread-msg-1/messages`)).status).toBe(404);
+
+    // Invalid after parameter -> 400
+    expect((await request(`/api/t3/projects/${project.id}/threads/thread-msg-1/messages?after=-1`)).status).toBe(400);
+    expect((await request(`/api/t3/projects/${project.id}/threads/thread-msg-1/messages?after=abc`)).status).toBe(400);
+
+    // Happy path: filters out non-message and malformed items, keeps user and assistant messages, reconciles state
+    mockState.threadStatus = "completed";
+    mockState.activeRunId = null;
+    mockState.recentRunStatus = "completed";
+    mockState.threadItems = [
+      {
+        position: 0,
+        type: "user_message",
+        text: "Check node",
+        textTruncated: false,
+        status: "completed",
+        updatedAt: "2026-11-03T10:00:00.000Z",
+      },
+      {
+        position: 2,
+        type: "dynamic_tool",
+        text: "ignored tool call",
+      },
+      {
+        position: -5,
+        type: "assistant_message",
+        text: "invalid position",
+      },
+      null,
+      {
+        position: 5,
+        type: "assistant_message",
+        text: "Node v22.11.0 is installed.",
+        textTruncated: true,
+        status: "completed",
+        updatedAt: "2026-11-03T10:00:05.000Z",
+      },
+    ];
+
+    const firstRes = await request(`/api/t3/projects/${project.id}/threads/thread-msg-1/messages`);
+    expect(firstRes.status).toBe(200);
+    const firstBody = await firstRes.json<ProjectT3ThreadMessagesResponse>();
+    expect(firstBody.thread.state).toBe("finished");
+    expect(firstBody.messages).toEqual([
+      {
+        position: 0,
+        role: "user",
+        text: "Check node",
+        truncated: false,
+        status: "completed",
+        updatedAt: "2026-11-03T10:00:00.000Z",
+      },
+      {
+        position: 5,
+        role: "assistant",
+        text: "Node v22.11.0 is installed.",
+        truncated: true,
+        status: "completed",
+        updatedAt: "2026-11-03T10:00:05.000Z",
+      },
+    ]);
+    expect(firstBody.nextPosition).toBe(5);
+    expect(firstBody.hasMore).toBe(false);
+
+    // Paging with ?after=0 returns only messages with position > 0
+    const afterRes = await request(`/api/t3/projects/${project.id}/threads/thread-msg-1/messages?after=0`);
+    expect(afterRes.status).toBe(200);
+    const afterBody = await afterRes.json<ProjectT3ThreadMessagesResponse>();
+    expect(afterBody.messages.map((m) => m.position)).toEqual([5]);
+    const readCall = mockState.toolCalls.filter((c) => c.name === "t3_thread_read").at(-1);
+    expect(readCall?.arguments).toMatchObject({
+      threadId: "thread-msg-1",
+      view: "messages",
+      afterPosition: 0,
+      limit: 100,
+      maxCharsPerItem: 20_000,
+    });
+  });
 });
+

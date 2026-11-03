@@ -26,6 +26,7 @@ import {
   listProjectT3ThreadsLive,
   listT3ModelCapabilities,
   listT3RunsLive,
+  readProjectT3ThreadMessages,
   replyToTaskT3Run,
   respondToTaskT3Request,
   sendProjectT3Message,
@@ -312,6 +313,36 @@ export const t3ApiRouter = new Hono<AppEnv>()
       }
     },
   )
+  .get("/projects/:projectId/threads/:threadId/messages", async (c) => {
+    const rawAfter = c.req.query("after")?.trim();
+    let afterPosition: number | undefined;
+    if (rawAfter !== undefined && rawAfter !== "") {
+      if (!/^\d+$/u.test(rawAfter)) {
+        return c.json(
+          { error: "validation_error", message: "Query parameter 'after' must be a non-negative integer" },
+          HTTP_BAD_REQUEST,
+        );
+      }
+      afterPosition = Number(rawAfter);
+      if (!Number.isSafeInteger(afterPosition)) {
+        return c.json(
+          { error: "validation_error", message: "Query parameter 'after' must be a non-negative integer" },
+          HTTP_BAD_REQUEST,
+        );
+      }
+    }
+    try {
+      const result = await readProjectT3ThreadMessages(
+        buildServiceDeps(c),
+        c.req.param("projectId"),
+        c.req.param("threadId"),
+        { ...(afterPosition !== undefined ? { afterPosition } : {}) },
+      );
+      return c.json(result);
+    } catch (err) {
+      return handleT3RouteError(err, c);
+    }
+  })
   .post(
     "/projects/:projectId/threads/:threadId/messages",
     zValidator("json", SendProjectT3MessageInputSchema, (result, c) => {

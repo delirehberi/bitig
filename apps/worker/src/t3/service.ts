@@ -1,6 +1,8 @@
 import {
   DEFAULT_PROJECT_T3_WORKSPACE_STRATEGY,
   NotFoundError,
+  PROJECT_T3_MESSAGES_PAGE_LIMIT,
+  PROJECT_T3_MESSAGE_MAX_CHARS,
   ValidationError,
   buildProjectT3LaunchPrompt,
   buildProjectT3ModelSwitchNotice,
@@ -23,6 +25,7 @@ import {
   type Comment,
   type Project,
   type ProjectT3Thread,
+  type ProjectT3ThreadMessagesResponse,
   type ProjectT3ThreadsResponse,
   type RealtimeEvent,
   type StorageProvider,
@@ -1083,3 +1086,62 @@ export async function listProjectT3ThreadsLive(
   }
   return { threads };
 }
+
+export interface ReadProjectT3ThreadMessagesOptions {
+  readonly afterPosition?: number | undefined;
+}
+
+/**
+ * Reads user and assistant messages from a project-level T3 thread (#BIT-131), paged forward with
+ * `afterPosition` (exclusive). Only threads Bitig recorded for this project can be read, so the
+ * endpoint cannot read arbitrary T3 threads. Also reconciles the thread's live state in D1.
+ */
+export async function readProjectT3ThreadMessages(
+  deps: T3ServiceDeps,
+  projectId: string,
+  threadId: string,
+  options: ReadProjectT3ThreadMessagesOptions = {},
+): Promise<ProjectT3ThreadMessagesResponse> {
+  await requireProject(deps.storage, projectId);
+  const existing = await deps.store.getProjectThread(projectId, threadId);
+  if (!existing) {
+    throw new NotFoundError("t3_thread", threadId);
+  }
+
+  const now = deps.now ? deps.now() : Date.now();
+  const mcpClient = await createActiveT3McpClient({
+    store: deps.store,
+    encryptionKey: deps.encryptionKey,
+    fetchFn: deps.fetchFn,
+    now,
+  });
+
+  const readout = await mcpClient.readThreadMessages(existing.threadId, {
+    afterPosition: options.afterPosition,
+    limit: PROJECT_T3_MESSAGES_PAGE_LIMIT,
+    maxCharsPerItem: PROJECT_T3_MESSAGE_MAX_CHARS,
+  });
+
+  let thread = existing;
+  if (readout.thread || readout.recentRuns.length > 0) {
+    const nextState = deriveLiveAgentRunState({
+      thread: readout.thread,
+      recentRuns: readout.recentRuns,
+    });
+    if (nextState !== existing.state) {
+      thread =
+        (await deps.store.updateProjectThreadState(projectId, existing.threadId, {
+          state: nextState,
+          now,
+        })) ?? existing;
+    }
+  }
+
+  return {
+    thread,
+    messages: readout.messages,
+    nextPosition: readout.nextPosition,
+    hasMore: readout.hasMore,
+  };
+}
+
