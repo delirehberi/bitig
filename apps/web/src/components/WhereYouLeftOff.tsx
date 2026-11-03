@@ -4,6 +4,7 @@ import {
   type LeftOffTouch,
   type Project,
   type Task,
+  type TaskStatus,
   type TaskTouchKind,
 } from "@bitig/core";
 import { History } from "lucide-react";
@@ -25,6 +26,13 @@ const TOUCH_LABELS: Record<TaskTouchKind, string> = {
   started: "Started",
   completed: "Completed",
   updated: "Updated",
+};
+
+const STATUS_LABELS: Record<TaskStatus, string> = {
+  todo: "To Do",
+  in_progress: "In Progress",
+  done: "Done",
+  archived: "Archived",
 };
 
 function groupByDay(touches: readonly LeftOffTouch[], now: Date): { label: string; touches: LeftOffTouch[] }[] {
@@ -159,7 +167,12 @@ export function WhereYouLeftOff({ projects, tasks, now = new Date() }: WhereYouL
                       key={task.id}
                       className="flex flex-col gap-0.5 border-t border-rule py-2 first:border-t-0"
                     >
-                      <TaskTitleLink task={task} project={project} locationHref={locationHref} />
+                      <div className="flex min-w-0 items-center justify-between gap-3">
+                        <TaskTitleLink task={task} project={project} locationHref={locationHref} />
+                        <span className="shrink-0 rounded-pill border border-rule bg-paper-2 px-2 py-0.5 text-2xs font-semibold text-ink-2">
+                          {STATUS_LABELS[task.status]}
+                        </span>
+                      </div>
                       <span className="text-xs text-ink-3">
                         {TOUCH_LABELS[kind]}
                         {actor !== undefined && ` by ${actor}`}

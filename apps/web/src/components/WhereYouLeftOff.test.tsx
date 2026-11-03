@@ -99,9 +99,14 @@ describe("WhereYouLeftOff", () => {
     const recent = screen.getByTestId("left-off-recent");
     const days = within(recent).getAllByRole("heading", { level: 4 }).map((h) => h.textContent);
     expect(days).toEqual(["Today", "Yesterday", "Tue 20 Oct"]);
-    expect(recent).toHaveTextContent("Created · 11:00 · Beta");
-    expect(recent).toHaveTextContent("Updated by claude · 16:00 · Beta");
-    expect(recent).toHaveTextContent("Completed · 10:00 · Alpha");
+    const recentItems = within(recent).getAllByRole("listitem");
+    expect(recentItems).toHaveLength(3);
+    expect(recentItems[0]).toHaveTextContent("To Do");
+    expect(recentItems[0]).toHaveTextContent("Created · 11:00 · Beta");
+    expect(recentItems[1]).toHaveTextContent("In Progress");
+    expect(recentItems[1]).toHaveTextContent("Updated by claude · 16:00 · Beta");
+    expect(recentItems[2]).toHaveTextContent("Done");
+    expect(recentItems[2]).toHaveTextContent("Completed · 10:00 · Alpha");
   });
 
   it("invites starting something when nothing is in progress, and counts what does not fit", () => {
