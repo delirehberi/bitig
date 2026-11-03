@@ -10,6 +10,7 @@ import {
   defaultIdGenerator,
   deriveLiveAgentRunState,
   formatT3ModelSelection,
+  isActiveAgentRunState,
   isSameT3ModelSelection,
   resolveTaskRef,
   taskCode,
@@ -21,7 +22,10 @@ import {
   type T3ConnectionStatus,
   type T3ModelCapability,
   type T3ModelSelection,
+  type T3ProjectActiveSession,
+  type T3RunsLiveResponse,
   type T3TaskRunLiveResponse,
+  type T3ThreadListItem,
   type T3WorkspaceStrategy,
   type Task,
 } from "@bitig/core";
@@ -320,6 +324,176 @@ export async function getTaskT3RunLiveStatus(
     }
     throw err;
   }
+}
+
+/**
+ * Syncs and lists T3 agent runs and active project sessions (#BIT-126).
+ * Uses `t3_thread_list` when a T3 host is connected so runs that finished or entered waiting state
+ * on the T3 host are reconciled in D1 without opening each task modal individually.
+ */
+export async function listT3RunsLive(deps: T3ServiceDeps): Promise<T3RunsLiveResponse> {
+  const [existingRuns, mappings] = await Promise.all([
+    deps.store.listAgentRuns(),
+    deps.store.listProjectMappings(),
+  ]);
+  if (existingRuns.length === 0 && mappings.length === 0) {
+    return { runs: [], activeSessions: [] };
+  }
+
+  const projectIdByT3ProjectId = new Map(mappings.map((m) => [m.t3ProjectId, m.projectId]));
+  const now = deps.now ? deps.now() : Date.now();
+
+  let mcpClient: T3McpClient | undefined;
+  try {
+    mcpClient = await createActiveT3McpClient({
+      store: deps.store,
+      encryptionKey: deps.encryptionKey,
+      fetchFn: deps.fetchFn,
+      now,
+    });
+  } catch {
+    mcpClient = undefined;
+  }
+
+  let threads: T3ThreadListItem[] = [];
+  let hostReachable = false;
+  if (mcpClient) {
+    try {
+      threads = await mcpClient.listThreads({
+        allProjects: true,
+        includeSubagents: false,
+        limit: 100,
+      });
+      hostReachable = true;
+    } catch (err) {
+      if (!(err instanceof T3McpError)) {
+        throw err;
+      }
+      hostReachable = false;
+    }
+  }
+
+  const threadsById = new Map(threads.map((t) => [t.threadId, t]));
+  const runs: AgentRun[] = [];
+
+  for (const existingRun of existingRuns) {
+    if (!hostReachable || !mcpClient) {
+      runs.push(existingRun);
+      continue;
+    }
+
+    const listedThread = threadsById.get(existingRun.threadId);
+    if (listedThread) {
+      const nextState = deriveLiveAgentRunState({
+        threadStatus: listedThread.status,
+        pendingRequestCount: listedThread.pendingRequestCount,
+        activeRunId: listedThread.activeRunId,
+        settled: listedThread.settled,
+      });
+      const nextLink = listedThread.link ?? existingRun.link;
+      const updatedRun =
+        nextState === existingRun.state && nextLink === existingRun.link
+          ? existingRun
+          : ((await deps.store.updateAgentRunState(existingRun.taskId, {
+              state: nextState,
+              ...(nextLink ? { link: nextLink } : {}),
+              now,
+            })) ?? existingRun);
+      if (updatedRun.state !== existingRun.state && deps.publishRealtime) {
+        await deps.publishRealtime({ type: "agent_run.updated", run: updatedRun }).catch(() => undefined);
+      }
+      runs.push(updatedRun);
+    } else if (isActiveAgentRunState(existingRun.state)) {
+      try {
+        const live = await mcpClient.readThreadLiveStatus(existingRun.threadId);
+        const nextState = deriveLiveAgentRunState({
+          thread: live.thread,
+          recentRuns: live.recentRuns,
+          pendingRequestIds: live.pendingRequestIds,
+        });
+        const updatedRun =
+          nextState === existingRun.state
+            ? existingRun
+            : ((await deps.store.updateAgentRunState(existingRun.taskId, { state: nextState, now })) ?? existingRun);
+        if (updatedRun.state !== existingRun.state && deps.publishRealtime) {
+          await deps.publishRealtime({ type: "agent_run.updated", run: updatedRun }).catch(() => undefined);
+        }
+        runs.push(updatedRun);
+      } catch (err) {
+        if (err instanceof T3McpError) {
+          runs.push(existingRun);
+        } else {
+          throw err;
+        }
+      }
+    } else {
+      runs.push(existingRun);
+    }
+  }
+
+  const tasks = await deps.storage.getTasks();
+  const tasksById = new Map(tasks.map((t) => [t.id, t]));
+  const activeSessions: T3ProjectActiveSession[] = [];
+  const seenThreadIds = new Set<string>();
+
+  for (const run of runs) {
+    if (!isActiveAgentRunState(run.state)) {
+      continue;
+    }
+    const task = tasksById.get(run.taskId);
+    const projectId = task?.projectId ?? projectIdByT3ProjectId.get(run.t3ProjectId);
+    if (!projectId) {
+      continue;
+    }
+    const listedThread = threadsById.get(run.threadId);
+    seenThreadIds.add(run.threadId);
+    activeSessions.push({
+      threadId: run.threadId,
+      projectId,
+      t3ProjectId: run.t3ProjectId,
+      state: run.state,
+      taskId: run.taskId,
+      ...(task?.title ? { title: task.title } : listedThread?.title ? { title: listedThread.title } : {}),
+      ...(run.link ? { link: run.link } : {}),
+      ...(run.model ? { model: run.model } : listedThread?.model ? { model: listedThread.model } : {}),
+      updatedAt: listedThread?.updatedAt ?? run.updatedAt,
+    });
+  }
+
+  for (const thread of threads) {
+    if (seenThreadIds.has(thread.threadId) || !thread.projectId) {
+      continue;
+    }
+    const projectId = projectIdByT3ProjectId.get(thread.projectId);
+    if (!projectId) {
+      continue;
+    }
+    const state = deriveLiveAgentRunState({
+      threadStatus: thread.status,
+      pendingRequestCount: thread.pendingRequestCount,
+      activeRunId: thread.activeRunId,
+      settled: thread.settled,
+    });
+    if (!isActiveAgentRunState(state)) {
+      continue;
+    }
+    seenThreadIds.add(thread.threadId);
+    activeSessions.push({
+      threadId: thread.threadId,
+      projectId,
+      t3ProjectId: thread.projectId,
+      state,
+      ...(thread.title ? { title: thread.title } : {}),
+      ...(thread.link ? { link: thread.link } : {}),
+      ...(thread.model ? { model: thread.model } : {}),
+      ...(thread.updatedAt ? { updatedAt: thread.updatedAt } : {}),
+    });
+  }
+
+  return {
+    runs,
+    activeSessions,
+  };
 }
 
 /** Run states in which a new comment is not forwarded: the T3 host cannot be reached. */

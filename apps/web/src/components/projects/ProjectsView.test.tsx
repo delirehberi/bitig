@@ -1,7 +1,8 @@
-import type { Project, Task } from "@bitig/core";
-import { render, screen } from "@testing-library/react";
+import type { AgentRun, Project, Task } from "@bitig/core";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
+import { dispatchRealtimeEvent } from "../../hooks/useRealtime";
 import { hrefFor, parseRoute } from "../../routing/router";
 import { ProjectsView } from "./ProjectsView";
 
@@ -47,6 +48,7 @@ const TASKS: Task[] = [
     description: "",
     status: "todo",
     needsHuman: "Approve Stripe plan",
+    number: 1,
     isPublic: false,
     createdAt: TIMESTAMP,
     updatedAt: TIMESTAMP,
@@ -57,6 +59,7 @@ const TASKS: Task[] = [
     title: "Publish npm package",
     description: "",
     status: "done",
+    number: 2,
     isPublic: false,
     createdAt: TIMESTAMP,
     updatedAt: TIMESTAMP,
@@ -75,6 +78,7 @@ function renderProjectsView(searchQuery = "") {
       onDeleteProject={vi.fn()}
       onSelectProject={vi.fn()}
       searchQuery={searchQuery}
+      agentRuns={[]}
     />,
   );
 }
@@ -147,6 +151,7 @@ describe("ProjectsView filtering and detail modal", () => {
         onDeleteProject={vi.fn()}
         onSelectProject={vi.fn()}
         searchQuery=""
+        agentRuns={[]}
       />,
     );
 
@@ -188,5 +193,142 @@ describe("ProjectsView filtering and detail modal", () => {
     expect(hrefFor({ name: "projects", archived: true })).toBe("/projects?archived=true");
     expect(parseRoute("/tasks", "?awaiting=approval")).toEqual({ name: "tasks", awaitingApproval: true });
     expect(hrefFor({ name: "tasks", awaitingApproval: true })).toBe("/tasks?awaiting=approval");
+  });
+
+  it("shows active T3 sessions (working and waiting_for_approval) on project cards and filters by T3 session state", async () => {
+    const user = userEvent.setup();
+    const runs: AgentRun[] = [
+      {
+        id: "01940000-0000-7000-8000-000000000091",
+        taskId: "01940000-0000-7000-8000-000000000011",
+        t3ProjectId: "t3-alpha",
+        threadId: "thread-alpha-1",
+        link: "<https://t3.example.test/threads/thread-alpha-1>",
+        state: "waiting_for_approval",
+        model: "claude-opus-4-7",
+        startedAt: TIMESTAMP,
+        updatedAt: TIMESTAMP,
+      },
+      {
+        id: "01940000-0000-7000-8000-000000000092",
+        taskId: "01940000-0000-7000-8000-000000000012",
+        t3ProjectId: "t3-beta",
+        threadId: "thread-beta-1",
+        state: "finished",
+        startedAt: TIMESTAMP,
+        updatedAt: TIMESTAMP,
+      },
+    ];
+
+    render(
+      <ProjectsView
+        projects={PROJECTS}
+        tasks={TASKS}
+        isLoading={false}
+        error={null}
+        onCreateProject={vi.fn()}
+        onUpdateProject={vi.fn()}
+        onDeleteProject={vi.fn()}
+        onSelectProject={vi.fn()}
+        searchQuery=""
+        agentRuns={runs}
+      />,
+    );
+
+    // Alpha SaaS shows its waiting T3 session with ticket code, title, model, and stripped link
+    const alphaSessions = screen.getByTestId(`project-t3-sessions-${PROJECT_PAID.id}`);
+    expect(within(alphaSessions).getByText("Active T3 session")).toBeInTheDocument();
+    expect(within(alphaSessions).getByText("ALP-1")).toBeInTheDocument();
+    expect(within(alphaSessions).getByText("Configure billing")).toBeInTheDocument();
+    expect(within(alphaSessions).getByText(/waiting for approval · claude-opus-4-7/)).toBeInTheDocument();
+    expect(within(alphaSessions).getByRole("link", { name: "Open ALP-1 in T3" })).toHaveAttribute(
+      "href",
+      "https://t3.example.test/threads/thread-alpha-1",
+    );
+
+    // Beta CLI has a finished run, so no active T3 session block is shown
+    expect(screen.queryByTestId(`project-t3-sessions-${PROJECT_OSS.id}`)).not.toBeInTheDocument();
+
+    // Filter by T3: Active in T3 (1)
+    await user.selectOptions(screen.getByLabelText(/t3:/i), "active");
+    expect(screen.getByRole("button", { name: "Alpha SaaS" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Beta CLI" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Gamma Notes" })).not.toBeInTheDocument();
+
+    // Filter by T3: No active session (to pick an idle project to work on next)
+    await user.selectOptions(screen.getByLabelText(/t3:/i), "idle");
+    expect(screen.queryByRole("button", { name: "Alpha SaaS" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Beta CLI" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Gamma Notes" })).toBeInTheDocument();
+
+    // Reset filter and open Alpha SaaS detail modal to verify active sessions appear there too
+    await user.selectOptions(screen.getByLabelText(/t3:/i), "");
+    await user.click(screen.getByRole("button", { name: "Alpha SaaS" }));
+    const dialog = screen.getByRole("dialog", { name: "Alpha SaaS" });
+    expect(within(dialog).getByText("Configure billing")).toBeInTheDocument();
+    expect(within(dialog).getByText(/waiting for approval · claude-opus-4-7/)).toBeInTheDocument();
+  });
+
+  it("fetches /api/t3/runs on mount and updates live when agent_run.updated realtime events arrive", async () => {
+    const initialRun: AgentRun = {
+      id: "01940000-0000-7000-8000-000000000093",
+      taskId: "01940000-0000-7000-8000-000000000011",
+      t3ProjectId: "t3-alpha",
+      threadId: "thread-alpha-live",
+      state: "working",
+      model: "gemini-4-argon",
+      startedAt: TIMESTAMP,
+      updatedAt: TIMESTAMP,
+    };
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(() =>
+        Promise.resolve(
+          Response.json({
+            runs: [initialRun],
+            activeSessions: [
+              {
+                threadId: "thread-gamma-direct",
+                projectId: PROJECT_PERSONAL.id,
+                t3ProjectId: "t3-gamma",
+                state: "working",
+                title: "Ad-hoc Gamma session",
+              },
+            ],
+          }),
+        ),
+      ),
+    );
+
+    render(
+      <ProjectsView
+        projects={PROJECTS}
+        tasks={TASKS}
+        isLoading={false}
+        error={null}
+        onCreateProject={vi.fn()}
+        onUpdateProject={vi.fn()}
+        onDeleteProject={vi.fn()}
+        onSelectProject={vi.fn()}
+        searchQuery=""
+      />,
+    );
+
+    const alphaSessions = await screen.findByTestId(`project-t3-sessions-${PROJECT_PAID.id}`);
+    expect(within(alphaSessions).getByText(/working · gemini-4-argon/)).toBeInTheDocument();
+
+    const gammaSessions = await screen.findByTestId(`project-t3-sessions-${PROJECT_PERSONAL.id}`);
+    expect(within(gammaSessions).getByText("Ad-hoc Gamma session")).toBeInTheDocument();
+
+    // Realtime event transitions Alpha's run to finished -> removes active session indicator
+    act(() => {
+      dispatchRealtimeEvent({
+        type: "agent_run.updated",
+        run: { ...initialRun, state: "finished" },
+      });
+    });
+
+    expect(screen.queryByTestId(`project-t3-sessions-${PROJECT_PAID.id}`)).not.toBeInTheDocument();
   });
 });

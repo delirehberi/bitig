@@ -7,6 +7,7 @@ import type {
   T3ModelCapability,
   T3ProjectMapping,
   T3RemoteProject,
+  T3RunsLiveResponse,
   T3TaskRunLiveResponse,
   Task,
 } from "@bitig/core";
@@ -155,6 +156,22 @@ export async function deleteT3ProjectMapping(projectId: string): Promise<void> {
   if (!response.ok) {
     throw new T3ApiError(response.status, await parseErrorMessage(response, "Could not remove project mapping"));
   }
+}
+
+export async function fetchT3Runs(signal?: AbortSignal): Promise<T3RunsLiveResponse> {
+  const response = await fetch("/api/t3/runs", {
+    headers: BASE_HEADERS,
+    credentials: "same-origin",
+    ...(signal ? { signal } : {}),
+  });
+  if (!response.ok) {
+    throw new T3ApiError(response.status, await parseErrorMessage(response, "Could not load T3 sessions"));
+  }
+  const body = (await response.json()) as Partial<T3RunsLiveResponse> | null;
+  return {
+    runs: Array.isArray(body?.runs) ? body.runs : [],
+    ...(Array.isArray(body?.activeSessions) ? { activeSessions: body.activeSessions } : {}),
+  };
 }
 
 export async function fetchTaskT3Run(

@@ -1,13 +1,20 @@
-import { useState } from "react";
-import { Archive, ArrowLeft, FolderPlus, Hand, Plus, Search } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Archive, ArrowLeft, FolderPlus, Hand, Plus, RefreshCw, Search } from "lucide-react";
 import {
   PROJECT_KINDS,
+  isActiveAgentRunState,
+  type AgentRun,
   type CreateProjectInput,
   type Project,
   type ProjectKind,
+  type T3ProjectActiveSession,
+  type T3RunsLiveResponse,
   type Task,
   type UpdateProjectInput,
 } from "@bitig/core";
+import { useRealtimeEvent } from "../../hooks/useRealtime";
+import { fetchT3Runs } from "../../services/t3";
+import { resolveProjectActiveSessions } from "./activeSessions";
 import { ProjectCard } from "./ProjectCard";
 import { ProjectDetailModal } from "./ProjectDetailModal";
 import { ProjectModal } from "./ProjectModal";
@@ -25,9 +32,12 @@ interface ProjectsViewProps {
   readonly searchQuery: string;
   readonly archivedView?: boolean;
   readonly onArchivedViewChange?: (archived: boolean) => void;
+  readonly agentRuns?: readonly AgentRun[] | undefined;
+  readonly activeSessions?: readonly T3ProjectActiveSession[] | undefined;
 }
 
 type ProjectTaskFilter = "" | "open" | "done" | "empty";
+type ProjectT3Filter = "" | "active" | "idle";
 
 const KIND_LABELS: Record<ProjectKind, string> = {
   hobby: "Hobby",
@@ -51,6 +61,8 @@ export function ProjectsView({
   searchQuery,
   archivedView,
   onArchivedViewChange,
+  agentRuns: agentRunsProp,
+  activeSessions: activeSessionsProp,
 }: ProjectsViewProps) {
   const [localArchivedView, setLocalArchivedView] = useState(false);
   const isArchivedView = archivedView ?? localArchivedView;
@@ -65,7 +77,83 @@ export function ProjectsView({
 
   const [kindFilter, setKindFilter] = useState<ProjectKind | "">("");
   const [taskFilter, setTaskFilter] = useState<ProjectTaskFilter>("");
+  const [t3Filter, setT3Filter] = useState<ProjectT3Filter>("");
   const [needsHumanOnly, setNeedsHumanOnly] = useState(false);
+
+  const [fetchedRuns, setFetchedRuns] = useState<AgentRun[]>([]);
+  const [fetchedSessions, setFetchedSessions] = useState<T3ProjectActiveSession[]>([]);
+  const [isRefreshingT3, setIsRefreshingT3] = useState(false);
+
+  const loadT3Sessions = useCallback(async () => {
+    setIsRefreshingT3(true);
+    try {
+      const res = await fetchT3Runs().catch(
+        (): T3RunsLiveResponse => ({
+          runs: [],
+          activeSessions: [],
+        }),
+      );
+      setFetchedRuns(res.runs);
+      setFetchedSessions(res.activeSessions ?? []);
+    } finally {
+      setIsRefreshingT3(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (agentRunsProp !== undefined || activeSessionsProp !== undefined) {
+      return;
+    }
+    const controller = new AbortController();
+    void fetchT3Runs(controller.signal)
+      .catch(
+        (): T3RunsLiveResponse => ({
+          runs: [],
+          activeSessions: [],
+        }),
+      )
+      .then((res) => {
+        if (controller.signal.aborted) return;
+        setFetchedRuns(res.runs);
+        setFetchedSessions(res.activeSessions ?? []);
+      });
+    return () => {
+      controller.abort();
+    };
+  }, [agentRunsProp, activeSessionsProp]);
+
+  useRealtimeEvent((event) => {
+    if (event.type === "agent_run.updated") {
+      setFetchedRuns((prev) => {
+        const idx = prev.findIndex((r) => r.taskId === event.run.taskId);
+        if (idx === -1) return [...prev, event.run];
+        const next = [...prev];
+        next[idx] = event.run;
+        return next;
+      });
+      if (!isActiveAgentRunState(event.run.state)) {
+        setFetchedSessions((prev) =>
+          prev.filter(
+            (s) => s.threadId !== event.run.threadId && s.taskId !== event.run.taskId,
+          ),
+        );
+      }
+    }
+  });
+
+  const effectiveRuns = agentRunsProp ?? fetchedRuns;
+  const effectiveSessions = activeSessionsProp ?? fetchedSessions;
+
+  const activeSessionsByProject = useMemo(() => {
+    const map = new Map<string, ReturnType<typeof resolveProjectActiveSessions>>();
+    for (const project of projects) {
+      map.set(
+        project.id,
+        resolveProjectActiveSessions(project, tasks, effectiveRuns, effectiveSessions),
+      );
+    }
+    return map;
+  }, [projects, tasks, effectiveRuns, effectiveSessions]);
 
   const [modalState, setModalState] = useState<{
     isOpen: boolean;
@@ -104,8 +192,12 @@ export function ProjectsView({
     tasks.some((task) => task.projectId === project.id && task.needsHuman !== undefined),
   ).length;
 
+  const activeT3ProjectCount = activeProjects.filter(
+    (project) => (activeSessionsByProject.get(project.id)?.length ?? 0) > 0,
+  ).length;
+
   const hasActiveFilters = Boolean(
-    (!isArchivedView && (kindFilter || taskFilter || needsHumanOnly)) || searchQuery,
+    (!isArchivedView && (kindFilter || taskFilter || t3Filter || needsHumanOnly)) || searchQuery,
   );
 
   const filteredProjects = (isArchivedView ? archivedProjects : activeProjects).filter((p) => {
@@ -117,6 +209,14 @@ export function ProjectsView({
       const projectTasks = tasks.filter((t) => t.projectId === p.id);
 
       if (needsHumanOnly && !projectTasks.some((t) => t.needsHuman !== undefined)) {
+        return false;
+      }
+
+      const projectActiveSessions = activeSessionsByProject.get(p.id) ?? [];
+      if (t3Filter === "active" && projectActiveSessions.length === 0) {
+        return false;
+      }
+      if (t3Filter === "idle" && projectActiveSessions.length > 0) {
         return false;
       }
 
@@ -146,6 +246,7 @@ export function ProjectsView({
   function clearFilters() {
     setKindFilter("");
     setTaskFilter("");
+    setT3Filter("");
     setNeedsHumanOnly(false);
   }
 
@@ -247,6 +348,21 @@ export function ProjectsView({
               </select>
             </label>
 
+            <label className="flex items-center gap-2 text-xs font-semibold text-ink-2">
+              <span>T3:</span>
+              <select
+                value={t3Filter}
+                onChange={(e) => {
+                  setT3Filter(e.target.value as ProjectT3Filter);
+                }}
+                className="rounded-md border border-rule bg-paper-2 px-3 py-1.5 text-xs text-ink focus-visible:outline-focus"
+              >
+                <option value="">All Sessions</option>
+                <option value="active">Active in T3 ({activeT3ProjectCount})</option>
+                <option value="idle">No active session</option>
+              </select>
+            </label>
+
             <button
               type="button"
               aria-pressed={needsHumanOnly}
@@ -264,6 +380,20 @@ export function ProjectsView({
               Needs you ({needsHumanProjectCount})
             </button>
           </div>
+
+          <button
+            type="button"
+            onClick={() => {
+              void loadT3Sessions();
+            }}
+            disabled={isRefreshingT3}
+            aria-label="Refresh T3 sessions"
+            title="Check live T3 Code session status"
+            className="inline-flex items-center gap-1.5 rounded-md border border-rule bg-paper-2 px-3 py-1.5 text-xs font-semibold text-ink-2 transition-colors hover:text-ink disabled:opacity-50 focus-visible:outline-focus"
+          >
+            <RefreshCw size={13} aria-hidden="true" />
+            Refresh T3
+          </button>
         </div>
       )}
 
@@ -324,7 +454,7 @@ export function ProjectsView({
               Create your first project
             </button>
           )}
-          {!isArchivedView && (kindFilter || taskFilter || needsHumanOnly) && (
+          {!isArchivedView && (kindFilter || taskFilter || t3Filter || needsHumanOnly) && (
             <button
               type="button"
               onClick={clearFilters}
@@ -341,6 +471,7 @@ export function ProjectsView({
               key={project.id}
               project={project}
               tasks={tasks}
+              activeSessions={activeSessionsByProject.get(project.id) ?? []}
               onView={(p) => {
                 setViewProjectId(p.id);
               }}
@@ -365,6 +496,7 @@ export function ProjectsView({
       <ProjectDetailModal
         project={viewProject}
         tasks={tasks}
+        activeSessions={viewProject ? (activeSessionsByProject.get(viewProject.id) ?? []) : []}
         onClose={() => {
           setViewProjectId(null);
         }}

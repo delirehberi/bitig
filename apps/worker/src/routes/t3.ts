@@ -21,6 +21,7 @@ import {
   getTaskT3RunLiveStatus,
   launchTaskInT3,
   listT3ModelCapabilities,
+  listT3RunsLive,
   replyToTaskT3Run,
   respondToTaskT3Request,
   stopTaskT3Run,
@@ -235,6 +236,10 @@ export const t3ApiRouter = new Hono<AppEnv>()
     const store = new T3D1Store(c.env.DB);
     const mappings = await store.listProjectMappings();
     return c.json({ mappings });
+  })
+  .get("/runs", async (c) => {
+    const result = await listT3RunsLive(buildServiceDeps(c));
+    return c.json(result);
   })
   .put(
     "/mappings/:projectId",

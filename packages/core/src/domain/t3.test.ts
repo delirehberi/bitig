@@ -10,6 +10,7 @@ import {
   computeT3ConnectionStatus,
   deriveLiveAgentRunState,
   formatT3ModelSelection,
+  isActiveAgentRunState,
   isSameT3ModelSelection,
   normalizeT3McpUrl,
 } from "./t3";
@@ -162,11 +163,21 @@ describe("deriveLiveAgentRunState", () => {
     expect(deriveLiveAgentRunState({ threadStatus: "failed" })).toBe("failed");
     expect(deriveLiveAgentRunState({ threadStatus: "interrupted" })).toBe("stopped");
   });
+
+  it("identifies working and waiting_for_approval as active agent run states", () => {
+    expect(isActiveAgentRunState("working")).toBe(true);
+    expect(isActiveAgentRunState("waiting_for_approval")).toBe(true);
+    expect(isActiveAgentRunState("finished")).toBe(false);
+    expect(isActiveAgentRunState("failed")).toBe(false);
+    expect(isActiveAgentRunState("stopped")).toBe(false);
+    expect(isActiveAgentRunState("offline")).toBe(false);
+  });
 });
 
 describe("T3_ALLOWED_MCP_TOOLS", () => {
-  it("never includes project mutation tools and allows thread organization", () => {
+  it("never includes project mutation tools and allows thread listing and organization", () => {
     const allowed = new Set<string>(T3_ALLOWED_MCP_TOOLS);
+    expect(allowed.has("t3_thread_list")).toBe(true);
     expect(allowed.has("t3_thread_organize")).toBe(true);
     expect(allowed.has("t3_thread_configure")).toBe(true);
     expect(allowed.has("t3_project_create")).toBe(false);

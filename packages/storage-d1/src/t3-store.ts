@@ -239,6 +239,11 @@ export class T3D1Store {
     await this.db.delete(t3ProjectMappings).where(eq(t3ProjectMappings.projectId, projectId));
   }
 
+  async listAgentRuns(): Promise<AgentRun[]> {
+    const rows = await this.db.select().from(agentRuns);
+    return rows.map(toAgentRun);
+  }
+
   async getAgentRunByTaskId(taskId: string): Promise<AgentRun | undefined> {
     const rows = await this.db
       .select()

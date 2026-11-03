@@ -16,6 +16,7 @@ import {
   type T3PendingQuestion,
   type T3RemoteProject,
   type T3RunSummary,
+  type T3ThreadListItem,
   type T3ThreadSummary,
   type T3WorkspaceStrategy,
 } from "@bitig/core";
@@ -562,6 +563,71 @@ export class T3McpClient {
         }
       }
       return projects;
+    });
+  }
+
+  async listThreads(input?: {
+    readonly allProjects?: boolean | undefined;
+    readonly projectId?: string | undefined;
+    readonly includeSubagents?: boolean | undefined;
+    readonly limit?: number | undefined;
+  }): Promise<T3ThreadListItem[]> {
+    return this.withSession(async (callTool) => {
+      const payload = await callTool("t3_thread_list", {
+        allProjects: input?.allProjects ?? true,
+        includeSubagents: input?.includeSubagents ?? false,
+        limit: input?.limit ?? 100,
+        ...(input?.projectId ? { projectId: input.projectId } : {}),
+      });
+      const rawThreads = Array.isArray(payload.threads) ? payload.threads : [];
+      const threads: T3ThreadListItem[] = [];
+      for (const item of rawThreads) {
+        if (!item || typeof item !== "object") {
+          continue;
+        }
+        const rec = item as Record<string, unknown>;
+        const threadId =
+          typeof rec.threadId === "string" && rec.threadId.trim().length > 0
+            ? rec.threadId.trim()
+            : typeof rec.id === "string" && rec.id.trim().length > 0
+              ? rec.id.trim()
+              : "";
+        if (!threadId) {
+          continue;
+        }
+        threads.push({
+          threadId,
+          ...(typeof rec.projectId === "string" && rec.projectId.trim().length > 0
+            ? { projectId: rec.projectId.trim() }
+            : {}),
+          ...(typeof rec.title === "string" && rec.title.trim().length > 0
+            ? { title: rec.title.trim() }
+            : {}),
+          ...(typeof rec.link === "string" && rec.link.trim().length > 0
+            ? { link: rec.link.trim() }
+            : {}),
+          ...(typeof rec.status === "string" && rec.status.trim().length > 0
+            ? { status: rec.status.trim() }
+            : {}),
+          ...(typeof rec.pendingRequestCount === "number"
+            ? { pendingRequestCount: rec.pendingRequestCount }
+            : {}),
+          ...(typeof rec.activeRunId === "string" || rec.activeRunId === null
+            ? { activeRunId: rec.activeRunId }
+            : {}),
+          ...(typeof rec.settled === "boolean" ? { settled: rec.settled } : {}),
+          ...(typeof rec.model === "string" && rec.model.trim().length > 0
+            ? { model: rec.model.trim() }
+            : {}),
+          ...(typeof rec.providerInstanceId === "string" && rec.providerInstanceId.trim().length > 0
+            ? { providerInstanceId: rec.providerInstanceId.trim() }
+            : {}),
+          ...(typeof rec.updatedAt === "string" && rec.updatedAt.trim().length > 0
+            ? { updatedAt: rec.updatedAt.trim() }
+            : {}),
+        });
+      }
+      return threads;
     });
   }
 

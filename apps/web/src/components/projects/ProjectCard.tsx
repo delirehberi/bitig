@@ -1,10 +1,112 @@
-import { Archive, ArchiveRestore, Edit2, FolderKanban, ListTodo, Trash2 } from "lucide-react";
-import type { Project, ProjectKind, Task } from "@bitig/core";
+import {
+  Archive,
+  ArchiveRestore,
+  Edit2,
+  ExternalLink,
+  FolderKanban,
+  ListTodo,
+  Terminal,
+  Trash2,
+} from "lucide-react";
+import type { ActiveAgentRunState, Project, ProjectKind, Task } from "@bitig/core";
+import { Link } from "../../routing/Link";
+import { taskHref, useLocationHref } from "../../routing/router";
+import type { ResolvedProjectActiveSession } from "./activeSessions";
 import { ResourceLinks } from "./Resources";
+
+const SESSION_STATE_LABELS: Record<ActiveAgentRunState, string> = {
+  working: "working",
+  waiting_for_approval: "waiting for approval",
+};
+
+const SESSION_BADGE_CLASSES: Record<ActiveAgentRunState, string> = {
+  working: "border-accent/40 bg-accent-soft text-accent-ink",
+  waiting_for_approval: "border-danger/40 bg-danger-soft text-danger",
+};
+
+export function ProjectActiveSessionsList({
+  projectId,
+  sessions,
+  onNavigateTask,
+}: {
+  readonly projectId: string;
+  readonly sessions: readonly ResolvedProjectActiveSession[];
+  readonly onNavigateTask?: (() => void) | undefined;
+}) {
+  const locationHref = useLocationHref();
+  if (sessions.length === 0) return null;
+
+  return (
+    <div
+      data-testid={`project-t3-sessions-${projectId}`}
+      className="mt-3 flex flex-col gap-1.5 rounded-md border border-rule bg-paper-2 p-2.5"
+    >
+      <div className="flex items-center justify-between gap-2 text-2xs font-semibold uppercase tracking-wider text-ink-3">
+        <span className="inline-flex items-center gap-1">
+          <Terminal size={12} aria-hidden="true" />
+          {sessions.length === 1
+            ? "Active T3 session"
+            : `Active T3 sessions (${String(sessions.length)})`}
+        </span>
+      </div>
+      <ul className="m-0 flex list-none flex-col gap-1.5 p-0">
+        {sessions.map((session) => (
+          <li
+            key={session.threadId}
+            className="flex flex-wrap items-center justify-between gap-2 text-xs"
+          >
+            <div className="flex min-w-0 items-baseline gap-1.5">
+              {session.taskId ? (
+                <Link
+                  href={taskHref(session.taskCode ?? session.taskId, locationHref)}
+                  onClick={() => {
+                    onNavigateTask?.();
+                  }}
+                  className="flex min-w-0 items-baseline gap-1.5 font-semibold text-ink hover:text-accent-ink hover:underline"
+                >
+                  {session.taskCode && (
+                    <span className="shrink-0 font-mono text-2xs text-ink-3">
+                      {session.taskCode}
+                    </span>
+                  )}
+                  <span className="truncate">{session.title}</span>
+                </Link>
+              ) : (
+                <span className="truncate font-semibold text-ink">{session.title}</span>
+              )}
+            </div>
+            <div className="flex shrink-0 items-center gap-1.5">
+              <span
+                className={`inline-flex items-center gap-1 rounded-pill border px-2 py-0.5 text-2xs font-semibold ${SESSION_BADGE_CLASSES[session.state]}`}
+              >
+                {SESSION_STATE_LABELS[session.state]}
+                {session.model ? ` · ${session.model}` : ""}
+              </span>
+              {session.link && (
+                <a
+                  href={session.link}
+                  target="_blank"
+                  rel="noreferrer"
+                  aria-label={`Open ${session.taskCode ?? session.title} in T3`}
+                  title="Open in T3"
+                  className="inline-flex items-center gap-0.5 rounded-pill border border-rule bg-paper px-1.5 py-0.5 text-2xs font-medium text-accent-ink hover:bg-paper-3"
+                >
+                  <span>T3</span>
+                  <ExternalLink size={10} aria-hidden="true" />
+                </a>
+              )}
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
 
 interface ProjectCardProps {
   readonly project: Project;
   readonly tasks: Task[];
+  readonly activeSessions?: readonly ResolvedProjectActiveSession[];
   readonly onEdit: (project: Project) => void;
   readonly onDelete: (project: Project) => void;
   readonly onSelect: (projectId: string) => void;
@@ -26,6 +128,7 @@ const ICON_SIZE = 14;
 export function ProjectCard({
   project,
   tasks,
+  activeSessions = [],
   onEdit,
   onDelete,
   onSelect,
@@ -194,6 +297,7 @@ export function ProjectCard({
           <p className="m-0 mt-1 text-xs italic text-ink-3">No description</p>
         )}
         <ResourceLinks resources={project.resources} />
+        <ProjectActiveSessionsList projectId={project.id} sessions={activeSessions} />
       </div>
 
       <div className="mt-5 flex items-center justify-between border-t border-rule pt-3">

@@ -7,6 +7,7 @@ import type {
   T3ModelCapability,
   T3ProjectMapping,
   T3RemoteProject,
+  T3RunsLiveResponse,
   T3TaskRunLiveResponse,
   Task,
 } from "@bitig/core";
@@ -182,6 +183,7 @@ interface MockT3ServerState {
   recentRunStatus: string;
   activeRunId: string | null;
   threadModelSelection: Record<string, unknown>;
+  threadList: Record<string, unknown>[];
   toolCalls: RecordedToolCall[];
 }
 
@@ -336,6 +338,10 @@ function createMockT3Fetch(state: MockT3ServerState): typeof fetch {
                 threadId: "thread-abc-123",
                 link: `${T3_ORIGIN}/threads/thread-abc-123`,
               };
+            } else if (toolName === "t3_thread_list") {
+              payload = {
+                threads: state.threadList,
+              };
             } else if (toolName === "t3_thread_read") {
               payload = {
                 thread: {
@@ -413,6 +419,7 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
       recentRunStatus: "running",
       activeRunId: null,
       threadModelSelection: { instanceId: "prov-claude", model: "claude-opus-4-7" },
+      threadList: [],
       toolCalls: [],
     };
     app = createApp({ t3Fetch: createMockT3Fetch(mockState) });
@@ -1193,5 +1200,101 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
     const { projects } = await projectsRes.json<{ projects: T3RemoteProject[] }>();
     expect(projects).toHaveLength(1);
     requireServiceToken = false;
+  });
+
+  it("lists and reconciles live T3 runs and active project sessions via GET /api/t3/runs (BIT-126)", async () => {
+    await connectT3Host();
+    const project = await (
+      await request("/api/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Bitig", key: "BIT" }),
+      })
+    ).json<Project>();
+    await request(`/api/t3/mappings/${project.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ t3ProjectId: "t3-proj-bitig", t3ProjectTitle: "Bitig Workspace" }),
+    });
+
+    const task = await (
+      await request("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: project.id, title: "Active session view" }),
+      })
+    ).json<Task>();
+
+    await request(`/api/tasks/${task.id}/t3-run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ providerInstanceId: "prov-claude", model: "claude-opus-4-7" }),
+    });
+
+    // t3_thread_list returns the Bitig task thread as waiting, plus a standalone running thread on the same mapped T3 project
+    mockState.threadList = [
+      {
+        threadId: "thread-abc-123",
+        projectId: "t3-proj-bitig",
+        title: "BIT-1 Active session view",
+        link: `<${T3_ORIGIN}/threads/thread-abc-123>`,
+        status: "waiting",
+        model: "claude-opus-4-7",
+        providerInstanceId: "prov-claude",
+        settled: false,
+        updatedAt: "2026-11-02T21:40:00Z",
+      },
+      {
+        threadId: "thread-standalone-99",
+        projectId: "t3-proj-bitig",
+        title: "Ad-hoc refactor in T3",
+        link: `${T3_ORIGIN}/threads/thread-standalone-99`,
+        status: "running",
+        model: "gpt-6-sol",
+        providerInstanceId: "prov-codex",
+        settled: false,
+        updatedAt: "2026-11-02T21:45:00Z",
+      },
+      {
+        threadId: "thread-settled-0",
+        projectId: "t3-proj-bitig",
+        title: "Finished thread",
+        status: "completed",
+        settled: true,
+        updatedAt: "2026-11-02T20:00:00Z",
+      },
+    ];
+
+    const runsRes = await request("/api/t3/runs");
+    expect(runsRes.status).toBe(200);
+    const body = await runsRes.json<T3RunsLiveResponse>();
+    expect(body.runs).toHaveLength(1);
+    expect(body.runs[0]).toMatchObject({
+      taskId: task.id,
+      threadId: "thread-abc-123",
+      state: "waiting_for_approval",
+    });
+
+    expect(body.activeSessions).toHaveLength(2);
+    expect(body.activeSessions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          projectId: project.id,
+          t3ProjectId: "t3-proj-bitig",
+          threadId: "thread-abc-123",
+          taskId: task.id,
+          state: "waiting_for_approval",
+          model: "claude-opus-4-7",
+        }),
+        expect.objectContaining({
+          projectId: project.id,
+          t3ProjectId: "t3-proj-bitig",
+          threadId: "thread-standalone-99",
+          title: "Ad-hoc refactor in T3",
+          state: "working",
+          model: "gpt-6-sol",
+        }),
+      ]),
+    );
   });
 });

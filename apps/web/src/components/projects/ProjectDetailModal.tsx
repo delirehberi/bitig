@@ -15,11 +15,14 @@ import type { Project, ProjectKind, Task } from "@bitig/core";
 import { formatFullTimestamp, formatTimeAgo } from "../../domain/time-ago";
 import { useFocusTrap } from "../../hooks/useFocusTrap";
 import { Markdown } from "../Markdown";
+import type { ResolvedProjectActiveSession } from "./activeSessions";
+import { ProjectActiveSessionsList } from "./ProjectCard";
 import { ResourceLinks } from "./Resources";
 
 interface ProjectDetailModalProps {
   readonly project: Project | null;
   readonly tasks: readonly Task[];
+  readonly activeSessions?: readonly ResolvedProjectActiveSession[];
   readonly onClose: () => void;
   readonly onEdit: (project: Project) => void;
   readonly onDelete: (project: Project) => void;
@@ -61,6 +64,7 @@ function Field({
 export function ProjectDetailModal({
   project,
   tasks,
+  activeSessions = [],
   onClose,
   onEdit,
   onDelete,
@@ -153,6 +157,16 @@ export function ProjectDetailModal({
             </h3>
             <ResourceLinks resources={project.resources} />
           </section>
+        )}
+
+        {activeSessions.length > 0 && (
+          <div className="mb-5">
+            <ProjectActiveSessionsList
+              projectId={project.id}
+              sessions={activeSessions}
+              onNavigateTask={onClose}
+            />
+          </div>
         )}
 
         <dl className="m-0 mb-5 grid grid-cols-1 gap-4 sm:grid-cols-2">

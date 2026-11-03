@@ -15,6 +15,16 @@ export const AGENT_RUN_STATES = [
 export type AgentRunState = (typeof AGENT_RUN_STATES)[number];
 export const AgentRunStateSchema = z.enum(AGENT_RUN_STATES);
 
+export const ACTIVE_AGENT_RUN_STATES = ["working", "waiting_for_approval"] as const;
+export type ActiveAgentRunState = (typeof ACTIVE_AGENT_RUN_STATES)[number];
+
+/**
+ * Whether a T3 run state represents an active session (running or waiting on a person, #BIT-126).
+ */
+export function isActiveAgentRunState(state: AgentRunState): state is ActiveAgentRunState {
+  return state === "working" || state === "waiting_for_approval";
+}
+
 export const T3_WORKSPACE_STRATEGIES = ["worktree", "root"] as const;
 export type T3WorkspaceStrategy = (typeof T3_WORKSPACE_STRATEGIES)[number];
 export const T3WorkspaceStrategySchema = z.enum(T3_WORKSPACE_STRATEGIES);
@@ -26,6 +36,7 @@ export const T3WorkspaceStrategySchema = z.enum(T3_WORKSPACE_STRATEGIES);
 export const T3_ALLOWED_MCP_TOOLS = [
   "t3_project_list",
   "orchestrator_capabilities",
+  "t3_thread_list",
   "t3_thread_launch",
   "t3_thread_read",
   "t3_pending_request",
@@ -188,6 +199,37 @@ export interface T3TaskRunLiveResponse {
   readonly run: AgentRun | null;
   readonly pendingRequestId?: string | undefined;
   readonly pendingQuestions: T3PendingQuestion[];
+}
+
+export interface T3ThreadListItem {
+  readonly threadId: string;
+  readonly projectId?: string | undefined;
+  readonly title?: string | undefined;
+  readonly link?: string | undefined;
+  readonly status?: string | undefined;
+  readonly pendingRequestCount?: number | undefined;
+  readonly activeRunId?: string | null | undefined;
+  readonly settled?: boolean | undefined;
+  readonly model?: string | undefined;
+  readonly providerInstanceId?: string | undefined;
+  readonly updatedAt?: string | undefined;
+}
+
+export interface T3ProjectActiveSession {
+  readonly threadId: string;
+  readonly projectId: string;
+  readonly t3ProjectId: string;
+  readonly state: ActiveAgentRunState;
+  readonly taskId?: string | undefined;
+  readonly title?: string | undefined;
+  readonly link?: string | undefined;
+  readonly model?: string | undefined;
+  readonly updatedAt?: string | undefined;
+}
+
+export interface T3RunsLiveResponse {
+  readonly runs: AgentRun[];
+  readonly activeSessions?: T3ProjectActiveSession[] | undefined;
 }
 
 export const T3PendingQuestionRequestSchema = z.strictObject({
