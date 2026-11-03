@@ -286,6 +286,95 @@ export const ReplyToT3RunInputSchema = z.strictObject({
 
 export type ReplyToT3RunInput = z.input<typeof ReplyToT3RunInputSchema>;
 
+/** Longest prompt or follow-up a person can send to a project-level T3 thread (#BIT-127). */
+export const PROJECT_T3_PROMPT_MAX = 20_000;
+/** Longest title Bitig gives a project-level T3 thread, taken from the prompt's first line. */
+export const PROJECT_T3_THREAD_TITLE_MAX = 120;
+/** Project threads are usually environment checks, so they run in the project root by default. */
+export const DEFAULT_PROJECT_T3_WORKSPACE_STRATEGY: T3WorkspaceStrategy = "root";
+
+/** A T3 thread Bitig started for a project without a task (#BIT-127). */
+export const ProjectT3ThreadSchema = z.strictObject({
+  id: IdSchema,
+  projectId: IdSchema,
+  t3ProjectId: z.string().trim().min(1).max(200),
+  threadId: z.string().trim().min(1).max(256),
+  title: z.string().trim().min(1).max(PROJECT_T3_THREAD_TITLE_MAX),
+  link: z.string().trim().min(1).max(2048).exactOptional(),
+  state: AgentRunStateSchema,
+  model: z.string().trim().min(1).max(200).exactOptional(),
+  providerInstanceId: z.string().trim().min(1).max(200).exactOptional(),
+  modelOptions: T3ModelSelectionOptionsSchema.exactOptional(),
+  workspaceStrategy: T3WorkspaceStrategySchema,
+  startedBy: TaskActorSchema.exactOptional(),
+  startedAt: TimestampSchema,
+  updatedAt: TimestampSchema,
+});
+
+export type ProjectT3Thread = z.output<typeof ProjectT3ThreadSchema>;
+
+export interface ProjectT3ThreadsResponse {
+  readonly threads: ProjectT3Thread[];
+}
+
+/** Starts a project-level T3 thread with a person's prompt (#BIT-127). */
+export const StartProjectT3ThreadInputSchema = z.strictObject({
+  prompt: z.string().trim().min(1).max(PROJECT_T3_PROMPT_MAX),
+  workspaceStrategy: T3WorkspaceStrategySchema.exactOptional(),
+  modelSelection: T3ModelSelectionSchema.exactOptional(),
+});
+
+export type StartProjectT3ThreadInput = z.input<typeof StartProjectT3ThreadInputSchema>;
+
+/** A follow-up to a project-level T3 thread; with `modelSelection`, the thread switches model first. */
+export const SendProjectT3MessageInputSchema = z.strictObject({
+  body: z.string().trim().min(1).max(PROJECT_T3_PROMPT_MAX),
+  modelSelection: T3ModelSelectionSchema.exactOptional(),
+});
+
+export type SendProjectT3MessageInput = z.input<typeof SendProjectT3MessageInputSchema>;
+
+const ELLIPSIS = "…";
+
+/** The thread title: the prompt's first non-empty line, cut to `PROJECT_T3_THREAD_TITLE_MAX`. */
+export function buildProjectT3ThreadTitle(prompt: string): string {
+  const firstLine =
+    prompt
+      .split("\n")
+      .map((line) => line.trim())
+      .find((line) => line.length > 0) ?? "";
+  const line = firstLine || "Project message";
+  return line.length <= PROJECT_T3_THREAD_TITLE_MAX
+    ? line
+    : `${line.slice(0, PROJECT_T3_THREAD_TITLE_MAX - ELLIPSIS.length).trimEnd()}${ELLIPSIS}`;
+}
+
+/** A label for the project in prompts, e.g. `"Bitig" (BIT)`. */
+export function formatProjectT3Label(project: { readonly name: string; readonly key?: string | undefined }): string {
+  return project.key ? `"${project.name}" (${project.key})` : `"${project.name}"`;
+}
+
+/**
+ * The first prompt of a project-level thread. There is no Bitig task behind it, so the agent is told
+ * not to create or change Bitig tasks unless the person asks for that.
+ */
+export function buildProjectT3LaunchPrompt(input: {
+  readonly project: { readonly name: string; readonly key?: string | undefined };
+  readonly prompt: string;
+}): string {
+  return [
+    `Project-level message from Bitig project ${formatProjectT3Label(input.project)}.`,
+    "There is no Bitig task for this thread: do not create, update, or complete Bitig tasks unless asked to.",
+    "",
+    input.prompt.trim(),
+  ].join("\n");
+}
+
+/** The line put before a follow-up after a project thread switches models. */
+export function buildProjectT3ModelSwitchNotice(to: string): string {
+  return `The thread switched to ${to}. Continue from the conversation so far.`;
+}
+
 /**
  * Run states in which a thread may switch models: it waits on a person, or its turn has ended
  * (finished, stopped, or failed, which covers usage-limit stops). Never mid-turn (`working`), and

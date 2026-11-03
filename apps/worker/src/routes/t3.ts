@@ -4,6 +4,8 @@ import {
   NotFoundError,
   ReplyToT3RunInputSchema,
   RespondT3PendingRequestInputSchema,
+  SendProjectT3MessageInputSchema,
+  StartProjectT3ThreadInputSchema,
   StartT3ThreadInputSchema,
   T3StartOAuthInputSchema,
   UpsertT3ProjectMappingInputSchema,
@@ -19,11 +21,14 @@ import {
   createActiveT3McpClient,
   getT3ConnectionStatus,
   getTaskT3RunLiveStatus,
+  launchProjectThreadInT3,
   launchTaskInT3,
+  listProjectT3ThreadsLive,
   listT3ModelCapabilities,
   listT3RunsLive,
   replyToTaskT3Run,
   respondToTaskT3Request,
+  sendProjectT3Message,
   stopTaskT3Run,
   T3ModelSwitchConflictError,
   type T3ServiceDeps,
@@ -271,7 +276,65 @@ export const t3ApiRouter = new Hono<AppEnv>()
     const store = new T3D1Store(c.env.DB);
     await store.deleteProjectMapping(projectId);
     return c.body(null, HTTP_NO_CONTENT);
-  });
+  })
+  // Project-level threads without a task (#BIT-127). `:projectId` is the Bitig project ID; the
+  // sibling `GET /projects` lists the remote T3 projects instead.
+  .get("/projects/:projectId/threads", async (c) => {
+    try {
+      const result = await listProjectT3ThreadsLive(buildServiceDeps(c), c.req.param("projectId"));
+      return c.json(result);
+    } catch (err) {
+      return handleT3RouteError(err, c);
+    }
+  })
+  .post(
+    "/projects/:projectId/threads",
+    zValidator("json", StartProjectT3ThreadInputSchema, (result, c) => {
+      if (!result.success) {
+        return c.json({ error: "validation_error", details: result.error.issues }, HTTP_BAD_REQUEST);
+      }
+      return undefined;
+    }),
+    async (c) => {
+      const input = c.req.valid("json");
+      const actor = c.req.header("X-Bitig-Actor") ?? c.req.header("X-Bitig-Agent") ?? "you";
+      try {
+        const thread = await launchProjectThreadInT3(buildServiceDeps(c), {
+          projectId: c.req.param("projectId"),
+          prompt: input.prompt,
+          workspaceStrategy: input.workspaceStrategy,
+          modelSelection: input.modelSelection,
+          actor,
+        });
+        return c.json(thread, HTTP_CREATED);
+      } catch (err) {
+        return handleT3RouteError(err, c);
+      }
+    },
+  )
+  .post(
+    "/projects/:projectId/threads/:threadId/messages",
+    zValidator("json", SendProjectT3MessageInputSchema, (result, c) => {
+      if (!result.success) {
+        return c.json({ error: "validation_error", details: result.error.issues }, HTTP_BAD_REQUEST);
+      }
+      return undefined;
+    }),
+    async (c) => {
+      const input = c.req.valid("json");
+      try {
+        const thread = await sendProjectT3Message(
+          buildServiceDeps(c),
+          c.req.param("projectId"),
+          c.req.param("threadId"),
+          { body: input.body, modelSelection: input.modelSelection },
+        );
+        return c.json(thread, HTTP_CREATED);
+      } catch (err) {
+        return handleT3RouteError(err, c);
+      }
+    },
+  );
 
 export const t3TaskRunsRouter = new Hono<AppEnv>()
   .get("/:id/t3-run", async (c) => {

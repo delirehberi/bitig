@@ -13,6 +13,7 @@ import {
   type T3ModelCapability,
   type T3ModelOption,
   type T3ModelSelection,
+  type T3ModelSelectionOption,
   type T3PendingQuestion,
   type T3RemoteProject,
   type T3RunSummary,
@@ -713,6 +714,8 @@ export class T3McpClient {
     workspaceStrategy: T3WorkspaceStrategy;
     providerInstanceId?: string | undefined;
     model?: string | undefined;
+    /** Model options (e.g. effort) sent with the model, in the `t3_thread_configure` shape. */
+    options?: readonly T3ModelSelectionOption[] | undefined;
   }): Promise<{ threadId: string; link?: string | undefined }> {
     return this.withSession(async (callTool) => {
       const args: Record<string, unknown> = {
@@ -731,6 +734,9 @@ export class T3McpClient {
         args.modelSelection = {
           model: input.model,
           ...(input.providerInstanceId ? { instanceId: input.providerInstanceId } : {}),
+          ...(input.options && input.options.length > 0
+            ? { options: input.options.map((opt) => ({ id: opt.id, value: opt.value })) }
+            : {}),
         };
       }
 

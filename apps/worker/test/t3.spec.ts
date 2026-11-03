@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type {
   AgentRun,
   Project,
+  ProjectT3Thread,
+  ProjectT3ThreadsResponse,
   T3ConnectionStatus,
   T3ModelCapability,
   T3ProjectMapping,
@@ -20,6 +22,7 @@ const T3_ORIGIN = "https://t3.example.test";
 const T3_MCP_URL = `${T3_ORIGIN}/mcp`;
 
 const STATEMENTS = [
+  "DROP TABLE IF EXISTS `project_t3_threads`",
   "DROP TABLE IF EXISTS `agent_runs`",
   "DROP TABLE IF EXISTS `t3_project_mappings`",
   "DROP TABLE IF EXISTS `t3_oauth_states`",
@@ -161,6 +164,25 @@ const STATEMENTS = [
   )`,
   "CREATE UNIQUE INDEX `agent_runs_task_id_idx` ON `agent_runs` (`task_id`)",
   "CREATE INDEX `agent_runs_thread_id_idx` ON `agent_runs` (`thread_id`)",
+  `CREATE TABLE \`project_t3_threads\` (
+    \`id\` text PRIMARY KEY NOT NULL,
+    \`project_id\` text NOT NULL,
+    \`t3_project_id\` text NOT NULL,
+    \`thread_id\` text NOT NULL,
+    \`title\` text NOT NULL,
+    \`link\` text,
+    \`state\` text NOT NULL,
+    \`model\` text,
+    \`provider_instance_id\` text,
+    \`model_options\` text,
+    \`workspace_strategy\` text NOT NULL,
+    \`started_by\` text,
+    \`started_at\` integer NOT NULL,
+    \`updated_at\` integer NOT NULL,
+    FOREIGN KEY (\`project_id\`) REFERENCES \`projects\`(\`id\`) ON UPDATE no action ON DELETE cascade
+  )`,
+  "CREATE UNIQUE INDEX `project_t3_threads_thread_id_idx` ON `project_t3_threads` (`thread_id`)",
+  "CREATE INDEX `project_t3_threads_project_id_idx` ON `project_t3_threads` (`project_id`)",
 ];
 
 interface RecordedToolCall {
@@ -184,6 +206,8 @@ interface MockT3ServerState {
   activeRunId: string | null;
   threadModelSelection: Record<string, unknown>;
   threadList: Record<string, unknown>[];
+  /** Thread ID the next `t3_thread_launch` returns; defaults to `thread-abc-123`. */
+  launchThreadId?: string;
   toolCalls: RecordedToolCall[];
 }
 
@@ -334,9 +358,10 @@ function createMockT3Fetch(state: MockT3ServerState): typeof fetch {
                 ],
               };
             } else if (toolName === "t3_thread_launch") {
+              const launchedId = state.launchThreadId ?? "thread-abc-123";
               payload = {
-                threadId: "thread-abc-123",
-                link: `${T3_ORIGIN}/threads/thread-abc-123`,
+                threadId: launchedId,
+                link: `${T3_ORIGIN}/threads/${launchedId}`,
               };
             } else if (toolName === "t3_thread_list") {
               payload = {
@@ -1296,5 +1321,167 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
         }),
       ]),
     );
+  });
+  it("starts, lists, and messages project-level T3 threads without a task (BIT-127)", async () => {
+    const createProject = async (name: string, key: string): Promise<Project> =>
+      (
+        await request("/api/projects", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name, key }),
+        })
+      ).json<Project>();
+    const mapProject = (projectId: string): Promise<Response> =>
+      request(`/api/t3/mappings/${projectId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ t3ProjectId: "t3-proj-bitig", t3ProjectTitle: "Bitig Workspace" }),
+      });
+    const startThread = (projectId: string, payload: Record<string, unknown>): Promise<Response> =>
+      request(`/api/t3/projects/${projectId}/threads`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    const sendMessage = (projectId: string, threadId: string, payload: Record<string, unknown>): Promise<Response> =>
+      request(`/api/t3/projects/${projectId}/threads/${threadId}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+    const project = await createProject("Bitig", "BIT");
+    const other = await createProject("Other", "OTH");
+
+    // Not connected yet: refused before T3 is called
+    await mapProject(project.id);
+    expect((await startThread(project.id, { prompt: "Check node" })).status).toBe(400);
+    await connectT3Host();
+
+    // Unknown project, invalid input, and an unmapped project are refused
+    expect((await startThread("01a14ecf-281e-7436-8c52-a524c5fabc99", { prompt: "x" })).status).toBe(404);
+    expect((await startThread(project.id, { prompt: "   " })).status).toBe(400);
+    const unmappedRes = await startThread(other.id, { prompt: "Check node" });
+    expect(unmappedRes.status).toBe(400);
+    expect(mockState.toolCalls.some((c) => c.name === "t3_thread_launch")).toBe(false);
+
+    // Happy path: root workspace by default, model and options passed to T3
+    mockState.launchThreadId = "thread-proj-1";
+    const startRes = await startThread(project.id, {
+      prompt: "Check the node version\nand pnpm too",
+      modelSelection: {
+        providerInstanceId: "prov-claude",
+        model: "claude-opus-4-7",
+        options: [{ id: "effort", value: "high" }],
+      },
+    });
+    expect(startRes.status).toBe(201);
+    const thread = await startRes.json<ProjectT3Thread>();
+    expect(thread).toMatchObject({
+      projectId: project.id,
+      t3ProjectId: "t3-proj-bitig",
+      threadId: "thread-proj-1",
+      title: "Check the node version",
+      state: "working",
+      workspaceStrategy: "root",
+      model: "claude-opus-4-7",
+      providerInstanceId: "prov-claude",
+      modelOptions: [{ id: "effort", value: "high" }],
+    });
+    const launchCall = mockState.toolCalls.find((c) => c.name === "t3_thread_launch");
+    expect(launchCall?.arguments).toMatchObject({
+      projectId: "t3-proj-bitig",
+      title: "Check the node version",
+      clientRequestId: thread.id,
+      modelSelection: { instanceId: "prov-claude", model: "claude-opus-4-7", options: [{ id: "effort", value: "high" }] },
+    });
+    expect(launchCall?.arguments.workspaceStrategy).toBeUndefined();
+    expect(String(launchCall?.arguments.message)).toContain("There is no Bitig task");
+    expect(String(launchCall?.arguments.message)).toContain("Check the node version\nand pnpm too");
+
+    // Worktree is still selectable
+    mockState.launchThreadId = "thread-proj-2";
+    const worktreeRes = await startThread(project.id, { prompt: "Try a branch", workspaceStrategy: "worktree" });
+    expect(worktreeRes.status).toBe(201);
+    expect((await worktreeRes.json<ProjectT3Thread>()).workspaceStrategy).toBe("worktree");
+
+    // Listing reconciles state with t3_thread_list, newest first
+    mockState.threadList = [
+      { threadId: "thread-proj-1", projectId: "t3-proj-bitig", status: "waiting", settled: false },
+      { threadId: "thread-proj-2", projectId: "t3-proj-bitig", status: "completed", settled: true },
+    ];
+    const listRes = await request(`/api/t3/projects/${project.id}/threads`);
+    expect(listRes.status).toBe(200);
+    const listed = await listRes.json<ProjectT3ThreadsResponse>();
+    expect(listed.threads.map((t) => [t.threadId, t.state])).toEqual([
+      ["thread-proj-2", "finished"],
+      ["thread-proj-1", "waiting_for_approval"],
+    ]);
+    expect((await (await request(`/api/t3/projects/${other.id}/threads`)).json<ProjectT3ThreadsResponse>()).threads).toEqual([]);
+
+    // Project threads show up as active sessions with their stored title
+    const runs = await (await request("/api/t3/runs")).json<T3RunsLiveResponse>();
+    expect(runs.activeSessions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ threadId: "thread-proj-1", projectId: project.id, title: "Check the node version" }),
+      ]),
+    );
+
+    // Messages only reach threads recorded for that project
+    expect((await sendMessage(project.id, "thread-unknown", { body: "hi" })).status).toBe(404);
+    expect((await sendMessage(other.id, "thread-proj-1", { body: "hi" })).status).toBe(404);
+    expect((await sendMessage(project.id, "thread-proj-1", { body: "" })).status).toBe(400);
+    expect(mockState.toolCalls.some((c) => c.name === "t3_thread_send")).toBe(false);
+
+    // A plain follow-up goes to the thread as-is
+    const followRes = await sendMessage(project.id, "thread-proj-1", { body: "  Now check wrangler  " });
+    expect(followRes.status).toBe(201);
+    expect((await followRes.json<ProjectT3Thread>()).state).toBe("working");
+    const sendCall = mockState.toolCalls.filter((c) => c.name === "t3_thread_send").at(-1);
+    expect(sendCall?.arguments).toMatchObject({ threadId: "thread-proj-1", message: "Now check wrangler" });
+
+    // A model switch is refused mid-turn and nothing is sent
+    const codexSelection = { providerInstanceId: "prov-codex", model: "gpt-6-sol" };
+    mockState.threadStatus = "running";
+    mockState.activeRunId = "run-1";
+    const sendsBefore = mockState.toolCalls.filter((c) => c.name === "t3_thread_send").length;
+    const busyRes = await sendMessage(project.id, "thread-proj-1", { body: "switch", modelSelection: codexSelection });
+    expect(busyRes.status).toBe(409);
+    expect(await busyRes.json()).toMatchObject({ error: "thread_busy", state: "working" });
+    expect(mockState.toolCalls.filter((c) => c.name === "t3_thread_send")).toHaveLength(sendsBefore);
+
+    // Once the turn ends, the model switches and the follow-up carries the notice
+    mockState.threadStatus = "completed";
+    mockState.activeRunId = null;
+    mockState.recentRunStatus = "completed";
+    const switchRes = await sendMessage(project.id, "thread-proj-1", { body: "switch", modelSelection: codexSelection });
+    expect(switchRes.status).toBe(201);
+    expect(await switchRes.json<ProjectT3Thread>()).toMatchObject({
+      model: "gpt-6-sol",
+      providerInstanceId: "prov-codex",
+      state: "working",
+    });
+    const configureCall = mockState.toolCalls.filter((c) => c.name === "t3_thread_configure").at(-1);
+    expect(configureCall?.arguments).toMatchObject({
+      threadId: "thread-proj-1",
+      modelSelection: { instanceId: "prov-codex", model: "gpt-6-sol" },
+    });
+    const switchSend = mockState.toolCalls.filter((c) => c.name === "t3_thread_send").at(-1);
+    expect(String(switchSend?.arguments.message)).toMatch(/^The thread switched to gpt-6-sol \(prov-codex\)\./);
+    expect(String(switchSend?.arguments.message)).not.toContain("resume_from_checkpoint");
+
+    // Archived projects cannot start new threads
+    await request(`/api/projects/${project.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ archived: true }),
+    });
+    expect((await startThread(project.id, { prompt: "Check node" })).status).toBe(400);
+
+    // When T3 is unreachable, active threads are listed as offline
+    mockState.failMcpConnection = true;
+    const offline = await (await request(`/api/t3/projects/${project.id}/threads`)).json<ProjectT3ThreadsResponse>();
+    expect(offline.threads.find((t) => t.threadId === "thread-proj-1")?.state).toBe("offline");
+    expect(offline.threads.find((t) => t.threadId === "thread-proj-2")?.state).toBe("finished");
   });
 });

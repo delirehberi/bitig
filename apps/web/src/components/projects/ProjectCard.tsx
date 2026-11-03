@@ -5,6 +5,7 @@ import {
   ExternalLink,
   FolderKanban,
   ListTodo,
+  MessageSquare,
   Terminal,
   Trash2,
 } from "lucide-react";
@@ -111,6 +112,8 @@ interface ProjectCardProps {
   readonly onDelete: (project: Project) => void;
   readonly onSelect: (projectId: string) => void;
   readonly onView?: (project: Project) => void;
+  /** Opens the project with its T3 message box focused (#BIT-127). */
+  readonly onMessage?: (project: Project) => void;
   readonly onArchive?: (project: Project) => void;
   readonly onRecover?: (project: Project) => void;
 }
@@ -133,6 +136,7 @@ export function ProjectCard({
   onDelete,
   onSelect,
   onView,
+  onMessage,
   onArchive,
   onRecover,
 }: ProjectCardProps) {
@@ -241,6 +245,19 @@ export function ProjectCard({
             )}
           </div>
           <div className="flex items-center gap-1">
+            {onMessage && (
+              <button
+                type="button"
+                onClick={() => {
+                  onMessage(project);
+                }}
+                title="Message T3 without a task"
+                aria-label={`Message ${project.name} in T3`}
+                className="rounded-md p-1.5 text-ink-3 transition-colors hover:bg-paper-2 hover:text-ink focus-visible:outline-focus"
+              >
+                <MessageSquare size={ICON_SIZE} />
+              </button>
+            )}
             <button
               type="button"
               onClick={() => {

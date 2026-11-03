@@ -183,6 +183,7 @@ export function ProjectsView({
 
   const [deleteTarget, setDeleteTarget] = useState<Project | null>(null);
   const [viewProjectId, setViewProjectId] = useState<string | null>(null);
+  const [focusT3Composer, setFocusT3Composer] = useState(false);
   const viewProject = projects.find((p) => p.id === viewProjectId) ?? null;
 
   const activeProjects = projects.filter((p) => !p.archived);
@@ -473,6 +474,11 @@ export function ProjectsView({
               tasks={tasks}
               activeSessions={activeSessionsByProject.get(project.id) ?? []}
               onView={(p) => {
+                setFocusT3Composer(false);
+                setViewProjectId(p.id);
+              }}
+              onMessage={(p) => {
+                setFocusT3Composer(true);
                 setViewProjectId(p.id);
               }}
               onEdit={(p) => {
@@ -497,6 +503,7 @@ export function ProjectsView({
         project={viewProject}
         tasks={tasks}
         activeSessions={viewProject ? (activeSessionsByProject.get(viewProject.id) ?? []) : []}
+        focusT3Composer={focusT3Composer}
         onClose={() => {
           setViewProjectId(null);
         }}

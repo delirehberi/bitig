@@ -17,12 +17,15 @@ import { useFocusTrap } from "../../hooks/useFocusTrap";
 import { Markdown } from "../Markdown";
 import type { ResolvedProjectActiveSession } from "./activeSessions";
 import { ProjectActiveSessionsList } from "./ProjectCard";
+import { ProjectT3Panel } from "./ProjectT3Panel";
 import { ResourceLinks } from "./Resources";
 
 interface ProjectDetailModalProps {
   readonly project: Project | null;
   readonly tasks: readonly Task[];
   readonly activeSessions?: readonly ResolvedProjectActiveSession[];
+  /** Focuses the T3 message box when the modal opens (the card's Message action, #BIT-127). */
+  readonly focusT3Composer?: boolean | undefined;
   readonly onClose: () => void;
   readonly onEdit: (project: Project) => void;
   readonly onDelete: (project: Project) => void;
@@ -65,6 +68,7 @@ export function ProjectDetailModal({
   project,
   tasks,
   activeSessions = [],
+  focusT3Composer = false,
   onClose,
   onEdit,
   onDelete,
@@ -157,6 +161,10 @@ export function ProjectDetailModal({
             </h3>
             <ResourceLinks resources={project.resources} />
           </section>
+        )}
+
+        {project.archived !== true && (
+          <ProjectT3Panel key={project.id} project={project} focusComposer={focusT3Composer} />
         )}
 
         {activeSessions.length > 0 && (

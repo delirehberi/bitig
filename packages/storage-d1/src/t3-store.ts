@@ -1,12 +1,14 @@
-import { eq, lt } from "drizzle-orm";
+import { and, desc, eq, lt } from "drizzle-orm";
 import { drizzle, type DrizzleD1Database } from "drizzle-orm/d1";
 import {
   AgentRunSchema,
+  ProjectT3ThreadSchema,
   T3ModelSelectionOptionsSchema,
   T3ProjectMappingSchema,
   toTimestamp,
   type AgentRun,
   type AgentRunState,
+  type ProjectT3Thread,
   type T3ModelSelection,
   type T3ModelSelectionOption,
   type T3ProjectMapping,
@@ -16,10 +18,12 @@ import {
 import * as schema from "./schema";
 import {
   agentRuns,
+  projectT3Threads,
   t3Connections,
   t3OauthStates,
   t3ProjectMappings,
   type AgentRunRecord,
+  type ProjectT3ThreadRecord,
   type T3ConnectionRecord,
   type T3OauthStateRecord,
   type T3ProjectMappingRecord,
@@ -95,6 +99,45 @@ function toAgentRun(row: AgentRunRecord): AgentRun {
     ...(row.providerInstanceId !== null ? { providerInstanceId: row.providerInstanceId } : {}),
     ...(modelOptions ? { modelOptions } : {}),
     ...(row.workspaceStrategy !== null ? { workspaceStrategy: row.workspaceStrategy } : {}),
+    ...(row.startedBy !== null ? { startedBy: row.startedBy } : {}),
+    startedAt: toTimestamp(new Date(row.startedAt)),
+    updatedAt: toTimestamp(new Date(row.updatedAt)),
+  });
+}
+
+export interface SaveProjectT3ThreadInput {
+  id: string;
+  projectId: string;
+  t3ProjectId: string;
+  threadId: string;
+  title: string;
+  link?: string | undefined;
+  state: AgentRunState;
+  selection?: T3ModelSelection | undefined;
+  workspaceStrategy: T3WorkspaceStrategy;
+  startedBy?: TaskActor | undefined;
+  startedAt: number;
+  updatedAt: number;
+}
+
+function serializeModelOptions(options: readonly T3ModelSelectionOption[] | undefined): string | null {
+  return options && options.length > 0 ? JSON.stringify(options) : null;
+}
+
+function toProjectT3Thread(row: ProjectT3ThreadRecord): ProjectT3Thread {
+  const modelOptions = parseModelOptions(row.modelOptions);
+  return ProjectT3ThreadSchema.parse({
+    id: row.id,
+    projectId: row.projectId,
+    t3ProjectId: row.t3ProjectId,
+    threadId: row.threadId,
+    title: row.title,
+    ...(row.link !== null ? { link: row.link } : {}),
+    state: row.state,
+    ...(row.model !== null ? { model: row.model } : {}),
+    ...(row.providerInstanceId !== null ? { providerInstanceId: row.providerInstanceId } : {}),
+    ...(modelOptions ? { modelOptions } : {}),
+    workspaceStrategy: row.workspaceStrategy,
     ...(row.startedBy !== null ? { startedBy: row.startedBy } : {}),
     startedAt: toTimestamp(new Date(row.startedAt)),
     updatedAt: toTimestamp(new Date(row.updatedAt)),
@@ -342,6 +385,105 @@ export class T3D1Store {
       })
       .where(eq(agentRuns.taskId, taskId));
     const updated: AgentRun = {
+      ...existing,
+      model: patch.selection.model,
+      providerInstanceId: patch.selection.providerInstanceId,
+      updatedAt: toTimestamp(new Date(updatedAt)),
+    };
+    if (options.length > 0) {
+      updated.modelOptions = options.map((opt) => ({ ...opt }));
+    } else {
+      delete updated.modelOptions;
+    }
+    return updated;
+  }
+
+  /** Project-level threads (#BIT-127), newest first. Pass a project ID to list one project's threads. */
+  async listProjectThreads(projectId?: string): Promise<ProjectT3Thread[]> {
+    const query = this.db.select().from(projectT3Threads);
+    const rows = await (projectId ? query.where(eq(projectT3Threads.projectId, projectId)) : query).orderBy(
+      desc(projectT3Threads.startedAt),
+      desc(projectT3Threads.id),
+    );
+    return rows.map(toProjectT3Thread);
+  }
+
+  /** The project's thread with this T3 thread ID; `undefined` when it belongs to another project. */
+  async getProjectThread(projectId: string, threadId: string): Promise<ProjectT3Thread | undefined> {
+    const rows = await this.db
+      .select()
+      .from(projectT3Threads)
+      .where(and(eq(projectT3Threads.projectId, projectId), eq(projectT3Threads.threadId, threadId)))
+      .limit(1);
+    const row = rows[0];
+    return row ? toProjectT3Thread(row) : undefined;
+  }
+
+  async saveProjectThread(input: SaveProjectT3ThreadInput): Promise<ProjectT3Thread> {
+    const record: ProjectT3ThreadRecord = {
+      id: input.id,
+      projectId: input.projectId,
+      t3ProjectId: input.t3ProjectId,
+      threadId: input.threadId,
+      title: input.title,
+      link: input.link ?? null,
+      state: input.state,
+      model: input.selection?.model ?? null,
+      providerInstanceId: input.selection?.providerInstanceId ?? null,
+      modelOptions: serializeModelOptions(input.selection?.options),
+      workspaceStrategy: input.workspaceStrategy,
+      startedBy: input.startedBy ?? null,
+      startedAt: input.startedAt,
+      updatedAt: input.updatedAt,
+    };
+    await this.db.insert(projectT3Threads).values(record);
+    return toProjectT3Thread(record);
+  }
+
+  async updateProjectThreadState(
+    projectId: string,
+    threadId: string,
+    patch: { state: AgentRunState; link?: string | undefined; now?: number },
+  ): Promise<ProjectT3Thread | undefined> {
+    const existing = await this.getProjectThread(projectId, threadId);
+    if (!existing) {
+      return undefined;
+    }
+    const updatedAt = patch.now ?? Date.now();
+    const nextLink = patch.link ?? existing.link ?? null;
+    await this.db
+      .update(projectT3Threads)
+      .set({ state: patch.state, link: nextLink, updatedAt })
+      .where(eq(projectT3Threads.id, existing.id));
+    return {
+      ...existing,
+      ...(nextLink ? { link: nextLink } : {}),
+      state: patch.state,
+      updatedAt: toTimestamp(new Date(updatedAt)),
+    };
+  }
+
+  async updateProjectThreadModel(
+    projectId: string,
+    threadId: string,
+    patch: { selection: T3ModelSelection; now?: number },
+  ): Promise<ProjectT3Thread | undefined> {
+    const existing = await this.getProjectThread(projectId, threadId);
+    if (!existing) {
+      return undefined;
+    }
+    const updatedAt = patch.now ?? Date.now();
+    const options = patch.selection.options ?? [];
+    await this.db
+      .update(projectT3Threads)
+      .set({
+        model: patch.selection.model,
+        providerInstanceId: patch.selection.providerInstanceId,
+        modelOptions: serializeModelOptions(options),
+        updatedAt,
+      })
+      .where(eq(projectT3Threads.id, existing.id));
+    const updated: ProjectT3Thread = {
       ...existing,
       model: patch.selection.model,
       providerInstanceId: patch.selection.providerInstanceId,

@@ -173,8 +173,8 @@ export function TaskComments({ storage, taskId, onResolve, t3 }: TaskCommentsPro
         {showModelPicker && (
           <div className="mt-2 flex flex-col gap-1">
             <T3ModelPicker
-              taskId={taskId}
-              run={t3.run}
+              idSuffix={`reply-${taskId}`}
+              keepLabel={`Keep current model (${t3.run.model ?? "default model"})`}
               capabilities={t3.capabilities}
               value={switchSelection}
               onChange={setModelSelection}

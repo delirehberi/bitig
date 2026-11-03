@@ -1,7 +1,11 @@
 import type {
   AgentRun,
   Comment,
+  ProjectT3Thread,
+  ProjectT3ThreadsResponse,
   ReplyToT3RunInput,
+  SendProjectT3MessageInput,
+  StartProjectT3ThreadInput,
   StartT3ThreadInput,
   T3ConnectionStatus,
   T3ModelCapability,
@@ -263,4 +267,64 @@ export async function replyToTaskT3Run(taskId: string, input: ReplyToT3RunInput)
     throw new T3ApiError(response.status, await parseErrorMessage(response, "Could not send reply to T3 thread"));
   }
   return (await response.json()) as ReplyToTaskT3RunResult;
+}
+
+function projectThreadsPath(projectId: string): string {
+  return `/api/t3/projects/${encodeURIComponent(projectId)}/threads`;
+}
+
+/** Lists the project's Bitig-started T3 threads (#BIT-127), newest first, with live state. */
+export async function fetchProjectT3Threads(projectId: string, signal?: AbortSignal): Promise<ProjectT3Thread[]> {
+  const response = await fetch(projectThreadsPath(projectId), {
+    headers: BASE_HEADERS,
+    credentials: "same-origin",
+    ...(signal ? { signal } : {}),
+  });
+  if (!response.ok) {
+    throw new T3ApiError(response.status, await parseErrorMessage(response, "Could not load project T3 threads"));
+  }
+  const body = (await response.json()) as Partial<ProjectT3ThreadsResponse> | null;
+  return Array.isArray(body?.threads) ? body.threads : [];
+}
+
+/** Starts a T3 thread for the project without a task (#BIT-127). */
+export async function startProjectT3Thread(
+  projectId: string,
+  input: StartProjectT3ThreadInput,
+  signal?: AbortSignal,
+): Promise<ProjectT3Thread> {
+  const response = await fetch(projectThreadsPath(projectId), {
+    method: "POST",
+    headers: { ...BASE_HEADERS, "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify(input),
+    ...(signal ? { signal } : {}),
+  });
+  if (!response.ok) {
+    throw new T3ApiError(response.status, await parseErrorMessage(response, "Could not start T3 thread"));
+  }
+  return (await response.json()) as ProjectT3Thread;
+}
+
+/**
+ * Sends a follow-up to a project-level T3 thread, switching its model first when `modelSelection`
+ * differs (#BIT-127). A 409 means the thread is mid-turn.
+ */
+export async function sendProjectT3Message(
+  projectId: string,
+  threadId: string,
+  input: SendProjectT3MessageInput,
+  signal?: AbortSignal,
+): Promise<ProjectT3Thread> {
+  const response = await fetch(`${projectThreadsPath(projectId)}/${encodeURIComponent(threadId)}/messages`, {
+    method: "POST",
+    headers: { ...BASE_HEADERS, "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify(input),
+    ...(signal ? { signal } : {}),
+  });
+  if (!response.ok) {
+    throw new T3ApiError(response.status, await parseErrorMessage(response, "Could not send message to T3 thread"));
+  }
+  return (await response.json()) as ProjectT3Thread;
 }

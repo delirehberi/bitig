@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  PROJECT_T3_THREAD_TITLE_MAX,
+  ProjectT3ThreadSchema,
   ReplyToT3RunInputSchema,
+  SendProjectT3MessageInputSchema,
+  StartProjectT3ThreadInputSchema,
+  buildProjectT3LaunchPrompt,
+  buildProjectT3ModelSwitchNotice,
+  buildProjectT3ThreadTitle,
   T3ModelCapabilitySchema,
   T3_ALLOWED_MCP_TOOLS,
   buildT3LaunchPrompt,
@@ -248,5 +255,64 @@ describe("T3 model switching (BIT-119)", () => {
         options: [{ id: "fastMode", values: [false, true] }],
       }).success,
     ).toBe(true);
+  });
+});
+
+describe("project-level T3 threads (BIT-127)", () => {
+  it("validates start input and trims the prompt", () => {
+    const parsed = StartProjectT3ThreadInputSchema.parse({
+      prompt: "  check node version  ",
+      workspaceStrategy: "root",
+      modelSelection: { providerInstanceId: "claudeAgent", model: "claude-opus-5-5" },
+    });
+    expect(parsed.prompt).toBe("check node version");
+    expect(StartProjectT3ThreadInputSchema.safeParse({ prompt: "   " }).success).toBe(false);
+    expect(StartProjectT3ThreadInputSchema.safeParse({ prompt: "x", extra: 1 }).success).toBe(false);
+    expect(StartProjectT3ThreadInputSchema.safeParse({ prompt: "x".repeat(20_001) }).success).toBe(false);
+  });
+
+  it("validates follow-up input", () => {
+    expect(SendProjectT3MessageInputSchema.safeParse({ body: "ok" }).success).toBe(true);
+    expect(SendProjectT3MessageInputSchema.safeParse({ body: "" }).success).toBe(false);
+    expect(
+      SendProjectT3MessageInputSchema.safeParse({ body: "ok", modelSelection: { model: "m" } }).success,
+    ).toBe(false);
+  });
+
+  it("requires a workspace strategy on a stored thread", () => {
+    const base = {
+      id: "01a1a193-c1e4-7750-833d-a7d9b5c42f1d",
+      projectId: "01a14ecf-281e-7436-8c52-a524c5fabc2f",
+      t3ProjectId: "t3-proj",
+      threadId: "thread-1",
+      title: "Check env",
+      state: "working",
+      startedAt: "2026-11-03T00:00:00.000Z",
+      updatedAt: "2026-11-03T00:00:00.000Z",
+    };
+    expect(ProjectT3ThreadSchema.safeParse(base).success).toBe(false);
+    expect(ProjectT3ThreadSchema.safeParse({ ...base, workspaceStrategy: "root" }).success).toBe(true);
+  });
+
+  it("titles a thread from the first non-empty prompt line", () => {
+    expect(buildProjectT3ThreadTitle("\n\n  Check env  \nmore")).toBe("Check env");
+    expect(buildProjectT3ThreadTitle("   ")).toBe("Project message");
+    const long = buildProjectT3ThreadTitle("a".repeat(500));
+    expect(long).toHaveLength(PROJECT_T3_THREAD_TITLE_MAX);
+    expect(long.endsWith("…")).toBe(true);
+  });
+
+  it("tells the agent there is no Bitig task", () => {
+    const prompt = buildProjectT3LaunchPrompt({ project: { name: "Bitig", key: "BIT" }, prompt: " ls -la " });
+    expect(prompt).toContain('Bitig project "Bitig" (BIT)');
+    expect(prompt).toContain("There is no Bitig task");
+    expect(prompt.endsWith("ls -la")).toBe(true);
+    expect(buildProjectT3LaunchPrompt({ project: { name: "X" }, prompt: "hi" })).toContain('project "X".');
+  });
+
+  it("builds a switch notice without checkpoint instructions", () => {
+    const notice = buildProjectT3ModelSwitchNotice("gpt-6 (codex)");
+    expect(notice).toContain("gpt-6 (codex)");
+    expect(notice).not.toContain("resume_from_checkpoint");
   });
 });

@@ -7,6 +7,7 @@ export {
 export {
   T3D1Store,
   type SaveAgentRunInput,
+  type SaveProjectT3ThreadInput,
   type SaveT3ConnectionInput,
   type SaveT3OauthStateInput,
 } from "./t3-store";

@@ -1,4 +1,4 @@
-import type { AgentRun, T3ModelCapability, T3ModelOptionValue, T3ModelSelection } from "@bitig/core";
+import type { T3ModelCapability, T3ModelOptionValue, T3ModelSelection } from "@bitig/core";
 
 /** Separates provider instance and model in a picker value; neither contains it. */
 const MODEL_KEY_SEPARATOR = "::";
@@ -36,13 +36,13 @@ function defaultT3ModelSelection(cap: T3ModelCapability): T3ModelSelection {
   };
 }
 
-function currentModelLabel(run: AgentRun): string {
-  return run.model ?? "default model";
-}
-
 interface T3ModelPickerProps {
-  readonly taskId: string;
-  readonly run: AgentRun;
+  /** Unique per picker on the page; used for the select's element ID. */
+  readonly idSuffix: string;
+  /** Visible label of the model select. */
+  readonly label?: string | undefined;
+  /** Text of the first option, which keeps the thread's current (or T3's default) model. */
+  readonly keepLabel: string;
   readonly capabilities: readonly T3ModelCapability[];
   /** `null` keeps the thread's current model. */
   readonly value: T3ModelSelection | null;
@@ -50,14 +50,27 @@ interface T3ModelPickerProps {
   readonly disabled: boolean;
 }
 
-/** Provider, model and option (e.g. effort) selects for a reply to a T3 thread (#BIT-119). */
-export function T3ModelPicker({ taskId, run, capabilities, value, onChange, disabled }: T3ModelPickerProps) {
+const DEFAULT_PICKER_LABEL = "Reply with model";
+
+/**
+ * Provider, model and option (e.g. effort) selects for a T3 thread: task replies (#BIT-119) and
+ * project-level threads (#BIT-127).
+ */
+export function T3ModelPicker({
+  idSuffix,
+  label = DEFAULT_PICKER_LABEL,
+  keepLabel,
+  capabilities,
+  value,
+  onChange,
+  disabled,
+}: T3ModelPickerProps) {
   const selectedCap = value ? capabilities.find((cap) => modelKey(cap) === modelKey(value)) : undefined;
-  const modelSelectId = `t3-reply-model-${taskId}`;
+  const modelSelectId = `t3-model-${idSuffix}`;
 
   return (
     <div className="flex flex-wrap items-center gap-2 text-xs text-ink-2">
-      <label htmlFor={modelSelectId}>Reply with model</label>
+      <label htmlFor={modelSelectId}>{label}</label>
       <select
         id={modelSelectId}
         value={value ? modelKey(value) : KEEP_CURRENT_VALUE}
@@ -68,7 +81,7 @@ export function T3ModelPicker({ taskId, run, capabilities, value, onChange, disa
         }}
         className="rounded-md border border-rule bg-paper px-2 py-1 text-xs text-ink disabled:opacity-50"
       >
-        <option value={KEEP_CURRENT_VALUE}>Keep current model ({currentModelLabel(run)})</option>
+        <option value={KEEP_CURRENT_VALUE}>{keepLabel}</option>
         {capabilities.map((cap) => (
           <option key={modelKey(cap)} value={modelKey(cap)}>
             {cap.displayName ? `${cap.displayName}: ` : ""}

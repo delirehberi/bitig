@@ -211,6 +211,34 @@ export const agentRuns = sqliteTable(
   ],
 );
 
+/** T3 threads Bitig started for a project without a task (#BIT-127). */
+export const projectT3Threads = sqliteTable(
+  "project_t3_threads",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    t3ProjectId: text("t3_project_id").notNull(),
+    threadId: text("thread_id").notNull(),
+    title: text("title").notNull(),
+    link: text("link"),
+    state: text("state").$type<AgentRunState>().notNull(),
+    model: text("model"),
+    providerInstanceId: text("provider_instance_id"),
+    /** JSON array of `{ id, value }` model options, as in `agent_runs.model_options`. */
+    modelOptions: text("model_options"),
+    workspaceStrategy: text("workspace_strategy").$type<T3WorkspaceStrategy>().notNull(),
+    startedBy: text("started_by").$type<TaskActor>(),
+    startedAt: integer("started_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("project_t3_threads_thread_id_idx").on(table.threadId),
+    index("project_t3_threads_project_id_idx").on(table.projectId),
+  ],
+);
+
 export const mcpTokens = sqliteTable("mcp_tokens", {
   id: text("id").primaryKey(),
   label: text("label").notNull(),
@@ -232,6 +260,7 @@ export type CheckpointRecord = typeof checkpoints.$inferSelect;
 export type InsertCheckpointRecord = typeof checkpoints.$inferInsert;
 export type WebhookRecord = typeof webhooks.$inferSelect;
 export type InsertWebhookRecord = typeof webhooks.$inferInsert;
+export type ProjectT3ThreadRecord = typeof projectT3Threads.$inferSelect;
 export type AttachmentRecord = typeof attachments.$inferSelect;
 export type InsertAttachmentRecord = typeof attachments.$inferInsert;
 export type T3ConnectionRecord = typeof t3Connections.$inferSelect;

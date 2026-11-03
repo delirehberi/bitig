@@ -130,6 +130,16 @@ describe("ProjectsView filtering and detail modal", () => {
     expect(screen.getByRole("dialog", { name: "Alpha SaaS" })).toBeInTheDocument();
   });
 
+  it("opens the project's T3 message panel from the card's Message action (BIT-127)", async () => {
+    const user = userEvent.setup();
+    renderProjectsView();
+
+    await user.click(screen.getByRole("button", { name: "Message Alpha SaaS in T3" }));
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByRole("heading", { name: "Alpha SaaS" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("heading", { name: "Message T3 (no task)" })).toBeInTheDocument();
+  });
+
   it("hides archived projects from the main view, archives active projects, and recovers archived projects", async () => {
     const user = userEvent.setup();
     const onUpdateProject = vi.fn().mockResolvedValue(PROJECT_PAID);

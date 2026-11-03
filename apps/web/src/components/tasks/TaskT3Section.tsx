@@ -12,7 +12,6 @@ import {
 } from "lucide-react";
 import type {
   AgentRun,
-  AgentRunState,
   Project,
   T3ConnectionStatus,
   T3ModelCapability,
@@ -23,6 +22,7 @@ import type {
   Task,
 } from "@bitig/core";
 import { useRealtimeEvent } from "../../hooks/useRealtime";
+import { STATE_BADGE_CLASSES, STATE_LABELS } from "./t3-run-state";
 import { Link } from "../../routing/Link";
 import { hrefFor } from "../../routing/router";
 import {
@@ -43,24 +43,6 @@ interface TaskT3SectionProps {
   /** Reports the task's run and the T3 model list, so the comment box can switch models (#BIT-119). */
   readonly onT3ContextChange?: ((context: { run: AgentRun | null; capabilities: T3ModelCapability[] }) => void) | undefined;
 }
-
-const STATE_LABELS: Record<AgentRunState, string> = {
-  working: "working",
-  waiting_for_approval: "waiting for approval",
-  finished: "finished",
-  failed: "failed",
-  stopped: "stopped",
-  offline: "offline",
-};
-
-const STATE_BADGE_CLASSES: Record<AgentRunState, string> = {
-  working: "border-accent/40 bg-accent-soft text-accent-ink",
-  waiting_for_approval: "border-danger/40 bg-danger-soft text-danger",
-  finished: "border-rule bg-paper-2 text-ink-2",
-  failed: "border-danger/40 bg-danger-soft text-danger",
-  stopped: "border-rule bg-paper-3 text-ink-3",
-  offline: "border-rule bg-paper-3 text-ink-3",
-};
 
 export function TaskT3Section({
   task,

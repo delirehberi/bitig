@@ -1,6 +1,10 @@
 import {
+  DEFAULT_PROJECT_T3_WORKSPACE_STRATEGY,
   NotFoundError,
   ValidationError,
+  buildProjectT3LaunchPrompt,
+  buildProjectT3ModelSwitchNotice,
+  buildProjectT3ThreadTitle,
   buildT3LaunchPrompt,
   buildT3ModelSwitchComment,
   buildT3ModelSwitchNotice,
@@ -17,11 +21,15 @@ import {
   type AgentRun,
   type AgentRunState,
   type Comment,
+  type Project,
+  type ProjectT3Thread,
+  type ProjectT3ThreadsResponse,
   type RealtimeEvent,
   type StorageProvider,
   type T3ConnectionStatus,
   type T3ModelCapability,
   type T3ModelSelection,
+  type T3ModelSelectionOption,
   type T3ProjectActiveSession,
   type T3RunsLiveResponse,
   type T3TaskRunLiveResponse,
@@ -332,10 +340,12 @@ export async function getTaskT3RunLiveStatus(
  * on the T3 host are reconciled in D1 without opening each task modal individually.
  */
 export async function listT3RunsLive(deps: T3ServiceDeps): Promise<T3RunsLiveResponse> {
-  const [existingRuns, mappings] = await Promise.all([
+  const [existingRuns, mappings, projectThreads] = await Promise.all([
     deps.store.listAgentRuns(),
     deps.store.listProjectMappings(),
+    deps.store.listProjectThreads(),
   ]);
+  const projectThreadsById = new Map(projectThreads.map((t) => [t.threadId, t]));
   if (existingRuns.length === 0 && mappings.length === 0) {
     return { runs: [], activeSessions: [] };
   }
@@ -478,14 +488,18 @@ export async function listT3RunsLive(deps: T3ServiceDeps): Promise<T3RunsLiveRes
       continue;
     }
     seenThreadIds.add(thread.threadId);
+    // Project-level threads Bitig started (#BIT-127) keep their stored title and model when T3 omits them.
+    const projectThread = projectThreadsById.get(thread.threadId);
+    const title = thread.title ?? projectThread?.title;
+    const model = thread.model ?? projectThread?.model;
     activeSessions.push({
       threadId: thread.threadId,
       projectId,
       t3ProjectId: thread.projectId,
       state,
-      ...(thread.title ? { title: thread.title } : {}),
+      ...(title ? { title } : {}),
       ...(thread.link ? { link: thread.link } : {}),
-      ...(thread.model ? { model: thread.model } : {}),
+      ...(model ? { model } : {}),
       ...(thread.updatedAt ? { updatedAt: thread.updatedAt } : {}),
     });
   }
@@ -717,6 +731,62 @@ export async function listT3ModelCapabilities(
   return capabilities;
 }
 
+/** The model a thread was last recorded with, as a full selection when both model and provider are known. */
+function storedT3ModelSelection(stored: {
+  readonly model?: string | undefined;
+  readonly providerInstanceId?: string | undefined;
+  readonly modelOptions?: readonly T3ModelSelectionOption[] | undefined;
+}): T3ModelSelection | undefined {
+  if (!stored.model || !stored.providerInstanceId) return undefined;
+  return {
+    providerInstanceId: stored.providerInstanceId,
+    model: stored.model,
+    ...(stored.modelOptions ? { options: stored.modelOptions.map((opt) => ({ ...opt })) } : {}),
+  };
+}
+
+/**
+ * Switches a thread to `selection` when it runs a different model (#BIT-119), shared by task replies
+ * and project-level follow-ups (#BIT-127). The thread must be waiting or past its turn (see
+ * `canSwitchT3Model`); otherwise `T3ModelSwitchConflictError` is thrown before anything changes.
+ * Resolves to the from/to labels after a switch, or `undefined` when the model already matches.
+ */
+async function switchT3ThreadModel(
+  mcpClient: T3McpClient,
+  threadId: string,
+  stored: {
+    readonly model?: string | undefined;
+    readonly providerInstanceId?: string | undefined;
+    readonly modelOptions?: readonly T3ModelSelectionOption[] | undefined;
+  },
+  selection: T3ModelSelection,
+): Promise<{ from: string; to: string } | undefined> {
+  const current = await mcpClient.readThreadModel(threadId);
+  const known = current ?? storedT3ModelSelection(stored);
+  if (known && isSameT3ModelSelection(known, selection)) {
+    return undefined;
+  }
+
+  const live = await mcpClient.readThreadLiveStatus(threadId);
+  const liveState = deriveLiveAgentRunState({
+    thread: live.thread,
+    recentRuns: live.recentRuns,
+    pendingRequestIds: live.pendingRequestIds,
+  });
+  // A pending request keeps a run id open while the thread waits on a person, so only an
+  // active run outside the waiting state counts as mid-turn.
+  const midTurn = Boolean(live.thread?.activeRunId) && liveState !== "waiting_for_approval";
+  if (!canSwitchT3Model(liveState) || midTurn) {
+    throw new T3ModelSwitchConflictError(midTurn ? "working" : liveState);
+  }
+
+  await mcpClient.configureThreadModel(threadId, selection);
+  return {
+    from: formatT3ModelSelection(known ?? { ...(stored.model ? { model: stored.model } : {}) }),
+    to: formatT3ModelSelection(selection),
+  };
+}
+
 /** Author of the comment Bitig records when a thread switches models. */
 export const T3_MODEL_SWITCH_COMMENT_AUTHOR = "bitig";
 
@@ -772,42 +842,14 @@ export async function replyToTaskT3Run(
   let switchComment: Comment | undefined;
   if (input.modelSelection) {
     const selection = input.modelSelection;
-    const current = await mcpClient.readThreadModel(existingRun.threadId);
-    const known: T3ModelSelection | undefined =
-      current ??
-      (existingRun.model && existingRun.providerInstanceId
-        ? {
-            providerInstanceId: existingRun.providerInstanceId,
-            model: existingRun.model,
-            ...(existingRun.modelOptions ? { options: existingRun.modelOptions } : {}),
-          }
-        : undefined);
-
-    if (!known || !isSameT3ModelSelection(known, selection)) {
-      const live = await mcpClient.readThreadLiveStatus(existingRun.threadId);
-      const liveState = deriveLiveAgentRunState({
-        thread: live.thread,
-        recentRuns: live.recentRuns,
-        pendingRequestIds: live.pendingRequestIds,
-      });
-      // A pending request keeps a run id open while the thread waits on a person, so only an
-      // active run outside the waiting state counts as mid-turn.
-      const midTurn = Boolean(live.thread?.activeRunId) && liveState !== "waiting_for_approval";
-      if (!canSwitchT3Model(liveState) || midTurn) {
-        throw new T3ModelSwitchConflictError(midTurn ? "working" : liveState);
-      }
-
-      await mcpClient.configureThreadModel(existingRun.threadId, selection);
+    const switched = await switchT3ThreadModel(mcpClient, existingRun.threadId, existingRun, selection);
+    if (switched) {
       run = (await deps.store.updateAgentRunModel(task.id, { selection, now })) ?? existingRun;
-
-      const fromLabel = formatT3ModelSelection(
-        known ?? { ...(existingRun.model ? { model: existingRun.model } : {}) },
-      );
-      switchedTo = formatT3ModelSelection(selection);
+      switchedTo = switched.to;
       switchComment = await deps.storage.addComment(
         {
           taskId: task.id,
-          body: buildT3ModelSwitchComment(fromLabel, switchedTo),
+          body: buildT3ModelSwitchComment(switched.from, switched.to),
           authorType: "agent",
           author: T3_MODEL_SWITCH_COMMENT_AUTHOR,
         },
@@ -841,4 +883,203 @@ export async function replyToTaskT3Run(
     ...(switchComment ? { switchComment } : {}),
     run: sent.run ?? run,
   };
+}
+
+/** Project-level thread states that `t3_thread_list` reconciliation turns offline when T3 is unreachable. */
+function toOfflineIfActive(thread: ProjectT3Thread): AgentRunState {
+  return isActiveAgentRunState(thread.state) ? "offline" : thread.state;
+}
+
+async function requireProject(storage: StorageProvider, projectId: string): Promise<Project> {
+  const project = await storage.getProject(projectId);
+  if (!project) {
+    throw new NotFoundError("project", projectId);
+  }
+  return project;
+}
+
+export interface LaunchProjectThreadInT3Options {
+  projectId: string;
+  prompt: string;
+  workspaceStrategy?: T3WorkspaceStrategy | undefined;
+  modelSelection?: T3ModelSelection | undefined;
+  actor?: string | undefined;
+}
+
+/**
+ * Starts a T3 thread for a Bitig project without a task (#BIT-127), e.g. to check the environment.
+ * Refused when the project is archived, is not mapped to a T3 project, or no valid T3 connection exists.
+ * The thread runs in the project root unless `workspaceStrategy` says otherwise.
+ */
+export async function launchProjectThreadInT3(
+  deps: T3ServiceDeps,
+  options: LaunchProjectThreadInT3Options,
+): Promise<ProjectT3Thread> {
+  const now = deps.now ? deps.now() : Date.now();
+  const project = await requireProject(deps.storage, options.projectId);
+  if (project.archived) {
+    makeValidationIssue("projectId", `Project "${project.name}" is archived. Restore it before messaging T3.`);
+  }
+
+  const mapping = await deps.store.getProjectMapping(project.id);
+  if (!mapping) {
+    makeValidationIssue(
+      "projectId",
+      `Project "${project.name}" is not mapped to a T3 project. Map it in Settings first.`,
+    );
+  }
+
+  const mcpClient = await createActiveT3McpClient({
+    store: deps.store,
+    encryptionKey: deps.encryptionKey,
+    fetchFn: deps.fetchFn,
+    now,
+  });
+
+  // The record ID doubles as T3's idempotency key, so a retried request cannot start a second thread.
+  const id = defaultIdGenerator();
+  const workspaceStrategy = options.workspaceStrategy ?? DEFAULT_PROJECT_T3_WORKSPACE_STRATEGY;
+  const title = buildProjectT3ThreadTitle(options.prompt);
+  const selection = options.modelSelection;
+  const launched = await mcpClient.launchThread({
+    projectId: mapping.t3ProjectId,
+    title,
+    prompt: buildProjectT3LaunchPrompt({ project, prompt: options.prompt }),
+    clientRequestId: id,
+    workspaceStrategy,
+    providerInstanceId: selection?.providerInstanceId,
+    model: selection?.model,
+    options: selection?.options,
+  });
+
+  const actor = (options.actor?.trim() ?? "") || "t3";
+  return deps.store.saveProjectThread({
+    id,
+    projectId: project.id,
+    t3ProjectId: mapping.t3ProjectId,
+    threadId: launched.threadId,
+    title,
+    link: launched.link,
+    state: "working",
+    selection,
+    workspaceStrategy,
+    startedBy: actor,
+    startedAt: now,
+    updatedAt: now,
+  });
+}
+
+export interface SendProjectT3MessageOptions {
+  body: string;
+  modelSelection?: T3ModelSelection | undefined;
+}
+
+/**
+ * Sends a follow-up to a project-level thread (#BIT-127). Only threads Bitig recorded for this
+ * project can be messaged, so the endpoint cannot reach arbitrary T3 threads. With `modelSelection`,
+ * the thread switches models first under the same rules as task replies (409 while mid-turn).
+ */
+export async function sendProjectT3Message(
+  deps: T3ServiceDeps,
+  projectId: string,
+  threadId: string,
+  options: SendProjectT3MessageOptions,
+): Promise<ProjectT3Thread> {
+  await requireProject(deps.storage, projectId);
+  const existing = await deps.store.getProjectThread(projectId, threadId);
+  if (!existing) {
+    throw new NotFoundError("t3_thread", threadId);
+  }
+
+  const now = deps.now ? deps.now() : Date.now();
+  const mcpClient = await createActiveT3McpClient({
+    store: deps.store,
+    encryptionKey: deps.encryptionKey,
+    fetchFn: deps.fetchFn,
+    now,
+  });
+
+  let thread = existing;
+  let switchedTo: string | undefined;
+  if (options.modelSelection) {
+    const selection = options.modelSelection;
+    const switched = await switchT3ThreadModel(mcpClient, existing.threadId, existing, selection);
+    if (switched) {
+      thread = (await deps.store.updateProjectThreadModel(projectId, threadId, { selection, now })) ?? existing;
+      switchedTo = switched.to;
+    }
+  }
+
+  const body = options.body.trim();
+  const prompt = switchedTo ? `${buildProjectT3ModelSwitchNotice(switchedTo)}\n\n${body}` : body;
+  await mcpClient.sendThreadMessage({ threadId: existing.threadId, prompt });
+
+  return (await deps.store.updateProjectThreadState(projectId, threadId, { state: "working", now })) ?? thread;
+}
+
+/**
+ * Lists a project's Bitig-started threads (#BIT-127), newest first, reconciling their state with
+ * `t3_thread_list`. When T3 cannot be reached, active threads are shown (and stored) as `offline`.
+ */
+export async function listProjectT3ThreadsLive(
+  deps: T3ServiceDeps,
+  projectId: string,
+): Promise<ProjectT3ThreadsResponse> {
+  await requireProject(deps.storage, projectId);
+  const stored = await deps.store.listProjectThreads(projectId);
+  if (stored.length === 0) {
+    return { threads: [] };
+  }
+
+  const now = deps.now ? deps.now() : Date.now();
+  let listed: T3ThreadListItem[] | undefined;
+  try {
+    const mcpClient = await createActiveT3McpClient({
+      store: deps.store,
+      encryptionKey: deps.encryptionKey,
+      fetchFn: deps.fetchFn,
+      now,
+    });
+    listed = await mcpClient.listThreads({ allProjects: true, includeSubagents: false, limit: 100 });
+  } catch (err) {
+    if (!(err instanceof T3McpError) && !(err instanceof ValidationError)) {
+      throw err;
+    }
+    listed = undefined;
+  }
+
+  const listedById = new Map((listed ?? []).map((t) => [t.threadId, t]));
+  const threads: ProjectT3Thread[] = [];
+  for (const thread of stored) {
+    const listedThread = listedById.get(thread.threadId);
+    let nextState: AgentRunState;
+    let nextLink = thread.link;
+    if (!listed) {
+      nextState = toOfflineIfActive(thread);
+    } else if (listedThread) {
+      nextState = deriveLiveAgentRunState({
+        threadStatus: listedThread.status,
+        pendingRequestCount: listedThread.pendingRequestCount,
+        activeRunId: listedThread.activeRunId,
+        settled: listedThread.settled,
+      });
+      nextLink = listedThread.link ?? thread.link;
+    } else {
+      // Not in the bounded listing (older or deleted on the host): keep what Bitig last saw.
+      nextState = thread.state;
+    }
+
+    if (nextState === thread.state && nextLink === thread.link) {
+      threads.push(thread);
+      continue;
+    }
+    threads.push(
+      (await deps.store.updateProjectThreadState(projectId, thread.threadId, {
+        state: nextState,
+        ...(nextLink ? { link: nextLink } : {}),
+        now,
+      })) ?? thread,
+    );
+  }
+  return { threads };
 }
