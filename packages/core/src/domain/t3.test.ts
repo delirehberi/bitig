@@ -20,7 +20,9 @@ import {
   isActiveAgentRunState,
   isSameT3ModelSelection,
   normalizeT3McpUrl,
+  T3WorkspaceBusyError,
 } from "./t3";
+import { BitigError, isBitigError } from "./errors";
 import type { Comment, Task } from "./types";
 
 describe("normalizeT3McpUrl", () => {
@@ -314,5 +316,31 @@ describe("project-level T3 threads (BIT-127)", () => {
     const notice = buildProjectT3ModelSwitchNotice("gpt-6 (codex)");
     expect(notice).toContain("gpt-6 (codex)");
     expect(notice).not.toContain("resume_from_checkpoint");
+  });
+});
+
+describe("T3WorkspaceBusyError (BIT-134)", () => {
+  it("is a BitigError with the WORKSPACE_BUSY code and names the busy task", () => {
+    const error = new T3WorkspaceBusyError({
+      threadId: "thread-1",
+      state: "waiting_for_approval",
+      taskId: "task-1",
+      taskCode: "BIT-12",
+      title: "Other task",
+    });
+    expect(error).toBeInstanceOf(BitigError);
+    expect(isBitigError(error)).toBe(true);
+    expect(error.code).toBe("WORKSPACE_BUSY");
+    expect(error.name).toBe("T3WorkspaceBusyError");
+    expect(error.session.threadId).toBe("thread-1");
+    expect(error.message).toContain("(BIT-12) is waiting for approval");
+    expect(error.message).toContain("isolated git worktree");
+  });
+
+  it("falls back to the title, then the thread ID, when the session has no ticket code", () => {
+    expect(new T3WorkspaceBusyError({ threadId: "t-1", state: "working", title: "Fix it" }).message).toContain(
+      "(Fix it) is working",
+    );
+    expect(new T3WorkspaceBusyError({ threadId: "t-1", state: "working" }).message).toContain("(t-1) is working");
   });
 });

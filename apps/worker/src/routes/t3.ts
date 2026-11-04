@@ -8,6 +8,7 @@ import {
   StartProjectT3ThreadInputSchema,
   StartT3ThreadInputSchema,
   T3StartOAuthInputSchema,
+  T3WorkspaceBusyError,
   UpsertT3ProjectMappingInputSchema,
   ValidationError,
 } from "@bitig/core";
@@ -56,6 +57,9 @@ export function buildServiceDeps(c: Context<AppEnv>): T3ServiceDeps {
 function handleT3RouteError(err: unknown, c: Context<AppEnv>): Response {
   if (err instanceof T3ModelSwitchConflictError) {
     return c.json({ error: err.code, message: err.message, state: err.state }, HTTP_CONFLICT);
+  }
+  if (err instanceof T3WorkspaceBusyError) {
+    return c.json({ error: "workspace_busy", message: err.message, session: err.session }, HTTP_CONFLICT);
   }
   if (err instanceof T3OAuthError || err instanceof T3McpError) {
     return c.json(

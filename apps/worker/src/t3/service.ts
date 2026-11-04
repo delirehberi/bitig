@@ -3,6 +3,7 @@ import {
   NotFoundError,
   PROJECT_T3_MESSAGES_PAGE_LIMIT,
   PROJECT_T3_MESSAGE_MAX_CHARS,
+  T3WorkspaceBusyError,
   ValidationError,
   buildProjectT3LaunchPrompt,
   buildProjectT3ModelSwitchNotice,
@@ -20,6 +21,7 @@ import {
   isSameT3ModelSelection,
   resolveTaskRef,
   taskCode,
+  type ActiveAgentRunState,
   type AgentRun,
   type AgentRunState,
   type Comment,
@@ -37,6 +39,7 @@ import {
   type T3RunsLiveResponse,
   type T3TaskRunLiveResponse,
   type T3ThreadListItem,
+  type T3WorkspaceBusySession,
   type T3WorkspaceStrategy,
   type Task,
 } from "@bitig/core";
@@ -200,9 +203,13 @@ export async function launchTaskInT3(
     now,
   });
 
+  const workspaceStrategy: T3WorkspaceStrategy = options.workspaceStrategy ?? "worktree";
+  if (workspaceStrategy === "root") {
+    await assertRootWorkspaceFree(deps, mcpClient, mapping.t3ProjectId, now);
+  }
+
   const comments = await deps.storage.getComments(task.id);
   const code = taskCode(task, project);
-  const workspaceStrategy: T3WorkspaceStrategy = options.workspaceStrategy ?? "worktree";
   const builtPrompt = buildT3LaunchPrompt({
     task,
     ...(code ? { taskCode: code } : {}),
@@ -254,6 +261,99 @@ export async function launchTaskInT3(
     run,
     task: updatedTask,
     ...(code ? { code } : {}),
+  };
+}
+
+/** Most threads `t3_thread_list` returns for one T3 project when the root-workspace guard checks it. */
+const ROOT_WORKSPACE_THREAD_LIST_LIMIT = 100;
+
+/**
+ * Refuses a root-workspace launch while another task's T3 session is active in the same T3
+ * project's root checkout (#BIT-134). Only runs Bitig recorded with `workspaceStrategy: "root"`
+ * count: isolated worktrees never collide, project-level threads do not edit the codebase, and
+ * threads started outside Bitig (or before the strategy was stored) have no known workspace.
+ *
+ * Stored run states can be stale, so each candidate is re-checked against T3 and the result is
+ * saved like `listT3RunsLive` does. A run whose thread T3 cannot read is saved as `offline`
+ * (as `getTaskT3RunLiveStatus` does), so a deleted thread cannot block launches forever.
+ */
+async function assertRootWorkspaceFree(
+  deps: T3ServiceDeps,
+  mcpClient: T3McpClient,
+  t3ProjectId: string,
+  now: number,
+): Promise<void> {
+  const candidates = (await deps.store.listAgentRuns()).filter(
+    (run) =>
+      run.t3ProjectId === t3ProjectId && run.workspaceStrategy === "root" && isActiveAgentRunState(run.state),
+  );
+  if (candidates.length === 0) {
+    return;
+  }
+
+  // A T3McpError here propagates: the host is unreachable, so the launch could not succeed either.
+  const listed = await mcpClient.listThreads({
+    allProjects: false,
+    projectId: t3ProjectId,
+    includeSubagents: false,
+    limit: ROOT_WORKSPACE_THREAD_LIST_LIMIT,
+  });
+  const listedById = new Map(listed.map((thread) => [thread.threadId, thread]));
+
+  for (const run of candidates) {
+    const listedThread = listedById.get(run.threadId);
+    let liveState: AgentRunState;
+    if (listedThread) {
+      liveState = deriveLiveAgentRunState({
+        threadStatus: listedThread.status,
+        pendingRequestCount: listedThread.pendingRequestCount,
+        activeRunId: listedThread.activeRunId,
+        settled: listedThread.settled,
+      });
+    } else {
+      try {
+        const live = await mcpClient.readThreadLiveStatus(run.threadId);
+        liveState = deriveLiveAgentRunState({
+          thread: live.thread,
+          recentRuns: live.recentRuns,
+          pendingRequestIds: live.pendingRequestIds,
+        });
+      } catch (err) {
+        if (!(err instanceof T3McpError)) {
+          throw err;
+        }
+        liveState = "offline";
+      }
+    }
+
+    if (liveState !== run.state) {
+      const updatedRun = await deps.store.updateAgentRunState(run.taskId, { state: liveState, now });
+      if (updatedRun && deps.publishRealtime) {
+        await deps.publishRealtime({ type: "agent_run.updated", run: updatedRun }).catch(() => undefined);
+      }
+    }
+
+    if (isActiveAgentRunState(liveState)) {
+      throw new T3WorkspaceBusyError(await describeBusyRun(deps.storage, run, liveState));
+    }
+  }
+}
+
+async function describeBusyRun(
+  storage: StorageProvider,
+  run: AgentRun,
+  state: ActiveAgentRunState,
+): Promise<T3WorkspaceBusySession> {
+  const busyTask = await storage.getTask(run.taskId);
+  const busyProject = (busyTask ? await storage.getProject(busyTask.projectId) : null) ?? undefined;
+  const busyCode = busyTask ? taskCode(busyTask, busyProject) : undefined;
+  return {
+    threadId: run.threadId,
+    state,
+    taskId: run.taskId,
+    ...(busyCode ? { taskCode: busyCode } : {}),
+    ...(busyTask ? { title: busyTask.title } : {}),
+    ...(run.link ? { link: run.link } : {}),
   };
 }
 

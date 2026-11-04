@@ -10,6 +10,7 @@ import {
   Square,
   Terminal,
 } from "lucide-react";
+import { isActiveAgentRunState } from "@bitig/core";
 import type {
   AgentRun,
   Project,
@@ -18,6 +19,7 @@ import type {
   T3PendingQuestion,
   T3ProjectMapping,
   T3TaskRunLiveResponse,
+  T3WorkspaceBusySession,
   T3WorkspaceStrategy,
   Task,
 } from "@bitig/core";
@@ -29,10 +31,12 @@ import {
   fetchT3Capabilities,
   fetchT3Connection,
   fetchT3ProjectMappings,
+  fetchT3Runs,
   fetchTaskT3Run,
   respondToTaskT3PendingRequest,
   startTaskT3Run,
   stopTaskT3Run,
+  T3WorkspaceBusyApiError,
 } from "../../services/t3";
 
 interface TaskT3SectionProps {
@@ -64,6 +68,10 @@ export function TaskT3Section({
   const [isLoading, setIsLoading] = useState(true);
   const [isBusy, setIsBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** The session that made the server refuse a root-checkout launch (#BIT-134). */
+  const [busySession, setBusySession] = useState<T3WorkspaceBusySession | null>(null);
+  /** Another task's active root-checkout run, looked up while the worktree box is unchecked (#BIT-134). */
+  const [rootBusyRun, setRootBusyRun] = useState<AgentRun | null>(null);
 
   const refreshRunStatus = useCallback(
     async (signal?: AbortSignal) => {
@@ -132,9 +140,47 @@ export function TaskT3Section({
     onT3ContextChange?.({ run, capabilities });
   }, [onT3ContextChange, run, capabilities]);
 
+  const t3ProjectId = mapping?.t3ProjectId;
+  const canLookUpRootRuns = !useWorktree && Boolean(connection?.connected && !connection.expired) && Boolean(t3ProjectId);
+
+  // Only meaningful while the lookup applies; a result from an earlier lookup is ignored otherwise.
+  const visibleRootBusyRun = canLookUpRootRuns ? rootBusyRun : null;
+
+  // Warn before launch when the root checkout is taken. The server still enforces the rule, so a
+  // failed lookup only hides the warning instead of blocking the launch.
+  useEffect(() => {
+    if (!canLookUpRootRuns) return;
+    const controller = new AbortController();
+    fetchT3Runs(controller.signal)
+      .then(({ runs }) => {
+        if (controller.signal.aborted) return;
+        setRootBusyRun(
+          runs.find(
+            (r) =>
+              r.taskId !== task.id &&
+              r.t3ProjectId === t3ProjectId &&
+              r.workspaceStrategy === "root" &&
+              isActiveAgentRunState(r.state),
+          ) ?? null,
+        );
+      })
+      .catch((err: unknown) => {
+        if (controller.signal.aborted) return;
+        console.warn("Could not check T3 sessions in the project root", err);
+        setRootBusyRun(null);
+      });
+    return () => {
+      controller.abort();
+    };
+  }, [canLookUpRootRuns, t3ProjectId, task.id]);
+
   useRealtimeEvent((event) => {
-    if (event.type === "agent_run.updated" && event.run.taskId === task.id) {
+    if (event.type !== "agent_run.updated") return;
+    if (event.run.taskId === task.id) {
       setRun(event.run);
+    }
+    if (rootBusyRun?.threadId === event.run.threadId && !isActiveAgentRunState(event.run.state)) {
+      setRootBusyRun(null);
     }
   });
 
@@ -159,6 +205,7 @@ export function TaskT3Section({
   async function handleStartInT3() {
     setIsBusy(true);
     setError(null);
+    setBusySession(null);
     try {
       const workspaceStrategy: T3WorkspaceStrategy = useWorktree ? "worktree" : "root";
       let providerInstanceId: string | undefined;
@@ -184,6 +231,9 @@ export function TaskT3Section({
         onTaskUpdated(launched.task);
       }
     } catch (err) {
+      if (err instanceof T3WorkspaceBusyApiError) {
+        setBusySession(err.session);
+      }
       setError(err instanceof Error ? err.message : "Could not start T3 thread.");
     } finally {
       setIsBusy(false);
@@ -286,6 +336,17 @@ export function TaskT3Section({
         >
           <AlertTriangle size={13} aria-hidden="true" />
           <span>{error}</span>
+          {busySession?.link && (
+            <a
+              href={busySession.link}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex shrink-0 items-center gap-1 font-semibold underline"
+            >
+              Open busy thread
+              <ExternalLink size={11} aria-hidden="true" />
+            </a>
+          )}
         </div>
       )}
 
@@ -453,10 +514,33 @@ export function TaskT3Section({
             </div>
           )}
 
+          {!gateReason && visibleRootBusyRun && (
+            <div role="status" className="flex flex-wrap items-center gap-1.5 text-xs text-ink-2">
+              <AlertTriangle size={12} aria-hidden="true" />
+              <span>
+                Another task&apos;s T3 session is active in this project&apos;s root checkout. Use an
+                isolated git worktree, or wait until it finishes.
+              </span>
+              {visibleRootBusyRun.link && (
+                <a
+                  href={visibleRootBusyRun.link}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 font-semibold text-accent-ink underline"
+                >
+                  Open in T3
+                  <ExternalLink size={11} aria-hidden="true" />
+                </a>
+              )}
+            </div>
+          )}
+
           <div>
             <button
               type="button"
-              disabled={isLoading || isBusy || Boolean(gateReason) || isDone}
+              disabled={
+                isLoading || isBusy || Boolean(gateReason) || isDone || visibleRootBusyRun !== null
+              }
               onClick={() => {
                 void handleStartInT3();
               }}

@@ -14,6 +14,7 @@ import type {
   T3RemoteProject,
   T3RunsLiveResponse,
   T3TaskRunLiveResponse,
+  T3WorkspaceBusySession,
   Task,
 } from "@bitig/core";
 
@@ -30,6 +31,65 @@ export class T3ApiError extends Error {
     super(message);
     this.status = status;
   }
+}
+
+const HTTP_CONFLICT = 409;
+const WORKSPACE_BUSY_ERROR = "workspace_busy";
+const SAFE_LINK_PROTOCOLS: ReadonlySet<string> = new Set(["http:", "https:"]);
+
+/** A root-checkout launch was refused because another task's T3 session runs there (#BIT-134). */
+export class T3WorkspaceBusyApiError extends T3ApiError {
+  readonly session: T3WorkspaceBusySession;
+
+  constructor(status: number, message: string, session: T3WorkspaceBusySession) {
+    super(status, message);
+    this.session = session;
+  }
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+/** Only http(s) links are rendered, so a malformed server value cannot become a `javascript:` href. */
+function safeLink(value: unknown): string | undefined {
+  const raw = optionalString(value);
+  if (!raw) return undefined;
+  try {
+    return SAFE_LINK_PROTOCOLS.has(new URL(raw).protocol) ? raw : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Reads the busy session from a `409 workspace_busy` body; any other body yields `undefined`. */
+async function readWorkspaceBusySession(response: Response): Promise<T3WorkspaceBusySession | undefined> {
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    // Not JSON: the caller reports the plain HTTP error instead.
+    return undefined;
+  }
+  if (!body || typeof body !== "object") return undefined;
+  const { error, session } = body as { error?: unknown; session?: unknown };
+  if (error !== WORKSPACE_BUSY_ERROR || !session || typeof session !== "object") return undefined;
+  const rec = session as Record<string, unknown>;
+  const threadId = optionalString(rec.threadId);
+  const state = rec.state;
+  if (!threadId || (state !== "working" && state !== "waiting_for_approval")) return undefined;
+  const taskId = optionalString(rec.taskId);
+  const taskCode = optionalString(rec.taskCode);
+  const title = optionalString(rec.title);
+  const link = safeLink(rec.link);
+  return {
+    threadId,
+    state,
+    ...(taskId ? { taskId } : {}),
+    ...(taskCode ? { taskCode } : {}),
+    ...(title ? { title } : {}),
+    ...(link ? { link } : {}),
+  };
 }
 
 async function parseErrorMessage(response: Response, fallback: string): Promise<string> {
@@ -208,7 +268,13 @@ export async function startTaskT3Run(
     body: JSON.stringify(input),
   });
   if (!response.ok) {
-    throw new T3ApiError(response.status, await parseErrorMessage(response, "Could not start T3 thread"));
+    const busySession =
+      response.status === HTTP_CONFLICT ? await readWorkspaceBusySession(response.clone()) : undefined;
+    const message = await parseErrorMessage(response, "Could not start T3 thread");
+    if (busySession) {
+      throw new T3WorkspaceBusyApiError(response.status, message, busySession);
+    }
+    throw new T3ApiError(response.status, message);
   }
   return (await response.json()) as { run: AgentRun; task: Task; code?: string | undefined };
 }

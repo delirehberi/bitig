@@ -1,4 +1,4 @@
-import { InMemoryStorage, type ProjectWorkContext, type ProjectWorkSummary } from "@bitig/core";
+import { InMemoryStorage, T3WorkspaceBusyError, type ProjectWorkContext, type ProjectWorkSummary } from "@bitig/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -764,5 +764,35 @@ describe("MCP Tools integration", () => {
     expect(deleted.isError).toBe(false);
     expect(deleted.data).toEqual({ success: true, deletedAttachmentId: mdMeta.id });
     expect((await call("list_attachments", { taskId: "BIT-1" })).data).toEqual([pngMeta]);
+  });
+});
+
+describe("start_t3_thread workspace guard (#BIT-134)", () => {
+  it("reports a busy root checkout as a WORKSPACE_BUSY tool error", async () => {
+    const storage = new InMemoryStorage();
+    const project = await storage.createProject({ name: "Bitig", key: "BIT" });
+    const task = await storage.saveTask({ projectId: project.id, title: "Wants the root checkout" });
+    const busy = new T3WorkspaceBusyError({ threadId: "thread-1", state: "working", taskCode: "BIT-9" });
+    const startT3Thread = vi.fn(() => Promise.reject(busy));
+    const server = new McpServer({ name: "bitig-test", version: "1.0.0" });
+    registerBitigTools(server, storage, { startT3Thread });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    const client = new Client({ name: "client-test", version: "1.0.0" }, { capabilities: {} });
+    await client.connect(clientTransport);
+
+    try {
+      const result = await client.callTool({
+        name: "start_t3_thread",
+        arguments: { taskId: "BIT-1", workspaceStrategy: "root" },
+      });
+      expect(result.isError).toBe(true);
+      expect((result.content as { text: string }[])[0]?.text).toBe(`[WORKSPACE_BUSY] ${busy.message}`);
+      expect(startT3Thread).toHaveBeenCalledWith(expect.objectContaining({ taskId: task.id, workspaceStrategy: "root" }));
+      expect((await storage.getTask(task.id))?.status).toBe("todo");
+    } finally {
+      await client.close();
+      await server.close();
+    }
   });
 });

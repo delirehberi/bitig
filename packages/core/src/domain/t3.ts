@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { CommentAuthorSchema, CommentBodySchema, IdSchema, TaskActorSchema, TimestampSchema } from "./schemas";
 import type { Comment, Task } from "./types";
-import { ValidationError } from "./errors";
+import { BitigError, ERROR_CODES, ValidationError } from "./errors";
 
 export const AGENT_RUN_STATES = [
   "working",
@@ -231,6 +231,36 @@ export interface T3ProjectActiveSession {
   readonly link?: string | undefined;
   readonly model?: string | undefined;
   readonly updatedAt?: string | undefined;
+}
+
+/** The active T3 session that already runs in a project's root checkout (#BIT-134). */
+export interface T3WorkspaceBusySession {
+  readonly threadId: string;
+  readonly state: ActiveAgentRunState;
+  readonly taskId?: string | undefined;
+  readonly taskCode?: string | undefined;
+  readonly title?: string | undefined;
+  readonly link?: string | undefined;
+}
+
+/**
+ * Refuses a T3 launch in the project root (`workspaceStrategy: "root"`) while another active
+ * session already runs there: two agents editing one checkout overwrite each other's changes.
+ */
+export class T3WorkspaceBusyError extends BitigError {
+  readonly session: T3WorkspaceBusySession;
+
+  constructor(session: T3WorkspaceBusySession, options?: ErrorOptions) {
+    const label = session.taskCode ?? session.title ?? session.threadId;
+    super(
+      ERROR_CODES.workspaceBusy,
+      `Another T3 session (${label}) is ${session.state.replaceAll("_", " ")} in this project's root checkout. ` +
+        "Start this task in an isolated git worktree, or wait until that session finishes.",
+      options,
+    );
+    this.name = "T3WorkspaceBusyError";
+    this.session = session;
+  }
 }
 
 export interface T3RunsLiveResponse {

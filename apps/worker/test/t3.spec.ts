@@ -1727,6 +1727,97 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
     expect(msgProjBody.thread.stopReason).toBe(expectedReason);
     expect(msgProjBody.stopReason).toBe(expectedReason);
   });
+
+  it("refuses a root-checkout launch while another task's root session is active in the same T3 project (#BIT-134)", async () => {
+    await connectT3Host();
+    const project = await (
+      await request("/api/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Bitig", key: "BIT" }),
+      })
+    ).json<Project>();
+    await request(`/api/t3/mappings/${project.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ t3ProjectId: "t3-proj-bitig", t3ProjectTitle: "Bitig Workspace" }),
+    });
+
+    async function createTask(title: string): Promise<Task> {
+      const res = await request("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: project.id, title }),
+      });
+      return res.json<Task>();
+    }
+    function launch(taskId: string, workspaceStrategy: "root" | "worktree"): Promise<Response> {
+      return request(`/api/tasks/${taskId}/t3-run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workspaceStrategy }),
+      });
+    }
+    async function storedRunState(taskId: string): Promise<string | null> {
+      return env.DB.prepare("SELECT state FROM agent_runs WHERE task_id = ?").bind(taskId).first<string>("state");
+    }
+    const launchCount = (): number => mockState.toolCalls.filter((c) => c.name === "t3_thread_launch").length;
+
+    const rootTask = await createTask("Edits the root checkout");
+    const secondRootTask = await createTask("Also wants the root checkout");
+    const isolatedTask = await createTask("Runs in its own worktree");
+
+    // 1. The first root launch has nothing to collide with, so T3 is not even asked for its threads.
+    mockState.launchThreadId = "thread-root-1";
+    expect((await launch(rootTask.id, "root")).status).toBe(201);
+    expect(mockState.toolCalls.some((c) => c.name === "t3_thread_list")).toBe(false);
+
+    // 2. A second root launch is refused while T3 reports the first thread as running.
+    mockState.threadList = [
+      { threadId: "thread-root-1", projectId: "t3-proj-bitig", status: "running", activeRunId: "run-1" },
+    ];
+    const launchesBefore = launchCount();
+    const busyRes = await launch(secondRootTask.id, "root");
+    expect(busyRes.status).toBe(409);
+    const busyBody = await busyRes.json<{
+      error: string;
+      message: string;
+      session: { threadId: string; state: string; taskId?: string; taskCode?: string; title?: string; link?: string };
+    }>();
+    expect(busyBody.error).toBe("workspace_busy");
+    expect(busyBody.message).toContain("BIT-1");
+    expect(busyBody.session).toEqual({
+      threadId: "thread-root-1",
+      state: "working",
+      taskId: rootTask.id,
+      taskCode: "BIT-1",
+      title: "Edits the root checkout",
+      link: `${T3_ORIGIN}/threads/thread-root-1`,
+    });
+    expect(launchCount()).toBe(launchesBefore);
+    expect(mockState.toolCalls.findLast((c) => c.name === "t3_thread_list")?.arguments).toMatchObject({
+      allProjects: false,
+      projectId: "t3-proj-bitig",
+    });
+    const refusedTask = await (await request(`/api/tasks/${secondRootTask.id}`)).json<Task>();
+    expect(refusedTask.status).toBe("todo");
+    expect(await storedRunState(secondRootTask.id)).toBeNull();
+
+    // 3. An isolated worktree launch is never blocked by a root session.
+    mockState.launchThreadId = "thread-worktree-1";
+    expect((await launch(isolatedTask.id, "worktree")).status).toBe(201);
+
+    // 4. Once T3 reports the root thread as completed, the stale "working" run no longer blocks,
+    //    is saved as finished, and an active worktree session does not count as a root conflict.
+    mockState.threadList = [
+      { threadId: "thread-root-1", projectId: "t3-proj-bitig", status: "completed", activeRunId: null, settled: true },
+      { threadId: "thread-worktree-1", projectId: "t3-proj-bitig", status: "running", activeRunId: "run-2" },
+    ];
+    expect(await storedRunState(rootTask.id)).toBe("working");
+    mockState.launchThreadId = "thread-root-2";
+    const freedRes = await launch(secondRootTask.id, "root");
+    expect(freedRes.status).toBe(201);
+    expect((await freedRes.json<{ run: AgentRun }>()).run.workspaceStrategy).toBe("root");
+    expect(await storedRunState(rootTask.id)).toBe("finished");
+  });
 });
-
-
