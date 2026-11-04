@@ -23,6 +23,7 @@ export type Route =
     }
   | { readonly name: "webhooks"; readonly projectId?: string; readonly taskRef?: string }
   | { readonly name: "settings"; readonly taskRef?: string }
+  | { readonly name: "reports"; readonly taskRef?: string }
   | { readonly name: "login"; readonly next?: string }
   | { readonly name: "not_found" };
 
@@ -44,6 +45,8 @@ const NEXT_PARAM = "next";
 export const LOGIN_PATH = "/login";
 /** The dashboard's home; `/` is the public landing page. */
 export const APP_PATH = "/app";
+/** Time spent and completion reports, moved off the dashboard (#BIT-140). */
+const REPORTS_PATH = "/reports";
 
 function trimTrailingSlash(pathname: string): string {
   return pathname.length > 1 ? pathname.replace(/\/+$/, "") : pathname;
@@ -94,6 +97,8 @@ export function parseRoute(pathname: string, search: string): Route {
     }
     case "/settings":
       return { name: "settings", ...task };
+    case REPORTS_PATH:
+      return { name: "reports", ...task };
     case LOGIN_PATH: {
       const next = safeNextPath(params.get(NEXT_PARAM));
       return next ? { name: "login", next } : { name: "login" };
@@ -145,6 +150,11 @@ export function hrefFor(route: Route): string {
       if (route.taskRef) params.set(TASK_PARAM, route.taskRef);
       return withQuery("/settings", params);
     }
+    case "reports": {
+      const params = new URLSearchParams();
+      if (route.taskRef) params.set(TASK_PARAM, route.taskRef);
+      return withQuery(REPORTS_PATH, params);
+    }
     case "login":
       return route.next ? `${LOGIN_PATH}?${new URLSearchParams({ [NEXT_PARAM]: route.next }).toString()}` : LOGIN_PATH;
   }
@@ -165,7 +175,8 @@ export function taskHref(
     route.name === "projects" ||
     route.name === "tasks" ||
     route.name === "webhooks" ||
-    route.name === "settings"
+    route.name === "settings" ||
+    route.name === "reports"
   ) {
     const params = new URLSearchParams(url.search);
     if (taskRef) params.set(TASK_PARAM, taskRef);

@@ -12,7 +12,6 @@ import { useMemo } from "react";
 import { Link } from "../routing/Link";
 import { hrefFor, taskHref, useLocationHref } from "../routing/router";
 import { formatDayLabel, formatTimeAgo } from "../domain/time-ago";
-import { ChecklistProgressBadge } from "./tasks/Checklist";
 
 interface WhereYouLeftOffProps {
   readonly projects: readonly Project[];
@@ -71,10 +70,9 @@ function TaskTitleLink({
 export function WhereYouLeftOff({ projects, tasks, now = new Date() }: WhereYouLeftOffProps) {
   const locationHref = useLocationHref();
   const summary = useMemo(() => whereYouLeftOff(projects, tasks), [projects, tasks]);
-  const { lastProject, inProgress, inProgressCount, recent } = summary;
+  // In-progress work is listed by "Agents working now" and "Stalled" on the dashboard.
+  const { lastProject, recent } = summary;
   if (lastProject === undefined) return null;
-
-  const hiddenInProgress = inProgressCount - inProgress.length;
 
   return (
     <section
@@ -109,47 +107,6 @@ export function WhereYouLeftOff({ projects, tasks, now = new Date() }: WhereYouL
                 {lastProject.openCount} open
               </p>
             </div>
-          </div>
-
-          <div className="flex flex-col gap-2" data-testid="left-off-in-progress">
-            <h3 className="m-0 font-display text-xs font-semibold uppercase tracking-wider text-ink-3">
-              In progress
-            </h3>
-            {inProgress.length === 0 ? (
-              <p className="m-0 rounded-md border border-dashed border-rule bg-paper-2 p-4 text-sm text-ink-3">
-                Nothing in progress. Start something from{" "}
-                <Link href={hrefFor({ name: "tasks" })} className="font-semibold text-accent-ink hover:underline">
-                  Tasks
-                </Link>
-                .
-              </p>
-            ) : (
-              <ul className="m-0 flex list-none flex-col gap-2 p-0">
-                {inProgress.map(({ task, project, nextSubtask }) => (
-                  <li key={task.id} className="flex flex-col gap-1 rounded-md border border-rule bg-paper-2 p-3">
-                    <div className="flex min-w-0 items-center justify-between gap-3">
-                      <TaskTitleLink task={task} project={project} locationHref={locationHref} />
-                      <ChecklistProgressBadge checklist={task.checklist} />
-                    </div>
-                    <div className="flex flex-wrap items-baseline gap-x-2 text-xs text-ink-3">
-                      <span>{project?.name}</span>
-                      <span aria-hidden="true">·</span>
-                      <span>{formatTimeAgo(task.updatedAt, now)}</span>
-                    </div>
-                    {nextSubtask !== undefined && (
-                      <p className="m-0 text-sm text-ink-2">
-                        <span className="font-semibold text-ink">Next:</span> {nextSubtask}
-                      </p>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            )}
-            {hiddenInProgress > 0 && (
-              <p className="m-0 text-xs text-ink-3">
-                and {hiddenInProgress} more in progress
-              </p>
-            )}
           </div>
         </div>
 

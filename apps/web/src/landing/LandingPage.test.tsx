@@ -63,7 +63,7 @@ describe("Landing page", () => {
 
     expect(window.location.pathname).toBe("/app");
     expect(
-      await screen.findByRole("heading", { level: 1, name: "Your agents keep the record." }),
+      await screen.findByRole("heading", { level: 1, name: "Overview" }),
     ).toBeInTheDocument();
   });
 });

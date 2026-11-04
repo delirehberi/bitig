@@ -1,10 +1,10 @@
-import { FolderKanban, ListTodo, Settings, Sprout, Webhook } from "lucide-react";
+import { ChartNoAxesColumn, FolderKanban, ListTodo, Settings, Sprout, Webhook } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { HealthState } from "../hooks/useHealth";
 import { Link } from "../routing/Link";
 import { hrefFor } from "../routing/router";
 
-export type NavigationTab = "overview" | "projects" | "tasks" | "webhooks" | "settings";
+export type NavigationTab = "overview" | "projects" | "tasks" | "webhooks" | "reports" | "settings";
 
 interface NavItem {
   readonly id: NavigationTab;
@@ -17,6 +17,7 @@ const NAV_ITEMS: readonly NavItem[] = [
   { id: "projects", label: "Projects", icon: FolderKanban },
   { id: "tasks", label: "Tasks", icon: ListTodo },
   { id: "webhooks", label: "Webhooks", icon: Webhook },
+  { id: "reports", label: "Reports", icon: ChartNoAxesColumn },
   { id: "settings", label: "Settings", icon: Settings },
 ];
 

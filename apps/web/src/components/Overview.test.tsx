@@ -1,8 +1,13 @@
-import type { Project, Task } from "@bitig/core";
-import { render, screen, within } from "@testing-library/react";
+import type { AgentRun, Project, Task } from "@bitig/core";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { dispatchRealtimeEvent } from "../hooks/useRealtime";
+import { NEEDS_YOU_VISIBLE_LIMIT } from "./dashboard/NeedsYou";
 import { Overview } from "./Overview";
+
+const NOW = new Date("2026-03-10T12:00:00.000Z");
+const LONG_AGO = "2026-03-01T00:00:00.000Z";
 
 const PROJECT_ALPHA: Project = {
   id: "01940000-0000-7000-8000-000000000001",
@@ -10,197 +15,214 @@ const PROJECT_ALPHA: Project = {
   key: "ALP",
   description: "",
   kind: "paid",
-  createdAt: "2026-03-01T00:00:00.000Z",
-  updatedAt: "2026-03-01T00:00:00.000Z",
+  createdAt: LONG_AGO,
+  updatedAt: LONG_AGO,
 };
 
-const PROJECT_BETA: Project = {
-  id: "01940000-0000-7000-8000-000000000002",
-  name: "Beta",
-  key: "BET",
-  description: "",
-  kind: "hobby",
-  createdAt: "2026-03-01T00:00:00.000Z",
-  updatedAt: "2026-03-01T00:00:00.000Z",
-};
-
-const TASKS: readonly [Task, Task] = [
-  {
-    id: "01940000-0000-7000-8000-000000000011",
+function task(number: number, overrides: Partial<Task> = {}): Task {
+  return {
+    id: `01940000-0000-7000-8000-${String(100 + number).padStart(12, "0")}`,
     projectId: PROJECT_ALPHA.id,
-    title: "Build API",
+    title: `Task ${String(number)}`,
     description: "",
-    status: "done",
+    status: "in_progress",
+    number,
     isPublic: false,
-    createdAt: "2026-03-02T08:00:00.000Z",
-    startedAt: "2026-03-02T09:00:00.000Z",
-    completedAt: "2026-03-02T11:30:00.000Z",
-    updatedAt: "2026-03-02T11:30:00.000Z",
-  },
-  {
-    id: "01940000-0000-7000-8000-000000000012",
-    projectId: PROJECT_BETA.id,
-    title: "Write docs",
-    description: "",
-    status: "done",
-    isPublic: false,
-    createdAt: "2026-03-09T09:00:00.000Z",
-    startedAt: "2026-03-09T10:00:00.000Z",
-    completedAt: "2026-03-09T11:00:00.000Z",
-    updatedAt: "2026-03-09T11:00:00.000Z",
-  },
-];
+    createdAt: LONG_AGO,
+    updatedAt: LONG_AGO,
+    ...overrides,
+  };
+}
 
-describe("Overview time analytics and CSV export", () => {
-  it("renders by-project and by-week time charts and filters by project", async () => {
-    const user = userEvent.setup();
-    render(
-      <Overview
-        mode="cloudflare"
-        health={{ kind: "online", version: "0.4.1", storageMode: "cloudflare" }}
-        projects={[PROJECT_ALPHA, PROJECT_BETA]}
-        tasks={TASKS}
-      />,
-    );
+function run(forTask: Task, state: AgentRun["state"], overrides: Partial<AgentRun> = {}): AgentRun {
+  return {
+    id: `01940000-0000-7000-8000-${String(900 + Number(forTask.number)).padStart(12, "0")}`,
+    taskId: forTask.id,
+    t3ProjectId: "t3",
+    threadId: `thread-${String(forTask.number)}`,
+    link: `https://t3.example.test/thread-${String(forTask.number)}`,
+    state,
+    startedAt: "2026-03-10T10:00:00.000Z",
+    updatedAt: "2026-03-10T11:00:00.000Z",
+    ...overrides,
+  };
+}
 
-    const chartsGrid = screen.getByTestId("time-charts-grid");
-    expect(chartsGrid).toHaveClass("lg:grid-cols-2");
-
-    const byProjectChart = screen.getByTestId("chart-by-project");
-    expect(within(byProjectChart).getByText("Alpha")).toBeInTheDocument();
-    expect(within(byProjectChart).getByText("2h 30m")).toBeInTheDocument();
-    expect(within(byProjectChart).getByText("Beta")).toBeInTheDocument();
-    expect(within(byProjectChart).getByText("1h")).toBeInTheDocument();
-
-    const byWeekChart = screen.getByTestId("chart-by-week");
-    expect(within(byWeekChart).getByText("2026-W10")).toBeInTheDocument();
-    expect(within(byWeekChart).getByText("2026-W11")).toBeInTheDocument();
-
-    // Filter to Alpha only
-    await user.selectOptions(
-      screen.getByLabelText("Filter analytics by project"),
-      PROJECT_ALPHA.id,
-    );
-    expect(within(byProjectChart).getByText("Alpha")).toBeInTheDocument();
-    expect(within(byProjectChart).queryByText("Beta")).not.toBeInTheDocument();
-    expect(within(byWeekChart).getByText("2026-W10")).toBeInTheDocument();
-    expect(within(byWeekChart).queryByText("2026-W11")).not.toBeInTheDocument();
-  });
-
-  it("exports CSV by project and by week", async () => {
-    const user = userEvent.setup();
-    const onExportCsv = vi.fn();
-    render(
-      <Overview
-        mode="cloudflare"
-        health={{ kind: "online", version: "0.4.1", storageMode: "cloudflare" }}
-        projects={[PROJECT_ALPHA, PROJECT_BETA]}
-        tasks={TASKS}
-        onExportCsv={onExportCsv}
-      />,
-    );
-
-    await user.click(screen.getByRole("button", { name: /export by project \(csv\)/i }));
-    expect(onExportCsv).toHaveBeenCalledWith(
-      "bitig-time-by-project.csv",
-      expect.stringContaining(
-        "Project Key,Project Name,Task Code,Task Title,Status,Priority,Created At,Started At,Completed At,Lead Time (Minutes),Spent (Minutes),Spent (Hours),Formatted Duration,Subtasks",
-      ),
-      "by_project",
-    );
-    expect(onExportCsv).toHaveBeenCalledWith(
-      "bitig-time-by-project.csv",
-      expect.stringContaining("Build API"),
-      "by_project",
-    );
-    expect(onExportCsv).toHaveBeenCalledWith(
-      "bitig-time-by-project.csv",
-      expect.stringContaining("Write docs"),
-      "by_project",
-    );
-
-    await user.click(screen.getByRole("button", { name: /export by week \(csv\)/i }));
-    expect(onExportCsv).toHaveBeenCalledWith(
-      "bitig-time-by-week.csv",
-      expect.stringContaining("Week,Project Key,Project Name,Completed Tasks"),
-      "by_week",
-    );
-  });
+const WAITING = task(1, { title: "Configure billing" });
+const QUESTION = task(2, { title: "Pick a database", needsHuman: "Postgres or SQLite?" });
+const BACKLOG = task(3, { title: "Proposed refactor", status: "todo", pendingApproval: true, needsHuman: "Worth it?" });
+const DONE = task(4, { title: "Write docs", status: "done", completedAt: LONG_AGO });
+const WORKING = task(5, {
+  title: "Build API",
+  checklist: [
+    { text: "Routes", done: true },
+    { text: "Validation", done: false },
+  ],
 });
+const STALLED = task(6, { title: "Forgotten task" });
 
-describe("Overview completed tasks awaiting review", () => {
-  const health = { kind: "online", version: "0.4.1", storageMode: "cloudflare" } as const;
+const TASKS = [WAITING, QUESTION, BACKLOG, DONE, WORKING, STALLED];
+const RUNS = [run(WAITING, "waiting_for_approval"), run(WORKING, "working", { model: "opus" })];
 
-  it("shows the latest five done tasks in completion order and links to their details", () => {
+function renderOverview(props: Partial<Parameters<typeof Overview>[0]> = {}) {
+  return render(
+    <Overview
+      mode="cloudflare"
+      projects={[PROJECT_ALPHA]}
+      tasks={TASKS}
+      agentRuns={RUNS}
+      activeSessions={[]}
+      now={NOW}
+      {...props}
+    />,
+  );
+}
+
+describe("Overview", () => {
+  beforeEach(() => {
     window.history.replaceState(null, "", "/app");
-    const tasks: Task[] = [
-      ...TASKS,
-      ...Array.from({ length: 5 }, (_, index): Task => ({
-        ...TASKS[0],
-        id: `01940000-0000-7000-8000-${String(index + 20).padStart(12, "0")}`,
-        title: `Recent task ${String(index + 1)}`,
-        number: index + 1,
-        completedAt: `2026-04-0${String(index + 1)}T10:00:00.000Z`,
-        updatedAt: `2026-04-0${String(index + 1)}T10:00:00.000Z`,
-      })),
-      { ...TASKS[0], id: "01940000-0000-7000-8000-000000000030", title: "Archived task", status: "archived" },
-      { ...TASKS[0], id: "01940000-0000-7000-8000-000000000031", title: "Open task", status: "in_progress" },
-    ];
-    render(<Overview mode="cloudflare" health={health} projects={[PROJECT_ALPHA, PROJECT_BETA]} tasks={tasks} />);
-
-    const review = screen.getByRole("region", { name: "Completed, awaiting review" });
-    expect(within(review).getByText("7")).toBeInTheDocument();
-    expect(within(review).getAllByRole("listitem")).toHaveLength(5);
-    expect(within(review).getAllByRole("link").map((link) => link.textContent)).toEqual([
-      "View all tasks",
-      "ALP-5Recent task 5",
-      "ALP-4Recent task 4",
-      "ALP-3Recent task 3",
-      "ALP-2Recent task 2",
-      "ALP-1Recent task 1",
-    ]);
-    expect(within(review).getByRole("link", { name: "ALP-5 Recent task 5" })).toHaveAttribute(
-      "href",
-      "/app?task=ALP-5",
-    );
-    expect(within(review).queryByText("Archived task")).not.toBeInTheDocument();
-    expect(within(review).queryByText("Open task")).not.toBeInTheDocument();
   });
 
-  it("shows an empty state and updates when a task is completed or archived", () => {
-    window.history.replaceState(null, "", "/app");
-    const openTask: Task = { ...TASKS[0], status: "in_progress" };
-    const { rerender } = render(<Overview mode="cloudflare" health={health} projects={[PROJECT_ALPHA]} tasks={[openTask]} />);
-    const review = screen.getByRole("region", { name: "Completed, awaiting review" });
-    expect(within(review).getByText("No completed tasks awaiting review.")).toBeInTheDocument();
-
-    rerender(<Overview mode="cloudflare" health={health} projects={[PROJECT_ALPHA]} tasks={[TASKS[0]]} />);
-    expect(within(review).getByRole("link", { name: "Build API" })).toHaveAttribute(
-      "href",
-      `/app?task=${TASKS[0].id}`,
-    );
-    expect(within(review).queryByText("No completed tasks awaiting review.")).not.toBeInTheDocument();
-
-    rerender(<Overview mode="cloudflare" health={health} projects={[PROJECT_ALPHA]} tasks={[{ ...TASKS[0], status: "archived" }]} />);
-    expect(within(review).getByText("No completed tasks awaiting review.")).toBeInTheDocument();
-  });
-
-  it("renders an Archive button per task when onArchiveTask is provided and calls it", async () => {
-    window.history.replaceState(null, "", "/app");
+  it("lists what needs the person, most urgent first, with direct actions", async () => {
     const user = userEvent.setup();
     const onArchiveTask = vi.fn();
-    render(
-      <Overview
-        mode="cloudflare"
-        health={health}
-        projects={[PROJECT_ALPHA, PROJECT_BETA]}
-        tasks={TASKS}
-        onArchiveTask={onArchiveTask}
-      />,
-    );
+    renderOverview({ onArchiveTask });
 
-    const review = screen.getByRole("region", { name: "Completed, awaiting review" });
-    await user.click(within(review).getByRole("button", { name: "Archive Write docs" }));
-    expect(onArchiveTask).toHaveBeenCalledWith(TASKS[1]);
+    const inbox = screen.getByRole("region", { name: /Needs you/ });
+    const rows = within(inbox).getAllByRole("listitem");
+    expect(rows.map((row) => row.getAttribute("data-reason"))).toEqual([
+      "thread_waiting",
+      "needs_human",
+      "review_done",
+    ]);
+    expect(within(inbox).getByText("3")).toBeInTheDocument();
+    // Backlog tasks wait for approval on the Tasks page, not in the inbox.
+    expect(within(inbox).queryByText("Proposed refactor")).not.toBeInTheDocument();
+
+    expect(within(inbox).getByRole("link", { name: "Open ALP-1 Configure billing in T3" })).toHaveAttribute(
+      "href",
+      "https://t3.example.test/thread-1",
+    );
+    expect(within(inbox).getByRole("link", { name: "Respond: ALP-1 Configure billing" })).toHaveAttribute(
+      "href",
+      "/app?task=ALP-1",
+    );
+    expect(within(inbox).getByText("Postgres or SQLite?")).toBeInTheDocument();
+
+    await user.click(within(inbox).getByRole("button", { name: "Archive Write docs" }));
+    expect(onArchiveTask).toHaveBeenCalledWith(DONE);
+  });
+
+  it("shows an agent that ended while its task is still in progress", () => {
+    renderOverview({ tasks: [WORKING], agentRuns: [run(WORKING, "failed")] });
+    const inbox = screen.getByRole("region", { name: /Needs you/ });
+    expect(within(inbox).getByText("Agent failed")).toBeInTheDocument();
+    expect(within(inbox).getByRole("link", { name: "Review: ALP-5 Build API" })).toBeInTheDocument();
+  });
+
+  it("shows an empty inbox and collapses a long one", async () => {
+    const user = userEvent.setup();
+    const { unmount } = renderOverview({ tasks: [], agentRuns: [] });
+    expect(screen.getByText("Nothing needs you right now.")).toBeInTheDocument();
+    unmount();
+
+    const total = NEEDS_YOU_VISIBLE_LIMIT + 2;
+    const doneTasks = Array.from({ length: total }, (_, index) =>
+      task(20 + index, { status: "done", completedAt: LONG_AGO }),
+    );
+    renderOverview({ tasks: doneTasks, agentRuns: [] });
+    const inbox = screen.getByRole("region", { name: /Needs you/ });
+    expect(within(inbox).getAllByRole("listitem")).toHaveLength(NEEDS_YOU_VISIBLE_LIMIT);
+    await user.click(within(inbox).getByRole("button", { name: "Show 2 more" }));
+    expect(within(inbox).getAllByRole("listitem")).toHaveLength(total);
+  });
+
+  it("lists agents working now with model, start time, next subtask and thread link", () => {
+    renderOverview();
+    const working = screen.getByRole("region", { name: /Agents working now/ });
+    const rows = within(working).getAllByRole("listitem");
+    expect(rows).toHaveLength(1);
+    const [row] = rows;
+    if (row === undefined) throw new Error("expected a working row");
+    expect(within(row).getByRole("link", { name: "ALP-5 Build API" })).toHaveAttribute("href", "/app?task=ALP-5");
+    expect(within(row).getByText(/opus · started/)).toBeInTheDocument();
+    expect(within(row).getByText("2 hours ago")).toBeInTheDocument();
+    expect(within(row).getByText("Validation")).toBeInTheDocument();
+    expect(within(row).getByRole("link", { name: "Open ALP-5 Build API in T3" })).toBeInTheDocument();
+  });
+
+  it("shows project-level threads without a task", () => {
+    renderOverview({
+      agentRuns: [],
+      activeSessions: [
+        { threadId: "thread-p", projectId: PROJECT_ALPHA.id, t3ProjectId: "t3", state: "working", title: "Ad-hoc chat" },
+      ],
+    });
+    const working = screen.getByRole("region", { name: /Agents working now/ });
+    expect(within(working).getByText("Ad-hoc chat")).toBeInTheDocument();
+  });
+
+  it("hides the T3 board without a Worker backend", () => {
+    renderOverview({ mode: "local", agentRuns: [] });
+    expect(screen.queryByRole("region", { name: /Agents working now/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("region", { name: /Stalled/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /in T3$/ })).not.toBeInTheDocument();
+  });
+
+  it("starts a stalled task in T3 and shows a failure on its row", async () => {
+    const user = userEvent.setup();
+    const onStartT3Thread = vi
+      .fn<(task: Task) => Promise<void>>()
+      .mockRejectedValueOnce(new Error("Project is not mapped to a T3 project"))
+      .mockResolvedValueOnce(undefined);
+    renderOverview({ onStartT3Thread });
+
+    const stalled = screen.getByRole("region", { name: /Stalled/ });
+    expect(within(stalled).getAllByRole("listitem")).toHaveLength(1);
+    const start = within(stalled).getByRole("button", { name: "Start ALP-6 Forgotten task in T3" });
+
+    await user.click(start);
+    expect(onStartT3Thread).toHaveBeenCalledWith(STALLED);
+    expect(await within(stalled).findByRole("alert")).toHaveTextContent("Project is not mapped to a T3 project");
+
+    await user.click(start);
+    expect(within(stalled).queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("invites creating a project when there are none", () => {
+    renderOverview({ projects: [], tasks: [] });
+    expect(screen.getByRole("heading", { name: "No projects yet" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: /Needs you/ })).not.toBeInTheDocument();
+  });
+
+  it("loads T3 sessions itself and updates live from realtime events", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(() => Promise.resolve(Response.json({ runs: [run(WORKING, "working")], activeSessions: [] }))),
+    );
+    render(<Overview mode="cloudflare" projects={[PROJECT_ALPHA]} tasks={[WORKING]} now={NOW} />);
+
+    const working = screen.getByRole("region", { name: /Agents working now/ });
+    expect(await within(working).findByRole("link", { name: "ALP-5 Build API" })).toBeInTheDocument();
+
+    act(() => {
+      dispatchRealtimeEvent({ type: "agent_run.updated", run: run(WORKING, "waiting_for_approval") });
+    });
+
+    expect(within(working).getByText("No agent is working right now.")).toBeInTheDocument();
+    const inbox = screen.getByRole("region", { name: /Needs you/ });
+    expect(within(inbox).getByText("Agent is waiting for you")).toBeInTheDocument();
+  });
+
+  it("reports a failed T3 load with a retry", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(() => Promise.resolve(Response.json({ error: "T3 host unreachable" }, { status: 502 }))),
+    );
+    render(<Overview mode="cloudflare" projects={[PROJECT_ALPHA]} tasks={[WORKING]} now={NOW} />);
+
+    const working = screen.getByRole("region", { name: /Agents working now/ });
+    expect(await within(working).findByRole("alert")).toHaveTextContent(/Could not load T3 sessions/);
+    expect(within(working).getByRole("button", { name: "Retry" })).toBeInTheDocument();
   });
 });

@@ -58,6 +58,10 @@ function stubApi(responses: {
         return Promise.resolve(Response.json({ error: "unauthorized" }, { status: 401 }));
       }
 
+      if (url.includes("/api/t3/runs")) {
+        return Promise.resolve(Response.json({ runs: [], activeSessions: [] }, { status: 200 }));
+      }
+
       if (url.includes("/api/projects")) {
         if (init?.method === "PATCH") {
           const id = decodeURIComponent(url.split("/").pop() ?? "");
@@ -235,7 +239,7 @@ describe("Dashboard Phase 4 Integration", () => {
 
     // Initially in Overview
     expect(
-      await screen.findByRole("heading", { level: 1, name: "Your agents keep the record." }),
+      await screen.findByRole("heading", { level: 1, name: "Overview" }),
     ).toBeInTheDocument();
 
     // Click Projects tab in primary nav
@@ -256,11 +260,11 @@ describe("Dashboard Phase 4 Integration", () => {
     // Click back to Overview
     await user.click(within(nav).getByRole("link", { name: "Overview" }));
     expect(
-      screen.getByRole("heading", { level: 1, name: "Your agents keep the record." }),
+      screen.getByRole("heading", { level: 1, name: "Overview" }),
     ).toBeInTheDocument();
   });
 
-  it("opens a completed task from the overview review section without leaving the overview and archives it", async () => {
+  it("opens a completed task from the Needs you inbox without leaving the overview and archives it", async () => {
     const projectId = "01940000-0000-7000-8000-000000000041";
     const taskId = "01940000-0000-7000-8000-000000000042";
     const secondTaskId = "01940000-0000-7000-8000-000000000043";
@@ -275,7 +279,7 @@ describe("Dashboard Phase 4 Integration", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    const review = await screen.findByRole("region", { name: "Completed, awaiting review" });
+    const review = await screen.findByRole("region", { name: /Needs you/ });
     const link = await within(review).findByRole("link", { name: "REV-7 Check completed work" });
     await user.click(link);
 
@@ -283,7 +287,7 @@ describe("Dashboard Phase 4 Integration", () => {
     expect(new URLSearchParams(window.location.search).get("task")).toBe("REV-7");
     const dialog = await screen.findByRole("dialog", { name: "Check completed work" });
     expect(dialog).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 1, name: "Your agents keep the record." })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "Overview" })).toBeInTheDocument();
 
     // Archive from the task detail modal
     await user.click(within(dialog).getByRole("button", { name: "Archive" }));
@@ -296,10 +300,10 @@ describe("Dashboard Phase 4 Integration", () => {
       expect(within(review).queryByText("Check completed work")).not.toBeInTheDocument();
     });
 
-    // Archive directly from the overview review list
+    // Archive directly from the inbox
     await user.click(within(review).getByRole("button", { name: "Archive Second completed work" }));
     await waitFor(() => {
-      expect(within(review).getByText("No completed tasks awaiting review.")).toBeInTheDocument();
+      expect(within(review).getByText("Nothing needs you right now.")).toBeInTheDocument();
     });
   });
 
@@ -363,7 +367,7 @@ describe("Dashboard Phase 4 Integration", () => {
     render(<App />);
 
     expect(
-      await screen.findByRole("heading", { level: 1, name: "Your agents keep the record." }),
+      await screen.findByRole("heading", { level: 1, name: "Overview" }),
     ).toBeInTheDocument();
     expect(window.location.pathname).toBe("/app");
   });
@@ -821,17 +825,18 @@ describe("Dashboard routing", () => {
     expect(new URLSearchParams(window.location.search).get("needs")).toBeNull();
   });
 
-  it("counts tasks that need a human on the overview and opens them", async () => {
-    stubApi({ projects: [PROJECT_A], tasks: [TASK_A, { ...TASK_A, id: "01940000-0000-7000-8000-0000000000a2", title: "Blocked task", needsHuman: "Approve" }] });
+  it("lists tasks that need a human in the overview inbox and opens them", async () => {
+    stubApi({ projects: [PROJECT_A], tasks: [TASK_A, { ...TASK_A, id: "01940000-0000-7000-8000-0000000000a2", title: "Blocked task", needsHuman: "Approve the plan" }] });
     const user = userEvent.setup();
     render(<App />);
 
-    const tile = await screen.findByRole("button", { name: /needs you\s*1/i });
-    await user.click(tile);
-    expect(window.location.pathname).toBe("/tasks");
-    expect(new URLSearchParams(window.location.search).get("needs")).toBe("human");
-    expect(await screen.findByText("Blocked task")).toBeInTheDocument();
-    expect(screen.queryByText("Alpha task")).not.toBeInTheDocument();
+    const inbox = await screen.findByRole("region", { name: /Needs you/ });
+    expect(await within(inbox).findByText("Approve the plan")).toBeInTheDocument();
+    expect(within(inbox).queryByText("Alpha task")).not.toBeInTheDocument();
+    await user.click(within(inbox).getByRole("link", { name: "Answer: Blocked task" }));
+    expect(window.location.pathname).toBe("/app");
+    expect(new URLSearchParams(window.location.search).get("task")).toBe("01940000-0000-7000-8000-0000000000a2");
+    expect(await screen.findByRole("dialog", { name: "Blocked task" })).toBeInTheDocument();
   });
 
   it("filters to tasks awaiting approval, from the URL and the toggle, and approves one", async () => {
@@ -860,20 +865,19 @@ describe("Dashboard routing", () => {
     expect(new URLSearchParams(window.location.search).get("awaiting")).toBeNull();
   });
 
-  it("counts tasks awaiting approval on the overview and opens them", async () => {
+  it("keeps Backlog tasks out of the overview inbox", async () => {
     stubApi({
       projects: [PROJECT_A],
-      tasks: [TASK_A, { ...TASK_A, id: "01940000-0000-7000-8000-0000000000a3", title: "Agent idea", pendingApproval: true }],
+      tasks: [
+        { ...TASK_A, status: "done", completedAt: new Date().toISOString() },
+        { ...TASK_A, id: "01940000-0000-7000-8000-0000000000a3", title: "Agent idea", pendingApproval: true, needsHuman: "Worth it?" },
+      ],
     });
-    const user = userEvent.setup();
     render(<App />);
 
-    const tile = await screen.findByRole("button", { name: /awaiting approval\s*1/i });
-    await user.click(tile);
-    expect(window.location.pathname).toBe("/tasks");
-    expect(new URLSearchParams(window.location.search).get("awaiting")).toBe("approval");
-    expect(await screen.findByText("Agent idea")).toBeInTheDocument();
-    expect(screen.queryByText("Alpha task")).not.toBeInTheDocument();
+    const inbox = await screen.findByRole("region", { name: /Needs you/ });
+    expect(await within(inbox).findByText("Alpha task")).toBeInTheDocument();
+    expect(within(inbox).queryByText("Agent idea")).not.toBeInTheDocument();
   });
 
   it("opens a project's tasks from the Projects page", async () => {
@@ -935,7 +939,7 @@ describe("Dashboard routing", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    const inProgress = await screen.findByTestId("left-off-in-progress");
+    const inProgress = await screen.findByTestId("left-off-recent");
     await user.click(within(inProgress).getByRole("link", { name: /BET-7\s*Beta task/ }));
 
     expect(window.location.pathname).toBe("/app");
@@ -1024,7 +1028,7 @@ describe("Dashboard routing", () => {
     window.history.back();
 
     expect(
-      await screen.findByRole("heading", { level: 1, name: "Your agents keep the record." }),
+      await screen.findByRole("heading", { level: 1, name: "Overview" }),
     ).toBeInTheDocument();
   });
 
@@ -1034,7 +1038,7 @@ describe("Dashboard routing", () => {
     render(<App />);
 
     expect(
-      await screen.findByRole("heading", { level: 1, name: "Your agents keep the record." }),
+      await screen.findByRole("heading", { level: 1, name: "Overview" }),
     ).toBeInTheDocument();
     expect(window.location.pathname).toBe("/app");
   });

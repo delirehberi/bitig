@@ -62,4 +62,11 @@ describe("task links", () => {
     expect(parseRoute("/settings", "")).toEqual({ name: "settings" });
     expect(hrefFor({ name: "settings" })).toBe("/settings");
   });
+
+  it("round-trips the reports route and keeps an open task on it", () => {
+    expect(parseRoute("/reports", "")).toEqual({ name: "reports" });
+    expect(parseRoute("/reports", "?task=BIT-64")).toEqual({ name: "reports", taskRef: "BIT-64" });
+    expect(hrefFor({ name: "reports" })).toBe("/reports");
+    expect(taskHref("BIT-64", "/reports")).toBe("/reports?task=BIT-64");
+  });
 });

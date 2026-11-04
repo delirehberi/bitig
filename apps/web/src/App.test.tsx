@@ -18,16 +18,24 @@ describe("App", () => {
   });
 
   it("shows the worker as online with its version", async () => {
-    stubFetch(() =>
-      Promise.resolve(Response.json({ status: "ok", version: "0.4.1", storageMode: "cloudflare" }, { status: 200 })),
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>((input) => {
+        const url = urlOf(input);
+        if (url.includes("/health")) {
+          return Promise.resolve(Response.json({ status: "ok", version: "0.4.1", storageMode: "cloudflare" }));
+        }
+        if (url.includes("/api/auth/session")) return Promise.resolve(Response.json({ user: "admin" }));
+        if (url.includes("/api/t3/runs")) return Promise.resolve(Response.json({ runs: [], activeSessions: [] }));
+        // Projects, tasks and webhooks are lists.
+        return Promise.resolve(Response.json([]));
+      }),
     );
 
     render(<App />);
 
-    expect(
-      await screen.findByRole("heading", { level: 1, name: "Your agents keep the record." }),
-    ).toBeInTheDocument();
-    expect(screen.getByText("Online")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 1, name: "Overview" })).toBeInTheDocument();
+    expect(await screen.findByText("Worker online · v0.4.1 · Cloudflare storage")).toBeInTheDocument();
     expect(screen.getAllByText("v0.4.1").length).toBeGreaterThan(0);
   });
 
@@ -36,8 +44,9 @@ describe("App", () => {
 
     render(<App />);
 
-    expect(await screen.findByText("Unreachable")).toBeInTheDocument();
-    expect(screen.getByText("worker did not respond")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Worker unreachable · worker did not respond · Cloudflare storage"),
+    ).toBeInTheDocument();
   });
 
   it("falls back to the default storage mode when the worker is unreachable", async () => {
@@ -45,7 +54,7 @@ describe("App", () => {
 
     render(<App />);
 
-    expect(await screen.findByText(MODE_COPY.cloudflare.summary)).toBeInTheDocument();
+    expect(await screen.findByText(new RegExp(`${MODE_COPY.cloudflare.label} storage$`))).toBeInTheDocument();
   });
 
   it("shows a loading state until the worker reports its storage mode", () => {

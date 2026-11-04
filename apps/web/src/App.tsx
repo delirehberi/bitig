@@ -16,6 +16,7 @@ import { LoginPage } from "./auth/LoginPage";
 import { useAuth } from "./auth/useAuth";
 import { Header } from "./components/Header";
 import { Overview } from "./components/Overview";
+import { Reports } from "./components/Reports";
 import { ProjectsView } from "./components/projects/ProjectsView";
 import { Rail, type NavigationTab } from "./components/Rail";
 import { SettingsView } from "./components/settings/SettingsView";
@@ -244,6 +245,8 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
 
       <div className="flex min-w-0 flex-col">
         <Header
+          mode={mode}
+          health={health}
           searchQuery={searchQuery}
           onSearchChange={setSearchQuery}
         />
@@ -275,22 +278,16 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
             {activeTab === "overview" && (
               <Overview
                 mode={mode}
-                health={health}
                 projects={projects.filter((project) => !project.archived)}
                 tasks={tasks}
-                projectsCount={projects.filter((project) => !project.archived).length}
-                tasksCount={tasks.length}
-                needsHumanCount={tasks.filter((task) => task.needsHuman !== undefined).length}
-                awaitingApprovalCount={tasks.filter((task) => task.pendingApproval === true).length}
-                onNavigate={(tab) => {
-                  if (tab === "needs_human") navigate(tasksHref({ needsHuman: true }));
-                  else if (tab === "awaiting_approval") navigate(tasksHref({ awaitingApproval: true }));
-                  else navigate(hrefFor({ name: tab }));
-                }}
                 onArchiveTask={(t) => {
                   void updateTask(t.id, { status: "archived" });
                 }}
               />
+            )}
+
+            {activeTab === "reports" && (
+              <Reports projects={projects.filter((project) => !project.archived)} tasks={tasks} />
             )}
 
             {activeTab === "projects" && (

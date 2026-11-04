@@ -64,7 +64,7 @@ describe("WhereYouLeftOff", () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it("shows the last project, in-progress tasks with their next subtask, and recent activity by day", () => {
+  it("shows the last project and recent activity by day", () => {
     window.history.replaceState(null, "", "/app");
     const tasks = [
       task(1, ALPHA, localIso(20, 10), { status: "done", startedAt: localIso(19, 10), completedAt: localIso(20, 10) }),
@@ -88,14 +88,6 @@ describe("WhereYouLeftOff", () => {
     );
     expect(project).toHaveTextContent("Active 4 hours ago · 1 in progress · 2 open");
 
-    const inProgress = screen.getByTestId("left-off-in-progress");
-    expect(within(inProgress).getByRole("link", { name: /BET-2\s*Task 2/ })).toHaveAttribute(
-      "href",
-      "/app?task=BET-2",
-    );
-    expect(inProgress).toHaveTextContent("Next: Write migration");
-    expect(within(inProgress).getByTitle("1 of 2 subtasks done")).toBeInTheDocument();
-
     const recent = screen.getByTestId("left-off-recent");
     const days = within(recent).getAllByRole("heading", { level: 4 }).map((h) => h.textContent);
     expect(days).toEqual(["Today", "Yesterday", "Tue 20 Oct"]);
@@ -109,14 +101,15 @@ describe("WhereYouLeftOff", () => {
     expect(recentItems[2]).toHaveTextContent("Completed · 10:00 · Alpha");
   });
 
-  it("invites starting something when nothing is in progress, and counts what does not fit", () => {
-    const { rerender } = render(
-      <WhereYouLeftOff projects={[ALPHA]} tasks={[task(1, ALPHA, localIso(22, 9))]} now={NOW} />,
+  it("leaves in-progress tasks to the dashboard's working and stalled lists", () => {
+    render(
+      <WhereYouLeftOff
+        projects={[ALPHA]}
+        tasks={[task(1, ALPHA, localIso(22, 9), { status: "in_progress" })]}
+        now={NOW}
+      />,
     );
-    expect(screen.getByTestId("left-off-in-progress")).toHaveTextContent("Nothing in progress");
-
-    const busy = Array.from({ length: 7 }, (_, i) => task(i + 1, ALPHA, localIso(22, 8 + i), { status: "in_progress" }));
-    rerender(<WhereYouLeftOff projects={[ALPHA]} tasks={busy} now={NOW} />);
-    expect(screen.getByTestId("left-off-in-progress")).toHaveTextContent("and 2 more in progress");
+    expect(screen.queryByTestId("left-off-in-progress")).not.toBeInTheDocument();
+    expect(screen.getByTestId("left-off-recent")).toHaveTextContent("Task 1");
   });
 });

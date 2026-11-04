@@ -1,19 +1,16 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Archive, ArrowLeft, FolderPlus, Hand, Plus, RefreshCw, Search } from "lucide-react";
 import {
   PROJECT_KINDS,
-  isActiveAgentRunState,
   type AgentRun,
   type CreateProjectInput,
   type Project,
   type ProjectKind,
   type T3ProjectActiveSession,
-  type T3RunsLiveResponse,
   type Task,
   type UpdateProjectInput,
 } from "@bitig/core";
-import { useRealtimeEvent } from "../../hooks/useRealtime";
-import { fetchT3Runs } from "../../services/t3";
+import { useT3Runs } from "../../hooks/useT3Runs";
 import { resolveProjectActiveSessions } from "./activeSessions";
 import { ProjectCard } from "./ProjectCard";
 import { ProjectDetailModal } from "./ProjectDetailModal";
@@ -80,69 +77,12 @@ export function ProjectsView({
   const [t3Filter, setT3Filter] = useState<ProjectT3Filter>("");
   const [needsHumanOnly, setNeedsHumanOnly] = useState(false);
 
-  const [fetchedRuns, setFetchedRuns] = useState<AgentRun[]>([]);
-  const [fetchedSessions, setFetchedSessions] = useState<T3ProjectActiveSession[]>([]);
-  const [isRefreshingT3, setIsRefreshingT3] = useState(false);
-
-  const loadT3Sessions = useCallback(async () => {
-    setIsRefreshingT3(true);
-    try {
-      const res = await fetchT3Runs().catch(
-        (): T3RunsLiveResponse => ({
-          runs: [],
-          activeSessions: [],
-        }),
-      );
-      setFetchedRuns(res.runs);
-      setFetchedSessions(res.activeSessions ?? []);
-    } finally {
-      setIsRefreshingT3(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (agentRunsProp !== undefined || activeSessionsProp !== undefined) {
-      return;
-    }
-    const controller = new AbortController();
-    void fetchT3Runs(controller.signal)
-      .catch(
-        (): T3RunsLiveResponse => ({
-          runs: [],
-          activeSessions: [],
-        }),
-      )
-      .then((res) => {
-        if (controller.signal.aborted) return;
-        setFetchedRuns(res.runs);
-        setFetchedSessions(res.activeSessions ?? []);
-      });
-    return () => {
-      controller.abort();
-    };
-  }, [agentRunsProp, activeSessionsProp]);
-
-  useRealtimeEvent((event) => {
-    if (event.type === "agent_run.updated") {
-      setFetchedRuns((prev) => {
-        const idx = prev.findIndex((r) => r.taskId === event.run.taskId);
-        if (idx === -1) return [...prev, event.run];
-        const next = [...prev];
-        next[idx] = event.run;
-        return next;
-      });
-      if (!isActiveAgentRunState(event.run.state)) {
-        setFetchedSessions((prev) =>
-          prev.filter(
-            (s) => s.threadId !== event.run.threadId && s.taskId !== event.run.taskId,
-          ),
-        );
-      }
-    }
+  const t3Runs = useT3Runs({
+    enabled: agentRunsProp === undefined && activeSessionsProp === undefined,
   });
 
-  const effectiveRuns = agentRunsProp ?? fetchedRuns;
-  const effectiveSessions = activeSessionsProp ?? fetchedSessions;
+  const effectiveRuns = agentRunsProp ?? t3Runs.runs;
+  const effectiveSessions = activeSessionsProp ?? t3Runs.activeSessions;
 
   const activeSessionsByProject = useMemo(() => {
     const map = new Map<string, ReturnType<typeof resolveProjectActiveSessions>>();
@@ -385,9 +325,9 @@ export function ProjectsView({
           <button
             type="button"
             onClick={() => {
-              void loadT3Sessions();
+              void t3Runs.refresh();
             }}
-            disabled={isRefreshingT3}
+            disabled={t3Runs.isRefreshing}
             aria-label="Refresh T3 sessions"
             title="Check live T3 Code session status"
             className="inline-flex items-center gap-1.5 rounded-md border border-rule bg-paper-2 px-3 py-1.5 text-xs font-semibold text-ink-2 transition-colors hover:text-ink disabled:opacity-50 focus-visible:outline-focus"
