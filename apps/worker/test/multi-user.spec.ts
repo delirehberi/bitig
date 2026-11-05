@@ -393,7 +393,12 @@ describe("multi-user organisations, permissions, tokens, invitations, profile an
     const commentRes = await req(`/api/tasks/${task.id}/comments`, {
       method: "POST",
       token,
-      bodyJson: { body: "Hello from token", authorType: "agent", author: "spoofed" },
+      bodyJson: {
+        body: "Hello from token",
+        authorType: "agent",
+        author: "spoofed",
+        authorId: "01940000-0000-7000-8000-000000000999",
+      },
     });
     expect(commentRes.status).toBe(201);
     const comment = await commentRes.json<Comment>();

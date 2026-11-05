@@ -71,7 +71,7 @@ export function useComments(storage: StorageProvider, taskId: string) {
           taskId,
           body,
           authorType: "human",
-          ...(profile ? { author: profile.displayName, authorUserId: profile.id } : {}),
+          ...(profile ? { author: profile.displayName, authorId: profile.id } : {}),
         },
         { actor: actorName },
       );

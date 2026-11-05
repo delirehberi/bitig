@@ -1,13 +1,54 @@
-import { InMemoryStorage, type AgentRun, type AgentRunState, type T3ModelCapability, type Task } from "@bitig/core";
+import {
+  InMemoryStorage,
+  type AgentRun,
+  type AgentRunState,
+  type T3ModelCapability,
+  type Task,
+  type User,
+} from "@bitig/core";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { AuthContext, type AuthContextValue } from "../../auth/auth-types";
 import { replyToTaskT3Run } from "../../services/t3";
 import { TaskComments } from "./TaskComments";
 
 vi.mock("../../services/t3", () => ({
   replyToTaskT3Run: vi.fn(),
 }));
+
+const SIGNED_IN_PROFILE: User = {
+  id: "01a1ac95-b471-7100-a809-21f894f9c1cd",
+  email: "nostr-46f3c7bb@nostr.local",
+  username: "nostr-46f3c7bb",
+  displayName: "Nostr (46f3c7bb)",
+  platformRole: "user",
+  status: "active",
+  createdAt: "2026-11-05T00:00:00.000Z",
+  updatedAt: "2026-11-05T00:00:00.000Z",
+};
+
+function makeAuthContext(profile: User | null): AuthContextValue {
+  return {
+    status: profile ? "authenticated" : "disabled",
+    user: profile?.username ?? null,
+    profile,
+    memberships: [],
+    needsOnboarding: false,
+    currentOrg: null,
+    currentRole: "owner",
+    isAdmin: false,
+    selectOrg: vi.fn(),
+    refreshAuth: vi.fn().mockResolvedValue(undefined),
+    requestSignInCode: vi.fn(),
+    requestRegistrationCode: vi.fn(),
+    verifyAuthCode: vi.fn(),
+    loginWithPassword: vi.fn(),
+    loginWithNostr: vi.fn(),
+    logout: vi.fn().mockResolvedValue(undefined),
+    expire: vi.fn(),
+  };
+}
 
 const CAPABILITIES: T3ModelCapability[] = [
   {
@@ -79,11 +120,42 @@ describe("TaskComments", () => {
 
     expect(await screen.findByText("Use the staging key")).toBeInTheDocument();
     expect(screen.getByLabelText("Add a comment")).toHaveValue("");
-    expect(await storage.getComments(task.id)).toMatchObject([{ body: "Use the staging key", authorType: "human" }]);
+    const storedComments = await storage.getComments(task.id);
+    expect(storedComments).toMatchObject([{ body: "Use the staging key", authorType: "human" }]);
+    expect(storedComments[0]?.author).toBeUndefined();
+    expect(storedComments[0]?.authorId).toBeUndefined();
 
     await user.click(screen.getByRole("button", { name: "Delete comment by You" }));
     expect(await screen.findByText("No comments yet")).toBeInTheDocument();
     expect(await storage.getComments(task.id)).toEqual([]);
+  });
+
+  it("submits a comment with a signed-in profile using authorId and passes strict schema validation (BIT-143)", async () => {
+    const user = userEvent.setup();
+    render(
+      <AuthContext.Provider value={makeAuthContext(SIGNED_IN_PROFILE)}>
+        <TaskComments storage={storage} taskId={task.id} />
+      </AuthContext.Provider>,
+    );
+    expect(await screen.findByText("No comments yet")).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("Add a comment"), "Signed-in Nostr comment");
+    await user.click(screen.getByRole("button", { name: "Comment" }));
+
+    expect(await screen.findByText("Signed-in Nostr comment")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByText(SIGNED_IN_PROFILE.displayName)).toBeInTheDocument();
+    expect(screen.getByLabelText("Add a comment")).toHaveValue("");
+
+    expect(await storage.getComments(task.id)).toMatchObject([
+      {
+        body: "Signed-in Nostr comment",
+        authorType: "human",
+        author: SIGNED_IN_PROFILE.displayName,
+        authorId: SIGNED_IN_PROFILE.id,
+      },
+    ]);
+    expect((await storage.getTask(task.id))?.updatedBy).toBe(SIGNED_IN_PROFILE.displayName);
   });
 
   it("only calls onResolve when Comment & resolve is clicked, not on a regular Comment", async () => {
