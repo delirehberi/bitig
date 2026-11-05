@@ -21,9 +21,16 @@ import {
   isSameT3ModelSelection,
   normalizeT3McpUrl,
   T3WorkspaceBusyError,
+  AgentRunSchema,
+  T3_HANDBACK_CHECKLIST_MAX,
+  buildT3SubagentCompletedComment,
+  buildT3SubagentCompletedPrompt,
+  buildT3SubagentEndedComment,
+  buildT3SubagentEndedPrompt,
+  buildT3SubagentStartedComment,
 } from "./t3";
 import { BitigError, isBitigError } from "./errors";
-import type { Comment, Task } from "./types";
+import type { Checkpoint, Comment, Task } from "./types";
 
 describe("normalizeT3McpUrl", () => {
   it("normalizes https origin or /mcp path", () => {
@@ -151,6 +158,120 @@ describe("buildT3LaunchPrompt", () => {
     expect(built.prompt).toContain("post the final comment first, then move the task to `done`");
     expect(built.prompt).toContain("complete_task");
     expect(built.prompt).toContain("Never move the task to `archived`");
+    expect(built.prompt).toContain("Checklist items are steps of BIT-107, not separate tasks");
+    expect(built.prompt).toContain('start_t3_thread({ taskId: "<child-code>", parentTaskId: "BIT-107" })');
+    expect(built.prompt).toContain("end your turn without polling");
+    expect(built.prompt).not.toContain("## Umbrella Task");
+  });
+
+  it("tells a child session which umbrella task started it (BIT-141)", () => {
+    const built = buildT3LaunchPrompt({ task: sampleTask, taskCode: "BIT-108", parentTaskCode: "BIT-100" });
+    expect(built.prompt).toContain("## Umbrella Task");
+    expect(built.prompt).toContain("umbrella task BIT-100");
+    expect(built.prompt).toContain("do not start, update, or complete BIT-100");
+    expect(built.prompt).toContain('complete_task({ id: "BIT-108" })');
+  });
+});
+
+describe("T3 subagent handback (BIT-141)", () => {
+  const child: Task = {
+    id: "0196ed60-0000-7000-8000-000000000021",
+    projectId: "0196ed60-0000-7000-8000-000000000002",
+    title: "Store encrypted token",
+    description: "",
+    status: "done",
+    isPublic: false,
+    checklist: [
+      { text: "Encrypt", done: true },
+      { text: "Persist", done: false },
+    ],
+    createdAt: "2026-11-01T10:00:00.000Z",
+    updatedAt: "2026-11-01T10:00:00.000Z",
+  };
+  const checkpoint: Checkpoint = {
+    id: "0196ed60-0000-7000-8000-000000000022",
+    taskId: child.id,
+    stepIndex: 2,
+    status: "COMPLETED",
+    stateSnapshot: {
+      summary: "Tokens are stored encrypted.",
+      modifiedArtifacts: ["src/crypto.ts", "src/store.ts"],
+      decisionsMade: ["AES-256-GCM"],
+      nextStepInstructions: "None",
+    },
+    createdAt: "2026-11-01T12:00:00.000Z",
+  };
+  const finalComment: Comment = {
+    id: "0196ed60-0000-7000-8000-000000000023",
+    taskId: child.id,
+    body: "Done and verified with make check.",
+    authorType: "agent",
+    author: "claude",
+    createdAt: "2026-11-01T12:30:00.000Z",
+  };
+  const input = { parentLabel: "BIT-100", childLabel: "BIT-108", child, checkpoint, finalComment };
+
+  it("treats waiting_subagent as an active state and stores parent and child links on a run", () => {
+    expect(isActiveAgentRunState("waiting_subagent")).toBe(true);
+    const run = AgentRunSchema.parse({
+      id: "0196ed60-0000-7000-8000-000000000030",
+      taskId: child.id,
+      t3ProjectId: "t3-proj",
+      threadId: "thread-1",
+      state: "waiting_subagent",
+      parentTaskId: "0196ed60-0000-7000-8000-000000000031",
+      waitingForTaskId: "0196ed60-0000-7000-8000-000000000032",
+      startedAt: "2026-11-01T10:00:00.000Z",
+      updatedAt: "2026-11-01T10:00:00.000Z",
+    });
+    expect(run.waitingForTaskId).toBe("0196ed60-0000-7000-8000-000000000032");
+    expect(() => AgentRunSchema.parse({ ...run, waitingForTaskId: "TAS-2" })).toThrow();
+  });
+
+  it("names the child and its thread in the started comment", () => {
+    const body = buildT3SubagentStartedComment({
+      childLabel: "BIT-108",
+      childTitle: "Store encrypted token",
+      link: "https://t3.example/threads/t-2",
+    });
+    expect(body).toContain('#BIT-108 "Store encrypted token"');
+    expect(body).toContain("(https://t3.example/threads/t-2)");
+    expect(buildT3SubagentStartedComment({ childLabel: "BIT-108", childTitle: "x" })).not.toContain("T3 thread]");
+  });
+
+  it("hands back status, checklist, checkpoint, and the final comment", () => {
+    const comment = buildT3SubagentCompletedComment(input);
+    const prompt = buildT3SubagentCompletedPrompt(input);
+    for (const text of [comment, prompt]) {
+      expect(text).toContain("Status: done");
+      expect(text).toContain("Checklist: 1/2 done");
+      expect(text).toContain("  - [ ] Persist");
+      expect(text).toContain("Latest checkpoint (step 2): Tokens are stored encrypted.");
+      expect(text).toContain("Modified: src/crypto.ts, src/store.ts");
+      expect(text).toContain("Decisions: AES-256-GCM");
+      expect(text).toContain("Final comment from claude:\n\nDone and verified with make check.");
+    }
+    expect(prompt).toContain("Child task BIT-108 that you started from BIT-100 is done.");
+    expect(prompt).toContain('resume_from_checkpoint({ taskId: "BIT-100" })');
+  });
+
+  it("omits missing checkpoint and comment, and bounds long checklists", () => {
+    const many = Array.from({ length: T3_HANDBACK_CHECKLIST_MAX + 5 }, (_, i) => ({ text: `Item ${String(i)}`, done: true }));
+    const prompt = buildT3SubagentCompletedPrompt({ parentLabel: "BIT-100", childLabel: "BIT-108", child: { ...child, checklist: many } });
+    expect(prompt).not.toContain("Latest checkpoint");
+    expect(prompt).not.toContain("Final comment");
+    expect(prompt).toContain("…and 5 more");
+    expect(prompt).not.toContain(`Item ${String(T3_HANDBACK_CHECKLIST_MAX)}\n`);
+  });
+
+  it("tells the umbrella session when a child session fails or stops", () => {
+    const ended = { ...input, child: { ...child, status: "in_progress" as const }, state: "failed" as const, stopReason: "Usage limit" };
+    expect(buildT3SubagentEndedComment(ended)).toContain(
+      "The T3 session of child task #BIT-108 failed before the task was done. Reason: Usage limit",
+    );
+    const prompt = buildT3SubagentEndedPrompt(ended);
+    expect(prompt).toContain("You started it from BIT-100.");
+    expect(prompt).toContain('start_t3_thread({ taskId: "BIT-108", parentTaskId: "BIT-100" })');
   });
 });
 
@@ -173,9 +294,10 @@ describe("deriveLiveAgentRunState", () => {
     expect(deriveLiveAgentRunState({ threadStatus: "interrupted" })).toBe("stopped");
   });
 
-  it("identifies working and waiting_for_approval as active agent run states", () => {
+  it("identifies working, waiting_for_approval, and waiting_subagent as active agent run states", () => {
     expect(isActiveAgentRunState("working")).toBe(true);
     expect(isActiveAgentRunState("waiting_for_approval")).toBe(true);
+    expect(isActiveAgentRunState("waiting_subagent")).toBe(true);
     expect(isActiveAgentRunState("finished")).toBe(false);
     expect(isActiveAgentRunState("failed")).toBe(false);
     expect(isActiveAgentRunState("stopped")).toBe(false);

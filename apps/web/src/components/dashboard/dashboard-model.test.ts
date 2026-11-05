@@ -109,9 +109,22 @@ describe("buildAttentionItems", () => {
     expect(items).toEqual([]);
   });
 
-  it("does not treat an offline run as waiting on the person", () => {
+  it("does not treat an offline or waiting_subagent run as waiting on the person", () => {
     const offline = task();
-    expect(buildAttentionItems(input([offline], [run(offline, "offline")]))).toEqual([]);
+    const umbrella = task();
+    const child = task();
+    expect(
+      buildAttentionItems(
+        input(
+          [offline, umbrella, child],
+          [
+            run(offline, "offline"),
+            { ...run(umbrella, "waiting_subagent"), waitingForTaskId: child.id },
+            run(child, "working"),
+          ],
+        ),
+      ),
+    ).toEqual([]);
   });
 
   it("ignores tasks of projects that are not shown", () => {
@@ -148,20 +161,26 @@ describe("buildAttentionItems", () => {
 });
 
 describe("workingSessions", () => {
-  it("keeps working threads, longest running first", () => {
+  it("keeps working and waiting_subagent threads, longest running first", () => {
     const first = task();
     const second = task();
+    const umbrella = task();
     const waiting = task();
     const sessions = resolveWorkspaceActiveSessions(
       [ALPHA],
-      [first, second, waiting],
+      [first, second, umbrella, waiting],
       [
         { ...run(second, "working"), startedAt: "2026-03-09T00:00:00.000Z" },
+        { ...run(umbrella, "waiting_subagent"), waitingForTaskId: second.id, startedAt: "2026-03-07T00:00:00.000Z" },
         { ...run(first, "working"), startedAt: "2026-03-08T00:00:00.000Z" },
         run(waiting, "waiting_for_approval"),
       ],
     );
-    expect(workingSessions(sessions).map((session) => session.taskId)).toEqual([first.id, second.id]);
+    expect(workingSessions(sessions).map((session) => session.taskId)).toEqual([
+      umbrella.id,
+      first.id,
+      second.id,
+    ]);
   });
 });
 
@@ -176,14 +195,22 @@ describe("findStalledTasks", () => {
     expect(stalled[1]?.code).toBe(`ALP-${String(noRun.number)}`);
   });
 
-  it("skips tasks with an active or ended run, a question, recent activity, or another status", () => {
+  it("skips tasks with an active (including waiting_subagent) or ended run, a question, recent activity, or another status", () => {
     const working = task();
+    const umbrella = task();
     const ended = task();
     const asking = task({ needsHuman: "help" });
     const recent = task({ updatedAt: RECENT });
     const todo = task({ status: "todo" });
     const stalled = findStalledTasks(
-      input([working, ended, asking, recent, todo], [run(working, "working"), run(ended, "stopped")]),
+      input(
+        [working, umbrella, ended, asking, recent, todo],
+        [
+          run(working, "working"),
+          { ...run(umbrella, "waiting_subagent"), waitingForTaskId: working.id },
+          run(ended, "stopped"),
+        ],
+      ),
       NOW,
     );
     expect(stalled).toEqual([]);

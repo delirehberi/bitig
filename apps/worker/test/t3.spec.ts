@@ -16,7 +16,7 @@ import type {
 } from "@bitig/core";
 import { createApp } from "../src/index";
 import { decryptT3Token, encryptT3Token } from "../src/t3/crypto";
-import { TEST_AUTH_HEADER, TEST_T3_ENCRYPTION_KEY } from "./constants";
+import { TEST_AUTH_HEADER, TEST_MCP_AUTH_HEADER, TEST_T3_ENCRYPTION_KEY } from "./constants";
 
 const BASE_URL = "https://bitig.test";
 const T3_ORIGIN = "https://t3.example.test";
@@ -164,6 +164,8 @@ const STATEMENTS = [
     \`provider_instance_id\` text,
     \`model_options\` text,
     \`workspace_strategy\` text,
+    \`parent_task_id\` text,
+    \`waiting_for_task_id\` text,
     \`started_by\` text,
     \`started_at\` integer NOT NULL,
     \`updated_at\` integer NOT NULL,
@@ -171,6 +173,7 @@ const STATEMENTS = [
   )`,
   "CREATE UNIQUE INDEX `agent_runs_task_id_idx` ON `agent_runs` (`task_id`)",
   "CREATE INDEX `agent_runs_thread_id_idx` ON `agent_runs` (`thread_id`)",
+  "CREATE INDEX `agent_runs_waiting_for_task_id_idx` ON `agent_runs` (`waiting_for_task_id`)",
   `CREATE TABLE \`project_t3_threads\` (
     \`id\` text PRIMARY KEY NOT NULL,
     \`project_id\` text NOT NULL,
@@ -1825,5 +1828,250 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
     expect(freedRes.status).toBe(201);
     expect((await freedRes.json<{ run: AgentRun }>()).run.workspaceStrategy).toBe("root");
     expect(await storedRunState(rootTask.id)).toBe("finished");
+  });
+
+  it("orchestrates child T3 sessions from an umbrella task with waiting_subagent state and completion/failure handback (#BIT-141)", async () => {
+    await connectT3Host();
+    const project = await (
+      await request("/api/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Bitig", key: "BIT" }),
+      })
+    ).json<Project>();
+    await request(`/api/t3/mappings/${project.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ t3ProjectId: "t3-proj-bitig", t3ProjectTitle: "Bitig Workspace" }),
+    });
+
+    async function callMcpTool(
+      name: string,
+      args: Record<string, unknown>,
+    ): Promise<{ isError?: boolean; text: string }> {
+      const res = await app.request(
+        `${BASE_URL}/mcp`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: TEST_MCP_AUTH_HEADER,
+            "Content-Type": "application/json",
+            Accept: "application/json, text/event-stream",
+          },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "tools/call",
+            params: { name, arguments: args },
+          }),
+        },
+        env,
+      );
+      expect(res.status).toBe(200);
+      const raw = await res.text();
+      const dataLine = raw
+        .split("\n")
+        .find((line) => line.startsWith("data: "));
+      const payload = JSON.parse(dataLine ? dataLine.slice(6) : raw) as {
+        result?: { isError?: boolean; content?: { text?: string }[] };
+      };
+      return {
+        ...(payload.result?.isError ? { isError: true } : {}),
+        text: payload.result?.content?.[0]?.text ?? "",
+      };
+    }
+
+    const umbrella = await (
+      await request("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: project.id, title: "Umbrella roadmap" }),
+      })
+    ).json<Task>();
+    const childOne = await (
+      await request("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: project.id,
+          title: "Child step one",
+          dependsOn: [umbrella.id],
+          checklist: [{ text: "Write handler", done: true }],
+        }),
+      })
+    ).json<Task>();
+    const childTwo = await (
+      await request("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: project.id,
+          title: "Child step two",
+          dependsOn: [umbrella.id, childOne.id],
+        }),
+      })
+    ).json<Task>();
+
+    // 1. Start the umbrella task in T3 (BIT-1).
+    mockState.launchThreadId = "thread-umbrella";
+    const startUmbrellaRes = await request(`/api/tasks/${umbrella.id}/t3-run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workspaceStrategy: "worktree" }),
+    });
+    expect(startUmbrellaRes.status).toBe(201);
+
+    // 2. Starting BIT-2 via MCP start_t3_thread({ taskId: "BIT-2", parentTaskId: "BIT-1" }) launches BIT-2
+    //    and transitions BIT-1's run to waiting_subagent.
+    mockState.launchThreadId = "thread-child-1";
+    const startChildOne = await callMcpTool("start_t3_thread", {
+      taskId: "BIT-2",
+      parentTaskId: "BIT-1",
+    });
+    expect(startChildOne.isError).toBeUndefined();
+    const launchedChildOne = JSON.parse(startChildOne.text) as { run: AgentRun; task: Task & { code: string } };
+    expect(launchedChildOne.task.code).toBe("BIT-2");
+    expect(launchedChildOne.task.status).toBe("in_progress");
+    expect(launchedChildOne.run.threadId).toBe("thread-child-1");
+    expect(launchedChildOne.run.parentTaskId).toBe(umbrella.id);
+
+    // Starting another child while BIT-1 already waits on BIT-2 is refused.
+    const concurrentAttempt = await callMcpTool("start_t3_thread", {
+      taskId: "BIT-3",
+      parentTaskId: "BIT-1",
+    });
+    expect(concurrentAttempt.isError).toBe(true);
+
+    // 3. Even when BIT-1's T3 thread is idle ("completed"), live status reconciliation keeps BIT-1
+    //    in waiting_subagent while BIT-2 is in_progress with an active run.
+    mockState.threadStatus = "completed";
+    mockState.recentRunStatus = "completed";
+    mockState.activeRunId = null;
+    mockState.threadList = [
+      {
+        threadId: "thread-umbrella",
+        projectId: "t3-proj-bitig",
+        status: "completed",
+        pendingRequestCount: 0,
+        activeRunId: null,
+        settled: false,
+      },
+      {
+        threadId: "thread-child-1",
+        projectId: "t3-proj-bitig",
+        status: "running",
+        pendingRequestCount: 0,
+        activeRunId: "run-child-1",
+        settled: false,
+      },
+    ];
+
+    const umbrellaLiveDuringWait = await (
+      await request(`/api/tasks/${umbrella.id}/t3-run`)
+    ).json<T3TaskRunLiveResponse>();
+    expect(umbrellaLiveDuringWait.run?.state).toBe("waiting_subagent");
+    expect(umbrellaLiveDuringWait.run?.waitingForTaskId).toBe(childOne.id);
+
+    const liveRunsDuringWait = await (await request("/api/t3/runs")).json<T3RunsLiveResponse>();
+    const reconciledUmbrella = liveRunsDuringWait.runs.find((r) => r.taskId === umbrella.id);
+    expect(reconciledUmbrella?.state).toBe("waiting_subagent");
+    expect(reconciledUmbrella?.waitingForTaskId).toBe(childOne.id);
+    const umbrellaSession = liveRunsDuringWait.activeSessions?.find((s) => s.taskId === umbrella.id);
+    expect(umbrellaSession?.state).toBe("waiting_subagent");
+    expect(umbrellaSession?.waitingForTaskId).toBe(childOne.id);
+
+    // 4. Child agent saves a checkpoint, posts a final comment, and completes BIT-2 via MCP complete_task.
+    await callMcpTool("save_checkpoint", {
+      taskId: "BIT-2",
+      stepIndex: 0,
+      status: "COMPLETED",
+      stateSnapshot: {
+        summary: "Implemented child step one handler and tests.",
+        modifiedArtifacts: ["src/step-one.ts"],
+        decisionsMade: ["Used atomic D1 update"],
+        nextStepInstructions: "Done.",
+      },
+    });
+    await callMcpTool("add_comment", {
+      taskId: "BIT-2",
+      author: "claude-child",
+      body: "Child step one verified and ready.",
+    });
+
+    const completedOne = await callMcpTool("complete_task", { id: "BIT-2" });
+    expect(completedOne.isError).toBeUndefined();
+
+    // Handback sent continuation prompt to BIT-1's thread, posted summary comment on BIT-1,
+    // and moved BIT-1's run back to working with waitingForTaskId cleared.
+    const sendCallOne = mockState.toolCalls.findLast((c) => c.name === "t3_thread_send");
+    expect(sendCallOne?.arguments).toMatchObject({
+      threadId: "thread-umbrella",
+      mode: "auto",
+    });
+    expect(String(sendCallOne?.arguments.message)).toContain(
+      "Child task BIT-2 that you started from BIT-1 is done.",
+    );
+    expect(String(sendCallOne?.arguments.message)).toContain("Implemented child step one handler and tests.");
+    expect(String(sendCallOne?.arguments.message)).toContain("Child step one verified and ready.");
+
+    const umbrellaCommentsAfterOne = await (
+      await request(`/api/tasks/${umbrella.id}/comments`)
+    ).json<{ body: string; author?: string }[]>();
+    expect(umbrellaCommentsAfterOne.some((c) => c.body.includes("Started child task #BIT-2"))).toBe(true);
+    expect(
+      umbrellaCommentsAfterOne.some(
+        (c) =>
+          c.body.includes("Child task #BIT-2") &&
+          c.body.includes("Implemented child step one handler and tests.") &&
+          c.body.includes("Child step one verified and ready."),
+      ),
+    ).toBe(true);
+
+    const umbrellaRowAfterOne = await env.DB.prepare(
+      "SELECT state, waiting_for_task_id FROM agent_runs WHERE task_id = ?",
+    )
+      .bind(umbrella.id)
+      .first<{ state: string; waiting_for_task_id: string | null }>();
+    expect(umbrellaRowAfterOne).toEqual({ state: "working", waiting_for_task_id: null });
+
+    // 5. Umbrella session now delegates BIT-3 (unblocked since BIT-2 is done).
+    mockState.launchThreadId = "thread-child-2";
+    const startChildTwo = await callMcpTool("start_t3_thread", {
+      taskId: "BIT-3",
+      parentTaskId: "BIT-1",
+    });
+    expect(startChildTwo.isError).toBeUndefined();
+
+    // Simulate childTwo's T3 thread failing before BIT-3 is completed: live reconciliation notifies BIT-1.
+    mockState.threadList = [
+      {
+        threadId: "thread-umbrella",
+        projectId: "t3-proj-bitig",
+        status: "completed",
+        pendingRequestCount: 0,
+        activeRunId: null,
+        settled: false,
+      },
+      {
+        threadId: "thread-child-2",
+        projectId: "t3-proj-bitig",
+        status: "failed",
+        pendingRequestCount: 0,
+        activeRunId: null,
+        settled: false,
+      },
+    ];
+    const runsAfterChildFailure = await (await request("/api/t3/runs")).json<T3RunsLiveResponse>();
+    const childTwoRun = runsAfterChildFailure.runs.find((r) => r.taskId === childTwo.id);
+    const umbrellaAfterChildFailure = runsAfterChildFailure.runs.find((r) => r.taskId === umbrella.id);
+    expect(childTwoRun?.state).toBe("failed");
+    expect(umbrellaAfterChildFailure?.state).toBe("working");
+    expect(umbrellaAfterChildFailure?.waitingForTaskId).toBeUndefined();
+
+    const sendCallFailure = mockState.toolCalls.findLast((c) => c.name === "t3_thread_send");
+    expect(sendCallFailure?.arguments).toMatchObject({ threadId: "thread-umbrella" });
+    expect(String(sendCallFailure?.arguments.message)).toContain(
+      "The T3 session of child task #BIT-3 failed before the task was done.",
+    );
   });
 });

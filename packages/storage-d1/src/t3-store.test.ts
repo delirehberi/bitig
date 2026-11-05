@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import migration from "../migrations/0019_project_t3_threads.sql?raw";
+import subagentMigration from "../migrations/0021_agent_run_subagents.sql?raw";
 import { defaultIdGenerator } from "@bitig/core";
 import { T3D1Store, type SaveProjectT3ThreadInput } from "./t3-store";
 
@@ -118,5 +119,98 @@ describe("T3D1Store project threads (BIT-127)", () => {
         selection: { providerInstanceId: "codex", model: "gpt-6" },
       }),
     ).toBeUndefined();
+  });
+});
+
+const PARENT_TASK_ID = "01a14ecf-281e-7436-8c52-a524c5fabd01";
+const CHILD_TASK_ID = "01a14ecf-281e-7436-8c52-a524c5fabd02";
+
+/** `agent_runs` as it stood before #BIT-141, so the test also applies migration 0021. */
+const AGENT_RUN_SETUP = [
+  "DROP TABLE IF EXISTS `agent_runs`",
+  "DROP TABLE IF EXISTS `tasks`",
+  "CREATE TABLE `tasks` (`id` text PRIMARY KEY NOT NULL, `title` text NOT NULL)",
+  `CREATE TABLE \`agent_runs\` (
+    \`id\` text PRIMARY KEY NOT NULL,
+    \`task_id\` text NOT NULL,
+    \`t3_project_id\` text NOT NULL,
+    \`thread_id\` text NOT NULL,
+    \`link\` text,
+    \`state\` text NOT NULL,
+    \`model\` text,
+    \`provider_instance_id\` text,
+    \`model_options\` text,
+    \`workspace_strategy\` text,
+    \`started_by\` text,
+    \`started_at\` integer NOT NULL,
+    \`updated_at\` integer NOT NULL,
+    FOREIGN KEY (\`task_id\`) REFERENCES \`tasks\`(\`id\`) ON UPDATE no action ON DELETE cascade
+  )`,
+  "CREATE UNIQUE INDEX `agent_runs_task_id_idx` ON `agent_runs` (`task_id`)",
+];
+
+describe("T3D1Store umbrella and child runs (BIT-141)", () => {
+  beforeEach(async () => {
+    for (const statement of AGENT_RUN_SETUP) {
+      await env.DB.prepare(statement).run();
+    }
+    for (const statement of subagentMigration.split("--> statement-breakpoint")) {
+      await env.DB.prepare(statement.trim()).run();
+    }
+    await env.DB.prepare("INSERT INTO tasks (id, title) VALUES (?, ?), (?, ?)")
+      .bind(PARENT_TASK_ID, "Umbrella", CHILD_TASK_ID, "Child")
+      .run();
+  });
+
+  function runInput(taskId: string, threadId: string, parentTaskId?: string) {
+    return {
+      id: defaultIdGenerator(),
+      taskId,
+      t3ProjectId: "t3-project",
+      threadId,
+      state: "working" as const,
+      ...(parentTaskId ? { parentTaskId } : {}),
+      startedAt: STARTED_AT,
+      updatedAt: STARTED_AT,
+    };
+  }
+
+  it("links a child run to its parent and lets exactly one caller claim the parent's wait", async () => {
+    const store = new T3D1Store(env.DB);
+    await store.saveAgentRun(runInput(PARENT_TASK_ID, "thread-parent"));
+    const child = await store.saveAgentRun(runInput(CHILD_TASK_ID, "thread-child", PARENT_TASK_ID));
+    expect(child.parentTaskId).toBe(PARENT_TASK_ID);
+    expect(await store.getAgentRunByTaskId(CHILD_TASK_ID)).toEqual(child);
+
+    const waiting = await store.setAgentRunWaitingFor(PARENT_TASK_ID, { childTaskId: CHILD_TASK_ID, now: LATER });
+    expect(waiting).toMatchObject({ state: "waiting_subagent", waitingForTaskId: CHILD_TASK_ID });
+    expect(await store.getAgentRunByTaskId(PARENT_TASK_ID)).toEqual(waiting);
+    expect((await store.listAgentRunsWaitingFor(CHILD_TASK_ID)).map((r) => r.taskId)).toEqual([PARENT_TASK_ID]);
+
+    // A state reconciliation keeps the wait pointer.
+    await store.updateAgentRunState(PARENT_TASK_ID, { state: "working" });
+    expect((await store.getAgentRunByTaskId(PARENT_TASK_ID))?.waitingForTaskId).toBe(CHILD_TASK_ID);
+
+    const claimed = await store.claimAgentRunWaitingFor(PARENT_TASK_ID, CHILD_TASK_ID, { state: "working", now: LATER });
+    expect(claimed?.state).toBe("working");
+    expect(claimed?.waitingForTaskId).toBeUndefined();
+    expect(await store.claimAgentRunWaitingFor(PARENT_TASK_ID, CHILD_TASK_ID, { state: "working" })).toBeUndefined();
+    expect(await store.listAgentRunsWaitingFor(CHILD_TASK_ID)).toEqual([]);
+    expect(await store.setAgentRunWaitingFor("missing", { childTaskId: CHILD_TASK_ID })).toBeUndefined();
+  });
+
+  it("drops the wait on relaunch and clears links when a linked task is deleted", async () => {
+    const store = new T3D1Store(env.DB);
+    await store.saveAgentRun(runInput(PARENT_TASK_ID, "thread-parent"));
+    await store.saveAgentRun(runInput(CHILD_TASK_ID, "thread-child", PARENT_TASK_ID));
+    await store.setAgentRunWaitingFor(PARENT_TASK_ID, { childTaskId: CHILD_TASK_ID });
+
+    const relaunched = await store.saveAgentRun(runInput(PARENT_TASK_ID, "thread-parent-2"));
+    expect(relaunched.waitingForTaskId).toBeUndefined();
+    expect((await store.getAgentRunByTaskId(PARENT_TASK_ID))?.waitingForTaskId).toBeUndefined();
+
+    await env.DB.prepare("PRAGMA foreign_keys = ON").run();
+    await env.DB.prepare("DELETE FROM tasks WHERE id = ?").bind(PARENT_TASK_ID).run();
+    expect((await store.getAgentRunByTaskId(CHILD_TASK_ID))?.parentTaskId).toBeUndefined();
   });
 });

@@ -162,6 +162,29 @@ describe("Overview", () => {
     expect(within(working).getByText("Ad-hoc chat")).toBeInTheDocument();
   });
 
+  it("shows an umbrella session waiting on a child task in Agents working now (#BIT-141)", () => {
+    const umbrella = task(10, { title: "Umbrella task" });
+    const child = task(11, { title: "Child task" });
+    renderOverview({
+      tasks: [umbrella, child],
+      agentRuns: [
+        run(umbrella, "waiting_subagent", { waitingForTaskId: child.id }),
+        run(child, "working"),
+      ],
+    });
+    const working = screen.getByRole("region", { name: /Agents working now/ });
+    expect(within(working).getByText("waiting for subagent")).toBeInTheDocument();
+    expect(within(working).getByText("#ALP-11")).toBeInTheDocument();
+    expect(within(working).getByRole("link", { name: /#ALP-11.*Child task/i })).toHaveAttribute(
+      "href",
+      "/app?task=ALP-11",
+    );
+    expect(within(working).getByRole("link", { name: /Child thread/i })).toHaveAttribute(
+      "href",
+      "https://t3.example.test/thread-11",
+    );
+  });
+
   it("hides the T3 board without a Worker backend", () => {
     renderOverview({ mode: "local", agentRuns: [] });
     expect(screen.queryByRole("region", { name: /Agents working now/ })).not.toBeInTheDocument();

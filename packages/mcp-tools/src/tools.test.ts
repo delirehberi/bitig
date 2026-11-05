@@ -796,3 +796,104 @@ describe("start_t3_thread workspace guard (#BIT-134)", () => {
     }
   });
 });
+
+describe("umbrella task child sessions (#BIT-141)", () => {
+  async function connect(
+    storage: InMemoryStorage,
+    options: Parameters<typeof registerBitigTools>[2],
+  ): Promise<{ client: Client; server: McpServer }> {
+    const server = new McpServer({ name: "bitig-test", version: "1.0.0" });
+    registerBitigTools(server, storage, options);
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    const client = new Client({ name: "client-test", version: "1.0.0" }, { capabilities: {} });
+    await client.connect(clientTransport);
+    return { client, server };
+  }
+
+  it("resolves parentTaskId and does not let a dependency on the umbrella task block its child", async () => {
+    const storage = new InMemoryStorage();
+    const project = await storage.createProject({ name: "Bitig", key: "BIT" });
+    const umbrella = await storage.saveTask({ projectId: project.id, title: "Umbrella", status: "in_progress" });
+    const other = await storage.saveTask({ projectId: project.id, title: "Unfinished other" });
+    const child = await storage.saveTask({ projectId: project.id, title: "Child", dependsOn: [umbrella.id] });
+    const blocked = await storage.saveTask({
+      projectId: project.id,
+      title: "Blocked child",
+      dependsOn: [umbrella.id, other.id],
+    });
+    const startT3Thread = vi.fn((input: { taskId: string }) =>
+      storage.getTask(input.taskId).then((task) => {
+        if (!task) throw new Error("missing task");
+        return {
+          run: {
+            id: "0196ed60-0000-7000-8000-000000000099",
+            taskId: task.id,
+            t3ProjectId: "t3",
+            threadId: "thread-child",
+            state: "working" as const,
+            startedAt: task.createdAt,
+            updatedAt: task.createdAt,
+          },
+          task,
+        };
+      }),
+    );
+    const { client, server } = await connect(storage, { startT3Thread });
+
+    try {
+      const withoutParent = await client.callTool({ name: "start_t3_thread", arguments: { taskId: "BIT-3" } });
+      expect(withoutParent.isError).toBe(true);
+      expect(startT3Thread).not.toHaveBeenCalled();
+
+      const started = await client.callTool({
+        name: "start_t3_thread",
+        arguments: { taskId: "BIT-3", parentTaskId: "BIT-1" },
+      });
+      expect(started.isError).toBeFalsy();
+      expect(startT3Thread).toHaveBeenCalledWith(
+        expect.objectContaining({ taskId: child.id, parentTaskId: umbrella.id }),
+      );
+
+      const stillBlocked = await client.callTool({
+        name: "start_t3_thread",
+        arguments: { taskId: blocked.id, parentTaskId: "BIT-1" },
+      });
+      expect(stillBlocked.isError).toBe(true);
+      expect((stillBlocked.content as { text: string }[])[0]?.text).toContain("BIT-2");
+      expect(startT3Thread).toHaveBeenCalledTimes(1);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("runs onTaskFinished after complete_task and after update_task to done or archived only", async () => {
+    const storage = new InMemoryStorage();
+    const project = await storage.createProject({ name: "Bitig", key: "BIT" });
+    const first = await storage.saveTask({ projectId: project.id, title: "First" });
+    const second = await storage.saveTask({ projectId: project.id, title: "Second" });
+    const third = await storage.saveTask({ projectId: project.id, title: "Third" });
+    const onTaskFinished = vi.fn((_task: { id: string; status: string }) => Promise.resolve());
+    const { client, server } = await connect(storage, { onTaskFinished });
+
+    try {
+      await client.callTool({ name: "update_task", arguments: { id: "BIT-1", status: "in_progress" } });
+      await client.callTool({ name: "update_task", arguments: { id: "BIT-1", title: "Renamed" } });
+      expect(onTaskFinished).not.toHaveBeenCalled();
+
+      await client.callTool({ name: "complete_task", arguments: { id: "BIT-1" } });
+      await client.callTool({ name: "update_task", arguments: { id: "BIT-2", status: "done" } });
+      await client.callTool({ name: "update_task", arguments: { id: "BIT-3", status: "archived" } });
+      expect(onTaskFinished.mock.calls.map(([task]) => task.id)).toEqual([
+        first.id,
+        second.id,
+        third.id,
+      ]);
+      expect(onTaskFinished).toHaveBeenNthCalledWith(1, expect.objectContaining({ status: "done" }));
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+});

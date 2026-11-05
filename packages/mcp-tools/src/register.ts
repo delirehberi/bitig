@@ -88,6 +88,8 @@ export interface StartT3ThreadToolInput {
   readonly providerInstanceId?: string | undefined;
   readonly model?: string | undefined;
   readonly actor?: string | undefined;
+  /** Resolved ID of the umbrella task whose session starts this task as a child session (#BIT-141). */
+  readonly parentTaskId?: string | undefined;
 }
 
 export interface StartT3ThreadToolResult {
@@ -106,7 +108,22 @@ export interface RegisterBitigToolsOptions {
    * Optional callback to launch a task in a connected T3 Code host.
    */
   readonly startT3Thread?: ((input: StartT3ThreadToolInput) => Promise<StartT3ThreadToolResult>) | undefined;
+  /**
+   * Optional callback run after `complete_task`, or `update_task` with status `done` or `archived`,
+   * e.g. to resume an umbrella task's T3 session waiting on this task (#BIT-141). It must report its
+   * own failures rather than throw: the task has already changed by the time it runs.
+   */
+  readonly onTaskFinished?: ((task: Task) => Promise<void>) | undefined;
+  /**
+   * Optional lookup returning the umbrella parent task ID recorded on `taskId`'s T3 run (#BIT-141),
+   * so a child task that listed its umbrella parent in `dependsOn` is not blocked by that parent
+   * while moving to `in_progress` or `done`.
+   */
+  readonly getUmbrellaParentTaskId?: ((taskId: string) => Promise<string | undefined>) | undefined;
 }
+
+/** Statuses after which `onTaskFinished` runs. */
+const FINISHED_STATUSES: ReadonlySet<Task["status"]> = new Set<Task["status"]>(["done", "archived"]);
 
 interface McpExtraLike {
   readonly requestInfo?:
@@ -200,7 +217,25 @@ export function registerBitigTools(
     opts: OperationOptions,
     dependsOn?: readonly string[] | null,
   ) {
-    await checkStatusChange(storage, id, status, context, { signal: opts.signal, requireApproval: true, dependsOn });
+    let effectiveDependsOn = dependsOn;
+    const parentTaskId = await options?.getUmbrellaParentTaskId?.(id);
+    if (parentTaskId) {
+      if (effectiveDependsOn !== undefined) {
+        effectiveDependsOn = effectiveDependsOn
+          ? effectiveDependsOn.filter((depId) => depId !== parentTaskId)
+          : effectiveDependsOn;
+      } else {
+        const task = await storage.getTask(id, opts);
+        if (task?.dependsOn?.includes(parentTaskId)) {
+          effectiveDependsOn = task.dependsOn.filter((depId) => depId !== parentTaskId);
+        }
+      }
+    }
+    await checkStatusChange(storage, id, status, context, {
+      signal: opts.signal,
+      requireApproval: true,
+      dependsOn: effectiveDependsOn,
+    });
   }
 
   // 1. list_projects
@@ -525,6 +560,7 @@ export function registerBitigTools(
         const patch =
           projectRef === undefined ? fields : { ...fields, projectId: await resolveProjectRef(storage, projectRef, opts) };
         const task = await storage.updateTask(id, patch, opts);
+        if (rest.status !== undefined && FINISHED_STATUSES.has(rest.status)) await options?.onTaskFinished?.(task);
         return formatSuccessResult(await withCode(task, opts));
       } catch (err) {
         return formatErrorResult(err);
@@ -550,6 +586,7 @@ export function registerBitigTools(
         const id = await resolveTaskRef(storage, args.id, opts);
         await assertAgentMayMove(id, "done", "complete_task", opts);
         const task = await storage.completeTask(id, opts);
+        await options?.onTaskFinished?.(task);
         return formatSuccessResult(await withCode(task, opts));
       } catch (err) {
         return formatErrorResult(err);
@@ -965,9 +1002,12 @@ export function registerBitigTools(
     "start_t3_thread",
     {
       description:
-        "Launch a T3 Code thread for a task on the connected T3 host. Refused if the task has pendingApproval: true, has unfinished dependencies in dependsOn, belongs to an unmapped project, or if no T3 host is connected. Moves the task to in_progress and records the T3 thread link.",
+        "Launch a T3 Code thread for a task on the connected T3 host. Refused if the task has pendingApproval: true, has unfinished dependencies in dependsOn, belongs to an unmapped project, or if no T3 host is connected. Moves the task to in_progress and records the T3 thread link. From an umbrella task's T3 session, pass parentTaskId to start one related task as a child session: the umbrella session then waits (waiting_subagent), so end your turn; Bitig resumes it with the child's completion context when the child task is done, or tells it when the child session fails or stops. Checklist items are steps of a task, never child sessions.",
       inputSchema: {
         taskId: TASK_REF,
+        parentTaskId: TASK_REF.optional().describe(
+          "Umbrella task whose T3 session starts this task as a child session, as a task ID or ticket code, e.g. TAS-1. It must have a T3 session and not already wait on another unfinished child task. A dependency of taskId on it does not block the launch.",
+        ),
         workspaceStrategy: T3WorkspaceStrategySchema.optional().describe(
           "Workspace strategy: 'worktree' (default, isolated git worktree on HEAD) or 'root'",
         ),
@@ -992,7 +1032,15 @@ export function registerBitigTools(
         const actor = resolveMcpActor(server, extra, options?.fallbackActor);
         const opts: OperationOptions = { signal: extra.signal, actor };
         const taskId = await resolveTaskRef(storage, args.taskId, opts);
-        await checkStatusChange(storage, taskId, "in_progress", "start_t3_thread", opts);
+        const parentTaskId =
+          args.parentTaskId === undefined ? undefined : await resolveTaskRef(storage, args.parentTaskId, opts);
+        // The umbrella task is in progress while it delegates, so a dependency on it does not block its child.
+        const task = parentTaskId === undefined ? null : await storage.getTask(taskId, opts);
+        const dependsOn = task ? (task.dependsOn ?? []).filter((id) => id !== parentTaskId) : undefined;
+        await checkStatusChange(storage, taskId, "in_progress", "start_t3_thread", {
+          signal: opts.signal,
+          ...(dependsOn ? { dependsOn } : {}),
+        });
         if (!options?.startT3Thread) {
           throw new ValidationError("start_t3_thread", [
             {
@@ -1009,6 +1057,7 @@ export function registerBitigTools(
           providerInstanceId: args.providerInstanceId,
           model: args.model,
           actor,
+          ...(parentTaskId ? { parentTaskId } : {}),
         });
         return formatSuccessResult({
           run: result.run,

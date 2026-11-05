@@ -341,4 +341,66 @@ describe("ProjectsView filtering and detail modal", () => {
 
     expect(screen.queryByTestId(`project-t3-sessions-${PROJECT_PAID.id}`)).not.toBeInTheDocument();
   });
+
+  it("displays the child task code and thread link when a project session is waiting_subagent (#BIT-141)", () => {
+    const childTask: Task = {
+      id: "01940000-0000-7000-8000-000000000015",
+      projectId: PROJECT_PAID.id,
+      title: "Stripe webhook handler",
+      description: "",
+      status: "in_progress",
+      number: 5,
+      isPublic: false,
+      createdAt: TIMESTAMP,
+      updatedAt: TIMESTAMP,
+    };
+    const runs: AgentRun[] = [
+      {
+        id: "01940000-0000-7000-8000-000000000095",
+        taskId: "01940000-0000-7000-8000-000000000011",
+        t3ProjectId: "t3-alpha",
+        threadId: "thread-alpha-umbrella",
+        state: "waiting_subagent",
+        waitingForTaskId: childTask.id,
+        startedAt: TIMESTAMP,
+        updatedAt: TIMESTAMP,
+      },
+      {
+        id: "01940000-0000-7000-8000-000000000096",
+        taskId: childTask.id,
+        t3ProjectId: "t3-alpha",
+        threadId: "thread-alpha-child",
+        link: "https://t3.example.test/threads/thread-alpha-child",
+        state: "working",
+        startedAt: TIMESTAMP,
+        updatedAt: TIMESTAMP,
+      },
+    ];
+
+    render(
+      <ProjectsView
+        projects={PROJECTS}
+        tasks={[...TASKS, childTask]}
+        isLoading={false}
+        error={null}
+        onCreateProject={vi.fn()}
+        onUpdateProject={vi.fn()}
+        onDeleteProject={vi.fn()}
+        onSelectProject={vi.fn()}
+        searchQuery=""
+        agentRuns={runs}
+      />,
+    );
+
+    const alphaSessions = screen.getByTestId(`project-t3-sessions-${PROJECT_PAID.id}`);
+    expect(within(alphaSessions).getByText("waiting for subagent")).toBeInTheDocument();
+    expect(within(alphaSessions).getByRole("link", { name: "#ALP-5" })).toHaveAttribute(
+      "href",
+      expect.stringContaining("task=ALP-5"),
+    );
+    expect(within(alphaSessions).getAllByRole("link", { name: "Open ALP-5 in T3" })[0]).toHaveAttribute(
+      "href",
+      "https://t3.example.test/threads/thread-alpha-child",
+    );
+  });
 });

@@ -89,7 +89,12 @@ async function readWorkspaceBusySession(response: Response): Promise<T3Workspace
   const rec = session as Record<string, unknown>;
   const threadId = optionalString(rec.threadId);
   const state = rec.state;
-  if (!threadId || (state !== "working" && state !== "waiting_for_approval")) return undefined;
+  if (
+    !threadId ||
+    (state !== "working" && state !== "waiting_for_approval" && state !== "waiting_subagent")
+  ) {
+    return undefined;
+  }
   const taskId = optionalString(rec.taskId);
   const taskCode = optionalString(rec.taskCode);
   const title = optionalString(rec.title);

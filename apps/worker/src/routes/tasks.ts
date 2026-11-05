@@ -15,31 +15,13 @@ import {
 } from "@bitig/core";
 import type { Context } from "hono";
 import type { AppEnv } from "../index";
-import { forwardCommentToT3Run, settleTaskT3Run } from "../t3/service";
+import { runInBackground } from "../background";
+import { forwardCommentToT3Run, handBackCompletedChildTask, settleTaskT3Run } from "../t3/service";
 import { buildServiceDeps } from "./t3";
 
 const HTTP_CREATED = 201;
 const HTTP_NO_CONTENT = 204;
 const HTTP_BAD_REQUEST = 400;
-
-/**
- * Runs background work via `executionCtx.waitUntil` on Workers, or awaits it directly when no
- * execution context exists (e.g. `app.request` in tests).
- */
-async function runInBackground(c: Context<AppEnv>, work: Promise<unknown>): Promise<void> {
-  let executionCtx: Context<AppEnv>["executionCtx"] | undefined;
-  try {
-    executionCtx = c.executionCtx;
-  } catch {
-    // Hono throws when the request has no execution context; fall back to awaiting the work.
-    executionCtx = undefined;
-  }
-  if (executionCtx) {
-    executionCtx.waitUntil(work);
-    return;
-  }
-  await work;
-}
 
 /**
  * Forwards a new comment to the task's T3 thread (#BIT-112). Comment creation never fails because
@@ -70,6 +52,20 @@ async function settleArchivedTaskInBackground(c: Context<AppEnv>, taskId: string
   await runInBackground(c, work);
 }
 
+/**
+ * Resumes an umbrella task's T3 session that waits on this task once it is done or archived
+ * (#BIT-141). The task change never fails because of T3: errors are logged with context.
+ */
+export async function handBackFinishedTaskInBackground(c: Context<AppEnv>, taskId: string): Promise<void> {
+  const work = handBackCompletedChildTask(buildServiceDeps(c), taskId).then(
+    () => undefined,
+    (error: unknown) => {
+      console.error("handing a finished child task back to its umbrella T3 session failed", { taskId, error });
+    },
+  );
+  await runInBackground(c, work);
+}
+
 /** A step index in a URL is plain decimal digits; anything else (signs, exponents, spaces) is refused. */
 const STEP_INDEX_PATTERN = /^\d+$/;
 
@@ -85,14 +81,32 @@ async function statusChangeOptions(
   id: string,
   status: Parameters<typeof checkStatusChange>[2] | undefined,
   context: string,
+  dependsOn?: readonly string[] | null,
 ): Promise<OperationOptions> {
   const actor = c.req.header("X-Bitig-Actor") ?? c.req.header("X-Bitig-Agent");
-  const overrideBlockedBy =
-    status === undefined
-      ? []
-      : await checkStatusChange(c.get("storage"), id, status, context, {
-          overrideBlocked: c.req.query(OVERRIDE_BLOCKED_PARAM) === "true",
-        });
+  if (status === undefined) {
+    return actor ? { actor } : {};
+  }
+  const storage = c.get("storage");
+  let effectiveDependsOn = dependsOn;
+  const run = await buildServiceDeps(c).store.getAgentRunByTaskId(id).catch(() => null);
+  const parentTaskId = run?.parentTaskId;
+  if (parentTaskId) {
+    if (effectiveDependsOn !== undefined) {
+      effectiveDependsOn = effectiveDependsOn
+        ? effectiveDependsOn.filter((depId) => depId !== parentTaskId)
+        : effectiveDependsOn;
+    } else {
+      const task = await storage.getTask(id);
+      if (task?.dependsOn?.includes(parentTaskId)) {
+        effectiveDependsOn = task.dependsOn.filter((depId) => depId !== parentTaskId);
+      }
+    }
+  }
+  const overrideBlockedBy = await checkStatusChange(storage, id, status, context, {
+    overrideBlocked: c.req.query(OVERRIDE_BLOCKED_PARAM) === "true",
+    dependsOn: effectiveDependsOn,
+  });
   return {
     ...(actor ? { actor } : {}),
     ...(overrideBlockedBy.length > 0 ? { overrideBlockedBy } : {}),
@@ -145,10 +159,14 @@ export const tasksRouter = new Hono<AppEnv>()
       const storage = c.get("storage");
       const id = c.req.param("id");
       const patch = c.req.valid("json");
-      const previous = patch.status === "archived" ? await storage.getTask(id) : null;
+      const finishing = patch.status === "archived" || patch.status === "done";
+      const previous = finishing ? await storage.getTask(id) : null;
       const updated = await storage.updateTask(id, patch, await statusChangeOptions(c, id, patch.status, "updateTask"));
       if (patch.status === "archived" && previous?.status !== "archived") {
         await settleArchivedTaskInBackground(c, updated.id);
+      }
+      if (finishing && previous?.status !== patch.status) {
+        await handBackFinishedTaskInBackground(c, updated.id);
       }
       return c.json(updated);
     },
@@ -163,6 +181,7 @@ export const tasksRouter = new Hono<AppEnv>()
     const storage = c.get("storage");
     const id = c.req.param("id");
     const completed = await storage.completeTask(id, await statusChangeOptions(c, id, "done", "completeTask"));
+    await handBackFinishedTaskInBackground(c, completed.id);
     return c.json(completed);
   })
   // Mention links, derived on read: what the task mentions (text and comments) and who mentions it.

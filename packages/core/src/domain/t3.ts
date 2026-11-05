@@ -1,11 +1,14 @@
 import { z } from "zod";
 import { CommentAuthorSchema, CommentBodySchema, IdSchema, TaskActorSchema, TimestampSchema } from "./schemas";
-import type { Comment, Task } from "./types";
+import type { Checkpoint, Comment, Task } from "./types";
+import { COMMENT_BODY_MAX } from "./constants";
 import { BitigError, ERROR_CODES, ValidationError } from "./errors";
 
 export const AGENT_RUN_STATES = [
   "working",
   "waiting_for_approval",
+  /** The session handed a related task to a child T3 session and waits for it to finish (#BIT-141). */
+  "waiting_subagent",
   "finished",
   "failed",
   "stopped",
@@ -15,14 +18,15 @@ export const AGENT_RUN_STATES = [
 export type AgentRunState = (typeof AGENT_RUN_STATES)[number];
 export const AgentRunStateSchema = z.enum(AGENT_RUN_STATES);
 
-export const ACTIVE_AGENT_RUN_STATES = ["working", "waiting_for_approval"] as const;
+export const ACTIVE_AGENT_RUN_STATES = ["working", "waiting_for_approval", "waiting_subagent"] as const;
 export type ActiveAgentRunState = (typeof ACTIVE_AGENT_RUN_STATES)[number];
 
 /**
- * Whether a T3 run state represents an active session (running or waiting on a person, #BIT-126).
+ * Whether a T3 run state represents an active session: running, waiting on a person (#BIT-126),
+ * or waiting on a child task's T3 session (#BIT-141).
  */
 export function isActiveAgentRunState(state: AgentRunState): state is ActiveAgentRunState {
-  return state === "working" || state === "waiting_for_approval";
+  return (ACTIVE_AGENT_RUN_STATES as readonly AgentRunState[]).includes(state);
 }
 
 export const T3_WORKSPACE_STRATEGIES = ["worktree", "root"] as const;
@@ -102,6 +106,10 @@ export const AgentRunSchema = z.strictObject({
   /** Model options chosen on the last switch (#BIT-119), e.g. the effort level. */
   modelOptions: T3ModelSelectionOptionsSchema.exactOptional(),
   workspaceStrategy: T3WorkspaceStrategySchema.exactOptional(),
+  /** On a child task's run: the umbrella task whose session started it (#BIT-141). */
+  parentTaskId: IdSchema.exactOptional(),
+  /** On an umbrella task's run: the child task it waits on while `waiting_subagent` (#BIT-141). */
+  waitingForTaskId: IdSchema.exactOptional(),
   startedBy: TaskActorSchema.exactOptional(),
   startedAt: TimestampSchema,
   updatedAt: TimestampSchema,
@@ -231,6 +239,8 @@ export interface T3ProjectActiveSession {
   readonly link?: string | undefined;
   readonly model?: string | undefined;
   readonly updatedAt?: string | undefined;
+  /** The child task this session waits on while `waiting_subagent` (#BIT-141). */
+  readonly waitingForTaskId?: string | undefined;
 }
 
 /** The active T3 session that already runs in a project's root checkout (#BIT-134). */
@@ -639,6 +649,8 @@ export interface BuildT3LaunchPromptInput {
   readonly code?: string | undefined;
   readonly projectName?: string | undefined;
   readonly comments?: readonly Comment[] | undefined;
+  /** Set when an umbrella task's session started this task as a child session (#BIT-141). */
+  readonly parentTaskCode?: string | undefined;
 }
 
 export interface BuiltT3LaunchPrompt {
@@ -656,6 +668,7 @@ export function buildT3LaunchPrompt({
   taskCode,
   code: codeAlias,
   comments = [],
+  parentTaskCode,
 }: BuildT3LaunchPromptInput): BuiltT3LaunchPrompt {
   const code = (taskCode ?? codeAlias ?? "").trim() || task.id;
   const title = `${code} ${task.title}`.slice(0, 512);
@@ -683,6 +696,18 @@ export function buildT3LaunchPrompt({
     sections.push(`## Recent Comments\n\n${formatted}`);
   }
 
+  const parentCode = parentTaskCode?.trim();
+  if (parentCode) {
+    sections.push(
+      [
+        "## Umbrella Task",
+        "",
+        `This session was started from the T3 session of umbrella task ${parentCode}. Work only on ${code}; do not start, update, or complete ${parentCode}.`,
+        `When ${code} is finished and verified, post the final comment and call \`complete_task({ id: "${code}" })\`: Bitig then hands your final comment and latest checkpoint back to ${parentCode}'s session.`,
+      ].join("\n"),
+    );
+  }
+
   sections.push(
     [
       "## Standing Instructions (Bitig MCP)",
@@ -694,6 +719,7 @@ export function buildT3LaunchPrompt({
       `6. Before every final response in T3, post that same substantive response as a comment on ${code} with the outcome, work done, verification, and any next action. Do this for completion, partial progress, failure, and blocked work; the comment in step 5 can satisfy this rule. If Bitig MCP cannot post the comment, say so explicitly in the T3 response.`,
       `7. When the work is finished and verified, post the final comment first, then move the task to \`done\` via \`complete_task({ id: "${code}" })\`. Leave unfinished or unverified work in progress.`,
       "8. Never move the task to `archived` — a human reviews `done` tasks and archives them.",
+      `9. Checklist items are steps of ${code}, not separate tasks: do them in this session and never start child sessions for them. If ${code} is an umbrella over other Bitig tasks (tasks it mentions or that depend on it), you may hand one approved, unblocked related task to its own T3 session with \`start_t3_thread({ taskId: "<child-code>", parentTaskId: "${code}" })\`. Start one child at a time, then end your turn without polling: Bitig resumes this thread with the child's completion context when it is done, or tells you if its session fails or stops.`,
     ].join("\n"),
   );
 
@@ -766,4 +792,131 @@ export function deriveLiveAgentRunState(input: {
       if (input.settled === true) return "finished";
       return "working";
   }
+}
+
+/** Longest text taken from a child task's comment or checkpoint field in a handback (#BIT-141). */
+export const T3_HANDBACK_TEXT_MAX = 4000;
+/** Most checklist items listed in a handback; the rest are only counted (#BIT-141). */
+export const T3_HANDBACK_CHECKLIST_MAX = 30;
+
+function truncateText(text: string, max: number): string {
+  const trimmed = text.trim();
+  return trimmed.length <= max ? trimmed : `${trimmed.slice(0, max - ELLIPSIS.length).trimEnd()}${ELLIPSIS}`;
+}
+
+/** The comment Bitig records on an umbrella task when its session starts a child session (#BIT-141). */
+export function buildT3SubagentStartedComment(input: {
+  readonly childLabel: string;
+  readonly childTitle: string;
+  readonly link?: string | undefined;
+}): string {
+  const thread = input.link ? ` ([T3 thread](${input.link}))` : "";
+  return (
+    `Started child task #${input.childLabel} "${input.childTitle}" in a separate T3 session${thread}. ` +
+    "This session waits until that task is done, then Bitig resumes it with the child's completion context."
+  );
+}
+
+export interface T3SubagentHandbackInput {
+  /** Ticket code (or quoted title) of the umbrella task. */
+  readonly parentLabel: string;
+  /** Ticket code (or ID) of the child task. */
+  readonly childLabel: string;
+  readonly child: Task;
+  /** The child's latest checkpoint, when it saved one. */
+  readonly checkpoint?: Checkpoint | undefined;
+  /** The child's latest agent comment, usually its final report. */
+  readonly finalComment?: Comment | undefined;
+}
+
+/** The child task's completion context: status, checklist, latest checkpoint, and final agent comment. */
+function buildT3SubagentContext(input: T3SubagentHandbackInput): string {
+  const { child } = input;
+  const lines: string[] = [`- Task: #${input.childLabel} "${child.title}"`, `- Status: ${child.status}`];
+
+  const checklist = child.checklist ?? [];
+  if (checklist.length > 0) {
+    const done = checklist.filter((item) => item.done).length;
+    lines.push(`- Checklist: ${String(done)}/${String(checklist.length)} done`);
+    for (const item of checklist.slice(0, T3_HANDBACK_CHECKLIST_MAX)) {
+      lines.push(`  - [${item.done ? "x" : " "}] ${item.text}`);
+    }
+    const hidden = checklist.length - T3_HANDBACK_CHECKLIST_MAX;
+    if (hidden > 0) {
+      lines.push(`  - …and ${String(hidden)} more`);
+    }
+  }
+
+  const snapshot = input.checkpoint?.stateSnapshot;
+  if (snapshot) {
+    lines.push(`- Latest checkpoint (step ${String(input.checkpoint?.stepIndex ?? 0)}): ${truncateText(snapshot.summary, T3_HANDBACK_TEXT_MAX)}`);
+    if (snapshot.modifiedArtifacts.length > 0) {
+      lines.push(`  - Modified: ${truncateText(snapshot.modifiedArtifacts.join(", "), T3_HANDBACK_TEXT_MAX)}`);
+    }
+    if (snapshot.decisionsMade.length > 0) {
+      lines.push(`  - Decisions: ${truncateText(snapshot.decisionsMade.join("; "), T3_HANDBACK_TEXT_MAX)}`);
+    }
+  }
+
+  const sections = [lines.join("\n")];
+  if (input.finalComment) {
+    const who = input.finalComment.author ?? input.finalComment.authorType;
+    sections.push(`Final comment from ${who}:\n\n${truncateText(input.finalComment.body, T3_HANDBACK_TEXT_MAX)}`);
+  }
+  return sections.join("\n\n");
+}
+
+/** The comment recorded on the umbrella task when a child task is completed (#BIT-141). */
+export function buildT3SubagentCompletedComment(input: T3SubagentHandbackInput): string {
+  return truncateText(
+    `Child task #${input.childLabel} is ${input.child.status}. Resuming this session.\n\n${buildT3SubagentContext(input)}`,
+    COMMENT_BODY_MAX,
+  );
+}
+
+/** The prompt sent to the umbrella task's T3 thread when a child task is completed (#BIT-141). */
+export function buildT3SubagentCompletedPrompt(input: T3SubagentHandbackInput): string {
+  return truncateText(
+    [
+      `Child task ${input.childLabel} that you started from ${input.parentLabel} is ${input.child.status}.`,
+      "",
+      buildT3SubagentContext(input),
+      "",
+      `Continue ${input.parentLabel}: call \`get_task({ id: "${input.parentLabel}" })\` and \`resume_from_checkpoint({ taskId: "${input.parentLabel}" })\`, then move on to the next related task or finish the umbrella task.`,
+    ].join("\n"),
+    COMMENT_BODY_MAX,
+  );
+}
+
+export interface T3SubagentEndedInput extends T3SubagentHandbackInput {
+  /** The child session's end state: it failed or was stopped before the task was done. */
+  readonly state: "failed" | "stopped";
+  readonly stopReason?: string | undefined;
+}
+
+function describeEndedChild(input: T3SubagentEndedInput): string {
+  const reason = input.stopReason ? ` Reason: ${truncateText(input.stopReason, T3_STOP_REASON_MAX)}` : "";
+  return `The T3 session of child task #${input.childLabel} ${input.state} before the task was done.${reason}`;
+}
+
+/** The comment recorded on the umbrella task when a child session fails or stops (#BIT-141). */
+export function buildT3SubagentEndedComment(input: T3SubagentEndedInput): string {
+  return truncateText(
+    `${describeEndedChild(input)} This session no longer waits for it.\n\n${buildT3SubagentContext(input)}`,
+    COMMENT_BODY_MAX,
+  );
+}
+
+/** The prompt sent to the umbrella task's T3 thread when a child session fails or stops (#BIT-141). */
+export function buildT3SubagentEndedPrompt(input: T3SubagentEndedInput): string {
+  return truncateText(
+    [
+      `${describeEndedChild(input)} You started it from ${input.parentLabel}.`,
+      "",
+      buildT3SubagentContext(input),
+      "",
+      `Decide how ${input.parentLabel} continues: restart the child with \`start_t3_thread({ taskId: "${input.childLabel}", parentTaskId: "${input.parentLabel}" })\`, move on to another related task, or ask a person through a comment and \`needsHuman\` on ${input.parentLabel}.`,
+    ].join("\n"),
+    COMMENT_BODY_MAX,
+  );
 }

@@ -69,6 +69,8 @@ export interface SaveAgentRunInput {
   model?: string | undefined;
   providerInstanceId?: string | undefined;
   workspaceStrategy?: T3WorkspaceStrategy | undefined;
+  /** The umbrella task whose session started this run (#BIT-141); cleared when absent. */
+  parentTaskId?: string | undefined;
   startedBy?: TaskActor | undefined;
   startedAt: number;
   updatedAt: number;
@@ -104,6 +106,8 @@ function toAgentRun(row: AgentRunRecord): AgentRun {
     ...(row.providerInstanceId !== null ? { providerInstanceId: row.providerInstanceId } : {}),
     ...(modelOptions ? { modelOptions } : {}),
     ...(row.workspaceStrategy !== null ? { workspaceStrategy: row.workspaceStrategy } : {}),
+    ...(row.parentTaskId !== null ? { parentTaskId: row.parentTaskId } : {}),
+    ...(row.waitingForTaskId !== null ? { waitingForTaskId: row.waitingForTaskId } : {}),
     ...(row.startedBy !== null ? { startedBy: row.startedBy } : {}),
     startedAt: toTimestamp(new Date(row.startedAt)),
     updatedAt: toTimestamp(new Date(row.updatedAt)),
@@ -354,6 +358,9 @@ export class T3D1Store {
       providerInstanceId: input.providerInstanceId ?? null,
       modelOptions: null,
       workspaceStrategy: input.workspaceStrategy ?? null,
+      parentTaskId: input.parentTaskId ?? null,
+      // A new launch never waits on a child yet; a relaunch drops any earlier wait.
+      waitingForTaskId: null,
       startedBy: input.startedBy ?? null,
       startedAt: input.startedAt,
       updatedAt: input.updatedAt,
@@ -374,6 +381,8 @@ export class T3D1Store {
           providerInstanceId: record.providerInstanceId,
           modelOptions: record.modelOptions,
           workspaceStrategy: record.workspaceStrategy,
+          parentTaskId: record.parentTaskId,
+          waitingForTaskId: record.waitingForTaskId,
           startedBy: record.startedBy,
           startedAt: record.startedAt,
           updatedAt: record.updatedAt,
@@ -407,6 +416,51 @@ export class T3D1Store {
       state: patch.state,
       updatedAt: toTimestamp(new Date(updatedAt)),
     };
+  }
+
+  /**
+   * Marks an umbrella task's run as `waiting_subagent` on `childTaskId` (#BIT-141).
+   * Resolves to `undefined` when the task has no run.
+   */
+  async setAgentRunWaitingFor(
+    taskId: string,
+    patch: { childTaskId: string; now?: number },
+  ): Promise<AgentRun | undefined> {
+    const updatedAt = patch.now ?? Date.now();
+    const rows = await this.db
+      .update(agentRuns)
+      .set({ state: "waiting_subagent", waitingForTaskId: patch.childTaskId, updatedAt })
+      .where(eq(agentRuns.taskId, taskId))
+      .returning();
+    const row = rows[0];
+    return row ? toAgentRun(row) : undefined;
+  }
+
+  /** The runs that wait on `childTaskId` (#BIT-141); normally at most one umbrella session. */
+  async listAgentRunsWaitingFor(childTaskId: string): Promise<AgentRun[]> {
+    const rows = await this.db.select().from(agentRuns).where(eq(agentRuns.waitingForTaskId, childTaskId));
+    return rows.map(toAgentRun);
+  }
+
+  /**
+   * Stops `taskId`'s run from waiting on `childTaskId` and moves it to `state` in one conditional
+   * update (#BIT-141). Only one caller can claim a wait, so concurrent completion and live-status
+   * checks hand a child's result back to the umbrella session once. Resolves to `undefined` when
+   * the run does not wait on that child (any more).
+   */
+  async claimAgentRunWaitingFor(
+    taskId: string,
+    childTaskId: string,
+    patch: { state: AgentRunState; now?: number },
+  ): Promise<AgentRun | undefined> {
+    const updatedAt = patch.now ?? Date.now();
+    const rows = await this.db
+      .update(agentRuns)
+      .set({ state: patch.state, waitingForTaskId: null, updatedAt })
+      .where(and(eq(agentRuns.taskId, taskId), eq(agentRuns.waitingForTaskId, childTaskId)))
+      .returning();
+    const row = rows[0];
+    return row ? toAgentRun(row) : undefined;
   }
 
   /** Records the model a thread switched to (#BIT-119). Resolves to `undefined` when the task has no run. */

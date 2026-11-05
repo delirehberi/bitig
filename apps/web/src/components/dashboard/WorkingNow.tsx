@@ -1,5 +1,5 @@
 import { ExternalLink, Loader, RefreshCw } from "lucide-react";
-import type { Project, Task } from "@bitig/core";
+import { taskCode, type Project, type Task } from "@bitig/core";
 import { formatFullTimestamp, formatTimeAgo } from "../../domain/time-ago";
 import { Link } from "../../routing/Link";
 import { taskHref, useLocationHref } from "../../routing/router";
@@ -8,7 +8,7 @@ import { ChecklistProgressBadge } from "../tasks/Checklist";
 import { STATE_BADGE_CLASSES, STATE_LABELS } from "../tasks/t3-run-state";
 
 interface WorkingNowProps {
-  /** Sessions in `working` state, already ordered. */
+  /** Active sessions (`working` or `waiting_subagent`), already ordered. */
   readonly sessions: readonly ResolvedProjectActiveSession[];
   readonly projects: readonly Project[];
   readonly tasks: readonly Task[];
@@ -77,6 +77,15 @@ export function WorkingNow({ sessions, projects, tasks, now, isLoading = false, 
             const since = session.startedAt ?? session.updatedAt;
             const next = nextSubtask(task);
             const label = session.taskCode ? `${session.taskCode} ${session.title}` : session.title;
+            const waitingForId = session.state === "waiting_subagent" ? session.waitingForTaskId : undefined;
+            const waitingTask = waitingForId === undefined ? undefined : tasksById.get(waitingForId);
+            const waitingProject =
+              waitingTask === undefined ? undefined : projectsById.get(waitingTask.projectId);
+            const waitingCode =
+              session.waitingForTaskCode ??
+              (waitingTask ? taskCode(waitingTask, waitingProject) : undefined);
+            const waitingTitle = session.waitingForTaskTitle ?? waitingTask?.title;
+            const waitingRef = waitingCode ?? waitingForId;
             return (
               <li key={session.threadId} className="flex flex-col gap-1.5 rounded-md border border-rule bg-paper-2 p-3">
                 <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
@@ -129,6 +138,29 @@ export function WorkingNow({ sessions, projects, tasks, now, isLoading = false, 
                     </>
                   )}
                 </span>
+                {waitingRef !== undefined && (
+                  <p className="m-0 flex flex-wrap items-center gap-1.5 text-sm text-ink-2">
+                    <span className="font-semibold text-ink">Waiting on:</span>
+                    <Link
+                      href={taskHref(waitingRef, locationHref)}
+                      className="inline-flex items-baseline gap-1 font-semibold text-accent-ink hover:underline"
+                    >
+                      <span className="font-mono text-xs">{waitingCode ? `#${waitingCode}` : waitingRef}</span>
+                      {waitingTitle && <span>{waitingTitle}</span>}
+                    </Link>
+                    {session.waitingForThreadLink && (
+                      <a
+                        href={session.waitingForThreadLink}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-2xs font-medium text-accent-ink hover:underline"
+                      >
+                        <span>Child thread</span>
+                        <ExternalLink size={11} aria-hidden="true" />
+                      </a>
+                    )}
+                  </p>
+                )}
                 {next !== undefined && (
                   <p className="m-0 text-sm text-ink-2">
                     <span className="font-semibold text-ink">Next:</span> {next}

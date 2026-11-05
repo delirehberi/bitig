@@ -18,11 +18,13 @@ import { ResourceLinks } from "./Resources";
 const SESSION_STATE_LABELS: Record<ActiveAgentRunState, string> = {
   working: "working",
   waiting_for_approval: "waiting for approval",
+  waiting_subagent: "waiting for subagent",
 };
 
 const SESSION_BADGE_CLASSES: Record<ActiveAgentRunState, string> = {
   working: "border-accent/40 bg-accent-soft text-accent-ink",
   waiting_for_approval: "border-danger/40 bg-danger-soft text-danger",
+  waiting_subagent: "border-accent/40 bg-accent-soft text-accent-ink",
 };
 
 export function ProjectActiveSessionsList({
@@ -51,54 +53,84 @@ export function ProjectActiveSessionsList({
         </span>
       </div>
       <ul className="m-0 flex list-none flex-col gap-1.5 p-0">
-        {sessions.map((session) => (
-          <li
-            key={session.threadId}
-            className="flex flex-wrap items-center justify-between gap-2 text-xs"
-          >
-            <div className="flex min-w-0 items-baseline gap-1.5">
-              {session.taskId ? (
-                <Link
-                  href={taskHref(session.taskCode ?? session.taskId, locationHref)}
-                  onClick={() => {
-                    onNavigateTask?.();
-                  }}
-                  className="flex min-w-0 items-baseline gap-1.5 font-semibold text-ink hover:text-accent-ink hover:underline"
+        {sessions.map((session) => {
+          const waitingCode = session.waitingForTaskCode;
+          const waitingRef = waitingCode ?? session.waitingForTaskId;
+          return (
+            <li
+              key={session.threadId}
+              className="flex flex-wrap items-center justify-between gap-2 text-xs"
+            >
+              <div className="flex min-w-0 flex-wrap items-baseline gap-1.5">
+                {session.taskId ? (
+                  <Link
+                    href={taskHref(session.taskCode ?? session.taskId, locationHref)}
+                    onClick={() => {
+                      onNavigateTask?.();
+                    }}
+                    className="flex min-w-0 items-baseline gap-1.5 font-semibold text-ink hover:text-accent-ink hover:underline"
+                  >
+                    {session.taskCode && (
+                      <span className="shrink-0 font-mono text-2xs text-ink-3">
+                        {session.taskCode}
+                      </span>
+                    )}
+                    <span className="truncate">{session.title}</span>
+                  </Link>
+                ) : (
+                  <span className="truncate font-semibold text-ink">{session.title}</span>
+                )}
+                {session.state === "waiting_subagent" && waitingRef && (
+                  <span className="inline-flex items-baseline gap-1 text-2xs text-ink-3">
+                    <span>waiting on</span>
+                    <Link
+                      href={taskHref(waitingRef, locationHref)}
+                      onClick={() => {
+                        onNavigateTask?.();
+                      }}
+                      className="font-mono font-semibold text-accent-ink hover:underline"
+                    >
+                      {waitingCode ? `#${waitingCode}` : waitingRef}
+                    </Link>
+                    {session.waitingForThreadLink && (
+                      <a
+                        href={session.waitingForThreadLink}
+                        target="_blank"
+                        rel="noreferrer"
+                        aria-label={`Open ${waitingCode ?? waitingRef} in T3`}
+                        className="inline-flex items-center gap-0.5 text-accent-ink hover:underline"
+                      >
+                        <span>thread</span>
+                        <ExternalLink size={10} aria-hidden="true" />
+                      </a>
+                    )}
+                  </span>
+                )}
+              </div>
+              <div className="flex shrink-0 items-center gap-1.5">
+                <span
+                  className={`inline-flex items-center gap-1 rounded-pill border px-2 py-0.5 text-2xs font-semibold ${SESSION_BADGE_CLASSES[session.state]}`}
                 >
-                  {session.taskCode && (
-                    <span className="shrink-0 font-mono text-2xs text-ink-3">
-                      {session.taskCode}
-                    </span>
-                  )}
-                  <span className="truncate">{session.title}</span>
-                </Link>
-              ) : (
-                <span className="truncate font-semibold text-ink">{session.title}</span>
-              )}
-            </div>
-            <div className="flex shrink-0 items-center gap-1.5">
-              <span
-                className={`inline-flex items-center gap-1 rounded-pill border px-2 py-0.5 text-2xs font-semibold ${SESSION_BADGE_CLASSES[session.state]}`}
-              >
-                {SESSION_STATE_LABELS[session.state]}
-                {session.model ? ` · ${session.model}` : ""}
-              </span>
-              {session.link && (
-                <a
-                  href={session.link}
-                  target="_blank"
-                  rel="noreferrer"
-                  aria-label={`Open ${session.taskCode ?? session.title} in T3`}
-                  title="Open in T3"
-                  className="inline-flex items-center gap-0.5 rounded-pill border border-rule bg-paper px-1.5 py-0.5 text-2xs font-medium text-accent-ink hover:bg-paper-3"
-                >
-                  <span>T3</span>
-                  <ExternalLink size={10} aria-hidden="true" />
-                </a>
-              )}
-            </div>
-          </li>
-        ))}
+                  {SESSION_STATE_LABELS[session.state]}
+                  {session.model ? ` · ${session.model}` : ""}
+                </span>
+                {session.link && (
+                  <a
+                    href={session.link}
+                    target="_blank"
+                    rel="noreferrer"
+                    aria-label={`Open ${session.taskCode ?? session.title} in T3`}
+                    title="Open in T3"
+                    className="inline-flex items-center gap-0.5 rounded-pill border border-rule bg-paper px-1.5 py-0.5 text-2xs font-medium text-accent-ink hover:bg-paper-3"
+                  >
+                    <span>T3</span>
+                    <ExternalLink size={10} aria-hidden="true" />
+                  </a>
+                )}
+              </div>
+            </li>
+          );
+        })}
       </ul>
     </div>
   );

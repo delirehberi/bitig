@@ -92,6 +92,49 @@ describe("TaskT3Section", () => {
     );
   });
 
+  it("displays the waited-on child task code, title, and thread link when in waiting_subagent state (BIT-141)", async () => {
+    const storage = new InMemoryStorage();
+    const keyedProject = await storage.createProject({ name: "Bitig", key: "BIT" });
+    const umbrella = await storage.saveTask({ projectId: keyedProject.id, title: "Umbrella task" });
+    const child = await storage.saveTask({ projectId: keyedProject.id, title: "Child implementation" });
+    const parentRun: AgentRun = {
+      ...makeRun(umbrella.id, "waiting_subagent"),
+      waitingForTaskId: child.id,
+      model: "claude-opus-4-7",
+    };
+    const childRun: AgentRun = {
+      ...makeRun(child.id, "working"),
+      threadId: "thread-child",
+      link: "https://t3.example.test/threads/thread-child",
+    };
+    vi.mocked(fetchTaskT3Run).mockImplementation((id) =>
+      Promise.resolve({
+        run: id === child.id ? childRun : parentRun,
+        pendingQuestions: [],
+      }),
+    );
+
+    render(
+      <TaskT3Section
+        task={umbrella}
+        project={keyedProject}
+        storage={storage}
+        hasUnfinishedDependencies={false}
+      />,
+    );
+
+    expect(await screen.findByTestId("t3-thread-chip")).toHaveTextContent(
+      "T3 thread · waiting for subagent · claude-opus-4-7",
+    );
+    const waitingBox = await screen.findByTestId("t3-thread-waiting-subagent");
+    expect(waitingBox).toHaveTextContent("#BIT-2");
+    expect(waitingBox).toHaveTextContent("Child implementation");
+    expect(screen.getByRole("link", { name: /open child thread/i })).toHaveAttribute(
+      "href",
+      "https://t3.example.test/threads/thread-child",
+    );
+  });
+
   describe("root checkout guard (#BIT-134)", () => {
     const T3_PROJECT_ID = "t3-proj";
     const BUSY_LINK = "https://t3.example.test/threads/thread-busy";

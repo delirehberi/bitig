@@ -4,6 +4,7 @@ import type { AgentRunState } from "@bitig/core";
 export const STATE_LABELS: Record<AgentRunState, string> = {
   working: "working",
   waiting_for_approval: "waiting for approval",
+  waiting_subagent: "waiting for subagent",
   finished: "finished",
   failed: "failed",
   stopped: "stopped",
@@ -13,6 +14,7 @@ export const STATE_LABELS: Record<AgentRunState, string> = {
 export const STATE_BADGE_CLASSES: Record<AgentRunState, string> = {
   working: "border-accent/40 bg-accent-soft text-accent-ink",
   waiting_for_approval: "border-danger/40 bg-danger-soft text-danger",
+  waiting_subagent: "border-accent/40 bg-accent-soft text-accent-ink",
   finished: "border-rule bg-paper-2 text-ink-2",
   failed: "border-danger/40 bg-danger-soft text-danger",
   stopped: "border-rule bg-paper-3 text-ink-3",

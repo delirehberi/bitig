@@ -329,6 +329,8 @@ export function TaskDetailModal({
             key={`t3-${task.id}`}
             task={task}
             project={project}
+            projects={projects}
+            storage={storage}
             hasUnfinishedDependencies={Boolean(
               dependencies?.dependsOn.some(
                 (dep) => dep.status !== "done" && dep.status !== "archived",

@@ -46,6 +46,14 @@ Never put secrets in a snapshot.
 Mentions: '#BIT-12' in a description, subtask or comment links that task. 'get_task' returns 'mentions' (what the task
 mentions) and 'mentionedIn' (the tasks that mention it).
 
+Umbrella tasks: a task's checklist items are steps of that task, not separate tasks; never start child sessions for
+them. When your T3 session works on an umbrella task over other Bitig tasks (tasks it mentions or that depend on it),
+you may hand one approved, unblocked related task to its own T3 session with
+'start_t3_thread({ taskId: "<child-code>", parentTaskId: "<umbrella-code>" })'. Start one child at a time, then end
+your turn without polling: the umbrella run waits as 'waiting_subagent', and Bitig resumes your session with the child's
+completion context (status, checklist, latest checkpoint and final comment) when the child task is done, or tells you
+when the child session fails or stops.
+
 Attachments: 'get_task' and 'list_attachments' list a task's attached files. Call 'get_attachment' to read an attachment
 (returns UTF-8 'content' for Markdown/text files and base64 'data' + 'downloadUrl' for images/binaries). Use
 'add_attachment' to attach Markdown specs, logs, or screenshots to a task, and 'delete_attachment' to remove one.

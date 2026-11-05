@@ -373,6 +373,10 @@ export const agentRuns = sqliteTable(
     /** JSON array of `{ id, value }` model options chosen on the last switch (#BIT-119). */
     modelOptions: text("model_options"),
     workspaceStrategy: text("workspace_strategy").$type<T3WorkspaceStrategy>(),
+    /** On a child task's run: the umbrella task whose session started it (#BIT-141). */
+    parentTaskId: text("parent_task_id").references(() => tasks.id, { onDelete: "set null" }),
+    /** On an umbrella task's run: the child task it waits on while `waiting_subagent` (#BIT-141). */
+    waitingForTaskId: text("waiting_for_task_id").references(() => tasks.id, { onDelete: "set null" }),
     startedBy: text("started_by").$type<TaskActor>(),
     startedAt: integer("started_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
@@ -380,6 +384,7 @@ export const agentRuns = sqliteTable(
   (table) => [
     uniqueIndex("agent_runs_task_id_idx").on(table.taskId),
     index("agent_runs_thread_id_idx").on(table.threadId),
+    index("agent_runs_waiting_for_task_id_idx").on(table.waitingForTaskId),
   ],
 );
 

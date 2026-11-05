@@ -21,6 +21,11 @@ export interface ResolvedProjectActiveSession {
   readonly startedAt?: string | undefined;
   /** The last time the run or thread changed. */
   readonly updatedAt?: string | undefined;
+  /** The child task an umbrella session is waiting on (#BIT-141). */
+  readonly waitingForTaskId?: string | undefined;
+  readonly waitingForTaskCode?: string | undefined;
+  readonly waitingForTaskTitle?: string | undefined;
+  readonly waitingForThreadLink?: string | undefined;
 }
 
 const SAFE_LINK_PROTOCOLS: ReadonlySet<string> = new Set(["http:", "https:"]);
@@ -46,10 +51,38 @@ export function resolveProjectActiveSessions(
   tasks: readonly Task[],
   runs: readonly AgentRun[] = [],
   activeSessions: readonly T3ProjectActiveSession[] = [],
+  projectsById?: ReadonlyMap<string, Project>,
 ): ResolvedProjectActiveSession[] {
   const tasksById = new Map(tasks.map((t) => [t.id, t]));
+  const runsByTaskId = new Map(runs.map((r) => [r.taskId, r]));
+  const sessionsByTaskId = new Map(
+    activeSessions.flatMap((s) => (s.taskId ? [[s.taskId, s] as const] : [])),
+  );
   const seenThreadIds = new Set<string>();
   const resolved: ResolvedProjectActiveSession[] = [];
+
+  function resolveWaitingDetails(
+    state: ActiveAgentRunState,
+    waitingForTaskId: string | undefined,
+  ): Partial<ResolvedProjectActiveSession> {
+    if (state !== "waiting_subagent" || !waitingForTaskId) return {};
+    const waitingTask = tasksById.get(waitingForTaskId);
+    const waitingProject = waitingTask
+      ? waitingTask.projectId === project.id
+        ? project
+        : projectsById?.get(waitingTask.projectId)
+      : undefined;
+    const waitingCode = waitingTask ? taskCode(waitingTask, waitingProject) : undefined;
+    const waitingRun = runsByTaskId.get(waitingForTaskId);
+    const waitingSession = sessionsByTaskId.get(waitingForTaskId);
+    const waitingLink = cleanT3Link(waitingRun?.link ?? waitingSession?.link);
+    return {
+      waitingForTaskId,
+      ...(waitingCode ? { waitingForTaskCode: waitingCode } : {}),
+      ...(waitingTask?.title ? { waitingForTaskTitle: waitingTask.title } : {}),
+      ...(waitingLink ? { waitingForThreadLink: waitingLink } : {}),
+    };
+  }
 
   for (const run of runs) {
     if (!isActiveAgentRunState(run.state)) continue;
@@ -69,6 +102,7 @@ export function resolveProjectActiveSessions(
       ...(run.model ? { model: run.model } : {}),
       startedAt: run.startedAt,
       updatedAt: run.updatedAt,
+      ...resolveWaitingDetails(run.state, run.waitingForTaskId),
     });
   }
 
@@ -80,6 +114,7 @@ export function resolveProjectActiveSessions(
     const task = session.taskId ? tasksById.get(session.taskId) : undefined;
     const code = task ? taskCode(task, project) : undefined;
     const link = cleanT3Link(session.link);
+    const existingRun = session.taskId ? runsByTaskId.get(session.taskId) : undefined;
     resolved.push({
       threadId: session.threadId,
       projectId: project.id,
@@ -90,6 +125,10 @@ export function resolveProjectActiveSessions(
       ...(link ? { link } : {}),
       ...(session.model ? { model: session.model } : {}),
       ...(session.updatedAt ? { updatedAt: session.updatedAt } : {}),
+      ...resolveWaitingDetails(
+        session.state,
+        session.waitingForTaskId ?? existingRun?.waitingForTaskId,
+      ),
     });
   }
 
@@ -106,5 +145,8 @@ export function resolveWorkspaceActiveSessions(
   runs: readonly AgentRun[] = [],
   activeSessions: readonly T3ProjectActiveSession[] = [],
 ): ResolvedProjectActiveSession[] {
-  return projects.flatMap((project) => resolveProjectActiveSessions(project, tasks, runs, activeSessions));
+  const projectsById = new Map(projects.map((p) => [p.id, p]));
+  return projects.flatMap((project) =>
+    resolveProjectActiveSessions(project, tasks, runs, activeSessions, projectsById),
+  );
 }

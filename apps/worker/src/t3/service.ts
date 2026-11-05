@@ -11,6 +11,11 @@ import {
   buildT3LaunchPrompt,
   buildT3ModelSwitchComment,
   buildT3ModelSwitchNotice,
+  buildT3SubagentCompletedComment,
+  buildT3SubagentCompletedPrompt,
+  buildT3SubagentEndedComment,
+  buildT3SubagentEndedPrompt,
+  buildT3SubagentStartedComment,
   canSwitchT3Model,
   checkStatusChange,
   computeT3ConnectionStatus,
@@ -24,6 +29,7 @@ import {
   type ActiveAgentRunState,
   type AgentRun,
   type AgentRunState,
+  type Checkpoint,
   type Comment,
   type Project,
   type ProjectT3Thread,
@@ -37,6 +43,7 @@ import {
   type T3ModelSelectionOption,
   type T3ProjectActiveSession,
   type T3RunsLiveResponse,
+  type T3SubagentHandbackInput,
   type T3TaskRunLiveResponse,
   type T3ThreadListItem,
   type T3WorkspaceBusySession,
@@ -152,6 +159,11 @@ export interface LaunchTaskInT3Options {
   providerInstanceId?: string | undefined;
   model?: string | undefined;
   actor?: string | undefined;
+  /**
+   * The umbrella task whose session starts this task as a child session (#BIT-141), as an ID or
+   * ticket code. Its run then waits (`waiting_subagent`) until this task is done.
+   */
+  parentTaskRef?: string | undefined;
 }
 
 export interface LaunchTaskInT3Result {
@@ -166,6 +178,10 @@ export interface LaunchTaskInT3Result {
  * 2. All tasks in `dependsOn` are finished (`done` or `archived`).
  * 3. The task's Bitig project is mapped to an existing T3 project.
  * 4. A valid, non-expired T3 OAuth connection is configured.
+ *
+ * With `parentTaskRef` (#BIT-141), the task starts as a child session of an umbrella task: a
+ * dependency on that umbrella task does not block it, the child run records the umbrella task,
+ * and the umbrella task's run moves to `waiting_subagent` until the child task is done.
  */
 export async function launchTaskInT3(
   deps: T3ServiceDeps,
@@ -183,9 +199,13 @@ export async function launchTaskInT3(
     throw new NotFoundError("project", task.projectId);
   }
 
-  // Enforce pendingApproval and unfinished dependency gates (same rules as an agent moving to in_progress)
+  const parent = options.parentTaskRef ? await requireUmbrellaParent(deps, task, options.parentTaskRef) : undefined;
+
+  // Enforce pendingApproval and unfinished dependency gates (same rules as an agent moving to in_progress).
+  // The umbrella task is in progress while it delegates, so a dependency on it does not block its child.
   await checkStatusChange(deps.storage, task.id, "in_progress", "startT3Thread", {
     requireApproval: true,
+    ...(parent ? { dependsOn: (task.dependsOn ?? []).filter((id) => id !== parent.task.id) } : {}),
   });
 
   const mapping = await deps.store.getProjectMapping(task.projectId);
@@ -205,7 +225,8 @@ export async function launchTaskInT3(
 
   const workspaceStrategy: T3WorkspaceStrategy = options.workspaceStrategy ?? "worktree";
   if (workspaceStrategy === "root") {
-    await assertRootWorkspaceFree(deps, mcpClient, mapping.t3ProjectId, now);
+    // The umbrella session ends its turn and waits while its child works, so it never collides with it.
+    await assertRootWorkspaceFree(deps, mcpClient, mapping.t3ProjectId, now, parent?.task.id);
   }
 
   const comments = await deps.storage.getComments(task.id);
@@ -215,6 +236,7 @@ export async function launchTaskInT3(
     ...(code ? { taskCode: code } : {}),
     projectName: project.name,
     comments,
+    ...(parent ? { parentTaskCode: parent.label } : {}),
   });
 
   const launched = await mcpClient.launchThread({
@@ -248,6 +270,7 @@ export async function launchTaskInT3(
     model: options.model,
     ...(options.model && options.providerInstanceId ? { providerInstanceId: options.providerInstanceId } : {}),
     workspaceStrategy,
+    ...(parent ? { parentTaskId: parent.task.id } : {}),
     startedBy: actor,
     startedAt: now,
     updatedAt: now,
@@ -257,11 +280,93 @@ export async function launchTaskInT3(
     await deps.publishRealtime({ type: "agent_run.updated", run }).catch(() => undefined);
   }
 
+  if (parent) {
+    const waitingRun = await deps.store.setAgentRunWaitingFor(parent.task.id, { childTaskId: task.id, now });
+    if (waitingRun && deps.publishRealtime) {
+      await deps.publishRealtime({ type: "agent_run.updated", run: waitingRun }).catch(() => undefined);
+    }
+    await deps.storage.addComment(
+      {
+        taskId: parent.task.id,
+        body: buildT3SubagentStartedComment({
+          childLabel: code ?? task.id,
+          childTitle: task.title,
+          link: run.link,
+        }),
+        authorType: "agent",
+        author: T3_BITIG_COMMENT_AUTHOR,
+      },
+      { actor },
+    );
+  }
+
   return {
     run,
     task: updatedTask,
     ...(code ? { code } : {}),
   };
+}
+
+/** Author of the comments Bitig itself records on tasks (model switches, child sessions). */
+export const T3_BITIG_COMMENT_AUTHOR = "bitig";
+
+/** Task statuses after which a child task no longer keeps its umbrella session waiting (#BIT-141). */
+const FINISHED_TASK_STATUSES: ReadonlySet<Task["status"]> = new Set<Task["status"]>(["done", "archived"]);
+
+/** Child run states that end the umbrella session's wait without the child task being done (#BIT-141). */
+const ENDED_CHILD_RUN_STATES: ReadonlySet<AgentRunState> = new Set<AgentRunState>(["failed", "stopped"]);
+
+interface UmbrellaParent {
+  readonly task: Task;
+  readonly run: AgentRun;
+  /** Ticket code, or ID when the task has none. */
+  readonly label: string;
+}
+
+async function labelTask(storage: StorageProvider, task: Task): Promise<string> {
+  const project = await storage.getProject(task.projectId);
+  return taskCode(task, project ?? undefined) ?? task.id;
+}
+
+/**
+ * Resolves the umbrella task a child session is started from (#BIT-141). Refused when it is the
+ * task itself, has no T3 session to resume, already waits on another unfinished child task, or
+ * when the child already has an active session of its own.
+ */
+async function requireUmbrellaParent(deps: T3ServiceDeps, child: Task, parentRef: string): Promise<UmbrellaParent> {
+  const parentId = await resolveTaskRef(deps.storage, parentRef);
+  const parentTask = await deps.storage.getTask(parentId);
+  if (!parentTask) {
+    throw new NotFoundError("task", parentId);
+  }
+  if (parentTask.id === child.id) {
+    makeValidationIssue("parentTaskId", "A task cannot be its own umbrella task.");
+  }
+  const label = await labelTask(deps.storage, parentTask);
+  const run = await deps.store.getAgentRunByTaskId(parentTask.id);
+  if (!run) {
+    makeValidationIssue(
+      "parentTaskId",
+      `Umbrella task ${label} has no T3 session, so Bitig cannot resume it when the child task is done. Start ${label} in T3 first.`,
+    );
+  }
+  if (run.waitingForTaskId && run.waitingForTaskId !== child.id) {
+    const waitedOn = await deps.storage.getTask(run.waitingForTaskId);
+    if (waitedOn && !FINISHED_TASK_STATUSES.has(waitedOn.status)) {
+      makeValidationIssue(
+        "parentTaskId",
+        `Umbrella task ${label} already waits on ${await labelTask(deps.storage, waitedOn)}. Start one child task at a time.`,
+      );
+    }
+  }
+  const childRun = await deps.store.getAgentRunByTaskId(child.id);
+  if (childRun && isActiveAgentRunState(childRun.state)) {
+    makeValidationIssue(
+      "taskId",
+      `This task already has an active T3 session (${childRun.state.replaceAll("_", " ")}). Wait for it instead of starting another one.`,
+    );
+  }
+  return { task: parentTask, run, label };
 }
 
 /** Most threads `t3_thread_list` returns for one T3 project when the root-workspace guard checks it. */
@@ -282,10 +387,14 @@ async function assertRootWorkspaceFree(
   mcpClient: T3McpClient,
   t3ProjectId: string,
   now: number,
+  ignoredTaskId?: string,
 ): Promise<void> {
   const candidates = (await deps.store.listAgentRuns()).filter(
     (run) =>
-      run.t3ProjectId === t3ProjectId && run.workspaceStrategy === "root" && isActiveAgentRunState(run.state),
+      run.t3ProjectId === t3ProjectId &&
+      run.workspaceStrategy === "root" &&
+      run.taskId !== ignoredTaskId &&
+      isActiveAgentRunState(run.state),
   );
   if (candidates.length === 0) {
     return;
@@ -325,11 +434,15 @@ async function assertRootWorkspaceFree(
         liveState = "offline";
       }
     }
+    liveState = await resolveUmbrellaRunState(deps, run, liveState);
 
     if (liveState !== run.state) {
       const updatedRun = await deps.store.updateAgentRunState(run.taskId, { state: liveState, now });
       if (updatedRun && deps.publishRealtime) {
         await deps.publishRealtime({ type: "agent_run.updated", run: updatedRun }).catch(() => undefined);
+      }
+      if (updatedRun) {
+        await afterRunStateChange(deps, run, updatedRun);
       }
     }
 
@@ -399,11 +512,15 @@ export async function getTaskT3RunLiveStatus(
 
   try {
     const live = await mcpClient.readThreadLiveStatus(existingRun.threadId);
-    const nextState = deriveLiveAgentRunState({
-      thread: live.thread,
-      recentRuns: live.recentRuns,
-      pendingRequestIds: live.pendingRequestIds,
-    });
+    const nextState = await resolveUmbrellaRunState(
+      deps,
+      existingRun,
+      deriveLiveAgentRunState({
+        thread: live.thread,
+        recentRuns: live.recentRuns,
+        pendingRequestIds: live.pendingRequestIds,
+      }),
+    );
 
     const updatedRun =
       nextState === existingRun.state
@@ -413,6 +530,7 @@ export async function getTaskT3RunLiveStatus(
     if (updatedRun.state !== existingRun.state && deps.publishRealtime) {
       await deps.publishRealtime({ type: "agent_run.updated", run: updatedRun }).catch(() => undefined);
     }
+    await afterRunStateChange(deps, existingRun, updatedRun, live.stopReason);
 
     return {
       run: updatedRun,
@@ -488,22 +606,35 @@ export async function listT3RunsLive(deps: T3ServiceDeps): Promise<T3RunsLiveRes
   }
 
   const threadsById = new Map(threads.map((t) => [t.threadId, t]));
+  const reconciledById = new Map<string, AgentRun>();
   const runs: AgentRun[] = [];
+  const pushRun = (run: AgentRun, existingRun: AgentRun): void => {
+    reconciledById.set(existingRun.id, run);
+  };
 
-  for (const existingRun of existingRuns) {
+  // Umbrella runs waiting on a child task go last, so they see their child's reconciled state (#BIT-141).
+  const reconcileOrder = [
+    ...existingRuns.filter((run) => !run.waitingForTaskId),
+    ...existingRuns.filter((run) => run.waitingForTaskId),
+  ];
+  for (const existingRun of reconcileOrder) {
     if (!hostReachable || !mcpClient) {
-      runs.push(existingRun);
+      pushRun(existingRun, existingRun);
       continue;
     }
 
     const listedThread = threadsById.get(existingRun.threadId);
     if (listedThread) {
-      const nextState = deriveLiveAgentRunState({
-        threadStatus: listedThread.status,
-        pendingRequestCount: listedThread.pendingRequestCount,
-        activeRunId: listedThread.activeRunId,
-        settled: listedThread.settled,
-      });
+      const nextState = await resolveUmbrellaRunState(
+        deps,
+        existingRun,
+        deriveLiveAgentRunState({
+          threadStatus: listedThread.status,
+          pendingRequestCount: listedThread.pendingRequestCount,
+          activeRunId: listedThread.activeRunId,
+          settled: listedThread.settled,
+        }),
+      );
       const nextLink = listedThread.link ?? existingRun.link;
       const updatedRun =
         nextState === existingRun.state && nextLink === existingRun.link
@@ -516,15 +647,20 @@ export async function listT3RunsLive(deps: T3ServiceDeps): Promise<T3RunsLiveRes
       if (updatedRun.state !== existingRun.state && deps.publishRealtime) {
         await deps.publishRealtime({ type: "agent_run.updated", run: updatedRun }).catch(() => undefined);
       }
-      runs.push(updatedRun);
+      await afterRunStateChange(deps, existingRun, updatedRun);
+      pushRun(updatedRun, existingRun);
     } else if (isActiveAgentRunState(existingRun.state)) {
       try {
         const live = await mcpClient.readThreadLiveStatus(existingRun.threadId);
-        const nextState = deriveLiveAgentRunState({
-          thread: live.thread,
-          recentRuns: live.recentRuns,
-          pendingRequestIds: live.pendingRequestIds,
-        });
+        const nextState = await resolveUmbrellaRunState(
+          deps,
+          existingRun,
+          deriveLiveAgentRunState({
+            thread: live.thread,
+            recentRuns: live.recentRuns,
+            pendingRequestIds: live.pendingRequestIds,
+          }),
+        );
         const updatedRun =
           nextState === existingRun.state
             ? existingRun
@@ -532,17 +668,21 @@ export async function listT3RunsLive(deps: T3ServiceDeps): Promise<T3RunsLiveRes
         if (updatedRun.state !== existingRun.state && deps.publishRealtime) {
           await deps.publishRealtime({ type: "agent_run.updated", run: updatedRun }).catch(() => undefined);
         }
-        runs.push(updatedRun);
+        await afterRunStateChange(deps, existingRun, updatedRun, live.stopReason);
+        pushRun(updatedRun, existingRun);
       } catch (err) {
         if (err instanceof T3McpError) {
-          runs.push(existingRun);
+          pushRun(existingRun, existingRun);
         } else {
           throw err;
         }
       }
     } else {
-      runs.push(existingRun);
+      pushRun(existingRun, existingRun);
     }
+  }
+  for (const existingRun of existingRuns) {
+    runs.push(reconciledById.get(existingRun.id) ?? existingRun);
   }
 
   const tasks = await deps.storage.getTasks();
@@ -571,6 +711,7 @@ export async function listT3RunsLive(deps: T3ServiceDeps): Promise<T3RunsLiveRes
       ...(run.link ? { link: run.link } : {}),
       ...(run.model ? { model: run.model } : listedThread?.model ? { model: listedThread.model } : {}),
       updatedAt: listedThread?.updatedAt ?? run.updatedAt,
+      ...(run.state === "waiting_subagent" && run.waitingForTaskId ? { waitingForTaskId: run.waitingForTaskId } : {}),
     });
   }
 
@@ -612,6 +753,219 @@ export async function listT3RunsLive(deps: T3ServiceDeps): Promise<T3RunsLiveRes
     runs,
     activeSessions,
   };
+}
+
+/** The child's latest checkpoint: checkpoints are ordered by step index, so the last is the latest step. */
+async function latestCheckpoint(storage: StorageProvider, taskId: string): Promise<Checkpoint | undefined> {
+  return (await storage.getCheckpoints(taskId)).at(-1);
+}
+
+/** Collects the child task's completion context for its umbrella session (#BIT-141). */
+async function buildHandbackInput(
+  deps: T3ServiceDeps,
+  parentTask: Task,
+  child: Task,
+): Promise<T3SubagentHandbackInput> {
+  const [parentLabel, childLabel, checkpoint, comments] = await Promise.all([
+    labelTask(deps.storage, parentTask),
+    labelTask(deps.storage, child),
+    latestCheckpoint(deps.storage, child.id),
+    deps.storage.getComments(child.id),
+  ]);
+  // The child agent's final report; Bitig's own notes (e.g. model switches) are not a report.
+  const finalComment = comments.findLast(
+    (comment) => comment.authorType === "agent" && comment.author !== T3_BITIG_COMMENT_AUTHOR,
+  );
+  return {
+    parentLabel,
+    childLabel,
+    child,
+    ...(checkpoint ? { checkpoint } : {}),
+    ...(finalComment ? { finalComment } : {}),
+  };
+}
+
+interface UmbrellaHandbackMessage {
+  readonly comment: string;
+  readonly prompt: string;
+}
+
+async function publishRun(deps: T3ServiceDeps, run: AgentRun | undefined): Promise<void> {
+  if (run && deps.publishRealtime) {
+    await deps.publishRealtime({ type: "agent_run.updated", run }).catch(() => undefined);
+  }
+}
+
+/**
+ * Ends an umbrella session's wait on `child` and resumes its thread with `buildMessage`'s prompt,
+ * then records the comment on the umbrella task (#BIT-141). The wait is claimed first, so a
+ * concurrent handback for the same child does nothing. When T3 cannot be reached, the wait is
+ * restored (a later live-status check retries) and the error is rethrown with context. An umbrella
+ * task that is already done or archived only drops the wait. Resolves to the updated umbrella run,
+ * or `undefined` when another caller already handed the child back.
+ */
+async function resumeUmbrellaSession(
+  deps: T3ServiceDeps,
+  parentRun: AgentRun,
+  child: Task,
+  buildMessage: (input: T3SubagentHandbackInput) => UmbrellaHandbackMessage,
+): Promise<AgentRun | undefined> {
+  const now = deps.now ? deps.now() : Date.now();
+  const parentTask = await deps.storage.getTask(parentRun.taskId);
+  if (!parentTask || FINISHED_TASK_STATUSES.has(parentTask.status)) {
+    const dropped = await deps.store.claimAgentRunWaitingFor(parentRun.taskId, child.id, { state: "finished", now });
+    await publishRun(deps, dropped);
+    return dropped;
+  }
+
+  const input = await buildHandbackInput(deps, parentTask, child);
+  const message = buildMessage(input);
+  const claimed = await deps.store.claimAgentRunWaitingFor(parentRun.taskId, child.id, { state: "working", now });
+  if (!claimed) {
+    return undefined;
+  }
+
+  try {
+    const mcpClient = await createActiveT3McpClient({
+      store: deps.store,
+      encryptionKey: deps.encryptionKey,
+      fetchFn: deps.fetchFn,
+      now,
+    });
+    await mcpClient.sendThreadMessage({ threadId: claimed.threadId, prompt: message.prompt });
+  } catch (err) {
+    const restored = await deps.store.setAgentRunWaitingFor(parentRun.taskId, { childTaskId: child.id, now });
+    await publishRun(deps, restored);
+    throw new Error(`resuming the T3 session of ${input.parentLabel} after ${input.childLabel}`, { cause: err });
+  }
+
+  await publishRun(deps, claimed);
+  await deps.storage.addComment(
+    { taskId: parentTask.id, body: message.comment, authorType: "agent", author: T3_BITIG_COMMENT_AUTHOR },
+    { actor: T3_BITIG_COMMENT_AUTHOR },
+  );
+  return claimed;
+}
+
+/**
+ * Hands a finished child task back to the umbrella sessions waiting on it (#BIT-141): records the
+ * child's status, checklist, latest checkpoint and final agent comment on the umbrella task, sends
+ * them to its T3 thread, and moves its run back to `working`. Called when a task moves to `done`
+ * (or `archived`) over MCP or HTTP. Resolves to how many umbrella sessions were resumed; it is a
+ * no-op when T3 is not configured, nothing waits on the task, or the task is not finished.
+ */
+export async function handBackCompletedChildTask(deps: T3ServiceDeps, childTaskId: string): Promise<number> {
+  if (!deps.encryptionKey) return 0;
+  const waiting = await deps.store.listAgentRunsWaitingFor(childTaskId);
+  if (waiting.length === 0) return 0;
+  const child = await deps.storage.getTask(childTaskId);
+  if (!child || !FINISHED_TASK_STATUSES.has(child.status)) return 0;
+
+  let resumed = 0;
+  for (const parentRun of waiting) {
+    const run = await resumeUmbrellaSession(deps, parentRun, child, (input) => ({
+      comment: buildT3SubagentCompletedComment(input),
+      prompt: buildT3SubagentCompletedPrompt(input),
+    }));
+    if (run?.state === "working") resumed += 1;
+  }
+  return resumed;
+}
+
+/**
+ * Tells the umbrella sessions waiting on a child task that the child's session failed or stopped
+ * before the task was done (#BIT-141), so they do not wait forever. A child task that is finished
+ * after all is handed back as completed instead.
+ */
+async function handBackEndedChildRun(
+  deps: T3ServiceDeps,
+  childRun: AgentRun,
+  stopReason?: string | undefined,
+): Promise<number> {
+  const state = childRun.state === "failed" || childRun.state === "stopped" ? childRun.state : undefined;
+  if (!state || !deps.encryptionKey) return 0;
+  const waiting = await deps.store.listAgentRunsWaitingFor(childRun.taskId);
+  if (waiting.length === 0) return 0;
+  const child = await deps.storage.getTask(childRun.taskId);
+  if (!child) return 0;
+  if (FINISHED_TASK_STATUSES.has(child.status)) {
+    return handBackCompletedChildTask(deps, child.id);
+  }
+
+  let resumed = 0;
+  for (const parentRun of waiting) {
+    const run = await resumeUmbrellaSession(deps, parentRun, child, (input) => {
+      const ended = { ...input, state, ...(stopReason ? { stopReason } : {}) };
+      return { comment: buildT3SubagentEndedComment(ended), prompt: buildT3SubagentEndedPrompt(ended) };
+    });
+    if (run?.state === "working") resumed += 1;
+  }
+  return resumed;
+}
+
+/**
+ * Runs after a run's stored state changed: when a child session just failed or stopped, its
+ * umbrella session is told (#BIT-141). A failed handback is logged, never thrown, so reading live
+ * status or stopping a thread does not fail because of the umbrella task.
+ */
+async function afterRunStateChange(
+  deps: T3ServiceDeps,
+  previous: AgentRun,
+  updated: AgentRun,
+  stopReason?: string | undefined,
+): Promise<void> {
+  if (updated.state === previous.state || !ENDED_CHILD_RUN_STATES.has(updated.state)) return;
+  try {
+    await handBackEndedChildRun(deps, updated, stopReason);
+  } catch (error) {
+    console.error("handing an ended child T3 session back to its umbrella task failed", {
+      taskId: updated.taskId,
+      state: updated.state,
+      error,
+    });
+  }
+}
+
+/**
+ * The state to store for a run whose thread T3 reports as `liveState` (#BIT-141). An umbrella
+ * session that waits on a child task is idle on T3 (`finished`), but stays `waiting_subagent` while
+ * the child task is in progress with an active session. When the child task is already finished,
+ * or its session failed or stopped, the umbrella session is handed the child's context instead:
+ * this also retries a handback that failed earlier because T3 could not be reached.
+ */
+async function resolveUmbrellaRunState(
+  deps: T3ServiceDeps,
+  run: AgentRun,
+  liveState: AgentRunState,
+): Promise<AgentRunState> {
+  const childId = run.waitingForTaskId;
+  if (!childId || liveState !== "finished") return liveState;
+
+  const child = await deps.storage.getTask(childId);
+  if (!child) return liveState;
+  const childRun = await deps.store.getAgentRunByTaskId(child.id);
+  const childFinished = FINISHED_TASK_STATUSES.has(child.status);
+  if (!childFinished && !(childRun && ENDED_CHILD_RUN_STATES.has(childRun.state))) {
+    return child.status === "in_progress" && childRun && isActiveAgentRunState(childRun.state)
+      ? "waiting_subagent"
+      : liveState;
+  }
+
+  try {
+    if (childFinished) {
+      await handBackCompletedChildTask(deps, child.id);
+    } else if (childRun) {
+      await handBackEndedChildRun(deps, childRun);
+    }
+  } catch (error) {
+    console.error("handing a child task back to its umbrella T3 session failed", {
+      taskId: run.taskId,
+      childTaskId: child.id,
+      error,
+    });
+  }
+  // The handback stored the umbrella run's new state (working, or waiting again after a failure).
+  return (await deps.store.getAgentRunByTaskId(run.taskId))?.state ?? liveState;
 }
 
 /** Run states in which a new comment is not forwarded: the T3 host cannot be reached. */
@@ -734,11 +1088,17 @@ export async function stopTaskT3Run(
 
   await mcpClient.interruptThread(existingRun.threadId);
 
+  // A person stopping an umbrella session also ends its wait on a child task (#BIT-141).
   const updatedRun =
-    (await deps.store.updateAgentRunState(taskId, { state: "stopped", now })) ?? existingRun;
+    (existingRun.waitingForTaskId
+      ? await deps.store.claimAgentRunWaitingFor(taskId, existingRun.waitingForTaskId, { state: "stopped", now })
+      : undefined) ??
+    (await deps.store.updateAgentRunState(taskId, { state: "stopped", now })) ??
+    existingRun;
   if (deps.publishRealtime) {
     await deps.publishRealtime({ type: "agent_run.updated", run: updatedRun }).catch(() => undefined);
   }
+  await afterRunStateChange(deps, existingRun, updatedRun);
   return {
     run: updatedRun,
     pendingQuestions: [],
@@ -892,7 +1252,7 @@ async function switchT3ThreadModel(
 }
 
 /** Author of the comment Bitig records when a thread switches models. */
-export const T3_MODEL_SWITCH_COMMENT_AUTHOR = "bitig";
+export const T3_MODEL_SWITCH_COMMENT_AUTHOR = T3_BITIG_COMMENT_AUTHOR;
 
 export interface ReplyToTaskT3RunInput {
   body: string;

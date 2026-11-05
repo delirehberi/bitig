@@ -2,10 +2,10 @@ import { Hono } from "hono";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { BITIG_SERVER_INSTRUCTIONS, registerBitigTools } from "@bitig/mcp-tools";
-import { T3D1Store } from "@bitig/storage-d1";
 import type { AppEnv } from "../index";
-import { publishRealtimeEvent } from "../realtime";
 import { launchTaskInT3 } from "../t3/service";
+import { buildServiceDeps } from "./t3";
+import { handBackFinishedTaskInBackground } from "./tasks";
 
 const MCP_SERVER_NAME = "bitig";
 const MCP_SERVER_VERSION = "1.0.0";
@@ -24,26 +24,22 @@ export const mcpRouter = new Hono<AppEnv>().all("*", async (c) => {
     },
   );
 
-  const orgId = c.get("orgId");
+  const t3Deps = buildServiceDeps(c);
   registerBitigTools(server, storage, {
     fallbackActor: () => lastInitializedClientName,
     startT3Thread: (input) =>
-      launchTaskInT3(
-        {
-          store: new T3D1Store(c.env.DB, orgId),
-          storage,
-          encryptionKey: c.get("config").T3_ENCRYPTION_KEY,
-          fetchFn: c.get("t3Fetch"),
-          publishRealtime: (event) => publishRealtimeEvent(c.env, event, orgId),
-        },
-        {
-          taskRef: input.taskId,
-          workspaceStrategy: input.workspaceStrategy,
-          providerInstanceId: input.providerInstanceId,
-          model: input.model,
-          actor: input.actor,
-        },
-      ),
+      launchTaskInT3(t3Deps, {
+        taskRef: input.taskId,
+        workspaceStrategy: input.workspaceStrategy,
+        providerInstanceId: input.providerInstanceId,
+        model: input.model,
+        actor: input.actor,
+        parentTaskRef: input.parentTaskId,
+      }),
+    // Resumes an umbrella task's T3 session waiting on the finished task (#BIT-141).
+    onTaskFinished: (task) => handBackFinishedTaskInBackground(c, task.id),
+    getUmbrellaParentTaskId: async (taskId) =>
+      (await t3Deps.store.getAgentRunByTaskId(taskId).catch(() => null))?.parentTaskId,
   });
 
   // Stateless mode: session management is disabled when sessionIdGenerator is omitted

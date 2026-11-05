@@ -120,6 +120,36 @@ describe("resolveWorkspaceActiveSessions", () => {
     );
     expect(sessions).toEqual([]);
   });
+
+  it("resolves the waited-on child task code, title and thread link for waiting_subagent sessions (#BIT-141)", () => {
+    const childTask = task("01940000-0000-7000-8000-000000000013", ALPHA.id, 3);
+    const sessions = resolveWorkspaceActiveSessions(
+      [ALPHA],
+      [ALPHA_TASK, childTask],
+      [
+        run({
+          taskId: ALPHA_TASK.id,
+          threadId: "thread-umbrella",
+          state: "waiting_subagent",
+          waitingForTaskId: childTask.id,
+        }),
+        run({
+          taskId: childTask.id,
+          threadId: "thread-child",
+          state: "working",
+          link: "https://t3.example.test/threads/thread-child",
+        }),
+      ],
+    );
+    expect(sessions[0]).toMatchObject({
+      threadId: "thread-umbrella",
+      state: "waiting_subagent",
+      waitingForTaskId: childTask.id,
+      waitingForTaskCode: "ALP-3",
+      waitingForTaskTitle: "Task 3",
+      waitingForThreadLink: "https://t3.example.test/threads/thread-child",
+    });
+  });
 });
 
 describe("cleanT3Link", () => {

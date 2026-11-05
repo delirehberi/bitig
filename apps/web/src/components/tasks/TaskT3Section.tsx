@@ -10,10 +10,11 @@ import {
   Square,
   Terminal,
 } from "lucide-react";
-import { isActiveAgentRunState } from "@bitig/core";
+import { isActiveAgentRunState, taskCode } from "@bitig/core";
 import type {
   AgentRun,
   Project,
+  StorageProvider,
   T3ConnectionStatus,
   T3ModelCapability,
   T3PendingQuestion,
@@ -24,9 +25,10 @@ import type {
   Task,
 } from "@bitig/core";
 import { useRealtimeEvent } from "../../hooks/useRealtime";
+import { cleanT3Link } from "../projects/activeSessions";
 import { STATE_BADGE_CLASSES, STATE_LABELS } from "./t3-run-state";
 import { Link } from "../../routing/Link";
-import { hrefFor } from "../../routing/router";
+import { hrefFor, taskHref, useLocationHref } from "../../routing/router";
 import {
   fetchT3Capabilities,
   fetchT3Connection,
@@ -42,19 +44,31 @@ import {
 interface TaskT3SectionProps {
   readonly task: Task;
   readonly project: Project | undefined;
+  readonly projects?: readonly Project[] | undefined;
+  readonly storage?: StorageProvider | undefined;
   readonly hasUnfinishedDependencies: boolean;
   readonly onTaskUpdated?: ((task: Task) => void) | undefined;
   /** Reports the task's run and the T3 model list, so the comment box can switch models (#BIT-119). */
   readonly onT3ContextChange?: ((context: { run: AgentRun | null; capabilities: T3ModelCapability[] }) => void) | undefined;
 }
 
+interface WaitingChildDetails {
+  readonly taskId: string;
+  readonly code?: string | undefined;
+  readonly title?: string | undefined;
+  readonly link?: string | undefined;
+}
+
 export function TaskT3Section({
   task,
   project,
+  projects,
+  storage,
   hasUnfinishedDependencies,
   onTaskUpdated,
   onT3ContextChange,
 }: TaskT3SectionProps) {
+  const locationHref = useLocationHref();
   const [run, setRun] = useState<AgentRun | null>(null);
   const [pendingRequestId, setPendingRequestId] = useState<string | undefined>(undefined);
   const [pendingQuestions, setPendingQuestions] = useState<T3PendingQuestion[]>([]);
@@ -72,6 +86,8 @@ export function TaskT3Section({
   const [busySession, setBusySession] = useState<T3WorkspaceBusySession | null>(null);
   /** Another task's active root-checkout run, looked up while the worktree box is unchecked (#BIT-134). */
   const [rootBusyRun, setRootBusyRun] = useState<AgentRun | null>(null);
+  /** Child task details when this umbrella session is in `waiting_subagent` (#BIT-141). */
+  const [waitingChild, setWaitingChild] = useState<WaitingChildDetails | null>(null);
 
   const refreshRunStatus = useCallback(
     async (signal?: AbortSignal) => {
@@ -140,6 +156,46 @@ export function TaskT3Section({
     onT3ContextChange?.({ run, capabilities });
   }, [onT3ContextChange, run, capabilities]);
 
+  const waitingForTaskId = run?.state === "waiting_subagent" ? run.waitingForTaskId : undefined;
+
+  useEffect(() => {
+    if (!waitingForTaskId) {
+      setWaitingChild(null);
+      return;
+    }
+    const controller = new AbortController();
+    setWaitingChild((prev) => (prev?.taskId === waitingForTaskId ? prev : { taskId: waitingForTaskId }));
+
+    void Promise.all([
+      storage
+        ? storage.getTask(waitingForTaskId, { signal: controller.signal }).catch(() => null)
+        : Promise.resolve(null),
+      fetchTaskT3Run(waitingForTaskId, controller.signal).catch(
+        (): T3TaskRunLiveResponse => ({ run: null, pendingQuestions: [] }),
+      ),
+    ]).then(([childTask, childLive]) => {
+      if (controller.signal.aborted) return;
+      const childProject = childTask
+        ? childTask.projectId === project?.id
+          ? project
+          : projects?.find((p) => p.id === childTask.projectId)
+        : undefined;
+      const code = childTask ? taskCode(childTask, childProject) : undefined;
+      const link =
+        childLive.run?.taskId === waitingForTaskId ? cleanT3Link(childLive.run.link) : undefined;
+      setWaitingChild({
+        taskId: waitingForTaskId,
+        ...(code ? { code } : {}),
+        ...(childTask?.title ? { title: childTask.title } : {}),
+        ...(link ? { link } : {}),
+      });
+    });
+
+    return () => {
+      controller.abort();
+    };
+  }, [waitingForTaskId, storage, project, projects]);
+
   const t3ProjectId = mapping?.t3ProjectId;
   const canLookUpRootRuns = !useWorktree && Boolean(connection?.connected && !connection.expired) && Boolean(t3ProjectId);
 
@@ -178,6 +234,12 @@ export function TaskT3Section({
     if (event.type !== "agent_run.updated") return;
     if (event.run.taskId === task.id) {
       setRun(event.run);
+    }
+    if (waitingForTaskId && event.run.taskId === waitingForTaskId) {
+      const link = cleanT3Link(event.run.link);
+      setWaitingChild((prev) =>
+        prev?.taskId === waitingForTaskId ? { ...prev, ...(link ? { link } : {}) } : prev,
+      );
     }
     if (rootBusyRun?.threadId === event.run.threadId && !isActiveAgentRunState(event.run.state)) {
       setRootBusyRun(null);
@@ -359,7 +421,7 @@ export function TaskT3Section({
               {run.model ? ` · ${run.model}` : ""}
             </span>
 
-            {(run.state === "working" || run.state === "waiting_for_approval") && (
+            {isActiveAgentRunState(run.state) && (
               <button
                 type="button"
                 onClick={() => {
@@ -373,6 +435,45 @@ export function TaskT3Section({
               </button>
             )}
           </div>
+
+          {run.state === "waiting_subagent" && run.waitingForTaskId && (
+            <div
+              data-testid="t3-thread-waiting-subagent"
+              className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-accent/30 bg-accent-soft px-2.5 py-2 text-xs text-accent-ink"
+            >
+              <span className="flex flex-wrap items-baseline gap-1.5">
+                <span>Waiting for subagent task</span>
+                <Link
+                  href={taskHref(
+                    (waitingChild?.taskId === run.waitingForTaskId ? waitingChild.code : undefined) ??
+                      run.waitingForTaskId,
+                    locationHref,
+                  )}
+                  className="inline-flex items-baseline gap-1 font-semibold underline"
+                >
+                  <span className="font-mono">
+                    {waitingChild?.taskId === run.waitingForTaskId && waitingChild.code
+                      ? `#${waitingChild.code}`
+                      : run.waitingForTaskId}
+                  </span>
+                  {waitingChild?.taskId === run.waitingForTaskId && waitingChild.title && (
+                    <span>{waitingChild.title}</span>
+                  )}
+                </Link>
+              </span>
+              {waitingChild?.taskId === run.waitingForTaskId && waitingChild.link && (
+                <a
+                  href={waitingChild.link}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex shrink-0 items-center gap-1 font-semibold underline"
+                >
+                  Open child thread
+                  <ExternalLink size={11} aria-hidden="true" />
+                </a>
+              )}
+            </div>
+          )}
 
           {pendingQuestions.length > 0 && pendingRequestId && (
             <form
