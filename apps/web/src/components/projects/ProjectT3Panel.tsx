@@ -33,6 +33,7 @@ import {
   fetchT3Connection,
   fetchT3ProjectMappings,
   sendProjectT3Message,
+  settleProjectT3Thread,
   startProjectT3Thread,
 } from "../../services/t3";
 import { Markdown } from "../Markdown";
@@ -87,9 +88,31 @@ interface ThreadItemProps {
   readonly thread: ProjectT3Thread;
   readonly capabilities: readonly T3ModelCapability[];
   readonly onUpdated: (thread: ProjectT3Thread) => void;
+  readonly onSettled: (threadId: string) => void;
 }
 
-function ProjectT3ThreadItem({ projectId, thread, capabilities, onUpdated }: ThreadItemProps) {
+function ProjectT3ThreadItem({ projectId, thread, capabilities, onUpdated, onSettled }: ThreadItemProps) {
+  const [isSettling, setIsSettling] = useState(false);
+  const [settleError, setSettleError] = useState<string | null>(null);
+  const settleController = useRef<AbortController | null>(null);
+  useEffect(() => () => settleController.current?.abort(), []);
+
+  async function handleSettle(): Promise<void> {
+    if (settleController.current || isSending) return;
+    const controller = new AbortController();
+    settleController.current = controller;
+    setIsSettling(true);
+    setSettleError(null);
+    try {
+      await settleProjectT3Thread(projectId, thread.threadId, controller.signal);
+      if (!controller.signal.aborted) onSettled(thread.threadId);
+    } catch (err) {
+      if (!controller.signal.aborted) setSettleError(errorMessage(err, "Could not settle T3 thread."));
+    } finally {
+      settleController.current = null;
+      if (!controller.signal.aborted) setIsSettling(false);
+    }
+  }
   const [isReplying, setIsReplying] = useState(false);
   const [draft, setDraft] = useState("");
   const [selection, setSelection] = useState<T3ModelSelection | null>(null);
@@ -187,7 +210,7 @@ function ProjectT3ThreadItem({ projectId, thread, capabilities, onUpdated }: Thr
 
   async function send() {
     const body = draft.trim();
-    if (body === "" || isSending) return;
+    if (body === "" || isSending || isSettling) return;
     setIsSending(true);
     setError(null);
     try {
@@ -265,14 +288,25 @@ function ProjectT3ThreadItem({ projectId, thread, capabilities, onUpdated }: Thr
                 setIsReplying(true);
               }}
               aria-label={`Follow up on "${thread.title}"`}
+              disabled={isSettling}
               className="inline-flex items-center gap-1 rounded-md border border-rule bg-paper px-2 py-0.5 text-2xs text-ink-2 hover:bg-paper-3"
             >
               <MessageSquare size={11} aria-hidden="true" />
               Follow up
             </button>
           )}
+          <button
+            type="button"
+            disabled={isSettling || isSending}
+            onClick={() => { void handleSettle(); }}
+            className="inline-flex items-center gap-1 rounded-md border border-rule bg-paper px-2 py-0.5 text-2xs text-ink-2 hover:bg-paper-3 disabled:opacity-50"
+          >
+            {isSettling ? "Settling…" : "Settle"}
+          </button>
         </div>
       </div>
+
+      {settleError && <p role="alert" className="text-xs text-danger">{settleError}</p>}
 
       {(thread.state === "failed" || thread.state === "stopped") && thread.stopReason && (
         <div
@@ -392,7 +426,7 @@ function ProjectT3ThreadItem({ projectId, thread, capabilities, onUpdated }: Thr
           <div className="flex items-center gap-2">
             <button
               type="button"
-              disabled={isSending || draft.trim() === ""}
+              disabled={isSending || isSettling || draft.trim() === ""}
               onClick={() => {
                 void send();
               }}
@@ -437,6 +471,7 @@ export function ProjectT3Panel({ project, focusComposer = false }: ProjectT3Pane
   const [isSending, setIsSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  const settledThreadIds = useRef(new Set<string>());
 
   const isConnected = Boolean(connection?.connected && !connection.expired);
   const isMapped = mapping !== undefined;
@@ -444,6 +479,7 @@ export function ProjectT3Panel({ project, focusComposer = false }: ProjectT3Pane
 
   useEffect(() => {
     const controller = new AbortController();
+    settledThreadIds.current.clear();
     void Promise.all([
       fetchT3Connection(controller.signal).catch((): T3ConnectionStatus => ({ connected: false })),
       fetchT3ProjectMappings(controller.signal).catch((): T3ProjectMapping[] => []),
@@ -488,7 +524,9 @@ export function ProjectT3Panel({ project, focusComposer = false }: ProjectT3Pane
     setIsRefreshing(true);
     setLoadError(null);
     try {
-      setThreads(await fetchProjectT3Threads(project.id));
+      const refreshed = await fetchProjectT3Threads(project.id);
+      // A refresh started before settlement can still contain the removed thread.
+      setThreads(refreshed.filter((thread) => !settledThreadIds.current.has(thread.threadId)));
     } catch (err: unknown) {
       setLoadError(errorMessage(err, "Could not load project T3 threads."));
     } finally {
@@ -655,6 +693,10 @@ export function ProjectT3Panel({ project, focusComposer = false }: ProjectT3Pane
                   thread={thread}
                   capabilities={capabilities}
                   onUpdated={handleThreadUpdated}
+                  onSettled={(threadId) => {
+                    settledThreadIds.current.add(threadId);
+                    setThreads((prev) => prev.filter((item) => item.threadId !== threadId));
+                  }}
                 />
               ))}
             </ul>

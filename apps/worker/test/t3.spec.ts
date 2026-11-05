@@ -15,6 +15,8 @@ import type {
   Task,
 } from "@bitig/core";
 import { createApp } from "../src/index";
+import { T3D1Store } from "@bitig/storage-d1";
+import { defaultIdGenerator } from "@bitig/core";
 import { decryptT3Token, encryptT3Token } from "../src/t3/crypto";
 import { TEST_AUTH_HEADER, TEST_MCP_AUTH_HEADER, TEST_T3_ENCRYPTION_KEY } from "./constants";
 
@@ -201,6 +203,7 @@ interface RecordedToolCall {
 }
 
 interface MockT3ServerState {
+  toolErrors?: Record<string, string>;
   expiresInSeconds: number;
   failMcpConnection: boolean;
   threadStatus: string;
@@ -318,6 +321,13 @@ function createMockT3Fetch(state: MockT3ServerState): typeof fetch {
             const toolName = body.params?.name ?? "";
             const toolArgs = body.params?.arguments ?? {};
             state.toolCalls.push({ name: toolName, arguments: toolArgs });
+            const toolError = state.toolErrors?.[toolName];
+            if (toolError) {
+              return Response.json({
+                jsonrpc: "2.0", id: body.id,
+                result: { isError: true, content: [{ type: "text", text: toolError }] },
+              }, { headers });
+            }
 
             let payload: Record<string, unknown> = {};
             if (toolName === "t3_project_list") {
@@ -1368,6 +1378,79 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
       ]),
     );
   });
+  async function setupProjectSettlement(): Promise<{ project: Project; store: T3D1Store }> {
+    const response = await request("/api/projects", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Settlement", key: "SET" }),
+    });
+    const project = await response.json<Project>();
+    const store = new T3D1Store(env.DB);
+    const now = Date.now();
+    await store.saveProjectThread({
+      id: defaultIdGenerator(), projectId: project.id, t3ProjectId: "t3-proj-bitig",
+      threadId: "settle-thread", title: "Settle me", state: "finished",
+      workspaceStrategy: "root", startedAt: now, updatedAt: now,
+    });
+    await connectT3Host();
+    return { project, store };
+  }
+
+  it.each(["running", "waiting", "idle"])("settles a %s project thread using live state (BIT-142)", async (status) => {
+    const { project, store } = await setupProjectSettlement();
+    mockState.threadStatus = status;
+    mockState.recentRunStatus = status === "idle" ? "completed" : "running";
+    mockState.pendingRequestCount = status === "waiting" ? 1 : 0;
+    const response = await request(`/api/t3/projects/${project.id}/threads/settle-thread/settle`, { method: "POST" });
+    expect(response.status).toBe(204);
+    expect(await response.text()).toBe("");
+    const actions = mockState.toolCalls.filter((call) =>
+      call.name === "t3_thread_interrupt" || call.name === "t3_thread_organize");
+    expect(actions).toEqual([
+      ...(status === "idle" ? [] : [{ name: "t3_thread_interrupt", arguments: { threadId: "settle-thread", stop: true } }]),
+      { name: "t3_thread_organize", arguments: { action: "settle", threadId: "settle-thread" } },
+    ]);
+    expect(await store.getProjectThread(project.id, "settle-thread")).toBeUndefined();
+    const listed = await request(`/api/t3/projects/${project.id}/threads`);
+    expect(await listed.json()).toEqual({ threads: [] });
+  });
+
+  it("rejects missing and other-project threads before contacting T3 (BIT-142)", async () => {
+    const { project, store } = await setupProjectSettlement();
+    const otherResponse = await request("/api/projects", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Other", key: "OTH" }),
+    });
+    const other = await otherResponse.json<Project>();
+    mockState.toolCalls = [];
+    for (const [projectId, threadId] of [
+      [project.id, "missing"], [other.id, "settle-thread"], [defaultIdGenerator(), "settle-thread"],
+    ] as const) {
+      const response = await request(`/api/t3/projects/${projectId}/threads/${threadId}/settle`, { method: "POST" });
+      expect(response.status).toBe(404);
+    }
+    expect(mockState.toolCalls).toEqual([]);
+    expect(await store.getProjectThread(project.id, "settle-thread")).toBeDefined();
+  });
+
+  it.each(["Thread is not running", "No active run"])("settles after a benign interruption race: %s", async (message) => {
+    const { project } = await setupProjectSettlement();
+    mockState.toolErrors = { t3_thread_interrupt: message };
+    expect((await request(`/api/t3/projects/${project.id}/threads/settle-thread/settle`, { method: "POST" })).status).toBe(204);
+    expect(mockState.toolCalls.some((call) => call.name === "t3_thread_organize")).toBe(true);
+  });
+
+  it.each(["t3_thread_read", "t3_thread_interrupt", "t3_thread_organize"])("preserves the project thread when %s fails", async (toolName) => {
+    const { project, store } = await setupProjectSettlement();
+    mockState.toolErrors = { [toolName]: "Permission denied" };
+    const response = await request(`/api/t3/projects/${project.id}/threads/settle-thread/settle`, { method: "POST" });
+    expect(response.status).toBe(502);
+    expect(await response.json()).toMatchObject({ error: "tool_error", message: "Permission denied" });
+    expect(await store.getProjectThread(project.id, "settle-thread")).toBeDefined();
+    if (toolName !== "t3_thread_organize") {
+      expect(mockState.toolCalls.some((call) => call.name === "t3_thread_organize")).toBe(false);
+    }
+  });
+
   it("starts, lists, and messages project-level T3 threads without a task (BIT-127)", async () => {
     const createProject = async (name: string, key: string): Promise<Project> =>
       (

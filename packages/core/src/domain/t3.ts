@@ -849,7 +849,7 @@ function buildT3SubagentContext(input: T3SubagentHandbackInput): string {
 
   const snapshot = input.checkpoint?.stateSnapshot;
   if (snapshot) {
-    lines.push(`- Latest checkpoint (step ${String(input.checkpoint?.stepIndex ?? 0)}): ${truncateText(snapshot.summary, T3_HANDBACK_TEXT_MAX)}`);
+    lines.push(`- Latest checkpoint (step ${String(input.checkpoint.stepIndex)}): ${truncateText(snapshot.summary, T3_HANDBACK_TEXT_MAX)}`);
     if (snapshot.modifiedArtifacts.length > 0) {
       lines.push(`  - Modified: ${truncateText(snapshot.modifiedArtifacts.join(", "), T3_HANDBACK_TEXT_MAX)}`);
     }

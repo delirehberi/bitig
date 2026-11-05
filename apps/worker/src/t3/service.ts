@@ -880,7 +880,7 @@ export async function handBackCompletedChildTask(deps: T3ServiceDeps, childTaskI
 async function handBackEndedChildRun(
   deps: T3ServiceDeps,
   childRun: AgentRun,
-  stopReason?: string | undefined,
+  stopReason?: string,
 ): Promise<number> {
   const state = childRun.state === "failed" || childRun.state === "stopped" ? childRun.state : undefined;
   if (!state || !deps.encryptionKey) return 0;
@@ -912,7 +912,7 @@ async function afterRunStateChange(
   deps: T3ServiceDeps,
   previous: AgentRun,
   updated: AgentRun,
-  stopReason?: string | undefined,
+  stopReason?: string,
 ): Promise<void> {
   if (updated.state === previous.state || !ENDED_CHILD_RUN_STATES.has(updated.state)) return;
   try {
@@ -1362,6 +1362,42 @@ async function requireProject(storage: StorageProvider, projectId: string): Prom
   return project;
 }
 
+/** Settle on the host before removing the project record, so failures remain retryable. */
+export async function settleProjectT3Thread(
+  deps: T3ServiceDeps,
+  projectId: string,
+  threadId: string,
+): Promise<void> {
+  await requireProject(deps.storage, projectId);
+  const existing = await deps.store.getProjectThread(projectId, threadId);
+  if (!existing) throw new NotFoundError("t3_thread", threadId);
+
+  const mcpClient = await createActiveT3McpClient({
+    store: deps.store,
+    encryptionKey: deps.encryptionKey,
+    fetchFn: deps.fetchFn,
+    now: deps.now ? deps.now() : Date.now(),
+  });
+  const live = await mcpClient.readThreadLiveStatus(existing.threadId);
+  const state = deriveLiveAgentRunState({
+    thread: live.thread,
+    recentRuns: live.recentRuns,
+    pendingRequestIds: live.pendingRequestIds,
+  });
+  if (state === "working" || state === "waiting_for_approval") {
+    try {
+      await mcpClient.interruptThread(existing.threadId);
+    } catch (err) {
+      // The turn may finish between reading its state and interrupting it.
+      const alreadyStopped = err instanceof T3McpError && err.code === "tool_error" &&
+        /^(?:thread is not running|no active run)(?:[.!]|$)/i.test(err.message.trim());
+      if (!alreadyStopped) throw err;
+    }
+  }
+  await mcpClient.settleThread(existing.threadId);
+  await deps.store.deleteProjectThread(projectId, existing.threadId);
+}
+
 export interface LaunchProjectThreadInT3Options {
   projectId: string;
   prompt: string;
@@ -1616,4 +1652,3 @@ export async function readProjectT3ThreadMessages(
     ...(readout.stopReason ? { stopReason: readout.stopReason } : {}),
   };
 }
-

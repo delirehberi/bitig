@@ -89,6 +89,18 @@ describe("T3D1Store project threads (BIT-127)", () => {
     await expect(store.saveProjectThread(threadInput())).rejects.toThrow();
   });
 
+  it("deletes only the requested project's thread and reports missing records", async () => {
+    const store = new T3D1Store(env.DB);
+    await store.saveProjectThread(threadInput());
+    await store.saveProjectThread(threadInput({ projectId: OTHER_PROJECT_ID, threadId: "other" }));
+    expect(await store.deleteProjectThread(OTHER_PROJECT_ID, "thread-1")).toBe(false);
+    expect(await store.deleteProjectThread(PROJECT_ID, "missing")).toBe(false);
+    expect(await store.deleteProjectThread(PROJECT_ID, "thread-1")).toBe(true);
+    expect(await store.deleteProjectThread(PROJECT_ID, "thread-1")).toBe(false);
+    expect(await store.listProjectThreads(PROJECT_ID)).toEqual([]);
+    expect(await store.listProjectThreads(OTHER_PROJECT_ID)).toHaveLength(1);
+  });
+
   it("updates state and keeps the link when none is given", async () => {
     const store = new T3D1Store(env.DB);
     await store.saveProjectThread(threadInput({ link: "https://t3.example/a" }));

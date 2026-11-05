@@ -1,8 +1,31 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { startTaskT3Run, T3ApiError, T3WorkspaceBusyApiError } from "./t3";
+import { settleProjectT3Thread, startTaskT3Run, T3ApiError, T3WorkspaceBusyApiError } from "./t3";
 
 const TASK_ID = "01940000-0000-7000-8000-000000000001";
 const HTTP_CONFLICT = 409;
+const HTTP_NO_CONTENT = 204;
+const HTTP_BAD_GATEWAY = 502;
+
+describe("settleProjectT3Thread", () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it("encodes the path and accepts an empty 204 response", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response(null, { status: HTTP_NO_CONTENT }));
+    vi.stubGlobal("fetch", fetchMock);
+    const controller = new AbortController();
+    await expect(settleProjectT3Thread("project/one", "thread/two", controller.signal)).resolves.toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledWith("/api/t3/projects/project%2Fone/threads/thread%2Ftwo/settle", expect.objectContaining({
+      method: "POST", credentials: "same-origin", signal: controller.signal,
+    }));
+  });
+
+  it("surfaces host errors for the panel to display", async () => {
+    stubFetchResponse({ message: "Host unavailable" }, HTTP_BAD_GATEWAY);
+    await expect(settleProjectT3Thread(TASK_ID, "thread")).rejects.toMatchObject({
+      status: HTTP_BAD_GATEWAY, message: "Host unavailable",
+    });
+  });
+});
 
 function stubFetchResponse(body: unknown, status: number): void {
   vi.stubGlobal("fetch", vi.fn<typeof fetch>().mockResolvedValue(Response.json(body, { status })));

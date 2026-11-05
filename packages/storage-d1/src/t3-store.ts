@@ -518,6 +518,14 @@ export class T3D1Store {
     return row ? toProjectT3Thread(row) : undefined;
   }
 
+  async deleteProjectThread(projectId: string, threadId: string): Promise<boolean> {
+    const deleted = await this.db
+      .delete(projectT3Threads)
+      .where(and(eq(projectT3Threads.projectId, projectId), eq(projectT3Threads.threadId, threadId)))
+      .returning({ id: projectT3Threads.id });
+    return deleted.length > 0;
+  }
+
   async saveProjectThread(input: SaveProjectT3ThreadInput): Promise<ProjectT3Thread> {
     const record: ProjectT3ThreadRecord = {
       id: input.id,

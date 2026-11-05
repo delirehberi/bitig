@@ -390,6 +390,23 @@ export async function startProjectT3Thread(
   return (await response.json()) as ProjectT3Thread;
 }
 
+/** Settles a project thread on its host and removes it from Bitig's open list. */
+export async function settleProjectT3Thread(
+  projectId: string,
+  threadId: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  const response = await fetch(`${projectThreadsPath(projectId)}/${encodeURIComponent(threadId)}/settle`, {
+    method: "POST",
+    headers: baseHeaders(),
+    credentials: "same-origin",
+    ...(signal ? { signal } : {}),
+  });
+  if (!response.ok) {
+    throw new T3ApiError(response.status, await parseErrorMessage(response, "Could not settle T3 thread"));
+  }
+}
+
 /**
  * Sends a follow-up to a project-level T3 thread, switching its model first when `modelSelection`
  * differs (#BIT-127). A 409 means the thread is mid-turn.
@@ -437,4 +454,3 @@ export async function fetchProjectT3ThreadMessages(
   }
   return (await response.json()) as ProjectT3ThreadMessagesResponse;
 }
-

@@ -159,12 +159,9 @@ export function TaskT3Section({
   const waitingForTaskId = run?.state === "waiting_subagent" ? run.waitingForTaskId : undefined;
 
   useEffect(() => {
-    if (!waitingForTaskId) {
-      setWaitingChild(null);
-      return;
-    }
+    // Rendering already scopes cached child details to the current waiting task ID.
+    if (!waitingForTaskId) return;
     const controller = new AbortController();
-    setWaitingChild((prev) => (prev?.taskId === waitingForTaskId ? prev : { taskId: waitingForTaskId }));
 
     void Promise.all([
       storage

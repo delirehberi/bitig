@@ -874,7 +874,7 @@ describe("umbrella task child sessions (#BIT-141)", () => {
     const first = await storage.saveTask({ projectId: project.id, title: "First" });
     const second = await storage.saveTask({ projectId: project.id, title: "Second" });
     const third = await storage.saveTask({ projectId: project.id, title: "Third" });
-    const onTaskFinished = vi.fn((_task: { id: string; status: string }) => Promise.resolve());
+    const onTaskFinished = vi.fn<(task: { id: string; status: string }) => Promise<void>>().mockResolvedValue(undefined);
     const { client, server } = await connect(storage, { onTaskFinished });
 
     try {

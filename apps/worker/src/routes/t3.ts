@@ -31,6 +31,7 @@ import {
   replyToTaskT3Run,
   respondToTaskT3Request,
   sendProjectT3Message,
+  settleProjectT3Thread,
   stopTaskT3Run,
   T3ModelSwitchConflictError,
   type T3ServiceDeps,
@@ -320,6 +321,14 @@ export const t3ApiRouter = new Hono<AppEnv>()
       }
     },
   )
+  .post("/projects/:projectId/threads/:threadId/settle", async (c) => {
+    try {
+      await settleProjectT3Thread(buildServiceDeps(c), c.req.param("projectId"), c.req.param("threadId"));
+      return c.body(null, HTTP_NO_CONTENT);
+    } catch (err) {
+      return handleT3RouteError(err, c);
+    }
+  })
   .get("/projects/:projectId/threads/:threadId/messages", async (c) => {
     const rawAfter = c.req.query("after")?.trim();
     let afterPosition: number | undefined;

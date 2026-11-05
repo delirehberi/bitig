@@ -16,6 +16,7 @@ import {
   fetchT3Connection,
   fetchT3ProjectMappings,
   sendProjectT3Message,
+  settleProjectT3Thread,
   startProjectT3Thread,
 } from "../../services/t3";
 import { PROJECT_T3_POLL_INTERVAL_MS, ProjectT3Panel } from "./ProjectT3Panel";
@@ -30,6 +31,7 @@ vi.mock("../../services/t3", async (importOriginal) => {
     fetchT3Connection: vi.fn(),
     fetchT3ProjectMappings: vi.fn(),
     sendProjectT3Message: vi.fn(),
+    settleProjectT3Thread: vi.fn(),
     startProjectT3Thread: vi.fn(),
   };
 });
@@ -92,6 +94,68 @@ describe("ProjectT3Panel (BIT-127)", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("shows settlement pending and removes only the settled thread", async () => {
+    mockReady([makeThread(), makeThread({ id: "second", threadId: "thread-2", title: "Keep me" })]);
+    let finish: () => void = () => { throw new Error("Settlement has not started"); };
+    vi.mocked(settleProjectT3Thread).mockImplementation(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const user = userEvent.setup();
+    render(<ProjectT3Panel project={PROJECT} />);
+    await screen.findByText("Check the environment");
+    const firstSettle = screen.getAllByRole("button", { name: "Settle" })[0];
+    if (!firstSettle) throw new Error("Missing Settle button");
+    await user.click(firstSettle);
+    expect(screen.getByRole("button", { name: "Settling…" })).toBeDisabled();
+    expect(settleProjectT3Thread).toHaveBeenCalledWith(PROJECT.id, "thread-1", expect.any(AbortSignal));
+    await act(async () => { finish(); await Promise.resolve(); });
+    expect(screen.queryByText("Check the environment")).not.toBeInTheDocument();
+    expect(screen.getByText("Keep me")).toBeInTheDocument();
+  });
+
+  it("keeps a failed settlement visible and allows retry", async () => {
+    mockReady([makeThread({ state: "offline" })]);
+    vi.mocked(settleProjectT3Thread).mockRejectedValueOnce(new Error("Host unavailable"));
+    vi.mocked(settleProjectT3Thread).mockResolvedValueOnce(undefined);
+    const user = userEvent.setup();
+    render(<ProjectT3Panel project={PROJECT} />);
+    await user.click(await screen.findByRole("button", { name: "Settle" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Host unavailable");
+    expect(screen.getByText("Check the environment")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Settle" }));
+    expect(screen.queryByText("Check the environment")).not.toBeInTheDocument();
+  });
+
+  it("does not restore a settled thread from an older refresh response", async () => {
+    const thread = makeThread();
+    mockReady([thread]);
+    vi.mocked(settleProjectT3Thread).mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    render(<ProjectT3Panel project={PROJECT} />);
+    await screen.findByText(thread.title);
+    let finishRefresh: (threads: ProjectT3Thread[]) => void = () => { throw new Error("Refresh has not started"); };
+    vi.mocked(fetchProjectT3Threads).mockImplementationOnce(() => new Promise((resolve) => { finishRefresh = resolve; }));
+    await user.click(screen.getByRole("button", { name: "Refresh project T3 threads" }));
+    await user.click(screen.getByRole("button", { name: "Settle" }));
+    expect(screen.queryByText(thread.title)).not.toBeInTheDocument();
+    await act(async () => { finishRefresh([thread]); await Promise.resolve(); });
+    expect(screen.queryByText(thread.title)).not.toBeInTheDocument();
+  });
+
+  it("aborts settlement when the panel unmounts", async () => {
+    mockReady([makeThread()]);
+    let signal: AbortSignal | undefined;
+    vi.mocked(settleProjectT3Thread).mockImplementation((_projectId, _threadId, requestSignal) => {
+      signal = requestSignal;
+      return new Promise<void>((_resolve, reject) => {
+        requestSignal?.addEventListener("abort", () => { reject(new DOMException("Aborted", "AbortError")); });
+      });
+    });
+    const user = userEvent.setup();
+    const view = render(<ProjectT3Panel project={PROJECT} />);
+    await user.click(await screen.findByRole("button", { name: "Settle" }));
+    view.unmount();
+    expect(signal?.aborted).toBe(true);
   });
 
   it("points to Settings when T3 is not connected", async () => {
@@ -386,5 +450,3 @@ describe("ProjectT3Panel (BIT-127)", () => {
     );
   });
 });
-
-
