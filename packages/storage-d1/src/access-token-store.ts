@@ -93,6 +93,9 @@ function recordToUser(row: UserRecord): User {
   if (row.avatarUrl !== null) {
     user.avatarUrl = row.avatarUrl;
   }
+  if (row.nip05 !== null) {
+    user.nip05 = row.nip05;
+  }
   if (row.lastLoginAt !== null) {
     user.lastLoginAt = new Date(row.lastLoginAt).toISOString();
   }

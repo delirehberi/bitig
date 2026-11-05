@@ -14,6 +14,7 @@ import { D1Storage } from "@bitig/storage-d1";
 import { parseConfig, type AppConfig } from "./config";
 import { ForbiddenRoleError, apiAuth, bearerAuth } from "./auth";
 import { MailerError, createMailer, type Mailer } from "./mailer";
+import { createNostrProfileFetcher, type NostrProfileFetcher } from "./nostr-profile";
 import { projectsRouter } from "./routes/projects";
 import { tasksRouter } from "./routes/tasks";
 import { commentsRouter } from "./routes/comments";
@@ -41,6 +42,7 @@ export interface AppEnv {
     customStorageFactory: boolean;
     t3Fetch: typeof fetch | undefined;
     mailer: Mailer;
+    nostrProfileFetcher: NostrProfileFetcher;
     user: User | undefined;
     sessionId: string | undefined;
     orgId: string | undefined;
@@ -66,6 +68,7 @@ export interface CreateAppOptions {
   config?: AppConfig;
   t3Fetch?: typeof fetch;
   mailer?: Mailer;
+  nostrProfileFetcher?: NostrProfileFetcher;
 }
 
 export function createApp(options?: CreateAppOptions): Hono<AppEnv> {
@@ -83,6 +86,10 @@ export function createApp(options?: CreateAppOptions): Hono<AppEnv> {
           resendApiKey: config.RESEND_API_KEY,
           mailFrom: config.MAIL_FROM,
         }),
+    );
+    c.set(
+      "nostrProfileFetcher",
+      options?.nostrProfileFetcher ?? createNostrProfileFetcher({ relays: config.NOSTR_PROFILE_RELAYS }),
     );
     const hasCfAccess =
       config.T3_CF_ACCESS_CLIENT_ID.length > 0 && config.T3_CF_ACCESS_CLIENT_SECRET.length > 0;

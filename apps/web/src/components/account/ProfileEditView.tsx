@@ -1,15 +1,25 @@
 import { useState, type SyntheticEvent } from "react";
-import { AlertTriangle, Check, Mail, Save } from "lucide-react";
+import { AlertTriangle, Check, CloudDownload, Mail, Save } from "lucide-react";
 import { useAuth } from "../../auth/useAuth";
 import { Link } from "../../routing/Link";
 import { hrefFor, navigate } from "../../routing/router";
 import {
   confirmAccountDelete,
+  isNostrAccount,
   requestAccountDeleteCode,
   requestEmailChange,
+  syncProfileFromNostr,
   updateMyProfile,
   verifyEmailChange,
+  type NostrProfileField,
 } from "../../services/multi-user";
+import { formatNip05 } from "./nip05";
+
+const NOSTR_FIELD_LABELS: Record<NostrProfileField, string> = {
+  displayName: "display name",
+  avatarUrl: "avatar",
+  nip05: "NIP-05",
+};
 
 export function ProfileEditView() {
   const { profile, refreshAuth, expire } = useAuth();
@@ -19,6 +29,11 @@ export function ProfileEditView() {
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileMessage, setProfileMessage] = useState<string | null>(null);
   const [profileError, setProfileError] = useState<string | null>(null);
+
+  // Nostr profile fetch
+  const [nostrBusy, setNostrBusy] = useState(false);
+  const [nostrMessage, setNostrMessage] = useState<string | null>(null);
+  const [nostrError, setNostrError] = useState<string | null>(null);
 
   // Email change flow
   const [newEmail, setNewEmail] = useState("");
@@ -51,6 +66,35 @@ export function ProfileEditView() {
       setProfileError(err instanceof Error ? err.message : "Could not update profile");
     } finally {
       setProfileSaving(false);
+    }
+  }
+
+  async function handleFetchFromNostr() {
+    setNostrBusy(true);
+    setNostrError(null);
+    setNostrMessage(null);
+    const before = profile;
+    try {
+      const result = await syncProfileFromNostr();
+      // Only refresh form fields the user has not started editing.
+      if (result.updated.includes("displayName") && displayName === (before?.displayName ?? "")) {
+        setDisplayName(result.user.displayName);
+      }
+      if (result.updated.includes("avatarUrl") && avatarUrl === (before?.avatarUrl ?? "")) {
+        setAvatarUrl(result.user.avatarUrl ?? "");
+      }
+      await refreshAuth();
+      if (!result.found) {
+        setNostrMessage("No Nostr profile was found on the relays.");
+      } else if (result.updated.length === 0) {
+        setNostrMessage("Your profile has no empty fields to fill, so nothing changed.");
+      } else {
+        setNostrMessage(`Filled from Nostr: ${result.updated.map((field) => NOSTR_FIELD_LABELS[field]).join(", ")}.`);
+      }
+    } catch (err) {
+      setNostrError(err instanceof Error ? err.message : "Could not fetch your Nostr profile");
+    } finally {
+      setNostrBusy(false);
     }
   }
 
@@ -209,6 +253,47 @@ export function ProfileEditView() {
           </div>
         </form>
       </section>
+
+      {profile && isNostrAccount(profile) && (
+        <section aria-labelledby="profile-nostr-heading" className="mb-6 rounded-lg border border-rule bg-paper p-6 shadow-xs">
+          <h2
+            id="profile-nostr-heading"
+            className="m-0 mb-2 flex items-center gap-2 font-display text-base font-bold text-ink"
+          >
+            <CloudDownload size={16} aria-hidden="true" className="text-accent-ink" />
+            Nostr profile
+          </h2>
+          <p className="m-0 mb-4 text-xs text-ink-3">
+            Fill empty fields (display name, avatar, verified NIP-05) from your Nostr profile. Fields you already set
+            stay as they are.
+            {profile.nip05 && (
+              <>
+                {" "}
+                NIP-05: <strong className="font-semibold text-ink-2">{formatNip05(profile.nip05)}</strong>.
+              </>
+            )}
+          </p>
+          {nostrError && (
+            <div role="alert" className="mb-4 rounded-md border border-danger/30 bg-danger-soft px-3 py-2 text-xs text-danger">
+              {nostrError}
+            </div>
+          )}
+          {nostrMessage && (
+            <div role="status" className="mb-4 rounded-md border border-ok/30 bg-paper-2 px-3 py-2 text-xs text-ink">
+              {nostrMessage}
+            </div>
+          )}
+          <button
+            type="button"
+            onClick={() => void handleFetchFromNostr()}
+            disabled={nostrBusy}
+            className="inline-flex items-center gap-1.5 rounded-md border border-rule bg-paper-2 px-3 py-2 text-xs font-semibold text-ink hover:bg-paper-3 disabled:opacity-50"
+          >
+            <CloudDownload size={14} aria-hidden="true" />
+            {nostrBusy ? "Fetching\u2026" : "Fetch my profile from Nostr"}
+          </button>
+        </section>
+      )}
 
       <section className="mb-6 rounded-lg border border-rule bg-paper p-6 shadow-xs">
         <h2 className="m-0 mb-2 flex items-center gap-2 font-display text-base font-bold text-ink">

@@ -5,6 +5,7 @@ import {
   TEST_BOOTSTRAP_EMAIL,
   TEST_MCP_TOKEN,
   TEST_MCP_URL_TOKEN,
+  TEST_NOSTR_PROFILE_RELAY,
   TEST_NOSTR_PUBKEY,
   TEST_SESSION_SECRET,
   TEST_T3_ENCRYPTION_KEY,
@@ -30,6 +31,8 @@ export default defineConfig({
           SESSION_SECRET: TEST_SESSION_SECRET,
           T3_ENCRYPTION_KEY: TEST_T3_ENCRYPTION_KEY,
           NOSTR_AUTH_PUBKEYS: TEST_NOSTR_PUBKEY,
+          // Keeps the post-sign-in profile sync off public relays: this port refuses at once.
+          NOSTR_PROFILE_RELAYS: TEST_NOSTR_PROFILE_RELAY,
         },
       },
     }),

@@ -40,6 +40,7 @@ function recordToUser(row: UserRecord): User {
     updatedAt: new Date(row.updatedAt).toISOString(),
   };
   if (row.avatarUrl !== null) user.avatarUrl = row.avatarUrl;
+  if (row.nip05 !== null) user.nip05 = row.nip05;
   if (row.emailVerifiedAt !== null) user.emailVerifiedAt = new Date(row.emailVerifiedAt).toISOString();
   if (row.lastLoginAt !== null) user.lastLoginAt = new Date(row.lastLoginAt).toISOString();
   return user;
@@ -52,6 +53,7 @@ function userToRecord(user: User): InsertUserRecord {
     username: user.username,
     displayName: user.displayName,
     avatarUrl: user.avatarUrl ?? null,
+    nip05: user.nip05 ?? null,
     platformRole: user.platformRole,
     status: user.status,
     emailVerifiedAt: user.emailVerifiedAt !== undefined ? Date.parse(user.emailVerifiedAt) : null,

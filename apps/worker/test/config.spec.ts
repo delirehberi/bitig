@@ -44,6 +44,14 @@ describe("parseConfig", () => {
     expect(() => parseConfig({ NOSTR_AUTH_PUBKEYS: "npub-invalid" })).toThrow(ConfigError);
   });
 
+  it("parses Nostr profile relays and rejects non-wss URLs", () => {
+    expect(parseConfig({}).NOSTR_PROFILE_RELAYS).toEqual([]);
+    expect(
+      parseConfig({ NOSTR_PROFILE_RELAYS: " wss://relay.one , wss://relay.two/path " }).NOSTR_PROFILE_RELAYS,
+    ).toEqual(["wss://relay.one", "wss://relay.two/path"]);
+    expect(() => parseConfig({ NOSTR_PROFILE_RELAYS: "https://relay.one" })).toThrow(ConfigError);
+  });
+
   it("leaves sessions off when SESSION_SECRET is empty", () => {
     expect(parseConfig({}).SESSION_SECRET).toBe("");
   });

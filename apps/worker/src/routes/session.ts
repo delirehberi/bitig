@@ -24,6 +24,8 @@ import { ACCESS_TOKEN_PREFIX, generateSixDigitCode, sha256Hex } from "../auth-cr
 import { ensureBootstrap } from "../bootstrap";
 import { buildSignInCodeEmail } from "../mailer";
 import { getClientIp, recordAuthFailure } from "../rate-limit";
+import { NOSTR_EMAIL_SUFFIX, nostrPlaceholderDisplayName, syncNostrProfile } from "../nostr-profile";
+import { runInBackground } from "../background";
 import { endSession, readSession, sessionsEnabled, startSession } from "../session";
 
 const HTTP_BAD_REQUEST = 400;
@@ -40,7 +42,11 @@ const LOGIN_EVENT_CONTENT = "Sign in to Bitig";
 const HEX_64 = /^[0-9a-f]{64}$/;
 const EMAIL_RATE_WINDOW_MS = 15 * 60 * 1000;
 const EMAIL_RATE_MAX = 10;
-const NOSTR_EMAIL_SUFFIX = "@nostr.local";
+const NOSTR_REGISTER_RATE_WINDOW_MS = 60 * 60 * 1000;
+export const NOSTR_REGISTER_RATE_MAX = 10;
+
+const NOSTR_USERNAME_PREFIX = "nostr-";
+const NOSTR_USERNAME_PUBKEY_CHARS = 16;
 
 const RequestCodeSchema = z.object({
   email: EmailSchema,
@@ -97,6 +103,18 @@ async function checkEmailAndIpRateLimit(env: Env, ip: string, email: string): Pr
     if (emailHit.limited) return emailHit.resetSeconds;
   } catch (error) {
     console.error("auth code rate limiter unavailable, allowing request", { error });
+  }
+  return null;
+}
+
+/** Caps how many new Nostr accounts one IP can create, since any valid key may now register. */
+async function checkNostrRegisterRateLimit(env: Env, ip: string): Promise<number | null> {
+  try {
+    const stub = env.RATE_LIMITER.get(env.RATE_LIMITER.idFromName(`nostr-register-ip:${ip}`));
+    const hit = await stub.hit(NOSTR_REGISTER_RATE_MAX, NOSTR_REGISTER_RATE_WINDOW_MS);
+    if (hit.limited) return hit.resetSeconds;
+  } catch (error) {
+    console.error("nostr registration rate limiter unavailable, allowing request", { error });
   }
   return null;
 }
@@ -346,9 +364,9 @@ export const sessionRouter = new Hono<AppEnv>()
   )
   .post("/challenge", async (c) => {
     const config = c.get("config");
-    if (!sessionsEnabled(config) || config.NOSTR_AUTH_PUBKEYS.length === 0) {
+    if (!sessionsEnabled(config)) {
       return c.json(
-        { error: "sessions_not_configured", message: "SESSION_SECRET or NOSTR_AUTH_PUBKEYS is not set" },
+        { error: "sessions_not_configured", message: "SESSION_SECRET is not set on the Worker" },
         HTTP_SERVICE_UNAVAILABLE,
       );
     }
@@ -391,13 +409,11 @@ export const sessionRouter = new Hono<AppEnv>()
       const eventOrigin = uniqueTagValue(event.tags, "origin");
       const action = uniqueTagValue(event.tags, "action");
       const requestOrigin = new URL(c.req.url).origin;
-      const authorized = config.NOSTR_AUTH_PUBKEYS.includes(event.pubkey);
       if (
         !nonce ||
         event.tags.length !== 3 ||
         eventOrigin !== requestOrigin ||
         action !== "login" ||
-        !authorized ||
         !verifyEvent(event)
       ) {
         await recordAuthFailure(c);
@@ -413,14 +429,26 @@ export const sessionRouter = new Hono<AppEnv>()
       const userStore = new D1UserStore(c.env.DB);
       const orgStore = new D1OrganisationStore(c.env.DB);
       const nostrEmail = `${event.pubkey}${NOSTR_EMAIL_SUFFIX}`;
+      // Any valid key may register as an ordinary user; only allowlisted keys are operators.
+      const isOperator = config.NOSTR_AUTH_PUBKEYS.includes(event.pubkey);
       let user = await userStore.getByEmail(nostrEmail);
       const nowIso = new Date().toISOString();
       if (!user) {
+        if (!isOperator) {
+          const resetSeconds = await checkNostrRegisterRateLimit(c.env, getClientIp(c));
+          if (resetSeconds !== null) {
+            c.header("Retry-After", String(resetSeconds));
+            return c.json(
+              { error: "too_many_requests", message: "Rate limit exceeded. Please try again later." },
+              HTTP_TOO_MANY_REQUESTS,
+            );
+          }
+        }
         user = await userStore.create({
           email: nostrEmail,
-          username: `nostr-${event.pubkey.slice(0, 16)}`,
-          displayName: `Nostr (${event.pubkey.slice(0, 8)})`,
-          platformRole: "admin",
+          username: `${NOSTR_USERNAME_PREFIX}${event.pubkey.slice(0, NOSTR_USERNAME_PUBKEY_CHARS)}`,
+          displayName: nostrPlaceholderDisplayName(event.pubkey),
+          platformRole: isOperator ? "admin" : "user",
           status: "active",
           emailVerifiedAt: nowIso,
           lastLoginAt: nowIso,
@@ -432,12 +460,30 @@ export const sessionRouter = new Hono<AppEnv>()
         }
         user = await userStore.update(user.id, { lastLoginAt: nowIso });
       }
-      const existingMembership = await orgStore.getMembership(DEFAULT_ORGANISATION_ID, user.id);
-      if (!existingMembership) {
-        await orgStore.addMember(DEFAULT_ORGANISATION_ID, user.id, "owner");
+      // Ordinary Nostr users go through onboarding like email users instead of joining the default org.
+      if (isOperator) {
+        const existingMembership = await orgStore.getMembership(DEFAULT_ORGANISATION_ID, user.id);
+        if (!existingMembership) {
+          await orgStore.addMember(DEFAULT_ORGANISATION_ID, user.id, "owner");
+        }
       }
 
       await startSession(c, user.id);
+      // Best effort: fill empty profile fields from Nostr after responding; relay failures never block sign-in.
+      const signedInUser = user;
+      await runInBackground(
+        c,
+        syncNostrProfile(userStore, signedInUser, c.get("nostrProfileFetcher")).then(
+          (result) => {
+            if (result.updated.length > 0) {
+              console.info("filled profile fields from Nostr", { userId: signedInUser.id, fields: result.updated });
+            }
+          },
+          (error: unknown) => {
+            console.error("Nostr profile sync after sign-in failed", { userId: signedInUser.id, error });
+          },
+        ),
+      );
       return c.json<SessionResponse>({ user: event.pubkey });
     },
   )

@@ -38,6 +38,7 @@ export const users = sqliteTable(
     username: text("username").notNull(),
     displayName: text("display_name").notNull(),
     avatarUrl: text("avatar_url"),
+    nip05: text("nip05"),
     platformRole: text("platform_role")
       .$type<PlatformRole>()
       .notNull()

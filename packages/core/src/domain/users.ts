@@ -19,6 +19,10 @@ export const USERNAME_PATTERN = /^[a-z0-9](?:[a-z0-9_-]{0,38}[a-z0-9])?$/;
 export const DISPLAY_NAME_MAX = 120;
 export const EMAIL_MAX = 320;
 export const AVATAR_URL_MAX = 2048;
+export const NIP05_MAX = 320;
+/** NIP-05 identifier `<local-part>@<domain>`; the local part is limited to a-z0-9-_. per the NIP. */
+export const NIP05_PATTERN =
+  /^[a-z0-9._-]+@(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 
 export const EmailSchema = z
   .string()
@@ -42,12 +46,20 @@ export const DisplayNameSchema = z.string().trim().min(1).max(DISPLAY_NAME_MAX);
 
 export const AvatarUrlSchema = z.url({ protocol: /^https?$/ }).max(AVATAR_URL_MAX);
 
+export const Nip05Schema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .max(NIP05_MAX)
+  .regex(NIP05_PATTERN, "NIP-05 identifier must look like name@example.com");
+
 export const UserSchema = z.strictObject({
   id: IdSchema,
   email: EmailSchema,
   username: UsernameSchema,
   displayName: DisplayNameSchema,
   avatarUrl: AvatarUrlSchema.exactOptional(),
+  nip05: Nip05Schema.exactOptional(),
   platformRole: PlatformRoleSchema,
   status: UserStatusSchema,
   emailVerifiedAt: TimestampSchema.exactOptional(),
@@ -64,6 +76,7 @@ export const CreateUserInputSchema = z.strictObject({
   username: UsernameSchema,
   displayName: DisplayNameSchema,
   avatarUrl: AvatarUrlSchema.optional(),
+  nip05: Nip05Schema.optional(),
   platformRole: PlatformRoleSchema.default(DEFAULT_PLATFORM_ROLE),
   status: UserStatusSchema.default(DEFAULT_USER_STATUS),
   emailVerifiedAt: TimestampSchema.optional(),
@@ -78,6 +91,7 @@ export const UpdateUserInputSchema = z
     username: UsernameSchema.optional(),
     displayName: DisplayNameSchema.optional(),
     avatarUrl: AvatarUrlSchema.nullable().optional(),
+    nip05: Nip05Schema.nullable().optional(),
     platformRole: PlatformRoleSchema.optional(),
     status: UserStatusSchema.optional(),
     emailVerifiedAt: TimestampSchema.nullable().optional(),
@@ -129,6 +143,7 @@ export function buildUser(input: CreateUserInput, deps: RuntimeDeps = defaultRun
     updatedAt: now,
   };
   if (parsed.avatarUrl !== undefined) user.avatarUrl = parsed.avatarUrl;
+  if (parsed.nip05 !== undefined) user.nip05 = parsed.nip05;
   if (parsed.emailVerifiedAt !== undefined) user.emailVerifiedAt = parsed.emailVerifiedAt;
   if (parsed.lastLoginAt !== undefined) user.lastLoginAt = parsed.lastLoginAt;
   return parseOrThrow(UserSchema, user, "createUser result");
@@ -140,6 +155,7 @@ export function applyUserPatch(user: User, patch: UpdateUserInput, now: Date): U
   const updatedAt = Date.parse(candidate) >= Date.parse(user.updatedAt) ? candidate : user.updatedAt;
   const avatarUrl =
     parsed.avatarUrl === undefined ? user.avatarUrl : (parsed.avatarUrl ?? undefined);
+  const nip05 = parsed.nip05 === undefined ? user.nip05 : (parsed.nip05 ?? undefined);
   const emailVerifiedAt =
     parsed.emailVerifiedAt === undefined
       ? user.emailVerifiedAt
@@ -158,6 +174,7 @@ export function applyUserPatch(user: User, patch: UpdateUserInput, now: Date): U
     updatedAt,
   };
   if (avatarUrl !== undefined) next.avatarUrl = avatarUrl;
+  if (nip05 !== undefined) next.nip05 = nip05;
   if (emailVerifiedAt !== undefined) next.emailVerifiedAt = emailVerifiedAt;
   if (lastLoginAt !== undefined) next.lastLoginAt = lastLoginAt;
   return parseOrThrow(UserSchema, next, "updateUser result");

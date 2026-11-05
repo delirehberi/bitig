@@ -354,7 +354,7 @@ export async function loginWithNostr(): Promise<LoginResult> {
   }
   const { message } = await readErrorDetails(response);
   if (response.status === HTTP_UNAUTHORIZED) {
-    return { ok: false, error: "This Nostr identity is not authorized or the challenge expired." };
+    return { ok: false, error: "The Nostr signature was rejected or the sign-in challenge expired. Try again." };
   }
   if (response.status === 429) return { ok: false, error: "Too many failed attempts. Try again later." };
   if (response.status === HTTP_SERVICE_UNAVAILABLE) {

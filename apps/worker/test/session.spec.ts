@@ -1,12 +1,17 @@
 import { env, exports } from "cloudflare:workers";
 import { generateSignedCookie } from "hono/cookie";
-import { finalizeEvent, type EventTemplate } from "nostr-tools/pure";
+import { finalizeEvent, getPublicKey, type EventTemplate } from "nostr-tools/pure";
 import { describe, expect, it } from "vitest";
-import { D1UserStore } from "@bitig/storage-d1";
+import { DEFAULT_ORGANISATION_ID } from "@bitig/core";
+import { D1SessionStore, D1UserStore } from "@bitig/storage-d1";
+import { sha256Hex } from "../src/auth-crypto";
 import { parseConfig } from "../src/config";
 import { createApp } from "../src/index";
 import { FakeMailer } from "../src/mailer";
 import { AUTH_FAIL_POLICY } from "../src/rate-limit";
+import { NOSTR_REGISTER_RATE_MAX } from "../src/routes/session";
+import type { NostrProfileFetcher } from "../src/nostr-profile";
+import { NOSTR_SYNC_RATE_MAX } from "../src/routes/me";
 import { SESSION_COOKIE } from "../src/session";
 import {
   TEST_AUTH_USER,
@@ -78,16 +83,81 @@ describe("NIP-07 dashboard login", () => {
     expect(setCookie).toContain("Path=/");
   });
 
-  it("rejects unauthorized keys, malformed events, and foreign origins", async () => {
-    expect((await submitLogin(await signedLoginEvent(OTHER_SECRET_KEY))).status).toBe(401);
+  it("rejects forged signatures, malformed events, and foreign origins", async () => {
+    const event = await signedLoginEvent(OTHER_SECRET_KEY);
+    expect((await submitLogin({ ...event, pubkey: TEST_NOSTR_PUBKEY })).status).toBe(401);
     expect((await submitLogin({ kind: 22242 })).status).toBe(400);
-    const event = await signedLoginEvent();
+    const own = await signedLoginEvent();
     const foreign = await request("/api/auth/nostr", {
       method: "POST",
       headers: { "Content-Type": "application/json", Origin: "https://evil.test" },
-      body: JSON.stringify(event),
+      body: JSON.stringify(own),
     });
     expect(foreign.status).toBe(403);
+  });
+
+  it("registers a non-allowlisted key as an ordinary user who must onboard", async () => {
+    const secretKey = new Uint8Array(32).fill(3);
+    const pubkey = getPublicKey(secretKey);
+    const res = await submitLogin(await signedLoginEvent(secretKey));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ user: pubkey });
+
+    const me = await request("/api/auth/me", { cookie: cookiePair(res) });
+    const body = await me.json<{
+      user: { platformRole: string; displayName: string; username: string };
+      memberships: unknown[];
+      needsOnboarding: boolean;
+    }>();
+    expect(body.user.platformRole).toBe("user");
+    expect(body.user.displayName).toBe(`Nostr (${pubkey.slice(0, 8)})`);
+    expect(body.user.username).toBe(`nostr-${pubkey.slice(0, 16)}`);
+    expect(body.memberships).toEqual([]);
+    expect(body.needsOnboarding).toBe(true);
+
+    // A second sign-in reuses the same account without promoting it.
+    const again = await submitLogin(await signedLoginEvent(secretKey));
+    expect(again.status).toBe(200);
+    const stored = await new D1UserStore(env.DB).getByEmail(`${pubkey}@nostr.local`);
+    expect(stored?.platformRole).toBe("user");
+  });
+
+  it("makes an allowlisted key a platform admin and default organisation owner", async () => {
+    const res = await submitLogin(await signedLoginEvent());
+    const me = await request("/api/auth/me", { cookie: cookiePair(res) });
+    const body = await me.json<{
+      user: { platformRole: string };
+      memberships: { organisation: { id: string }; role: string }[];
+      needsOnboarding: boolean;
+    }>();
+    expect(body.user.platformRole).toBe("admin");
+    expect(body.memberships).toContainEqual(
+      expect.objectContaining({ organisation: expect.objectContaining({ id: DEFAULT_ORGANISATION_ID }) as unknown, role: "owner" }),
+    );
+    expect(body.needsOnboarding).toBe(false);
+  });
+
+  it("rate limits new Nostr registrations per IP", async () => {
+    const ip = uniqueIp();
+    for (let index = 0; index < NOSTR_REGISTER_RATE_MAX; index += 1) {
+      const secretKey = new Uint8Array(32).fill(0x40 + index);
+      const event = await signedLoginEvent(secretKey);
+      const res = await request("/api/auth/nostr", {
+        ip,
+        method: "POST",
+        headers: { "Content-Type": "application/json", Origin: BASE_URL, "X-Bitig-Request": "true" },
+        body: JSON.stringify(event),
+      });
+      expect(res.status).toBe(200);
+    }
+    const blocked = await request("/api/auth/nostr", {
+      ip,
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: BASE_URL, "X-Bitig-Request": "true" },
+      body: JSON.stringify(await signedLoginEvent(new Uint8Array(32).fill(0x7f))),
+    });
+    expect(blocked.status).toBe(429);
+    expect(blocked.headers.get("Retry-After")).not.toBeNull();
   });
 
   it("consumes a challenge exactly once", async () => {
@@ -120,6 +190,169 @@ describe("NIP-07 dashboard login", () => {
       TEST_NOSTR_SECRET_KEY,
     );
     expect((await submitLogin(expired)).status).toBe(401);
+  });
+});
+
+describe("Nostr profile fill on sign-in", () => {
+  function createProfileApp(fetcher: NostrProfileFetcher) {
+    const app = createApp({ nostrProfileFetcher: fetcher });
+    // No execution context here, so the background sync is awaited before the response returns.
+    return (path: string, init: RequestInit & { cookie?: string } = {}) => {
+      const headers = new Headers(init.headers);
+      headers.set("cf-connecting-ip", uniqueIp());
+      if (init.cookie !== undefined) headers.set("Cookie", init.cookie);
+      return Promise.resolve(app.fetch(new Request(`${BASE_URL}${path}`, { ...init, headers }), env));
+    };
+  }
+
+  async function signIn(appReq: ReturnType<typeof createProfileApp>, secretKey: Uint8Array) {
+    const challenge = await appReq("/api/auth/challenge", {
+      method: "POST",
+      headers: { Origin: BASE_URL, "X-Bitig-Request": "true" },
+    });
+    const { event } = await challenge.json<{ event: EventTemplate }>();
+    return appReq("/api/auth/nostr", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: BASE_URL, "X-Bitig-Request": "true" },
+      body: JSON.stringify(finalizeEvent(event, secretKey)),
+    });
+  }
+
+  it("fills the placeholder name, avatar, and verified NIP-05 of a new account", async () => {
+    const secretKey = new Uint8Array(32).fill(0x21);
+    const pubkey = getPublicKey(secretKey);
+    const appReq = createProfileApp({
+      fetchProfile: (key) =>
+        Promise.resolve(
+          key === pubkey
+            ? { displayName: "Dana", avatarUrl: "https://cdn.test/dana.png", nip05: "dana@example.com" }
+            : null,
+        ),
+    });
+    const res = await signIn(appReq, secretKey);
+    expect(res.status).toBe(200);
+    const stored = await new D1UserStore(env.DB).getByEmail(`${pubkey}@nostr.local`);
+    expect(stored).toMatchObject({
+      displayName: "Dana",
+      avatarUrl: "https://cdn.test/dana.png",
+      nip05: "dana@example.com",
+    });
+  });
+
+  it("keeps fields the user already set and still signs in when the lookup fails", async () => {
+    const secretKey = new Uint8Array(32).fill(0x22);
+    const pubkey = getPublicKey(secretKey);
+    const first = await signIn(createProfileApp({ fetchProfile: () => Promise.resolve(null) }), secretKey);
+    expect(first.status).toBe(200);
+    const store = new D1UserStore(env.DB);
+    const created = await store.getByEmail(`${pubkey}@nostr.local`);
+    if (!created) throw new Error("expected the Nostr account to exist");
+    await store.update(created.id, { displayName: "Picked By Me" });
+
+    const failing = await signIn(
+      createProfileApp({ fetchProfile: () => Promise.reject(new Error("relays down")) }),
+      secretKey,
+    );
+    expect(failing.status).toBe(200);
+
+    await signIn(
+      createProfileApp({
+        fetchProfile: () => Promise.resolve({ displayName: "Relay Name", avatarUrl: "https://cdn.test/e.png" }),
+      }),
+      secretKey,
+    );
+    expect(await store.getById(created.id)).toMatchObject({
+      displayName: "Picked By Me",
+      avatarUrl: "https://cdn.test/e.png",
+    });
+  });
+});
+
+describe("POST /api/me/nostr/sync", () => {
+  const SCRIPT_HEADERS = { Origin: BASE_URL, "X-Bitig-Request": "true" };
+
+  function appFor(fetcher: NostrProfileFetcher) {
+    const app = createApp({ nostrProfileFetcher: fetcher });
+    return (path: string, init: RequestInit & { cookie?: string } = {}) => {
+      const headers = new Headers(init.headers);
+      headers.set("cf-connecting-ip", uniqueIp());
+      if (init.cookie !== undefined) headers.set("Cookie", init.cookie);
+      return Promise.resolve(app.fetch(new Request(`${BASE_URL}${path}`, { ...init, headers }), env));
+    };
+  }
+
+  async function nostrCookie(secretKey: Uint8Array): Promise<string> {
+    const appReq = appFor({ fetchProfile: () => Promise.resolve(null) });
+    const challenge = await appReq("/api/auth/challenge", { method: "POST", headers: SCRIPT_HEADERS });
+    const { event } = await challenge.json<{ event: EventTemplate }>();
+    const res = await appReq("/api/auth/nostr", {
+      method: "POST",
+      headers: { ...SCRIPT_HEADERS, "Content-Type": "application/json" },
+      body: JSON.stringify(finalizeEvent(event, secretKey)),
+    });
+    expect(res.status).toBe(200);
+    return cookiePair(res);
+  }
+
+  it("fills empty fields and reports which ones changed", async () => {
+    const cookie = await nostrCookie(new Uint8Array(32).fill(0x31));
+    const appReq = appFor({
+      fetchProfile: () => Promise.resolve({ displayName: "Erin", nip05: "erin@example.com" }),
+    });
+    const res = await appReq("/api/me/nostr/sync", { method: "POST", headers: SCRIPT_HEADERS, cookie });
+    expect(res.status).toBe(200);
+    const body = await res.json<{ user: { displayName: string; nip05?: string }; found: boolean; updated: string[] }>();
+    expect(body.found).toBe(true);
+    expect(body.updated).toEqual(["displayName", "nip05"]);
+    expect(body.user).toMatchObject({ displayName: "Erin", nip05: "erin@example.com" });
+
+    const again = await appReq("/api/me/nostr/sync", { method: "POST", headers: SCRIPT_HEADERS, cookie });
+    expect(await again.json()).toMatchObject({ found: true, updated: [] });
+  });
+
+  it("reports when no profile was found", async () => {
+    const cookie = await nostrCookie(new Uint8Array(32).fill(0x32));
+    const res = await appFor({ fetchProfile: () => Promise.resolve(null) })("/api/me/nostr/sync", {
+      method: "POST",
+      headers: SCRIPT_HEADERS,
+      cookie,
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ found: false, updated: [] });
+  });
+
+  it("rejects signed-out callers and non-Nostr accounts", async () => {
+    const appReq = appFor({ fetchProfile: () => Promise.resolve(null) });
+    expect((await appReq("/api/me/nostr/sync", { method: "POST", headers: SCRIPT_HEADERS })).status).toBe(401);
+
+    const user = await new D1UserStore(env.DB).create({
+      email: "frank@example.com",
+      username: "frank",
+      displayName: "Frank",
+    });
+    const sessionId = crypto.randomUUID();
+    await new D1SessionStore(env.DB).create({
+      id: await sha256Hex(sessionId),
+      userId: user.id,
+      expiresAt: Date.now() + 60_000,
+    });
+    const res = await appReq("/api/me/nostr/sync", {
+      method: "POST",
+      headers: SCRIPT_HEADERS,
+      cookie: await signedCookie(sessionId),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: "not_nostr_account" });
+  });
+
+  it("rate limits repeated syncs per account", async () => {
+    const cookie = await nostrCookie(new Uint8Array(32).fill(0x33));
+    const appReq = appFor({ fetchProfile: () => Promise.resolve(null) });
+    for (let attempt = 0; attempt < NOSTR_SYNC_RATE_MAX; attempt += 1) {
+      expect((await appReq("/api/me/nostr/sync", { method: "POST", headers: SCRIPT_HEADERS, cookie })).status).toBe(200);
+    }
+    const blocked = await appReq("/api/me/nostr/sync", { method: "POST", headers: SCRIPT_HEADERS, cookie });
+    expect(blocked.status).toBe(429);
   });
 });
 
@@ -392,7 +625,7 @@ describe("failed-login rate limit", () => {
     expect(blocked.status).toBe(429);
   });
 
-  it("answers 429 after repeated unauthorized Nostr signatures", async () => {
+  it("answers 429 after repeated forged Nostr signatures", async () => {
     const ip = uniqueIp();
     for (let attempt = 0; attempt < AUTH_FAIL_POLICY.max; attempt += 1) {
       const event = await signedLoginEvent(OTHER_SECRET_KEY);
@@ -400,7 +633,7 @@ describe("failed-login rate limit", () => {
         ip,
         method: "POST",
         headers: { "Content-Type": "application/json", Origin: BASE_URL, "X-Bitig-Request": "true" },
-        body: JSON.stringify(event),
+        body: JSON.stringify({ ...event, pubkey: TEST_NOSTR_PUBKEY }),
       });
       expect(res.status).toBe(401);
     }
@@ -450,12 +683,17 @@ describe("unconfigured sign-in", () => {
     });
   });
 
-  it("explains a missing allowlist on Nostr challenge", async () => {
+  it("issues a Nostr challenge without an allowlist", async () => {
     const res = await appRequest({ NOSTR_AUTH_PUBKEYS: "" }, "/api/auth/challenge");
+    expect(res.status).toBe(200);
+  });
+
+  it("explains a missing SESSION_SECRET on Nostr challenge", async () => {
+    const res = await appRequest({ SESSION_SECRET: "" }, "/api/auth/challenge");
     expect(res.status).toBe(503);
     expect(await res.json()).toMatchObject({
       error: "sessions_not_configured",
-      message: expect.stringContaining("NOSTR_AUTH_PUBKEYS") as unknown,
+      message: expect.stringContaining("SESSION_SECRET") as unknown,
     });
   });
 });

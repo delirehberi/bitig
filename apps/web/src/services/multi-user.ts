@@ -123,6 +123,25 @@ export async function updateMyProfile(patch: {
   });
 }
 
+export type NostrProfileField = "displayName" | "avatarUrl" | "nip05";
+
+export interface NostrProfileSyncResult {
+  readonly user: User;
+  /** False when no relay returned a validly signed Nostr profile for the account. */
+  readonly found: boolean;
+  readonly updated: readonly NostrProfileField[];
+}
+
+/** Asks the Worker to fill empty profile fields from the account's Nostr metadata. */
+export async function syncProfileFromNostr(): Promise<NostrProfileSyncResult> {
+  return apiJson("/api/me/nostr/sync", { method: "POST" });
+}
+
+/** Nostr accounts carry the synthetic email `<hex pubkey>@nostr.local`. */
+export function isNostrAccount(user: Pick<User, "email">): boolean {
+  return /^[0-9a-f]{64}@nostr\.local$/.test(user.email);
+}
+
 export async function requestEmailChange(email: string): Promise<{ readonly status: string }> {
   return apiJson("/api/me/email", {
     method: "POST",

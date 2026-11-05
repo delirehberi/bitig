@@ -1,5 +1,6 @@
-import { Building2, Calendar, CircleUserRound, KeyRound, Mail, Settings, Shield } from "lucide-react";
+import { BadgeCheck, Building2, Calendar, CircleUserRound, KeyRound, Mail, Settings, Shield } from "lucide-react";
 import { useAuth } from "../../auth/useAuth";
+import { formatNip05 } from "./nip05";
 import { formatFullTimestamp, formatTimeAgo } from "../../domain/time-ago";
 import { Link } from "../../routing/Link";
 import { hrefFor, navigate } from "../../routing/router";
@@ -72,6 +73,17 @@ export function ProfileView() {
               </dt>
               <dd className="m-0 mt-1 text-sm text-ink">{profile.email}</dd>
             </div>
+            {profile.nip05 && (
+              <div>
+                <dt className="flex items-center gap-1.5 text-2xs font-semibold uppercase tracking-wider text-ink-3">
+                  <BadgeCheck size={12} aria-hidden="true" />
+                  NIP-05
+                </dt>
+                <dd className="m-0 mt-1 text-sm text-ink" title="Verified against the domain's nostr.json">
+                  {formatNip05(profile.nip05)}
+                </dd>
+              </div>
+            )}
             <div>
               <dt className="flex items-center gap-1.5 text-2xs font-semibold uppercase tracking-wider text-ink-3">
                 <Calendar size={12} aria-hidden="true" />

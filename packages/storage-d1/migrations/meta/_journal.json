@@ -155,6 +155,13 @@
       "when": 1793900000000,
       "tag": "0021_agent_run_subagents",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "6",
+      "when": 1793908789509,
+      "tag": "0022_user_nip05",
+      "breakpoints": true
     }
   ]
 }

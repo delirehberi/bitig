@@ -12,6 +12,7 @@ export const TEST_AUTH_HEADER = `Bearer ${TEST_BOOTSTRAP_ACCESS_TOKEN}`;
 export const TEST_SESSION_SECRET = "test-session-secret-0123456789abcdef";
 export const TEST_NOSTR_SECRET_KEY = new Uint8Array(32).fill(1);
 export const TEST_NOSTR_PUBKEY = getPublicKey(TEST_NOSTR_SECRET_KEY);
+export const TEST_NOSTR_PROFILE_RELAY = "wss://127.0.0.1:9";
 
 export const TEST_MCP_TOKEN = "test-mcp-bearer-token-secret";
 export const TEST_MCP_AUTH_HEADER = `Bearer ${TEST_MCP_TOKEN}`;

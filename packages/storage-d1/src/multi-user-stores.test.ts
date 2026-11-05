@@ -30,6 +30,7 @@ const STATEMENTS = [
     \`username\` text NOT NULL,
     \`display_name\` text NOT NULL,
     \`avatar_url\` text,
+    \`nip05\` text,
     \`platform_role\` text DEFAULT 'user' NOT NULL,
     \`status\` text DEFAULT 'active' NOT NULL,
     \`created_at\` integer NOT NULL,
@@ -305,6 +306,27 @@ describe("D1 multi-user stores and org isolation", () => {
 
     await tokenStore.revokeAllForUserInOrg(bob.id, org.id);
     expect(await tokenStore.verifyByHash("tok-hash-bob")).toBeNull();
+  });
+
+  it("round-trips the NIP-05 identifier through the user and session stores", async () => {
+    const userStore = new D1UserStore(env.DB);
+    const sessionStore = new D1SessionStore(env.DB);
+    const carol = await userStore.create({
+      email: "carol@example.com",
+      username: "carol",
+      displayName: "Carol",
+      platformRole: "admin",
+      nip05: "Carol@Example.com",
+    });
+    expect(carol.nip05).toBe("carol@example.com");
+    expect((await userStore.getById(carol.id))?.nip05).toBe("carol@example.com");
+
+    await sessionStore.create({ id: "sess-nip05", userId: carol.id, expiresAt: Date.now() + 60_000 });
+    expect((await sessionStore.getWithUser("sess-nip05"))?.user.nip05).toBe("carol@example.com");
+
+    const cleared = await userStore.update(carol.id, { nip05: null });
+    expect(cleared.nip05).toBeUndefined();
+    expect((await userStore.getById(carol.id))?.nip05).toBeUndefined();
   });
 
   it("isolates projects, tasks, comments, and duplicate project keys across organisations", async () => {

@@ -17,6 +17,7 @@ const MULTI_USER_DDL = [
     \`username\` text NOT NULL,
     \`display_name\` text NOT NULL,
     \`avatar_url\` text,
+    \`nip05\` text,
     \`platform_role\` text DEFAULT 'user' NOT NULL,
     \`status\` text DEFAULT 'active' NOT NULL,
     \`email_verified_at\` integer,

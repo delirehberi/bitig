@@ -23,6 +23,7 @@ import { generateAccessToken, generateSixDigitCode, sha256Hex } from "../auth-cr
 import { buildAccountDeleteEmail, buildEmailChangeEmail } from "../mailer";
 import { disconnectRealtimeUser } from "../realtime";
 import { endSession } from "../session";
+import { nostrPubkeyForUser, syncNostrProfile } from "../nostr-profile";
 
 const HTTP_CREATED = 201;
 const HTTP_NO_CONTENT = 204;
@@ -30,6 +31,10 @@ const HTTP_BAD_REQUEST = 400;
 const HTTP_UNAUTHORIZED = 401;
 const HTTP_NOT_FOUND = 404;
 const HTTP_CONFLICT = 409;
+const HTTP_TOO_MANY_REQUESTS = 429;
+
+const NOSTR_SYNC_RATE_WINDOW_MS = 15 * 60 * 1000;
+export const NOSTR_SYNC_RATE_MAX = 10;
 
 const UpdateProfileSchema = z
   .object({
@@ -178,6 +183,40 @@ export const meRouter = new Hono<AppEnv>()
       return c.json({ user: updated });
     },
   )
+  .post("/nostr/sync", async (c) => {
+    const user = c.get("user");
+    if (!user) return c.json({ error: "unauthorized" }, HTTP_UNAUTHORIZED);
+    if (nostrPubkeyForUser(user) === null) {
+      return c.json(
+        { error: "not_nostr_account", message: "Only accounts that sign in with Nostr can fetch a Nostr profile" },
+        HTTP_BAD_REQUEST,
+      );
+    }
+
+    // Each sync opens several relay sockets, so cap it per account (fails open like the other limiters).
+    try {
+      const stub = c.env.RATE_LIMITER.get(c.env.RATE_LIMITER.idFromName(`nostr-sync:${user.id}`));
+      const hit = await stub.hit(NOSTR_SYNC_RATE_MAX, NOSTR_SYNC_RATE_WINDOW_MS);
+      if (hit.limited) {
+        c.header("Retry-After", String(hit.resetSeconds));
+        return c.json(
+          { error: "too_many_requests", message: "Rate limit exceeded. Please try again later." },
+          HTTP_TOO_MANY_REQUESTS,
+        );
+      }
+    } catch (error) {
+      console.error("nostr sync rate limiter unavailable, allowing request", { error });
+    }
+
+    const result = await syncNostrProfile(
+      new D1UserStore(c.env.DB),
+      user,
+      c.get("nostrProfileFetcher"),
+      c.req.raw.signal,
+    );
+    c.set("user", result.user);
+    return c.json({ user: result.user, found: result.found, updated: result.updated });
+  })
   .post(
     "/email",
     zValidator("json", RequestEmailChangeSchema, (result, c) => {

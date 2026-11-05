@@ -62,6 +62,12 @@ const configSchema = z.object({
     .default("")
     .transform((raw) => raw.split(ORIGIN_SEPARATOR).map((key) => key.trim().toLowerCase()).filter(Boolean))
     .pipe(z.array(z.string().regex(NOSTR_PUBKEY_PATTERN))),
+  // Relays queried for kind-0 profile metadata on Nostr sign-in. Empty uses the built-in list.
+  NOSTR_PROFILE_RELAYS: z
+    .string()
+    .default("")
+    .transform((raw) => raw.split(ORIGIN_SEPARATOR).map((url) => url.trim()).filter(Boolean))
+    .pipe(z.array(z.url({ protocol: /^wss$/ }))),
   // Chosen per deployment; the dashboard reads it from /health instead of offering a switch.
   STORAGE_MODE: z.enum(STORAGE_MODES).default("cloudflare"),
 });

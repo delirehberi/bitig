@@ -68,6 +68,31 @@ describe("InMemoryUserStore", () => {
     await store.delete(bob.id);
     expect(await store.getById(bob.id)).toBeNull();
   });
+
+  it("stores, normalizes, validates, and clears the NIP-05 identifier", async () => {
+    const store = new InMemoryUserStore();
+    const carol = await store.create({
+      email: "carol@example.com",
+      username: "carol",
+      displayName: "Carol",
+      nip05: " Carol@Example.COM ",
+    });
+    expect(carol.nip05).toBe("carol@example.com");
+
+    await expect(store.update(carol.id, { nip05: "not-an-identifier" })).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+    await expect(store.update(carol.id, { nip05: "evil@<script>.com" })).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+
+    const underscore = await store.update(carol.id, { nip05: "_@carol.dev" });
+    expect(underscore.nip05).toBe("_@carol.dev");
+
+    const cleared = await store.update(carol.id, { nip05: null });
+    expect(cleared.nip05).toBeUndefined();
+    expect("nip05" in cleared).toBe(false);
+  });
 });
 
 describe("InMemoryOrganisationStore", () => {
