@@ -60,8 +60,8 @@
     // Comma-separated list of extra origins allowed to call /api/* cross-origin.
     // Empty means same-origin only (the dashboard is served by this Worker).
     "ALLOWED_ORIGINS": "",
-    // Sender address used for transactional emails sent through Resend.
-    "MAIL_FROM": "Bitig <noreply@emre.xyz>",
+    // Sender address used for transactional emails sent through Cloudflare Email Sending (or Resend fallback).
+    "MAIL_FROM": "Bitig <noreply@workouse.com>",
     // Email address seeded as the initial platform admin and default organisation owner.
     "BOOTSTRAP_ADMIN_EMAIL": "",
     // Comma-separated lowercase hex public keys allowed to sign in via NIP-07.

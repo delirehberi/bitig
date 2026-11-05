@@ -21,7 +21,7 @@ export class MailerError extends Error {
   }
 }
 
-const DEFAULT_MAIL_FROM = "Bitig <noreply@emre.xyz>";
+const DEFAULT_MAIL_FROM = "Bitig <noreply@workouse.com>";
 
 export function parseSenderAddress(raw: string): string | EmailAddress {
   const trimmed = raw.trim() || DEFAULT_MAIL_FROM;
@@ -190,26 +190,47 @@ export interface CreateMailerInput {
 
 /**
  * Selects the production or development Mailer:
- * 1. Native Cloudflare Email Sending binding (`env.EMAIL`) when configured.
+ * 1. Native Cloudflare Email Sending binding (`env.EMAIL`) when configured,
+ *    falling back to Resend if the binding fails and `RESEND_API_KEY` is set.
  * 2. Resend HTTP API when `RESEND_API_KEY` is provided.
  * 3. `ConsoleMailer` fallback in local dev when neither is configured.
  */
 export function createMailer(input: CreateMailerInput): Mailer {
   const from = input.mailFrom !== undefined && input.mailFrom.trim().length > 0 ? input.mailFrom.trim() : DEFAULT_MAIL_FROM;
-  if (input.emailBinding && typeof input.emailBinding.send === "function") {
-    return new CloudflareEmailMailer({
-      binding: input.emailBinding,
-      from,
-    });
-  }
+  const cfMailer =
+    input.emailBinding && typeof input.emailBinding.send === "function"
+      ? new CloudflareEmailMailer({
+          binding: input.emailBinding,
+          from,
+        })
+      : null;
   const resendKey = input.resendApiKey?.trim();
-  if (resendKey && resendKey.length > 0) {
-    return new ResendMailer({
-      apiKey: resendKey,
-      from,
-      fetchFn: input.fetchFn,
-    });
+  const resendMailer =
+    resendKey && resendKey.length > 0
+      ? new ResendMailer({
+          apiKey: resendKey,
+          from,
+          fetchFn: input.fetchFn,
+        })
+      : null;
+
+  if (cfMailer && resendMailer) {
+    return {
+      async send(email: TransactionalEmail): Promise<void> {
+        try {
+          await cfMailer.send(email);
+        } catch (cfError) {
+          console.warn("Cloudflare Email Sending failed, falling back to Resend", {
+            to: email.to,
+            error: cfError,
+          });
+          await resendMailer.send(email);
+        }
+      },
+    };
   }
+  if (cfMailer) return cfMailer;
+  if (resendMailer) return resendMailer;
   return new ConsoleMailer();
 }
 

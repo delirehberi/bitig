@@ -13,7 +13,7 @@ import {
 import { D1Storage } from "@bitig/storage-d1";
 import { parseConfig, type AppConfig } from "./config";
 import { ForbiddenRoleError, apiAuth, bearerAuth } from "./auth";
-import { createMailer, type Mailer } from "./mailer";
+import { MailerError, createMailer, type Mailer } from "./mailer";
 import { projectsRouter } from "./routes/projects";
 import { tasksRouter } from "./routes/tasks";
 import { commentsRouter } from "./routes/comments";
@@ -51,6 +51,7 @@ export interface AppEnv {
 const HTTP_NOT_FOUND = 404;
 const HTTP_FORBIDDEN = 403;
 const HTTP_BAD_REQUEST = 400;
+const HTTP_BAD_GATEWAY = 502;
 const HTTP_INTERNAL_ERROR = 500;
 const CORS_MAX_AGE_SECONDS = 600;
 
@@ -201,6 +202,16 @@ export function createApp(options?: CreateAppOptions): Hono<AppEnv> {
       return c.json(
         { error: "validation_error", message: err.message, details: err.issues },
         HTTP_BAD_REQUEST,
+      );
+    }
+    if (err instanceof MailerError) {
+      return c.json(
+        {
+          error: "email_delivery_failed",
+          message:
+            "Could not send verification email. Ensure Cloudflare Email Sending is enabled for the sender domain or RESEND_API_KEY is configured.",
+        },
+        HTTP_BAD_GATEWAY,
       );
     }
     if (err instanceof HTTPException) {

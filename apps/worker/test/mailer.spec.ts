@@ -42,11 +42,11 @@ describe("Mailer and transactional email templates", () => {
   });
 
   it("parses sender display name and email for Cloudflare Email Sending", () => {
-    expect(parseSenderAddress("Bitig <noreply@emre.xyz>")).toEqual({
+    expect(parseSenderAddress("Bitig <noreply@workouse.com>")).toEqual({
       name: "Bitig",
-      email: "noreply@emre.xyz",
+      email: "noreply@workouse.com",
     });
-    expect(parseSenderAddress("noreply@emre.xyz")).toBe("noreply@emre.xyz");
+    expect(parseSenderAddress("noreply@workouse.com")).toBe("noreply@workouse.com");
   });
 
   it("sends through the native Cloudflare Email Sending binding (send_email) and surfaces errors", async () => {
@@ -60,14 +60,14 @@ describe("Mailer and transactional email templates", () => {
 
     const mailer = createMailer({
       emailBinding: mockBinding,
-      mailFrom: "Bitig <noreply@emre.xyz>",
+      mailFrom: "Bitig <noreply@workouse.com>",
     });
     expect(mailer).toBeInstanceOf(CloudflareEmailMailer);
 
     await mailer.send(buildSignInCodeEmail("alice@example.com", "112233"));
     expect(sentPayloads).toHaveLength(1);
     expect(sentPayloads[0]).toMatchObject({
-      from: { name: "Bitig", email: "noreply@emre.xyz" },
+      from: { name: "Bitig", email: "noreply@workouse.com" },
       to: "alice@example.com",
     });
 
@@ -76,7 +76,7 @@ describe("Mailer and transactional email templates", () => {
     };
     const failMailer = new CloudflareEmailMailer({
       binding: failingBinding,
-      from: "Bitig <noreply@emre.xyz>",
+      from: "Bitig <noreply@workouse.com>",
     });
     await expect(failMailer.send(buildSignInCodeEmail("alice@example.com", "112233"))).rejects.toBeInstanceOf(
       MailerError,
@@ -121,5 +121,26 @@ describe("Mailer and transactional email templates", () => {
     await mailer.send(buildSignInCodeEmail("dev@example.com", "000111"));
     expect(spy).toHaveBeenCalledOnce();
     spy.mockRestore();
+  });
+
+  it("falls back to Resend when Cloudflare Email Sending binding fails and RESEND_API_KEY is set", async () => {
+    const failingBinding: SendEmail = {
+      send: () => Promise.reject(new Error("domain not onboarded")),
+    };
+    const calls: string[] = [];
+    const okFetch: typeof fetch = (input) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      calls.push(url);
+      return Promise.resolve(new Response(JSON.stringify({ id: "re_fallback" }), { status: 200 }));
+    };
+
+    const mailer = createMailer({
+      emailBinding: failingBinding,
+      resendApiKey: "re_secret_key",
+      mailFrom: "Bitig <noreply@workouse.com>",
+      fetchFn: okFetch,
+    });
+    await mailer.send(buildSignInCodeEmail("alice@example.com", "112233"));
+    expect(calls).toEqual(["https://api.resend.com/emails"]);
   });
 });
