@@ -228,7 +228,7 @@ export function SecurityView() {
         </form>
 
         {loading ? (
-          <p className="m-0 text-xs text-ink-3">Loading tokens\u2026</p>
+          <p className="m-0 text-xs text-ink-3">Loading tokens…</p>
         ) : tokens.length === 0 ? (
           <p className="m-0 text-xs text-ink-3">No personal access tokens issued yet.</p>
         ) : (
@@ -242,7 +242,7 @@ export function SecurityView() {
                   <div className="flex items-center gap-2">
                     <span className="font-semibold text-ink">{token.name}</span>
                     <code className="rounded bg-paper px-1.5 py-0.5 font-mono text-2xs text-ink-3">
-                      {token.prefix}\u2026
+                      {token.prefix}…
                     </code>
                     <span className="font-mono text-2xs text-ink-3">/{token.orgSlug}</span>
                   </div>
@@ -300,7 +300,7 @@ export function SecurityView() {
         </div>
 
         {loading ? (
-          <p className="m-0 text-xs text-ink-3">Loading sessions\u2026</p>
+          <p className="m-0 text-xs text-ink-3">Loading sessions…</p>
         ) : sessions.length === 0 ? (
           <p className="m-0 text-xs text-ink-3">No active server sessions found.</p>
         ) : (

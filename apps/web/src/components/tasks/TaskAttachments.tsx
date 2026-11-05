@@ -198,7 +198,7 @@ function AttachmentItem({ attachment, loadContent, onDelete }: AttachmentItemPro
 
       {canPreview && expanded && (
         <div className="mt-2 border-t border-rule pt-2">
-          {loadingPreview && <p className="m-0 text-xs text-ink-3">Loading preview\u2026</p>}
+          {loadingPreview && <p className="m-0 text-xs text-ink-3">Loading preview…</p>}
           {previewError && (
             <p role="alert" className="m-0 text-xs text-danger">
               {previewError}
@@ -352,7 +352,7 @@ export function TaskAttachments({ storage, taskId }: TaskAttachmentsProps) {
         </div>
       </div>
 
-      {isLoading && <p className="m-0 mb-2 text-sm text-ink-3">Loading attachments\u2026</p>}
+      {isLoading && <p className="m-0 mb-2 text-sm text-ink-3">Loading attachments…</p>}
       {error && (
         <p role="alert" className="m-0 mb-2 text-sm text-danger">
           {error}

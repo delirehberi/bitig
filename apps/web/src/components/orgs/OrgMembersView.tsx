@@ -224,7 +224,7 @@ export function OrgMembersView({ slug }: OrgMembersViewProps) {
         </h2>
 
         {loading ? (
-          <p className="m-0 text-xs text-ink-3">Loading members\u2026</p>
+          <p className="m-0 text-xs text-ink-3">Loading members…</p>
         ) : members.length === 0 ? (
           <p className="m-0 text-xs text-ink-3">No members found.</p>
         ) : (

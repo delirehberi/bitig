@@ -476,7 +476,7 @@ function Redirect({ to }: { readonly to: string }) {
   useEffect(() => {
     navigate(to, { replace: true });
   }, [to]);
-  return <LoadingScreen label="Loading workspace\u2026" />;
+  return <LoadingScreen label="Loading workspace…" />;
 }
 
 /**
@@ -500,7 +500,7 @@ function Pages({ mode, health }: { readonly mode: StorageMode; readonly health: 
     return <Workspace mode={mode} health={health} route={route} />;
   }
 
-  if (status === "checking") return <LoadingScreen label="Checking your session\u2026" />;
+  if (status === "checking") return <LoadingScreen label="Checking your session…" />;
 
   if (route.name === "login") {
     if (status === "authenticated") return <Redirect to={route.next ?? hrefFor({ name: "overview" })} />;
@@ -532,7 +532,7 @@ function Pages({ mode, health }: { readonly mode: StorageMode; readonly health: 
 function Dashboard() {
   const health = useHealth();
 
-  if (health.kind === "checking") return <LoadingScreen label="Loading workspace\u2026" />;
+  if (health.kind === "checking") return <LoadingScreen label="Loading workspace…" />;
 
   const mode = health.kind === "online" ? health.storageMode : DEFAULT_MODE;
 

@@ -110,7 +110,7 @@ export function Header({ mode, health, searchQuery, onSearchChange }: HeaderProp
         />
         <input
           type="search"
-          placeholder="Search tasks and projects\u2026"
+          placeholder="Search tasks and projects…"
           value={searchQuery}
           onChange={(e) => {
             onSearchChange(e.target.value);
@@ -148,7 +148,7 @@ export function Header({ mode, health, searchQuery, onSearchChange }: HeaderProp
                       {m.organisation.name} ({m.role})
                     </option>
                   ))}
-                  <option value="__create_org__">+ New organisation\u2026</option>
+                  <option value="__create_org__">+ New organisation…</option>
                 </select>
               </div>
               {currentRole === "viewer" && (
@@ -208,7 +208,7 @@ export function Header({ mode, health, searchQuery, onSearchChange }: HeaderProp
               {profile && (
                 <div className="mb-2 border-b border-rule px-2.5 pb-2">
                   <div className="truncate text-xs font-bold text-ink">{profile.displayName}</div>
-                  <div className="truncate font-mono text-2xs text-ink-3">@{profile.username} \u00b7 {profile.email}</div>
+                  <div className="truncate font-mono text-2xs text-ink-3">@{profile.username} · {profile.email}</div>
                 </div>
               )}
 

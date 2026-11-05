@@ -109,7 +109,7 @@ export function OrgSettingsView({ slug }: OrgSettingsViewProps) {
   }
 
   if (loading) {
-    return <p className="text-sm text-ink-3">Loading organisation settings\u2026</p>;
+    return <p className="text-sm text-ink-3">Loading organisation settings…</p>;
   }
 
   return (

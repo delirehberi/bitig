@@ -202,7 +202,7 @@ export function AdminUsersView() {
               <Search size={13} aria-hidden="true" className="pointer-events-none absolute left-2.5 text-ink-3" />
               <input
                 type="search"
-                placeholder="Filter users\u2026"
+                placeholder="Filter users…"
                 value={search}
                 onChange={(e) => {
                   setSearch(e.target.value);
@@ -238,7 +238,7 @@ export function AdminUsersView() {
         </div>
 
         {loading ? (
-          <p className="m-0 text-xs text-ink-3">Loading users\u2026</p>
+          <p className="m-0 text-xs text-ink-3">Loading users…</p>
         ) : users.length === 0 ? (
           <p className="m-0 text-xs text-ink-3">No matching users found.</p>
         ) : (

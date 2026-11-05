@@ -150,7 +150,7 @@ export function OnboardingPage() {
           <input
             id="onboard-invite-token"
             type="text"
-            placeholder="Paste invitation token\u2026"
+            placeholder="Paste invitation token…"
             value={inviteToken}
             onChange={(event) => {
               setInviteToken(event.target.value);
