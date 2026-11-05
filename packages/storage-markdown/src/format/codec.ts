@@ -82,7 +82,7 @@ const TASK_KEY_ORDER = [
   "updatedAt",
 ] as const satisfies readonly (keyof TaskFileData)[];
 
-const COMMENT_KEY_ORDER = ["authorType", "author", "createdAt"] as const satisfies readonly (keyof CommentFileData)[];
+const COMMENT_KEY_ORDER = ["authorType", "author", "authorId", "authorAvatarUrl", "createdAt"] as const satisfies readonly (keyof CommentFileData)[];
 const WEBHOOK_KEY_ORDER = [
   "name",
   "provider",

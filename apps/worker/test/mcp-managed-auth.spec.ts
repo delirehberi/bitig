@@ -15,7 +15,8 @@ import { AUTH_FAIL_POLICY } from "../src/rate-limit";
 
 const BASE_URL = "https://bitig.test";
 const CREATE_SQL = `CREATE TABLE mcp_tokens (
-  id TEXT PRIMARY KEY, label TEXT NOT NULL, transport TEXT NOT NULL,
+  id TEXT PRIMARY KEY, org_id TEXT DEFAULT '01a10000-0000-7000-8000-000000000001' NOT NULL,
+  label TEXT NOT NULL, transport TEXT NOT NULL,
   digest TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, expires_at TEXT, revoked_at TEXT
 )`;
 

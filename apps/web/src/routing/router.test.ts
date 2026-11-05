@@ -69,4 +69,35 @@ describe("task links", () => {
     expect(hrefFor({ name: "reports" })).toBe("/reports");
     expect(taskHref("BIT-64", "/reports")).toBe("/reports?task=BIT-64");
   });
+
+  it("round-trips multi-user account, organisation, admin, and register routes", () => {
+    expect(parseRoute("/register", "?invite=inv-1&next=%2Fapp")).toEqual({
+      name: "register",
+      invite: "inv-1",
+      next: "/app",
+    });
+    expect(hrefFor({ name: "register", invite: "inv-1", next: "/app" })).toBe("/register?next=%2Fapp&invite=inv-1");
+
+    expect(parseRoute("/profile", "?task=BIT-64")).toEqual({ name: "profile", taskRef: "BIT-64" });
+    expect(hrefFor({ name: "profile" })).toBe("/profile");
+
+    expect(parseRoute("/settings/profile", "")).toEqual({ name: "settings_profile" });
+    expect(hrefFor({ name: "settings_profile" })).toBe("/settings/profile");
+
+    expect(parseRoute("/settings/security", "")).toEqual({ name: "settings_security" });
+    expect(hrefFor({ name: "settings_security" })).toBe("/settings/security");
+
+    expect(parseRoute("/orgs/acme/settings", "?task=BIT-41")).toEqual({
+      name: "org_settings",
+      slug: "acme",
+      taskRef: "BIT-41",
+    });
+    expect(hrefFor({ name: "org_settings", slug: "acme" })).toBe("/orgs/acme/settings");
+
+    expect(parseRoute("/orgs/acme/members", "")).toEqual({ name: "org_members", slug: "acme" });
+    expect(hrefFor({ name: "org_members", slug: "acme" })).toBe("/orgs/acme/members");
+
+    expect(parseRoute("/admin/users", "")).toEqual({ name: "admin_users" });
+    expect(hrefFor({ name: "admin_users" })).toBe("/admin/users");
+  });
 });

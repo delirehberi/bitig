@@ -23,6 +23,18 @@ const BASE_HEADERS = {
   "X-Bitig-Request": "true",
 } as const;
 
+function baseHeaders(): Record<string, string> {
+  try {
+    const org = typeof window !== "undefined" ? window.localStorage.getItem("bitig:active-org") : null;
+    if (org) {
+      return { ...BASE_HEADERS, "X-Bitig-Org": org };
+    }
+  } catch {
+    // ignore storage access errors
+  }
+  return { ...BASE_HEADERS };
+}
+
 export class T3ApiError extends Error {
   override readonly name = "T3ApiError";
   readonly status: number;
@@ -117,7 +129,7 @@ async function parseErrorMessage(response: Response, fallback: string): Promise<
 
 export async function fetchT3Connection(signal?: AbortSignal): Promise<T3ConnectionStatus> {
   const response = await fetch("/api/t3/connection", {
-    headers: BASE_HEADERS,
+    headers: baseHeaders(),
     credentials: "same-origin",
     ...(signal ? { signal } : {}),
   });
@@ -131,7 +143,7 @@ export async function startT3OAuth(mcpUrl: string): Promise<{ authorizationUrl: 
   const response = await fetch("/api/t3/oauth/start", {
     method: "POST",
     headers: {
-      ...BASE_HEADERS,
+      ...baseHeaders(),
       "Content-Type": "application/json",
     },
     credentials: "same-origin",
@@ -146,7 +158,7 @@ export async function startT3OAuth(mcpUrl: string): Promise<{ authorizationUrl: 
 export async function disconnectT3(): Promise<void> {
   const response = await fetch("/api/t3/connection", {
     method: "DELETE",
-    headers: BASE_HEADERS,
+    headers: baseHeaders(),
     credentials: "same-origin",
   });
   if (!response.ok) {
@@ -156,7 +168,7 @@ export async function disconnectT3(): Promise<void> {
 
 export async function fetchT3RemoteProjects(signal?: AbortSignal): Promise<T3RemoteProject[]> {
   const response = await fetch("/api/t3/projects", {
-    headers: BASE_HEADERS,
+    headers: baseHeaders(),
     credentials: "same-origin",
     ...(signal ? { signal } : {}),
   });
@@ -169,7 +181,7 @@ export async function fetchT3RemoteProjects(signal?: AbortSignal): Promise<T3Rem
 
 export async function fetchT3Capabilities(signal?: AbortSignal): Promise<T3ModelCapability[]> {
   const response = await fetch("/api/t3/capabilities", {
-    headers: BASE_HEADERS,
+    headers: baseHeaders(),
     credentials: "same-origin",
     ...(signal ? { signal } : {}),
   });
@@ -182,7 +194,7 @@ export async function fetchT3Capabilities(signal?: AbortSignal): Promise<T3Model
 
 export async function fetchT3ProjectMappings(signal?: AbortSignal): Promise<T3ProjectMapping[]> {
   const response = await fetch("/api/t3/mappings", {
-    headers: BASE_HEADERS,
+    headers: baseHeaders(),
     credentials: "same-origin",
     ...(signal ? { signal } : {}),
   });
@@ -200,7 +212,7 @@ export async function saveT3ProjectMapping(
   const response = await fetch(`/api/t3/mappings/${encodeURIComponent(projectId)}`, {
     method: "PUT",
     headers: {
-      ...BASE_HEADERS,
+      ...baseHeaders(),
       "Content-Type": "application/json",
     },
     credentials: "same-origin",
@@ -215,7 +227,7 @@ export async function saveT3ProjectMapping(
 export async function deleteT3ProjectMapping(projectId: string): Promise<void> {
   const response = await fetch(`/api/t3/mappings/${encodeURIComponent(projectId)}`, {
     method: "DELETE",
-    headers: BASE_HEADERS,
+    headers: baseHeaders(),
     credentials: "same-origin",
   });
   if (!response.ok) {
@@ -225,7 +237,7 @@ export async function deleteT3ProjectMapping(projectId: string): Promise<void> {
 
 export async function fetchT3Runs(signal?: AbortSignal): Promise<T3RunsLiveResponse> {
   const response = await fetch("/api/t3/runs", {
-    headers: BASE_HEADERS,
+    headers: baseHeaders(),
     credentials: "same-origin",
     ...(signal ? { signal } : {}),
   });
@@ -244,7 +256,7 @@ export async function fetchTaskT3Run(
   signal?: AbortSignal,
 ): Promise<T3TaskRunLiveResponse> {
   const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/t3-run`, {
-    headers: BASE_HEADERS,
+    headers: baseHeaders(),
     credentials: "same-origin",
     ...(signal ? { signal } : {}),
   });
@@ -261,7 +273,7 @@ export async function startTaskT3Run(
   const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/t3-run`, {
     method: "POST",
     headers: {
-      ...BASE_HEADERS,
+      ...baseHeaders(),
       "Content-Type": "application/json",
     },
     credentials: "same-origin",
@@ -282,7 +294,7 @@ export async function startTaskT3Run(
 export async function stopTaskT3Run(taskId: string): Promise<T3TaskRunLiveResponse> {
   const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/t3-run/stop`, {
     method: "POST",
-    headers: BASE_HEADERS,
+    headers: baseHeaders(),
     credentials: "same-origin",
   });
   if (!response.ok) {
@@ -298,7 +310,7 @@ export async function respondToTaskT3PendingRequest(
   const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/t3-run/respond`, {
     method: "POST",
     headers: {
-      ...BASE_HEADERS,
+      ...baseHeaders(),
       "Content-Type": "application/json",
     },
     credentials: "same-origin",
@@ -324,7 +336,7 @@ export async function replyToTaskT3Run(taskId: string, input: ReplyToT3RunInput)
   const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/t3-run/reply`, {
     method: "POST",
     headers: {
-      ...BASE_HEADERS,
+      ...baseHeaders(),
       "Content-Type": "application/json",
     },
     credentials: "same-origin",
@@ -343,7 +355,7 @@ function projectThreadsPath(projectId: string): string {
 /** Lists the project's Bitig-started T3 threads (#BIT-127), newest first, with live state. */
 export async function fetchProjectT3Threads(projectId: string, signal?: AbortSignal): Promise<ProjectT3Thread[]> {
   const response = await fetch(projectThreadsPath(projectId), {
-    headers: BASE_HEADERS,
+    headers: baseHeaders(),
     credentials: "same-origin",
     ...(signal ? { signal } : {}),
   });
@@ -362,7 +374,7 @@ export async function startProjectT3Thread(
 ): Promise<ProjectT3Thread> {
   const response = await fetch(projectThreadsPath(projectId), {
     method: "POST",
-    headers: { ...BASE_HEADERS, "Content-Type": "application/json" },
+    headers: { ...baseHeaders(), "Content-Type": "application/json" },
     credentials: "same-origin",
     body: JSON.stringify(input),
     ...(signal ? { signal } : {}),
@@ -385,7 +397,7 @@ export async function sendProjectT3Message(
 ): Promise<ProjectT3Thread> {
   const response = await fetch(`${projectThreadsPath(projectId)}/${encodeURIComponent(threadId)}/messages`, {
     method: "POST",
-    headers: { ...BASE_HEADERS, "Content-Type": "application/json" },
+    headers: { ...baseHeaders(), "Content-Type": "application/json" },
     credentials: "same-origin",
     body: JSON.stringify(input),
     ...(signal ? { signal } : {}),
@@ -411,7 +423,7 @@ export async function fetchProjectT3ThreadMessages(
       ? `${basePath}?after=${encodeURIComponent(String(options.afterPosition))}`
       : basePath;
   const response = await fetch(url, {
-    headers: BASE_HEADERS,
+    headers: baseHeaders(),
     credentials: "same-origin",
     ...(options.signal ? { signal: options.signal } : {}),
   });

@@ -329,9 +329,15 @@ make build      # Builds all packages and bundles apps/cli
 
 ---
 
-## Nostr Identity
+## Multi-User & Authentication (Cloudflare Mode)
 
-The deployed dashboard stores data in D1 and uses an allowlisted NIP-07 public key for sign-in. Configure `NOSTR_AUTH_PUBKEYS` as comma-separated 64-character hex public keys and set `SESSION_SECRET`. Nostr relay storage is retired; see [the migration guide](./docs/interop-and-backup.md#retiring-nostr-storage) before upgrading an older deployment.
+In Cloudflare (`D1`) mode, Bitig supports multi-user accounts and multi-organisation tenancy:
+
+- **Organisations & Roles:** Every project, task, comment, checkpoint, attachment, and webhook belongs to an organisation. Each member has an `owner`, `editor`, or `viewer` role, and project keys (`BIT`) are unique per organisation.
+- **Open Registration & One-Time Email Codes:** Visitors can sign up at `/register` and sign in at `/login` using 6-digit verification codes sent via **Cloudflare Email Sending** (`send_email` binding `EMAIL` in `apps/worker/wrangler.jsonc` and `EMAIL_FROM`). Newly registered users without an organisation are guided through onboarding to create their first organisation before entering the workspace.
+- **Bootstrap Admin & Default Organisation:** Set `BOOTSTRAP_ADMIN_EMAIL` and `SESSION_SECRET` on the Worker. On startup, the Worker ensures the bootstrap admin user and a `default` organisation exist and migrates any pre-multi-user projects into that organisation.
+- **Server-Side Sessions & Per-User Access Tokens:** Browser sessions are stored in D1 (`sessions`) and presented via `__Host-bitig_session`. Users can issue per-user personal access tokens (`btg_...`) scoped to an organisation in **Settings → Sessions & API Tokens** (`/settings/security`) and pass `X-Bitig-Org: <slug>` when calling `/api/*` or `/mcp`.
+- **Nostr Identity:** Allowlisted NIP-07 public keys (`NOSTR_AUTH_PUBKEYS`) continue to work on `/login`. Nostr relay storage is retired; see [the migration guide](./docs/interop-and-backup.md#retiring-nostr-storage) before upgrading an older deployment.
 
 ---
 

@@ -232,26 +232,45 @@ function resolveTaskLifecycleActors(
   }
 }
 
+export interface ActorUserContext {
+  readonly userId?: string | undefined;
+  readonly userAvatarUrl?: string | undefined;
+}
+
+function withUserFields(entry: TaskActivityEntry, user?: ActorUserContext): TaskActivityEntry {
+  const next: TaskActivityEntry = { ...entry };
+  if (user?.userId !== undefined) next.userId = user.userId;
+  if (user?.userAvatarUrl !== undefined) next.userAvatarUrl = user.userAvatarUrl;
+  return next;
+}
+
 function buildUpdateActivityEntry(
   previousStatus: Task["status"],
   nextStatus: Task["status"],
   actor: string,
   timestamp: string,
+  user?: ActorUserContext,
 ): TaskActivityEntry {
   if (nextStatus !== previousStatus) {
-    return {
-      action: nextStatus === COMPLETED_TASK_STATUS ? "completed" : "status_changed",
+    return withUserFields(
+      {
+        action: nextStatus === COMPLETED_TASK_STATUS ? "completed" : "status_changed",
+        actor,
+        timestamp,
+        fromStatus: previousStatus,
+        toStatus: nextStatus,
+      },
+      user,
+    );
+  }
+  return withUserFields(
+    {
+      action: "updated",
       actor,
       timestamp,
-      fromStatus: previousStatus,
-      toStatus: nextStatus,
-    };
-  }
-  return {
-    action: "updated",
-    actor,
-    timestamp,
-  };
+    },
+    user,
+  );
 }
 
 /**
@@ -265,19 +284,27 @@ function appendActivity(
   actor: string | undefined,
   timestamp: string,
   overrideBlockedBy: readonly string[] | undefined,
+  user?: ActorUserContext,
 ): TaskActivityEntry[] | undefined {
   const entries: TaskActivityEntry[] = [];
   if (overrideBlockedBy !== undefined && overrideBlockedBy.length > 0 && nextStatus !== task.status) {
-    entries.push({
-      action: "dependency_override",
-      actor: actor ?? DEFAULT_OVERRIDE_ACTOR,
-      timestamp,
-      fromStatus: task.status,
-      toStatus: nextStatus,
-      blockedBy: [...overrideBlockedBy],
-    });
+    entries.push(
+      withUserFields(
+        {
+          action: "dependency_override",
+          actor: actor ?? DEFAULT_OVERRIDE_ACTOR,
+          timestamp,
+          fromStatus: task.status,
+          toStatus: nextStatus,
+          blockedBy: [...overrideBlockedBy],
+        },
+        user,
+      ),
+    );
   }
-  if (actor !== undefined) entries.push(buildUpdateActivityEntry(task.status, nextStatus, actor, timestamp));
+  if (actor !== undefined) {
+    entries.push(buildUpdateActivityEntry(task.status, nextStatus, actor, timestamp, user));
+  }
   return entries.length === 0 ? task.activity : [...(task.activity ?? []), ...entries];
 }
 
@@ -374,6 +401,7 @@ export function buildTask(
   deps: RuntimeDeps,
   number: number,
   actor?: string,
+  user?: ActorUserContext,
 ): Task {
   const parsed = parseOrThrow(CreateTaskInputSchema, input, "saveTask");
   const validActor =
@@ -387,12 +415,15 @@ export function buildTask(
     validActor === undefined
       ? undefined
       : [
-          {
-            action: "created",
-            actor: validActor,
-            timestamp: now,
-            toStatus: parsed.status,
-          },
+          withUserFields(
+            {
+              action: "created",
+              actor: validActor,
+              timestamp: now,
+              toStatus: parsed.status,
+            },
+            user,
+          ),
         ];
   const task = assembleTask(
     {
@@ -437,6 +468,7 @@ export function applyTaskPatch(
   now: Date,
   actor?: string,
   overrideBlockedBy?: readonly string[],
+  user?: ActorUserContext,
 ): Task {
   const parsed = parseOrThrow(UpdateTaskInputSchema, patch, "updateTask");
   const validActor =
@@ -450,7 +482,7 @@ export function applyTaskPatch(
   const { startedBy, completedBy } = resolveTaskLifecycleActors(task, nextStatus, validActor);
   const activity = orderOnly
     ? task.activity
-    : appendActivity(task, nextStatus, validActor, updatedAt, overrideBlockedBy);
+    : appendActivity(task, nextStatus, validActor, updatedAt, overrideBlockedBy, user);
   const next = assembleTask(
     {
       id: task.id,
@@ -487,7 +519,7 @@ export function applyTaskPatch(
 }
 
 /** Records work that touched a task without changing one of its editable fields. */
-export function touchTaskEntity(task: Task, now: Date, actor?: string): Task {
+export function touchTaskEntity(task: Task, now: Date, actor?: string, user?: ActorUserContext): Task {
   const validActor =
     actor === undefined ? undefined : parseOrThrow(TaskActorSchema, actor, "touchTask actor");
   const updatedAt = nextUpdatedAt(task.updatedAt, now);
@@ -511,7 +543,7 @@ export function touchTaskEntity(task: Task, now: Date, actor?: string): Task {
         startedBy: task.startedBy,
         completedBy: task.completedBy,
         updatedBy: validActor,
-        activity: appendActivity(task, task.status, validActor, updatedAt, undefined),
+        activity: appendActivity(task, task.status, validActor, updatedAt, undefined, user),
         dueDate: task.dueDate,
         priority: task.priority,
         labels: task.labels,
@@ -551,12 +583,13 @@ export function completeTaskEntity(
   now: Date,
   actor?: string,
   overrideBlockedBy?: readonly string[],
+  user?: ActorUserContext,
 ): Task {
   const validActor =
     actor === undefined ? undefined : parseOrThrow(TaskActorSchema, actor, "completeTask actor");
   if (task.status === COMPLETED_TASK_STATUS) return task;
   const updatedAt = nextUpdatedAt(task.updatedAt, now);
-  const activity = appendActivity(task, COMPLETED_TASK_STATUS, validActor, updatedAt, overrideBlockedBy);
+  const activity = appendActivity(task, COMPLETED_TASK_STATUS, validActor, updatedAt, overrideBlockedBy, user);
   const next = assembleTask(
     {
       id: task.id,
@@ -602,6 +635,8 @@ export function buildComment(input: CreateCommentInput, deps: RuntimeDeps): Comm
     createdAt: toTimestamp(deps.clock()),
   };
   if (parsed.author !== undefined) comment.author = parsed.author;
+  if (parsed.authorId !== undefined) comment.authorId = parsed.authorId;
+  if (parsed.authorAvatarUrl !== undefined) comment.authorAvatarUrl = parsed.authorAvatarUrl;
   return parseOrThrow(CommentSchema, comment, "addComment result");
 }
 

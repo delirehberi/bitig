@@ -29,6 +29,11 @@
       "preview_bucket_name": "bitig-attachments"
     }
   ],
+  "send_email": [
+    {
+      "name": "EMAIL"
+    }
+  ],
   // The dashboard (apps/web) is served as static assets. API routes run the
   // Worker first; every other path falls back to the SPA's index.html.
   // Rate limit counters (one object per policy + client IP) and the workspace
@@ -55,6 +60,10 @@
     // Comma-separated list of extra origins allowed to call /api/* cross-origin.
     // Empty means same-origin only (the dashboard is served by this Worker).
     "ALLOWED_ORIGINS": "",
+    // Sender address used for transactional emails sent through Resend.
+    "MAIL_FROM": "Bitig <noreply@emre.xyz>",
+    // Email address seeded as the initial platform admin and default organisation owner.
+    "BOOTSTRAP_ADMIN_EMAIL": "",
     // Comma-separated lowercase hex public keys allowed to sign in via NIP-07.
     "NOSTR_AUTH_PUBKEYS": "46f3c7bb33cc3019049b76dc89dbb96e34c247bdda68b6ad8632682793ff8a1a",
     // Storage backend the dashboard uses: "cloudflare" (D1 via this Worker)

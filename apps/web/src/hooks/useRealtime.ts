@@ -14,16 +14,17 @@ export function dispatchRealtimeEvent(event: RealtimeEvent): void {
   window.dispatchEvent(new CustomEvent<RealtimeEvent>(REALTIME_DOM_EVENT, { detail: event }));
 }
 
-function realtimeSocketUrl(): string {
+function realtimeSocketUrl(orgId?: string): string {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return `${protocol}//${window.location.host}${REALTIME_PATH}`;
+  const suffix = orgId ? `?orgId=${encodeURIComponent(orgId)}` : "";
+  return `${protocol}//${window.location.host}${REALTIME_PATH}${suffix}`;
 }
 
 /**
  * Maintains the workspace WebSocket connection to `/api/realtime` when `enabled`
  * is true (`cloudflare` mode), dispatching validated `RealtimeEvent` payloads.
  */
-export function useRealtime(enabled: boolean): void {
+export function useRealtime(enabled: boolean, orgId?: string): void {
   useEffect(() => {
     if (!enabled || typeof WebSocket === "undefined") return;
 
@@ -48,7 +49,7 @@ export function useRealtime(enabled: boolean): void {
     function connect() {
       if (disposed) return;
       try {
-        socket = new WebSocket(realtimeSocketUrl());
+        socket = new WebSocket(realtimeSocketUrl(orgId));
       } catch (error) {
         console.warn("failed to open realtime websocket", error);
         scheduleReconnect();
@@ -121,7 +122,7 @@ export function useRealtime(enabled: boolean): void {
         }
       }
     };
-  }, [enabled]);
+  }, [enabled, orgId]);
 }
 
 /** Subscribes a hook to incoming `RealtimeEvent` payloads. */
@@ -142,4 +143,3 @@ export function useRealtimeEvent(onEvent: (event: RealtimeEvent) => void): void 
     };
   }, []);
 }
-

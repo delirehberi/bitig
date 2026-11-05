@@ -43,7 +43,7 @@ mcpTokensRouter.use("*", bodyLimit({
 }));
 
 mcpTokensRouter.get("/", async (context) => {
-  const store = new McpTokenStore(context.env.DB);
+  const store = new McpTokenStore(context.env.DB, context.get("orgId"));
   return context.json(await store.list(new Date().toISOString()));
 });
 
@@ -62,7 +62,7 @@ mcpTokensRouter.post("/", zValidator("json", CreateMcpTokenSchema, (result, cont
     createdAt: now, expiresAt, revokedAt: null,
   };
   const token = generateMcpToken();
-  const store = new McpTokenStore(context.env.DB);
+  const store = new McpTokenStore(context.env.DB, context.get("orgId"));
   if (!(await store.create(credential, await digestMcpToken(token)))) {
     return context.json({ error: "token_limit", message: "Revoke an active token before creating another." }, HTTP_CONFLICT);
   }
@@ -72,7 +72,11 @@ mcpTokensRouter.post("/", zValidator("json", CreateMcpTokenSchema, (result, cont
 mcpTokensRouter.delete("/:id", async (context) => {
   const parsed = z.uuid().safeParse(context.req.param("id"));
   if (!parsed.success) return context.json({ error: "invalid_token_id" }, HTTP_BAD_REQUEST);
-  const credential = await new McpTokenStore(context.env.DB).revoke(parsed.data, new Date().toISOString());
+  const credential = await new McpTokenStore(context.env.DB, context.get("orgId")).revoke(
+    parsed.data,
+    new Date().toISOString(),
+  );
   if (credential === null) return context.json({ error: "not_found" }, HTTP_NOT_FOUND);
   return context.json(credential);
 });
+

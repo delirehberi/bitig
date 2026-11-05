@@ -20,6 +20,9 @@ export * from "./domain/schemas";
 export * from "./domain/t3";
 export * from "./domain/realtime";
 export * from "./domain/mcp-tokens";
+export * from "./domain/users";
+export * from "./domain/organisations";
+export * from "./domain/permissions";
 export type * from "./domain/types";
 export { buildCheckpoint, compareCheckpoints, buildExecutionContext } from "./domain/checkpoints";
 export { PROJECT_WORK_LIMITS, selectProjectWork, buildProjectWorkContext } from "./domain/project-work";
@@ -81,6 +84,7 @@ export {
   withTaskAttachmentCount,
   withTaskCommentCount,
 } from "./domain/entities";
+export type { ActorUserContext } from "./domain/entities";
 export {
   classifyWebhookPayload,
   extractTaskFromWebhookPayload,

@@ -16,8 +16,21 @@ const configSchema = z.object({
         .filter((origin) => origin.length > 0),
     )
     .pipe(z.array(z.url({ protocol: /^https?$/ }))),
-  BASIC_AUTH_USER: z.string().default("admin"),
-  BASIC_AUTH_PASS: z.string().default(""),
+  RESEND_API_KEY: z
+    .string()
+    .default("")
+    .transform((val) => val.trim()),
+  MAIL_FROM: z
+    .string()
+    .default("")
+    .transform((val) => val.trim()),
+  BOOTSTRAP_ADMIN_EMAIL: z
+    .string()
+    .default("")
+    .transform((val) => val.trim().toLowerCase())
+    .refine((val) => val.length === 0 || z.email().safeParse(val).success, {
+      message: "must be a valid email address when set",
+    }),
   MCP_AUTH_TOKEN: z.string().default(""),
   // Accepted as /mcp?token= for clients that cannot send headers. Empty disables it.
   MCP_URL_TOKEN: z.string().default(""),

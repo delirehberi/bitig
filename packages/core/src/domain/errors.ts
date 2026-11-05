@@ -20,7 +20,19 @@ export class BitigError extends Error {
   }
 }
 
-export type EntityKind = "project" | "task" | "comment" | "attachment" | "webhook" | "t3_thread";
+export type EntityKind =
+  | "project"
+  | "task"
+  | "comment"
+  | "attachment"
+  | "webhook"
+  | "t3_thread"
+  | "user"
+  | "organisation"
+  | "membership"
+  | "invitation"
+  | "session"
+  | "access_token";
 
 export class NotFoundError extends BitigError {
   readonly entity: EntityKind;

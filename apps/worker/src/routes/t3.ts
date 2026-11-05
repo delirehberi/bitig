@@ -45,12 +45,13 @@ const HTTP_BAD_GATEWAY = 502;
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 
 export function buildServiceDeps(c: Context<AppEnv>): T3ServiceDeps {
+  const orgId = c.get("orgId");
   return {
-    store: new T3D1Store(c.env.DB),
+    store: new T3D1Store(c.env.DB, orgId),
     storage: c.get("storage"),
     encryptionKey: c.get("config").T3_ENCRYPTION_KEY,
     fetchFn: c.get("t3Fetch"),
-    publishRealtime: (event) => publishRealtimeEvent(c.env, event),
+    publishRealtime: (event) => publishRealtimeEvent(c.env, event, orgId),
   };
 }
 
@@ -131,6 +132,7 @@ export const t3OauthCallbackRouter = new Hono<AppEnv>().get("/", async (c) => {
     const expiresAt = now + tokenResult.expiresInSeconds * 1000;
 
     await store.saveConnection({
+      orgId: stateRecord.orgId,
       mcpUrl: stateRecord.mcpUrl,
       issuer: stateRecord.issuer,
       clientId: stateRecord.clientId,
@@ -150,12 +152,12 @@ export const t3OauthCallbackRouter = new Hono<AppEnv>().get("/", async (c) => {
 
 export const t3ApiRouter = new Hono<AppEnv>()
   .get("/connection", async (c) => {
-    const store = new T3D1Store(c.env.DB);
+    const store = new T3D1Store(c.env.DB, c.get("orgId"));
     const status = await getT3ConnectionStatus(store);
     return c.json(status);
   })
   .delete("/connection", async (c) => {
-    const store = new T3D1Store(c.env.DB);
+    const store = new T3D1Store(c.env.DB, c.get("orgId"));
     await store.deleteConnection();
     return c.body(null, HTTP_NO_CONTENT);
   })
@@ -182,7 +184,7 @@ export const t3ApiRouter = new Hono<AppEnv>()
 
       const { mcpUrl } = c.req.valid("json");
       const redirectUri = new URL("/api/t3/oauth/callback", c.req.url).toString();
-      const store = new T3D1Store(c.env.DB);
+      const store = new T3D1Store(c.env.DB, c.get("orgId"));
 
       try {
         const started = await startT3OAuthFlow({
@@ -193,6 +195,7 @@ export const t3ApiRouter = new Hono<AppEnv>()
         const now = Date.now();
         await store.saveOauthState({
           state: started.state,
+          orgId: c.get("orgId"),
           mcpUrl: started.mcpUrl,
           issuer: started.issuer,
           tokenEndpoint: started.tokenEndpoint,
@@ -213,7 +216,7 @@ export const t3ApiRouter = new Hono<AppEnv>()
     },
   )
   .get("/projects", async (c) => {
-    const store = new T3D1Store(c.env.DB);
+    const store = new T3D1Store(c.env.DB, c.get("orgId"));
     try {
       const client = await createActiveT3McpClient({
         store,
@@ -227,7 +230,7 @@ export const t3ApiRouter = new Hono<AppEnv>()
     }
   })
   .get("/capabilities", async (c) => {
-    const store = new T3D1Store(c.env.DB);
+    const store = new T3D1Store(c.env.DB, c.get("orgId"));
     try {
       const capabilities = await listT3ModelCapabilities(
         {
@@ -243,7 +246,7 @@ export const t3ApiRouter = new Hono<AppEnv>()
     }
   })
   .get("/mappings", async (c) => {
-    const store = new T3D1Store(c.env.DB);
+    const store = new T3D1Store(c.env.DB, c.get("orgId"));
     const mappings = await store.listProjectMappings();
     return c.json({ mappings });
   })
@@ -267,7 +270,7 @@ export const t3ApiRouter = new Hono<AppEnv>()
         throw new NotFoundError("project", projectId);
       }
       const { t3ProjectId, t3ProjectTitle } = c.req.valid("json");
-      const store = new T3D1Store(c.env.DB);
+      const store = new T3D1Store(c.env.DB, c.get("orgId"));
       const mapping = await store.upsertProjectMapping({
         projectId,
         t3ProjectId,
@@ -278,7 +281,7 @@ export const t3ApiRouter = new Hono<AppEnv>()
   )
   .delete("/mappings/:projectId", async (c) => {
     const projectId = c.req.param("projectId");
-    const store = new T3D1Store(c.env.DB);
+    const store = new T3D1Store(c.env.DB, c.get("orgId"));
     await store.deleteProjectMapping(projectId);
     return c.body(null, HTTP_NO_CONTENT);
   })

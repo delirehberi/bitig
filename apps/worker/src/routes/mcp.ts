@@ -24,16 +24,17 @@ export const mcpRouter = new Hono<AppEnv>().all("*", async (c) => {
     },
   );
 
+  const orgId = c.get("orgId");
   registerBitigTools(server, storage, {
     fallbackActor: () => lastInitializedClientName,
     startT3Thread: (input) =>
       launchTaskInT3(
         {
-          store: new T3D1Store(c.env.DB),
+          store: new T3D1Store(c.env.DB, orgId),
           storage,
           encryptionKey: c.get("config").T3_ENCRYPTION_KEY,
           fetchFn: c.get("t3Fetch"),
-          publishRealtime: (event) => publishRealtimeEvent(c.env, event),
+          publishRealtime: (event) => publishRealtimeEvent(c.env, event, orgId),
         },
         {
           taskRef: input.taskId,

@@ -16,6 +16,7 @@ const STATEMENTS = [
   "DROP TABLE IF EXISTS `projects`",
   `CREATE TABLE \`projects\` (
     \`id\` text PRIMARY KEY NOT NULL,
+    \`org_id\` text DEFAULT '01a10000-0000-7000-8000-000000000001' NOT NULL,
     \`name\` text NOT NULL,
     \`description\` text DEFAULT '' NOT NULL,
     \`kind\` text DEFAULT 'hobby' NOT NULL,
@@ -62,6 +63,8 @@ const STATEMENTS = [
     \`body\` text NOT NULL,
     \`author_type\` text NOT NULL,
     \`author\` text,
+    \`author_id\` text,
+    \`author_avatar_url\` text,
     \`created_at\` integer NOT NULL,
     FOREIGN KEY (\`task_id\`) REFERENCES \`tasks\`(\`id\`) ON UPDATE no action ON DELETE cascade
   )`,

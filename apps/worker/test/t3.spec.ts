@@ -36,6 +36,7 @@ const STATEMENTS = [
   "DROP TABLE IF EXISTS `projects`",
   `CREATE TABLE \`projects\` (
     \`id\` text PRIMARY KEY NOT NULL,
+    \`org_id\` text DEFAULT '01a10000-0000-7000-8000-000000000001' NOT NULL,
     \`name\` text NOT NULL,
     \`description\` text DEFAULT '' NOT NULL,
     \`kind\` text DEFAULT 'hobby' NOT NULL,
@@ -82,6 +83,8 @@ const STATEMENTS = [
     \`body\` text NOT NULL,
     \`author_type\` text NOT NULL,
     \`author\` text,
+    \`author_id\` text,
+    \`author_avatar_url\` text,
     \`created_at\` integer NOT NULL,
     FOREIGN KEY (\`task_id\`) REFERENCES \`tasks\`(\`id\`) ON UPDATE no action ON DELETE cascade
   )`,
@@ -119,6 +122,7 @@ const STATEMENTS = [
   "CREATE UNIQUE INDEX `webhooks_token_idx` ON `webhooks` (`token`)",
   `CREATE TABLE \`t3_connections\` (
     \`id\` text PRIMARY KEY NOT NULL,
+    \`org_id\` text DEFAULT '01a10000-0000-7000-8000-000000000001' NOT NULL,
     \`mcp_url\` text NOT NULL,
     \`issuer\` text NOT NULL,
     \`client_id\` text NOT NULL,
@@ -129,8 +133,10 @@ const STATEMENTS = [
     \`connected_at\` integer NOT NULL,
     \`updated_at\` integer NOT NULL
   )`,
+  "CREATE UNIQUE INDEX `t3_connections_org_id_unique` ON `t3_connections` (`org_id`)",
   `CREATE TABLE \`t3_oauth_states\` (
     \`state\` text PRIMARY KEY NOT NULL,
+    \`org_id\` text DEFAULT '01a10000-0000-7000-8000-000000000001' NOT NULL,
     \`mcp_url\` text NOT NULL,
     \`issuer\` text NOT NULL,
     \`token_endpoint\` text NOT NULL,

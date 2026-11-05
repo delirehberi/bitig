@@ -2,10 +2,18 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { secureHeaders } from "hono/secure-headers";
 import { HTTPException } from "hono/http-exception";
-import { NotFoundError, ValidationError, type StorageMode, type StorageProvider } from "@bitig/core";
+import {
+  NotFoundError,
+  ValidationError,
+  type OrganisationRole,
+  type StorageMode,
+  type StorageProvider,
+  type User,
+} from "@bitig/core";
 import { D1Storage } from "@bitig/storage-d1";
 import { parseConfig, type AppConfig } from "./config";
-import { apiAuth, bearerAuth } from "./auth";
+import { ForbiddenRoleError, apiAuth, bearerAuth } from "./auth";
+import { createMailer, type Mailer } from "./mailer";
 import { projectsRouter } from "./routes/projects";
 import { tasksRouter } from "./routes/tasks";
 import { commentsRouter } from "./routes/comments";
@@ -14,6 +22,9 @@ import { backupRouter } from "./routes/backup";
 import { mcpRouter } from "./routes/mcp";
 import { mcpTokensRouter } from "./routes/mcp-tokens";
 import { sessionRouter } from "./routes/session";
+import { meRouter } from "./routes/me";
+import { invitationsAcceptRouter, invitationsPublicRouter, orgsRouter } from "./routes/orgs";
+import { adminRouter } from "./routes/admin";
 import { t3ApiRouter, t3OauthCallbackRouter, t3TaskRunsRouter } from "./routes/t3";
 import { webhookReceiverRouter, webhooksApiRouter } from "./routes/webhooks";
 import { API_POLICY, MCP_POLICY, WEBHOOK_POLICY, authFailureGuard, rateLimit } from "./rate-limit";
@@ -27,11 +38,18 @@ export interface AppEnv {
   Variables: {
     config: AppConfig;
     storage: StorageProvider;
+    customStorageFactory: boolean;
     t3Fetch: typeof fetch | undefined;
+    mailer: Mailer;
+    user: User | undefined;
+    sessionId: string | undefined;
+    orgId: string | undefined;
+    orgRole: OrganisationRole | undefined;
   };
 }
 
 const HTTP_NOT_FOUND = 404;
+const HTTP_FORBIDDEN = 403;
 const HTTP_BAD_REQUEST = 400;
 const HTTP_INTERNAL_ERROR = 500;
 const CORS_MAX_AGE_SECONDS = 600;
@@ -46,6 +64,7 @@ export interface CreateAppOptions {
   storageFactory?: (env: Env) => StorageProvider;
   config?: AppConfig;
   t3Fetch?: typeof fetch;
+  mailer?: Mailer;
 }
 
 export function createApp(options?: CreateAppOptions): Hono<AppEnv> {
@@ -54,6 +73,16 @@ export function createApp(options?: CreateAppOptions): Hono<AppEnv> {
   app.use("*", async (c, next) => {
     const config = options?.config ?? parseConfig(c.env);
     c.set("config", config);
+    c.set("customStorageFactory", Boolean(options?.storageFactory));
+    c.set(
+      "mailer",
+      options?.mailer ??
+        createMailer({
+          emailBinding: c.env.EMAIL,
+          resendApiKey: config.RESEND_API_KEY,
+          mailFrom: config.MAIL_FROM,
+        }),
+    );
     const hasCfAccess =
       config.T3_CF_ACCESS_CLIENT_ID.length > 0 && config.T3_CF_ACCESS_CLIENT_SECRET.length > 0;
     c.set(
@@ -86,7 +115,7 @@ export function createApp(options?: CreateAppOptions): Hono<AppEnv> {
         defaultSrc: ["'self'"],
         scriptSrc: ["'self'"],
         styleSrc: ["'self'", "'unsafe-inline'"],
-        imgSrc: ["'self'", "data:", "blob:"],
+        imgSrc: ["'self'", "data:", "blob:", "https:"],
         connectSrc: ["'self'"],
         frameAncestors: ["'none'"],
       },
@@ -118,12 +147,19 @@ export function createApp(options?: CreateAppOptions): Hono<AppEnv> {
   // Clients over the failed-login budget get 429 before any credentials are checked
   app.use("/api/*", authFailureGuard());
 
-  // Sign-in and OAuth PKCE callback routes answer before the guard below
+  // Sign-in, public invitation preview, and OAuth PKCE callback routes answer before the guard below
   app.route("/api/auth", sessionRouter);
+  app.route("/api/invitations", invitationsPublicRouter);
   app.route("/api/t3/oauth/callback", t3OauthCallbackRouter);
 
-  // A session cookie or Basic credentials guard every other /api/* route
+  // A session cookie or Bearer personal access token guards every other /api/* route
   app.use("/api/*", apiAuth());
+
+  // Multi-user account, organisation, invitation and admin routes
+  app.route("/api/me", meRouter);
+  app.route("/api/orgs", orgsRouter);
+  app.route("/api/invitations", invitationsAcceptRouter);
+  app.route("/api/admin", adminRouter);
 
   // REST API routes
   app.route("/api/projects", projectsRouter);
@@ -154,6 +190,9 @@ export function createApp(options?: CreateAppOptions): Hono<AppEnv> {
   app.notFound((c) => c.json({ error: "not_found" }, HTTP_NOT_FOUND));
 
   app.onError((err, c) => {
+    if (err instanceof ForbiddenRoleError) {
+      return c.json({ error: "forbidden", message: err.message }, HTTP_FORBIDDEN);
+    }
     if (err instanceof NotFoundError) {
       return c.json({ error: "not_found", message: err.message }, HTTP_NOT_FOUND);
     }

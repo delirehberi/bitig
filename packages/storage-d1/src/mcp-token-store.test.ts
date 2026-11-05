@@ -18,6 +18,12 @@ describe("McpTokenStore", () => {
     for (const statement of migration.split("--> statement-breakpoint")) {
       await env.DB.prepare(statement.trim()).run();
     }
+    await env.DB.prepare(
+      "ALTER TABLE `mcp_tokens` ADD `org_id` text DEFAULT '01a10000-0000-7000-8000-000000000001' NOT NULL",
+    ).run();
+    await env.DB.prepare(
+      "CREATE INDEX IF NOT EXISTS `mcp_tokens_org_id_idx` ON `mcp_tokens` (`org_id`)",
+    ).run();
   });
 
   it("stores only digests and never lists them", async () => {
@@ -28,6 +34,26 @@ describe("McpTokenStore", () => {
     expect(await store.accepts(DIGEST, "bearer", NOW)).toBe(true);
     expect(await store.accepts(DIGEST, "query", NOW)).toBe(false);
     expect(await store.accepts("unknown", "bearer", NOW)).toBe(false);
+  });
+
+  it("binds tokens to the default organisation by default and isolates tokens across organisations", async () => {
+    const defaultStore = new McpTokenStore(env.DB);
+    const otherOrgId = "01a10000-0000-7000-8000-000000000099";
+    const otherStore = new McpTokenStore(env.DB, otherOrgId);
+    const defaultMeta = credential();
+    const otherMeta = { ...credential(), label: "Other org client" };
+    const otherDigest = "b".repeat(64);
+
+    expect(await defaultStore.create(defaultMeta, DIGEST)).toBe(true);
+    expect(await otherStore.create(otherMeta, otherDigest)).toBe(true);
+
+    expect(await defaultStore.list(NOW)).toEqual([defaultMeta]);
+    expect(await otherStore.list(NOW)).toEqual([otherMeta]);
+    expect(await defaultStore.resolveOrgId(DIGEST, "bearer", NOW)).toBe(
+      "01a10000-0000-7000-8000-000000000001",
+    );
+    expect(await defaultStore.resolveOrgId(otherDigest, "bearer", NOW)).toBe(otherOrgId);
+    expect(await otherStore.revoke(defaultMeta.id, NOW)).toBeNull();
   });
 
   it("expires at the exact boundary and revokes idempotently", async () => {
@@ -77,3 +103,4 @@ describe("McpTokenStore", () => {
     ).bind(crypto.randomUUID(), "Invalid", "invalid", "invalid", NOW).run()).rejects.toThrow(/CHECK constraint/);
   });
 });
+

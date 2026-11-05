@@ -13,6 +13,7 @@ const STATEMENTS = [
   "DROP TABLE IF EXISTS `projects`",
   `CREATE TABLE \`projects\` (
     \`id\` text PRIMARY KEY NOT NULL,
+    \`org_id\` text DEFAULT '01a10000-0000-7000-8000-000000000001' NOT NULL,
     \`name\` text NOT NULL,
     \`description\` text DEFAULT '' NOT NULL,
     \`kind\` text DEFAULT 'hobby' NOT NULL,
@@ -22,6 +23,8 @@ const STATEMENTS = [
     \`created_at\` integer NOT NULL,
     \`updated_at\` integer NOT NULL
   )`,
+  "CREATE INDEX `projects_org_id_idx` ON `projects` (`org_id`)",
+  "CREATE UNIQUE INDEX `projects_org_key_unique` ON `projects` (`org_id`, `key`)",
   `CREATE TABLE \`tasks\` (
     \`id\` text PRIMARY KEY NOT NULL,
     \`project_id\` text NOT NULL,
@@ -59,6 +62,8 @@ const STATEMENTS = [
     \`body\` text NOT NULL,
     \`author_type\` text NOT NULL,
     \`author\` text,
+    \`author_id\` text,
+    \`author_avatar_url\` text,
     \`created_at\` integer NOT NULL,
     FOREIGN KEY (\`task_id\`) REFERENCES \`tasks\`(\`id\`) ON UPDATE no action ON DELETE cascade
   )`,

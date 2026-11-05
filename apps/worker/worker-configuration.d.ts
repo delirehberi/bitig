@@ -5,12 +5,17 @@ interface __BaseEnv_Env {
 	ATTACHMENTS: R2Bucket;
 	DB: D1Database;
 	ASSETS: Fetcher;
+	EMAIL?: SendEmail;
 	NOSTR_AUTH_PUBKEYS: string;
 	STORAGE_MODE: string;
 	ALLOWED_ORIGINS: string;
-	BASIC_AUTH_USER: string;
-	BASIC_AUTH_PASS: string;
-	MCP_AUTH_TOKEN: string;
+	MAIL_FROM?: string;
+	BOOTSTRAP_ADMIN_EMAIL?: string;
+	RESEND_API_KEY?: string;
+	SESSION_SECRET?: string;
+	MCP_AUTH_TOKEN?: string;
+	MCP_URL_TOKEN?: string;
+	T3_ENCRYPTION_KEY?: string;
 	T3_CF_ACCESS_CLIENT_ID?: string;
 	T3_CF_ACCESS_CLIENT_SECRET?: string;
 	RATE_LIMITER: DurableObjectNamespace<import("./src/index").RateLimiter>;
@@ -29,7 +34,7 @@ type StringifyValues<EnvType extends Record<string, unknown>> = {
 	[Binding in keyof EnvType]: EnvType[Binding] extends string ? EnvType[Binding] : string;
 };
 declare namespace NodeJS {
-	interface ProcessEnv extends StringifyValues<Pick<Cloudflare.Env, "NOSTR_AUTH_PUBKEYS" | "STORAGE_MODE" | "ALLOWED_ORIGINS" | "BASIC_AUTH_USER" | "BASIC_AUTH_PASS" | "MCP_AUTH_TOKEN">> {}
+	interface ProcessEnv extends StringifyValues<Pick<Cloudflare.Env, "NOSTR_AUTH_PUBKEYS" | "STORAGE_MODE" | "ALLOWED_ORIGINS">> {}
 }
 declare module "*.txt" {
 	const value: string;

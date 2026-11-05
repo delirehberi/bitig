@@ -1,15 +1,17 @@
 import { env, exports } from "cloudflare:workers";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CreatedMcpTokenSchema, McpTokenListSchema, MCP_TOKEN_ACTIVE_LIMIT } from "@bitig/core";
-import { TEST_AUTH_HEADER, TEST_AUTH_USER, TEST_AUTH_PASS, TEST_MCP_AUTH_HEADER } from "./constants";
+import { TEST_AUTH_HEADER, TEST_BOOTSTRAP_EMAIL, TEST_MCP_AUTH_HEADER } from "./constants";
 import { digestMcpToken } from "../src/mcp-token-crypto";
 import { createApp } from "../src/index";
 import { parseConfig } from "../src/config";
+import { FakeMailer } from "../src/mailer";
 
 const BASE_URL = "https://bitig.test/api/mcp-tokens";
 const VALID_INPUT = { label: "My MCP client", transport: "bearer", expiresAt: null };
 const CREATE_SQL = `CREATE TABLE mcp_tokens (
-  id TEXT PRIMARY KEY, label TEXT NOT NULL, transport TEXT NOT NULL,
+  id TEXT PRIMARY KEY, org_id TEXT DEFAULT '01a10000-0000-7000-8000-000000000001' NOT NULL,
+  label TEXT NOT NULL, transport TEXT NOT NULL,
   digest TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, expires_at TEXT, revoked_at TEXT
 )`;
 
@@ -66,15 +68,26 @@ describe("MCP token management API", () => {
     expect((await request("", "POST", VALID_INPUT, { Origin: "https://evil.test" })).status).toBe(403);
   });
 
-  it("accepts a dashboard session without Basic credentials", async () => {
-    const login = await exports.default.fetch(new Request("https://bitig.test/api/auth/login", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: TEST_AUTH_USER, password: TEST_AUTH_PASS }),
-    }));
-    expect(login.status).toBe(200);
-    const cookie = login.headers.get("set-cookie")?.split(";")[0];
-    if (cookie === undefined) throw new Error("Login did not provide a session cookie");
-    const response = await exports.default.fetch(new Request(BASE_URL, { headers: { Cookie: cookie } }));
+  it("accepts a dashboard session without Bearer credentials", async () => {
+    const mailer = new FakeMailer();
+    const app = createApp({ mailer });
+    const sendCode = await app.request("https://bitig.test/api/auth/code", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: TEST_BOOTSTRAP_EMAIL }),
+    }, env);
+    expect(sendCode.status).toBe(200);
+    const code = mailer.extractLastCode(TEST_BOOTSTRAP_EMAIL);
+    expect(code).toBeDefined();
+    const verify = await app.request("https://bitig.test/api/auth/verify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: TEST_BOOTSTRAP_EMAIL, code }),
+    }, env);
+    expect(verify.status).toBe(200);
+    const cookie = verify.headers.get("set-cookie")?.split(";")[0];
+    if (cookie === undefined) throw new Error("Verify did not provide a session cookie");
+    const response = await app.request(BASE_URL, { headers: { Cookie: cookie } }, env);
     expect(response.status).toBe(200);
   });
 

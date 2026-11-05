@@ -3,8 +3,11 @@ import { sql } from "drizzle-orm";
 import {
   DEFAULT_DESCRIPTION,
   DEFAULT_IS_PUBLIC,
+  DEFAULT_ORGANISATION_ID,
+  DEFAULT_PLATFORM_ROLE,
   DEFAULT_PROJECT_KIND,
   DEFAULT_TASK_STATUS,
+  DEFAULT_USER_STATUS,
   DEFAULT_WEBHOOK_ENABLED,
   DEFAULT_WEBHOOK_PROVIDER,
   type AgentRunState,
@@ -13,6 +16,8 @@ import {
   type CheckpointStatus,
   type StateSnapshot,
   type CommentAuthorType,
+  type OrganisationRole,
+  type PlatformRole,
   type ProjectKind,
   type ProjectResource,
   type T3WorkspaceStrategy,
@@ -20,21 +25,180 @@ import {
   type TaskActivityEntry,
   type TaskPriority,
   type TaskStatus,
+  type UserStatus,
   type WebhookMapping,
   type WebhookProvider,
 } from "@bitig/core";
 
-export const projects = sqliteTable("projects", {
-  id: text("id").primaryKey(),
-  name: text("name").notNull(),
-  description: text("description").notNull().default(DEFAULT_DESCRIPTION),
-  kind: text("kind").$type<ProjectKind>().notNull().default(DEFAULT_PROJECT_KIND),
-  resources: text("resources", { mode: "json" }).$type<ProjectResource[]>(),
-  key: text("key"),
-  archived: integer("archived", { mode: "boolean" }),
-  createdAt: integer("created_at").notNull(),
-  updatedAt: integer("updated_at").notNull(),
-});
+export const users = sqliteTable(
+  "users",
+  {
+    id: text("id").primaryKey(),
+    email: text("email").notNull(),
+    username: text("username").notNull(),
+    displayName: text("display_name").notNull(),
+    avatarUrl: text("avatar_url"),
+    platformRole: text("platform_role")
+      .$type<PlatformRole>()
+      .notNull()
+      .default(DEFAULT_PLATFORM_ROLE),
+    status: text("status").$type<UserStatus>().notNull().default(DEFAULT_USER_STATUS),
+    emailVerifiedAt: integer("email_verified_at"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+    lastLoginAt: integer("last_login_at"),
+    deletedAt: integer("deleted_at"),
+  },
+  (table) => [
+    uniqueIndex("users_email_unique").on(table.email),
+    uniqueIndex("users_username_unique").on(table.username),
+  ],
+);
+
+export const organisations = sqliteTable(
+  "organisations",
+  {
+    id: text("id").primaryKey(),
+    name: text("name").notNull(),
+    slug: text("slug").notNull(),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+    deletedAt: integer("deleted_at"),
+  },
+  (table) => [uniqueIndex("organisations_slug_unique").on(table.slug)],
+);
+
+export const memberships = sqliteTable(
+  "memberships",
+  {
+    orgId: text("org_id")
+      .notNull()
+      .references(() => organisations.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    role: text("role").$type<OrganisationRole>().notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("memberships_org_user_unique").on(table.orgId, table.userId),
+    index("memberships_user_id_idx").on(table.userId),
+  ],
+);
+
+export const sessions = sqliteTable(
+  "sessions",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    createdAt: integer("created_at").notNull(),
+    expiresAt: integer("expires_at").notNull(),
+    lastSeenAt: integer("last_seen_at").notNull(),
+    userAgent: text("user_agent"),
+    ip: text("ip"),
+  },
+  (table) => [index("sessions_user_id_idx").on(table.userId)],
+);
+
+export type AuthCodePurpose = "sign_in" | "register" | "email_change" | "account_delete";
+
+export interface AuthCodePayload {
+  username?: string | undefined;
+  displayName?: string | undefined;
+  inviteToken?: string | undefined;
+  userId?: string | undefined;
+}
+
+export const authCodes = sqliteTable(
+  "auth_codes",
+  {
+    id: text("id").primaryKey(),
+    email: text("email").notNull(),
+    purpose: text("purpose").$type<AuthCodePurpose>().notNull().default("sign_in"),
+    codeHash: text("code_hash").notNull(),
+    payload: text("payload", { mode: "json" }).$type<AuthCodePayload>(),
+    attempts: integer("attempts").notNull().default(0),
+    createdAt: integer("created_at").notNull(),
+    expiresAt: integer("expires_at").notNull(),
+    consumedAt: integer("consumed_at"),
+  },
+  (table) => [index("auth_codes_email_purpose_idx").on(table.email, table.purpose)],
+);
+
+export const invitations = sqliteTable(
+  "invitations",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => organisations.id, { onDelete: "cascade" }),
+    email: text("email").notNull(),
+    role: text("role").$type<OrganisationRole>().notNull(),
+    tokenHash: text("token_hash").notNull(),
+    invitedBy: text("invited_by")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    createdAt: integer("created_at").notNull(),
+    expiresAt: integer("expires_at").notNull(),
+    acceptedAt: integer("accepted_at"),
+    revokedAt: integer("revoked_at"),
+  },
+  (table) => [
+    uniqueIndex("invitations_token_hash_unique").on(table.tokenHash),
+    index("invitations_org_id_idx").on(table.orgId),
+    index("invitations_email_idx").on(table.email),
+  ],
+);
+
+export const accessTokens = sqliteTable(
+  "access_tokens",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => organisations.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    tokenHash: text("token_hash").notNull(),
+    prefix: text("prefix").notNull(),
+    createdAt: integer("created_at").notNull(),
+    lastUsedAt: integer("last_used_at"),
+    expiresAt: integer("expires_at"),
+    revokedAt: integer("revoked_at"),
+  },
+  (table) => [
+    uniqueIndex("access_tokens_token_hash_unique").on(table.tokenHash),
+    index("access_tokens_user_id_idx").on(table.userId),
+    index("access_tokens_org_id_idx").on(table.orgId),
+  ],
+);
+
+export const projects = sqliteTable(
+  "projects",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id")
+      .notNull()
+      .default(DEFAULT_ORGANISATION_ID)
+      .references(() => organisations.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    description: text("description").notNull().default(DEFAULT_DESCRIPTION),
+    kind: text("kind").$type<ProjectKind>().notNull().default(DEFAULT_PROJECT_KIND),
+    resources: text("resources", { mode: "json" }).$type<ProjectResource[]>(),
+    key: text("key"),
+    archived: integer("archived", { mode: "boolean" }),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [
+    index("projects_org_id_idx").on(table.orgId),
+    uniqueIndex("projects_org_key_unique").on(table.orgId, table.key),
+  ],
+);
 
 export const tasks = sqliteTable(
   "tasks",
@@ -86,6 +250,8 @@ export const comments = sqliteTable(
     body: text("body").notNull(),
     authorType: text("author_type").$type<CommentAuthorType>().notNull(),
     author: text("author"),
+    authorId: text("author_id"),
+    authorAvatarUrl: text("author_avatar_url"),
     createdAt: integer("created_at").notNull(),
   },
   (table) => [index("comments_task_id_idx").on(table.taskId)],
@@ -151,21 +317,27 @@ export const attachments = sqliteTable(
   (table) => [index("attachments_task_id_idx").on(table.taskId)],
 );
 
-export const t3Connections = sqliteTable("t3_connections", {
-  id: text("id").primaryKey(),
-  mcpUrl: text("mcp_url").notNull(),
-  issuer: text("issuer").notNull(),
-  clientId: text("client_id").notNull(),
-  encryptedAccessToken: text("encrypted_access_token").notNull(),
-  tokenIv: text("token_iv").notNull(),
-  scope: text("scope").notNull(),
-  expiresAt: integer("expires_at").notNull(),
-  connectedAt: integer("connected_at").notNull(),
-  updatedAt: integer("updated_at").notNull(),
-});
+export const t3Connections = sqliteTable(
+  "t3_connections",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id").notNull().default("01a10000-0000-7000-8000-000000000001"),
+    mcpUrl: text("mcp_url").notNull(),
+    issuer: text("issuer").notNull(),
+    clientId: text("client_id").notNull(),
+    encryptedAccessToken: text("encrypted_access_token").notNull(),
+    tokenIv: text("token_iv").notNull(),
+    scope: text("scope").notNull(),
+    expiresAt: integer("expires_at").notNull(),
+    connectedAt: integer("connected_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [uniqueIndex("t3_connections_org_id_unique").on(table.orgId)],
+);
 
 export const t3OauthStates = sqliteTable("t3_oauth_states", {
   state: text("state").primaryKey(),
+  orgId: text("org_id").notNull().default("01a10000-0000-7000-8000-000000000001"),
   mcpUrl: text("mcp_url").notNull(),
   issuer: text("issuer").notNull(),
   tokenEndpoint: text("token_endpoint").notNull(),
@@ -239,15 +411,38 @@ export const projectT3Threads = sqliteTable(
   ],
 );
 
-export const mcpTokens = sqliteTable("mcp_tokens", {
-  id: text("id").primaryKey(),
-  label: text("label").notNull(),
-  transport: text("transport", { enum: ["bearer", "query"] }).notNull(),
-  digest: text("digest").notNull().unique(),
-  createdAt: text("created_at").notNull(),
-  expiresAt: text("expires_at"),
-  revokedAt: text("revoked_at"),
-}, (table) => [check("mcp_tokens_transport_check", sql`${table.transport} IN ('bearer', 'query')`)]);
+export const mcpTokens = sqliteTable(
+  "mcp_tokens",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id").notNull().default("01a10000-0000-7000-8000-000000000001"),
+    label: text("label").notNull(),
+    transport: text("transport", { enum: ["bearer", "query"] }).notNull(),
+    digest: text("digest").notNull().unique(),
+    createdAt: text("created_at").notNull(),
+    expiresAt: text("expires_at"),
+    revokedAt: text("revoked_at"),
+  },
+  (table) => [
+    index("mcp_tokens_org_id_idx").on(table.orgId),
+    check("mcp_tokens_transport_check", sql`${table.transport} IN ('bearer', 'query')`),
+  ],
+);
+
+export type UserRecord = typeof users.$inferSelect;
+export type InsertUserRecord = typeof users.$inferInsert;
+export type OrganisationRecord = typeof organisations.$inferSelect;
+export type InsertOrganisationRecord = typeof organisations.$inferInsert;
+export type MembershipRecord = typeof memberships.$inferSelect;
+export type InsertMembershipRecord = typeof memberships.$inferInsert;
+export type SessionRecord = typeof sessions.$inferSelect;
+export type InsertSessionRecord = typeof sessions.$inferInsert;
+export type AuthCodeRecord = typeof authCodes.$inferSelect;
+export type InsertAuthCodeRecord = typeof authCodes.$inferInsert;
+export type InvitationRecord = typeof invitations.$inferSelect;
+export type InsertInvitationRecord = typeof invitations.$inferInsert;
+export type AccessTokenRecord = typeof accessTokens.$inferSelect;
+export type InsertAccessTokenRecord = typeof accessTokens.$inferInsert;
 
 export type ProjectRecord = typeof projects.$inferSelect;
 export type InsertProjectRecord = typeof projects.$inferInsert;

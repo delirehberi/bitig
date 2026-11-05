@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { compareComments, type Comment, type StorageProvider } from "@bitig/core";
+import { useOptionalAuth } from "../auth/useAuth";
 import { dispatchRealtimeEvent, useRealtimeEvent } from "./useRealtime";
 
 function upsertComment(comments: readonly Comment[], incoming: Comment): Comment[] {
@@ -13,6 +14,9 @@ function upsertComment(comments: readonly Comment[], incoming: Comment): Comment
  * Mount it once per task (key the component by task ID): state is not reset when `taskId` changes.
  */
 export function useComments(storage: StorageProvider, taskId: string) {
+  const auth = useOptionalAuth();
+  const profile = auth?.profile ?? null;
+  const actorName = profile?.displayName ?? "you";
   const [comments, setComments] = useState<Comment[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -62,21 +66,29 @@ export function useComments(storage: StorageProvider, taskId: string) {
 
   const addComment = useCallback(
     async (body: string): Promise<Comment> => {
-      const added = await storage.addComment({ taskId, body, authorType: "human" }, { actor: "you" });
+      const added = await storage.addComment(
+        {
+          taskId,
+          body,
+          authorType: "human",
+          ...(profile ? { author: profile.displayName, authorUserId: profile.id } : {}),
+        },
+        { actor: actorName },
+      );
       setComments((prev) => upsertComment(prev, added));
       dispatchRealtimeEvent({ type: "comment.created", comment: added });
       return added;
     },
-    [storage, taskId],
+    [storage, taskId, actorName, profile],
   );
 
   const deleteComment = useCallback(
     async (id: string): Promise<void> => {
-      await storage.deleteComment(id, { actor: "you" });
+      await storage.deleteComment(id, { actor: actorName });
       setComments((prev) => prev.filter((c) => c.id !== id));
       dispatchRealtimeEvent({ type: "comment.deleted", id, taskId });
     },
-    [storage, taskId],
+    [storage, taskId, actorName],
   );
 
   return { comments, isLoading, error, addComment, deleteComment };

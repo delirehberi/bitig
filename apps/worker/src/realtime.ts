@@ -1,21 +1,37 @@
 import { Hono } from "hono";
-import type { RealtimeEvent, StorageProvider } from "@bitig/core";
+import { DEFAULT_ORGANISATION_ID, type RealtimeEvent, type StorageProvider } from "@bitig/core";
 import type { AppEnv } from "./index";
 
-const WORKSPACE_HUB_NAME = "workspace";
 const HTTP_FORBIDDEN = 403;
+const HTTP_NOT_FOUND = 404;
 const HTTP_UPGRADE_REQUIRED = 426;
 
 /**
- * Publishes a realtime mutation event to the workspace Durable Object. Fails
+ * Publishes a realtime mutation event to the organisation's Durable Object. Fails
  * open so an unavailable Durable Object never aborts a completed storage write.
  */
-export async function publishRealtimeEvent(env: Env, event: RealtimeEvent): Promise<void> {
+export async function publishRealtimeEvent(
+  env: Env,
+  event: RealtimeEvent,
+  orgId: string = DEFAULT_ORGANISATION_ID,
+): Promise<void> {
   try {
-    const stub = env.REALTIME_HUB.get(env.REALTIME_HUB.idFromName(WORKSPACE_HUB_NAME));
+    const stub = env.REALTIME_HUB.get(env.REALTIME_HUB.idFromName(orgId));
     await stub.publish(event);
   } catch (error) {
-    console.error("realtime hub unavailable, event not broadcast", { type: event.type, error });
+    console.error("realtime hub unavailable, event not broadcast", { type: event.type, orgId, error });
+  }
+}
+
+/**
+ * Disconnects any active WebSocket connections for a user in a specific organisation.
+ */
+export async function disconnectRealtimeUser(env: Env, orgId: string, userId: string): Promise<void> {
+  try {
+    const stub = env.REALTIME_HUB.get(env.REALTIME_HUB.idFromName(orgId));
+    await stub.disconnectUser(userId);
+  } catch (error) {
+    console.error("realtime hub disconnectUser failed", { orgId, userId, error });
   }
 }
 
@@ -142,7 +158,7 @@ export function withRealtimeBroadcast(
 
 /**
  * Upgrades authenticated `GET /api/realtime` requests to a WebSocket managed by
- * the `RealtimeHub` Durable Object.
+ * the organisation's `RealtimeHub` Durable Object.
  */
 export const realtimeRouter = new Hono<AppEnv>().get("/", async (c) => {
   if (c.req.header("upgrade")?.toLowerCase() !== "websocket") {
@@ -164,7 +180,21 @@ export const realtimeRouter = new Hono<AppEnv>().get("/", async (c) => {
     }
   }
 
-  const stub = c.env.REALTIME_HUB.get(c.env.REALTIME_HUB.idFromName(WORKSPACE_HUB_NAME));
-  return stub.fetch(c.req.raw);
-});
+  const orgId = c.get("orgId");
+  if (!orgId) {
+    return c.json({ error: "not_found" }, HTTP_NOT_FOUND);
+  }
 
+  const user = c.get("user");
+  const headers = new Headers(c.req.raw.headers);
+  if (user) {
+    headers.set("X-Bitig-User-Id", user.id);
+  }
+  const forwarded = new Request(c.req.raw.url, {
+    method: c.req.raw.method,
+    headers,
+  });
+
+  const stub = c.env.REALTIME_HUB.get(c.env.REALTIME_HUB.idFromName(orgId));
+  return stub.fetch(forwarded);
+});

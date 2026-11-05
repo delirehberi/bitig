@@ -1,6 +1,14 @@
 import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import { defineConfig } from "vitest/config";
-import { TEST_ALLOWED_ORIGIN, TEST_AUTH_PASS, TEST_AUTH_USER, TEST_MCP_TOKEN, TEST_MCP_URL_TOKEN, TEST_NOSTR_PUBKEY, TEST_SESSION_SECRET, TEST_T3_ENCRYPTION_KEY } from "./test/constants.ts";
+import {
+  TEST_ALLOWED_ORIGIN,
+  TEST_BOOTSTRAP_EMAIL,
+  TEST_MCP_TOKEN,
+  TEST_MCP_URL_TOKEN,
+  TEST_NOSTR_PUBKEY,
+  TEST_SESSION_SECRET,
+  TEST_T3_ENCRYPTION_KEY,
+} from "./test/constants.ts";
 
 // The Workers runtime cold-starts per test file; with several files starting in
 // parallel, a file's first request can wait well past Vitest's 5s default.
@@ -16,8 +24,7 @@ export default defineConfig({
       miniflare: {
         bindings: {
           ALLOWED_ORIGINS: TEST_ALLOWED_ORIGIN,
-          BASIC_AUTH_USER: TEST_AUTH_USER,
-          BASIC_AUTH_PASS: TEST_AUTH_PASS,
+          BOOTSTRAP_ADMIN_EMAIL: TEST_BOOTSTRAP_EMAIL,
           MCP_AUTH_TOKEN: TEST_MCP_TOKEN,
           MCP_URL_TOKEN: TEST_MCP_URL_TOKEN,
           SESSION_SECRET: TEST_SESSION_SECRET,

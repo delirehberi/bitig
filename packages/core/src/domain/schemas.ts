@@ -150,6 +150,8 @@ export const TaskActivityEntrySchema = z.strictObject({
   action: TaskActivityActionSchema,
   actor: TaskActorSchema,
   timestamp: TimestampSchema,
+  userId: IdSchema.exactOptional(),
+  userAvatarUrl: z.url({ protocol: /^https?$/ }).max(RESOURCE_URL_MAX).exactOptional(),
   fromStatus: TaskStatusSchema.exactOptional(),
   toStatus: TaskStatusSchema.exactOptional(),
   /** On `dependency_override`: the unfinished dependencies (ticket codes, or IDs without one) a person overrode. */
@@ -290,6 +292,8 @@ export const CommentSchema = z.strictObject({
   authorType: CommentAuthorTypeSchema,
   createdAt: TimestampSchema,
   author: CommentAuthorSchema.exactOptional(),
+  authorId: IdSchema.exactOptional(),
+  authorAvatarUrl: z.url({ protocol: /^https?$/ }).max(RESOURCE_URL_MAX).exactOptional(),
 });
 
 /** Metadata for a file attached to a task. Binary content is fetched via `getAttachment`. */
@@ -402,6 +406,8 @@ export const CreateCommentInputSchema = z.strictObject({
   body: CommentBodySchema,
   authorType: CommentAuthorTypeSchema.default(DEFAULT_COMMENT_AUTHOR_TYPE),
   author: CommentAuthorSchema.optional(),
+  authorId: IdSchema.optional(),
+  authorAvatarUrl: z.url({ protocol: /^https?$/ }).max(RESOURCE_URL_MAX).optional(),
 });
 
 export const CreateAttachmentInputSchema = z.strictObject({

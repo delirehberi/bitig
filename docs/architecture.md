@@ -136,12 +136,9 @@ Storage: Markdown keeps `<projectId>/<taskId>.checkpoints/<checkpointId>.json`; 
 Bitig (Turkic for "record/document") is a flexible, edge-ready task and project manager. Every task belongs to a project. Core logic and UI are separated from storage by the `StorageProvider` interface.
 
 ### Storage modes
-1. **Local (Markdown as DB):** offline, no network. Projects are directories; tasks are `.md` files (YAML frontmatter + body). Node `fs` for CLI/desktop; File System Access API in the browser (Chromium only).
-2. **Cloudflare (Hono + D1 + Durable Objects):** relational storage via Drizzle ORM, web dashboard with a `/login` page and session cookie (Basic Auth still accepted for API clients), and live WebSocket push updates (`/api/realtime`) coordinated by the `RealtimeHub` Durable Object whenever `/mcp` or `/api/*` mutates projects, tasks, or comments.
-MCP is available over STDIO (local CLI) and Streamable HTTP (Cloudflare). The deployed web UI uses `ApiStorage`; `local` remains an in-memory placeholder until the FS Access API adapter lands.
-
-### Non-goals (initial release)
-- Real-time multi-user collaboration, OAuth for MCP, and mobile apps.
+1. **Local (Markdown as DB):** offline, no network, single-user. Projects are directories; tasks are `.md` files (YAML frontmatter + body). Node `fs` for CLI/desktop; File System Access API in the browser (Chromium only).
+2. **Cloudflare (Hono + D1 + Durable Objects + Cloudflare Email Sending):** multi-user and multi-organisation relational storage via Drizzle ORM. Organisations own projects, tasks, comments, checkpoints, attachments, and webhooks with `owner`, `editor`, and `viewer` roles. Users register at `/register` and sign in at `/login` with 6-digit one-time email codes sent via Cloudflare Email Sending (`send_email` binding `EMAIL`) or allowlisted Nostr NIP-07 keys. Live WebSocket push updates (`/api/realtime`) are scoped per organisation by the `RealtimeHub` Durable Object.
+MCP is available over STDIO (local CLI) and Streamable HTTP (Cloudflare, authenticated via per-user `btg_...` access tokens or legacy MCP tokens). The deployed web UI uses `ApiStorage` with `X-Bitig-Org` organisation scoping.
 
 ---
 

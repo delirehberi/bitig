@@ -1,7 +1,8 @@
-import { and, desc, eq, lt } from "drizzle-orm";
+import { and, desc, eq, inArray, lt } from "drizzle-orm";
 import { drizzle, type DrizzleD1Database } from "drizzle-orm/d1";
 import {
   AgentRunSchema,
+  DEFAULT_ORGANISATION_ID,
   ProjectT3ThreadSchema,
   T3ModelSelectionOptionsSchema,
   T3ProjectMappingSchema,
@@ -18,10 +19,12 @@ import {
 import * as schema from "./schema";
 import {
   agentRuns,
+  projects,
   projectT3Threads,
   t3Connections,
   t3OauthStates,
   t3ProjectMappings,
+  tasks,
   type AgentRunRecord,
   type ProjectT3ThreadRecord,
   type T3ConnectionRecord,
@@ -32,6 +35,7 @@ import {
 const DEFAULT_CONNECTION_ID = "default";
 
 export interface SaveT3ConnectionInput {
+  orgId?: string | undefined;
   mcpUrl: string;
   issuer: string;
   clientId: string;
@@ -44,6 +48,7 @@ export interface SaveT3ConnectionInput {
 
 export interface SaveT3OauthStateInput {
   state: string;
+  orgId?: string | undefined;
   mcpUrl: string;
   issuer: string;
   tokenEndpoint: string;
@@ -160,24 +165,34 @@ function toProjectMapping(row: T3ProjectMappingRecord): T3ProjectMapping {
  */
 export class T3D1Store {
   private readonly db: DrizzleD1Database<typeof schema>;
+  private readonly orgId: string;
+  private readonly explicitOrgScope: boolean;
 
-  constructor(d1: D1Database) {
+  constructor(d1: D1Database, orgId?: string) {
     this.db = drizzle(d1, { schema });
+    this.orgId = orgId ?? DEFAULT_ORGANISATION_ID;
+    this.explicitOrgScope = orgId !== undefined;
+  }
+
+  private connectionRowId(targetOrgId: string): string {
+    return targetOrgId === DEFAULT_ORGANISATION_ID ? DEFAULT_CONNECTION_ID : targetOrgId;
   }
 
   async getConnection(): Promise<T3ConnectionRecord | undefined> {
     const rows = await this.db
       .select()
       .from(t3Connections)
-      .where(eq(t3Connections.id, DEFAULT_CONNECTION_ID))
+      .where(eq(t3Connections.orgId, this.orgId))
       .limit(1);
     return rows[0];
   }
 
   async saveConnection(input: SaveT3ConnectionInput): Promise<T3ConnectionRecord> {
     const now = input.now ?? Date.now();
+    const targetOrgId = input.orgId ?? this.orgId;
     const record: T3ConnectionRecord = {
-      id: DEFAULT_CONNECTION_ID,
+      id: this.connectionRowId(targetOrgId),
+      orgId: targetOrgId,
       mcpUrl: input.mcpUrl,
       issuer: input.issuer,
       clientId: input.clientId,
@@ -195,6 +210,7 @@ export class T3D1Store {
       .onConflictDoUpdate({
         target: t3Connections.id,
         set: {
+          orgId: record.orgId,
           mcpUrl: record.mcpUrl,
           issuer: record.issuer,
           clientId: record.clientId,
@@ -211,12 +227,15 @@ export class T3D1Store {
   }
 
   async deleteConnection(): Promise<void> {
-    await this.db.delete(t3Connections).where(eq(t3Connections.id, DEFAULT_CONNECTION_ID));
+    await this.db.delete(t3Connections).where(eq(t3Connections.orgId, this.orgId));
   }
 
   async saveOauthState(input: SaveT3OauthStateInput): Promise<void> {
     await this.db.delete(t3OauthStates).where(lt(t3OauthStates.expiresAt, input.createdAt));
-    await this.db.insert(t3OauthStates).values(input);
+    await this.db.insert(t3OauthStates).values({
+      ...input,
+      orgId: input.orgId ?? this.orgId,
+    });
   }
 
   async consumeOauthState(state: string, now = Date.now()): Promise<T3OauthStateRecord | undefined> {
@@ -237,7 +256,18 @@ export class T3D1Store {
   }
 
   async listProjectMappings(): Promise<T3ProjectMapping[]> {
-    const rows = await this.db.select().from(t3ProjectMappings);
+    if (!this.explicitOrgScope) {
+      const rows = await this.db.select().from(t3ProjectMappings);
+      return rows.map(toProjectMapping);
+    }
+    const orgProjectIds = this.db
+      .select({ id: projects.id })
+      .from(projects)
+      .where(eq(projects.orgId, this.orgId));
+    const rows = await this.db
+      .select()
+      .from(t3ProjectMappings)
+      .where(inArray(t3ProjectMappings.projectId, orgProjectIds));
     return rows.map(toProjectMapping);
   }
 
@@ -283,7 +313,22 @@ export class T3D1Store {
   }
 
   async listAgentRuns(): Promise<AgentRun[]> {
-    const rows = await this.db.select().from(agentRuns);
+    if (!this.explicitOrgScope) {
+      const rows = await this.db.select().from(agentRuns);
+      return rows.map(toAgentRun);
+    }
+    const orgProjectIds = this.db
+      .select({ id: projects.id })
+      .from(projects)
+      .where(eq(projects.orgId, this.orgId));
+    const orgTaskIds = this.db
+      .select({ id: tasks.id })
+      .from(tasks)
+      .where(inArray(tasks.projectId, orgProjectIds));
+    const rows = await this.db
+      .select()
+      .from(agentRuns)
+      .where(inArray(agentRuns.taskId, orgTaskIds));
     return rows.map(toAgentRun);
   }
 

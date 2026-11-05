@@ -13,8 +13,16 @@ import { X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { AuthProvider } from "./auth/auth-context";
 import { LoginPage } from "./auth/LoginPage";
+import { OnboardingPage } from "./auth/OnboardingPage";
+import { RegisterPage } from "./auth/RegisterPage";
 import { useAuth } from "./auth/useAuth";
+import { ProfileEditView } from "./components/account/ProfileEditView";
+import { ProfileView } from "./components/account/ProfileView";
+import { SecurityView } from "./components/account/SecurityView";
+import { AdminUsersView } from "./components/admin/AdminUsersView";
 import { Header } from "./components/Header";
+import { OrgMembersView } from "./components/orgs/OrgMembersView";
+import { OrgSettingsView } from "./components/orgs/OrgSettingsView";
 import { Overview } from "./components/Overview";
 import { Reports } from "./components/Reports";
 import { ProjectsView } from "./components/projects/ProjectsView";
@@ -71,6 +79,8 @@ interface WorkspaceProps {
 function Workspace({ mode, health, route }: WorkspaceProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const locationHref = useLocationHref();
+  const { profile, user } = useAuth();
+  const actorName = profile?.displayName ?? user ?? "you";
   const activeTab = route.name;
   const routeProjectId = route.name === "tasks" || route.name === "webhooks" ? route.projectId : undefined;
   const viewTaskRef = route.taskRef;
@@ -212,7 +222,7 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
   ) {
     if (!attachments || attachments.length === 0) return;
     for (const file of attachments) {
-      const added = await storage.addAttachment({ ...file, taskId }, { actor: "you" });
+      const added = await storage.addAttachment({ ...file, taskId }, { actor: actorName });
       dispatchRealtimeEvent({ type: "attachment.created", attachment: added });
     }
   }
@@ -362,6 +372,13 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
               />
             )}
 
+            {activeTab === "profile" && <ProfileView />}
+            {activeTab === "settings_profile" && <ProfileEditView />}
+            {activeTab === "settings_security" && <SecurityView />}
+            {route.name === "org_settings" && <OrgSettingsView slug={route.slug} />}
+            {route.name === "org_members" && <OrgMembersView slug={route.slug} />}
+            {activeTab === "admin_users" && <AdminUsersView />}
+
             {activeTab !== "tasks" && (
               <>
                 <TaskDetailModal
@@ -459,38 +476,49 @@ function Redirect({ to }: { readonly to: string }) {
   useEffect(() => {
     navigate(to, { replace: true });
   }, [to]);
-  return <LoadingScreen label="Loading workspace…" />;
+  return <LoadingScreen label="Loading workspace\u2026" />;
 }
 
 /**
  * Picks the page for the current URL. With dashboard sign-in, every page but
- * /login needs a session: signed-out visitors go to /login?next=<where they were>,
- * and signed-in visitors on /login go on to that page.
+ * /login and /register needs a session: signed-out visitors go to /login?next=<where they were>,
+ * and signed-in visitors without an organisation go to onboarding.
  */
 function Pages({ mode, health }: { readonly mode: StorageMode; readonly health: HealthState }) {
   const route = useRoute();
   const href = useLocationHref();
-  const { status } = useAuth();
+  const { status, needsOnboarding } = useAuth();
   const { passwordLogin } = useFeatureFlags();
 
   // App renders the landing page itself; this only narrows the route type.
   if (route.name === "not_found" || route.name === "landing") return <Redirect to={hrefFor({ name: "overview" })} />;
 
   if (!passwordLogin) {
-    if (route.name === "login") return <Redirect to={route.next ?? hrefFor({ name: "overview" })} />;
+    if (route.name === "login" || route.name === "register") {
+      return <Redirect to={route.next ?? hrefFor({ name: "overview" })} />;
+    }
     return <Workspace mode={mode} health={health} route={route} />;
   }
 
-  if (status === "checking") return <LoadingScreen label="Checking your session…" />;
+  if (status === "checking") return <LoadingScreen label="Checking your session\u2026" />;
 
   if (route.name === "login") {
     if (status === "authenticated") return <Redirect to={route.next ?? hrefFor({ name: "overview" })} />;
-    return <LoginPage next={route.next} />;
+    return <LoginPage next={route.next} invite={route.invite} />;
+  }
+
+  if (route.name === "register") {
+    if (status === "authenticated") return <Redirect to={route.next ?? hrefFor({ name: "overview" })} />;
+    return <RegisterPage next={route.next} invite={route.invite} />;
   }
 
   if (status === "unauthenticated") {
     const next = route.name === "overview" && route.taskRef === undefined ? undefined : href;
     return <Redirect to={hrefFor(next ? { name: "login", next } : { name: "login" })} />;
+  }
+
+  if (needsOnboarding) {
+    return <OnboardingPage />;
   }
 
   return <Workspace mode={mode} health={health} route={route} />;
@@ -504,7 +532,7 @@ function Pages({ mode, health }: { readonly mode: StorageMode; readonly health: 
 function Dashboard() {
   const health = useHealth();
 
-  if (health.kind === "checking") return <LoadingScreen label="Loading workspace…" />;
+  if (health.kind === "checking") return <LoadingScreen label="Loading workspace\u2026" />;
 
   const mode = health.kind === "online" ? health.storageMode : DEFAULT_MODE;
 

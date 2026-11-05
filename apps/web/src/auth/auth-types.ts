@@ -1,5 +1,11 @@
 import { createContext } from "react";
-import type { LoginResult } from "../services/session";
+import type {
+  Organisation,
+  OrganisationRole,
+  User,
+  UserOrganisationMembership,
+} from "@bitig/core";
+import type { CodeSendResult, LoginResult } from "../services/session";
 
 /**
  * - `disabled`: this deployment has no dashboard sign-in (local mode).
@@ -10,6 +16,28 @@ export type AuthStatus = "disabled" | "checking" | "authenticated" | "unauthenti
 export interface AuthContextValue {
   readonly status: AuthStatus;
   readonly user: string | null;
+  readonly profile: User | null;
+  readonly memberships: readonly UserOrganisationMembership[];
+  readonly needsOnboarding: boolean;
+  readonly currentOrg: Organisation | null;
+  readonly currentRole: OrganisationRole;
+  readonly isAdmin: boolean;
+  selectOrg: (orgIdOrSlug: string) => void;
+  refreshAuth: () => Promise<void>;
+  requestSignInCode: (email: string) => Promise<CodeSendResult>;
+  requestRegistrationCode: (input: {
+    readonly email: string;
+    readonly username: string;
+    readonly displayName: string;
+    readonly inviteToken?: string | undefined;
+    readonly organisationName?: string | undefined;
+  }) => Promise<CodeSendResult>;
+  verifyAuthCode: (input: {
+    readonly email: string;
+    readonly code: string;
+    readonly inviteToken?: string | undefined;
+    readonly organisationName?: string | undefined;
+  }) => Promise<LoginResult>;
   loginWithPassword: (username: string, password: string) => Promise<LoginResult>;
   loginWithNostr: () => Promise<LoginResult>;
   logout: () => Promise<void>;

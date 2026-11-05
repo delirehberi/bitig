@@ -9,8 +9,10 @@ import {
   resolveSentryTasks,
   withTaskCodes,
 } from "@bitig/core";
+import { D1Storage } from "@bitig/storage-d1";
 import type { AppEnv } from "../index";
 import { recordAuthFailure } from "../rate-limit";
+import { publishRealtimeEvent, withRealtimeBroadcast } from "../realtime";
 
 const HTTP_CREATED = 201;
 const HTTP_NO_CONTENT = 204;
@@ -87,7 +89,20 @@ export const webhookReceiverRouter = new Hono<AppEnv>().post("/:token", async (c
     return c.json({ error: "not_found" }, HTTP_NOT_FOUND);
   }
 
-  const storage = c.get("storage");
+  let storage = c.get("storage");
+  if (!c.get("customStorageFactory")) {
+    const lookup = new D1Storage({ db: c.env.DB, bucket: c.env.ATTACHMENTS });
+    const orgId = await lookup.findWebhookOrgId(parsedToken.data);
+    if (!orgId) {
+      await recordAuthFailure(c);
+      return c.json({ error: "not_found" }, HTTP_NOT_FOUND);
+    }
+    storage = withRealtimeBroadcast(
+      new D1Storage({ db: c.env.DB, bucket: c.env.ATTACHMENTS, orgId }),
+      (event) => publishRealtimeEvent(c.env, event, orgId),
+    );
+  }
+
   const webhook = await storage.getWebhookByToken(parsedToken.data);
   if (!webhook) {
     await recordAuthFailure(c);

@@ -10,6 +10,7 @@ import {
   type Task,
   type UpdateTaskInput,
 } from "@bitig/core";
+import { useOptionalAuth } from "../auth/useAuth";
 import { useRealtimeEvent } from "./useRealtime";
 
 /** A person's confirmed go-ahead to start or complete a task despite unfinished dependencies. */
@@ -27,14 +28,15 @@ async function statusChangeOptions(
   status: Task["status"] | undefined,
   context: string,
   choice: StatusChangeChoice | undefined,
+  actor: string,
   dependsOn?: readonly string[] | null,
 ): Promise<OperationOptions | undefined> {
-  if (status === undefined) return undefined;
+  if (status === undefined) return actor === "you" ? undefined : { actor };
   const overrideBlockedBy = await checkStatusChange(storage, id, status, context, {
     overrideBlocked: choice?.overrideBlocked === true,
     dependsOn,
   });
-  return { actor: "you", ...(overrideBlockedBy.length > 0 ? { overrideBlockedBy } : {}) };
+  return { actor, ...(overrideBlockedBy.length > 0 ? { overrideBlockedBy } : {}) };
 }
 
 function upsertTask(tasks: readonly Task[], incoming: Task, projectId?: string): Task[] {
@@ -57,6 +59,8 @@ function upsertTask(tasks: readonly Task[], incoming: Task, projectId?: string):
 }
 
 export function useTasks(storage: StorageProvider, projectId?: string) {
+  const auth = useOptionalAuth();
+  const actorName = auth?.profile?.displayName ?? "you";
   const [tasks, setTasks] = useState<Task[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -206,39 +210,47 @@ export function useTasks(storage: StorageProvider, projectId?: string) {
   const saveTask = useCallback(
     async (input: CreateTaskInput): Promise<Task> => {
       await checkNewTaskStatus(storage, input, "saveTask");
-      const created = await storage.saveTask(input, { actor: "you" });
+      const created = await storage.saveTask(input, { actor: actorName });
       setTasks((prev) => upsertTask(prev, created, projectId));
       return created;
     },
-    [storage, projectId],
+    [storage, projectId, actorName],
   );
 
   const updateTask = useCallback(
     async (id: string, patch: UpdateTaskInput, choice?: StatusChangeChoice): Promise<Task> => {
-      const opts = await statusChangeOptions(storage, id, patch.status, "updateTask", choice, patch.dependsOn);
+      const opts = await statusChangeOptions(
+        storage,
+        id,
+        patch.status,
+        "updateTask",
+        choice,
+        actorName,
+        patch.dependsOn,
+      );
       const updated = await storage.updateTask(id, patch, opts);
       setTasks((prev) => upsertTask(prev, updated, projectId));
       return updated;
     },
-    [storage, projectId],
+    [storage, projectId, actorName],
   );
 
   const completeTask = useCallback(
     async (id: string, choice?: StatusChangeChoice): Promise<Task> => {
-      const opts = await statusChangeOptions(storage, id, "done", "completeTask", choice);
-      const completed = await storage.completeTask(id, { ...opts, actor: "you" });
+      const opts = await statusChangeOptions(storage, id, "done", "completeTask", choice, actorName);
+      const completed = await storage.completeTask(id, { ...opts, actor: actorName });
       setTasks((prev) => upsertTask(prev, completed, projectId));
       return completed;
     },
-    [storage, projectId],
+    [storage, projectId, actorName],
   );
 
   const deleteTask = useCallback(
     async (id: string): Promise<void> => {
-      await storage.deleteTask(id, { actor: "you" });
+      await storage.deleteTask(id, { actor: actorName });
       setTasks((prev) => prev.filter((t) => t.id !== id));
     },
-    [storage],
+    [storage, actorName],
   );
 
   return {

@@ -4,11 +4,13 @@ import {
   BUNDLE_VERSION,
   BackupBundleSchema,
   CheckpointSchema,
+  DEFAULT_ORGANISATION_ID,
   IdSchema,
   NotFoundError,
   ProjectBundleSchema,
   SaveCheckpointInputSchema,
   TaskFilterSchema,
+  ValidationError,
   WebhookFilterSchema,
   WebhookTokenSchema,
   applyProjectPatch,
@@ -138,6 +140,7 @@ export interface D1StorageOptions {
   readonly db: D1Database | DrizzleD1Database<typeof schema>;
   readonly bucket?: AttachmentBlobStore;
   readonly deps?: RuntimeDeps;
+  readonly orgId?: string;
 }
 
 function attachmentBlobKey(taskId: string, attachmentId: string): string {
@@ -273,6 +276,12 @@ function recordToComment(row: CommentRecord): Comment {
   if (row.author !== null) {
     comment.author = row.author;
   }
+  if (row.authorId !== null) {
+    comment.authorId = row.authorId;
+  }
+  if (row.authorAvatarUrl !== null) {
+    comment.authorAvatarUrl = row.authorAvatarUrl;
+  }
   return comment;
 }
 
@@ -283,6 +292,8 @@ function commentToRecord(comment: Comment): InsertCommentRecord {
     body: comment.body,
     authorType: comment.authorType,
     author: comment.author ?? null,
+    authorId: comment.authorId ?? null,
+    authorAvatarUrl: comment.authorAvatarUrl ?? null,
     createdAt: Date.parse(comment.createdAt),
   };
 }
@@ -375,10 +386,24 @@ function isTaskNumberConflict(err: unknown): boolean {
   return false;
 }
 
+export async function findWebhookOrgId(
+  dbInput: D1Database | DrizzleD1Database<typeof schema>,
+  token: string,
+): Promise<string | null> {
+  const parsed = WebhookTokenSchema.safeParse(token);
+  if (!parsed.success) return null;
+  const db = isD1Database(dbInput) ? drizzle(dbInput, { schema }) : dbInput;
+  const webhookRow = await db.select({ projectId: webhooks.projectId }).from(webhooks).where(eq(webhooks.token, parsed.data)).get();
+  if (!webhookRow) return null;
+  const projectRow = await db.select({ orgId: projects.orgId }).from(projects).where(eq(projects.id, webhookRow.projectId)).get();
+  return projectRow?.orgId ?? null;
+}
+
 export class D1Storage implements StorageProvider {
   readonly #db: DrizzleD1Database<typeof schema>;
   readonly #bucket: AttachmentBlobStore;
   readonly #deps: RuntimeDeps;
+  readonly #orgId: string;
 
   constructor(
     dbOrOptions: D1Database | DrizzleD1Database<typeof schema> | D1StorageOptions,
@@ -388,16 +413,30 @@ export class D1Storage implements StorageProvider {
       this.#db = isD1Database(dbOrOptions.db) ? drizzle(dbOrOptions.db, { schema }) : dbOrOptions.db;
       this.#bucket = dbOrOptions.bucket ?? new InMemoryAttachmentBlobStore();
       this.#deps = dbOrOptions.deps ?? defaultRuntimeDeps;
+      this.#orgId = dbOrOptions.orgId ?? DEFAULT_ORGANISATION_ID;
     } else {
       this.#db = isD1Database(dbOrOptions) ? drizzle(dbOrOptions, { schema }) : dbOrOptions;
       this.#bucket = new InMemoryAttachmentBlobStore();
       this.#deps = maybeDeps ?? defaultRuntimeDeps;
+      this.#orgId = DEFAULT_ORGANISATION_ID;
     }
+  }
+
+  get orgId(): string {
+    return this.#orgId;
+  }
+
+  #orgProjectIds() {
+    return this.#db.select({ id: projects.id }).from(projects).where(eq(projects.orgId, this.#orgId));
+  }
+
+  #orgTaskIds() {
+    return this.#db.select({ id: tasks.id }).from(tasks).where(inArray(tasks.projectId, this.#orgProjectIds()));
   }
 
   async getProjects(opts?: OperationOptions): Promise<Project[]> {
     throwIfAborted(opts?.signal);
-    const rows = await this.#db.select().from(projects).all();
+    const rows = await this.#db.select().from(projects).where(eq(projects.orgId, this.#orgId)).all();
     throwIfAborted(opts?.signal);
     const result = rows.map(recordToProject);
     result.sort(compareProjects);
@@ -407,7 +446,11 @@ export class D1Storage implements StorageProvider {
   async getProject(id: string, opts?: OperationOptions): Promise<Project | null> {
     throwIfAborted(opts?.signal);
     const validId = parseOrThrow(IdSchema, id, "getProject");
-    const row = await this.#db.select().from(projects).where(eq(projects.id, validId)).get();
+    const row = await this.#db
+      .select()
+      .from(projects)
+      .where(and(eq(projects.id, validId), eq(projects.orgId, this.#orgId)))
+      .get();
     throwIfAborted(opts?.signal);
     if (!row) return null;
     return copyProject(recordToProject(row));
@@ -419,6 +462,7 @@ export class D1Storage implements StorageProvider {
     throwIfAborted(opts?.signal);
     await this.#db.insert(projects).values({
       id: project.id,
+      orgId: this.#orgId,
       name: project.name,
       description: project.description,
       kind: project.kind,
@@ -435,7 +479,11 @@ export class D1Storage implements StorageProvider {
   async updateProject(id: string, patch: UpdateProjectInput, opts?: OperationOptions): Promise<Project> {
     throwIfAborted(opts?.signal);
     const validId = parseOrThrow(IdSchema, id, "updateProject");
-    const existingRow = await this.#db.select().from(projects).where(eq(projects.id, validId)).get();
+    const existingRow = await this.#db
+      .select()
+      .from(projects)
+      .where(and(eq(projects.id, validId), eq(projects.orgId, this.#orgId)))
+      .get();
     throwIfAborted(opts?.signal);
     if (!existingRow) throw new NotFoundError("project", validId);
 
@@ -453,7 +501,7 @@ export class D1Storage implements StorageProvider {
         archived: next.archived ?? null,
         updatedAt: Date.parse(next.updatedAt),
       })
-      .where(eq(projects.id, validId));
+      .where(and(eq(projects.id, validId), eq(projects.orgId, this.#orgId)));
     throwIfAborted(opts?.signal);
     return copyProject(next);
   }
@@ -461,7 +509,11 @@ export class D1Storage implements StorageProvider {
   async deleteProject(id: string, opts?: OperationOptions): Promise<void> {
     throwIfAborted(opts?.signal);
     const validId = parseOrThrow(IdSchema, id, "deleteProject");
-    const existingRow = await this.#db.select().from(projects).where(eq(projects.id, validId)).get();
+    const existingRow = await this.#db
+      .select()
+      .from(projects)
+      .where(and(eq(projects.id, validId), eq(projects.orgId, this.#orgId)))
+      .get();
     throwIfAborted(opts?.signal);
     if (!existingRow) throw new NotFoundError("project", validId);
 
@@ -482,7 +534,7 @@ export class D1Storage implements StorageProvider {
     await this.#db.delete(tasks).where(eq(tasks.projectId, validId));
     if (removed.size > 0) await this.#dropDependencies(removed);
     await this.#db.delete(webhooks).where(eq(webhooks.projectId, validId));
-    await this.#db.delete(projects).where(eq(projects.id, validId));
+    await this.#db.delete(projects).where(and(eq(projects.id, validId), eq(projects.orgId, this.#orgId)));
     throwIfAborted(opts?.signal);
   }
 
@@ -494,7 +546,15 @@ export class D1Storage implements StorageProvider {
     let commentCountRows: { taskId: string; total: number }[];
     let attachmentCountRows: { taskId: string; total: number }[];
     if (parsedFilter?.projectId !== undefined) {
-      rows = await this.#db.select().from(tasks).where(eq(tasks.projectId, parsedFilter.projectId)).all();
+      const projectTaskSubquery = this.#db
+        .select({ id: tasks.id })
+        .from(tasks)
+        .where(and(eq(tasks.projectId, parsedFilter.projectId), inArray(tasks.projectId, this.#orgProjectIds())));
+      rows = await this.#db
+        .select()
+        .from(tasks)
+        .where(and(eq(tasks.projectId, parsedFilter.projectId), inArray(tasks.projectId, this.#orgProjectIds())))
+        .all();
       throwIfAborted(opts?.signal);
       commentCountRows =
         rows.length === 0
@@ -502,12 +562,7 @@ export class D1Storage implements StorageProvider {
           : await this.#db
               .select({ taskId: comments.taskId, total: count() })
               .from(comments)
-              .where(
-                inArray(
-                  comments.taskId,
-                  this.#db.select({ id: tasks.id }).from(tasks).where(eq(tasks.projectId, parsedFilter.projectId)),
-                ),
-              )
+              .where(inArray(comments.taskId, projectTaskSubquery))
               .groupBy(comments.taskId)
               .all();
       attachmentCountRows =
@@ -516,16 +571,11 @@ export class D1Storage implements StorageProvider {
           : await this.#db
               .select({ taskId: attachments.taskId, total: count() })
               .from(attachments)
-              .where(
-                inArray(
-                  attachments.taskId,
-                  this.#db.select({ id: tasks.id }).from(tasks).where(eq(tasks.projectId, parsedFilter.projectId)),
-                ),
-              )
+              .where(inArray(attachments.taskId, projectTaskSubquery))
               .groupBy(attachments.taskId)
               .all();
     } else {
-      rows = await this.#db.select().from(tasks).all();
+      rows = await this.#db.select().from(tasks).where(inArray(tasks.projectId, this.#orgProjectIds())).all();
       throwIfAborted(opts?.signal);
       commentCountRows =
         rows.length === 0
@@ -533,6 +583,7 @@ export class D1Storage implements StorageProvider {
           : await this.#db
               .select({ taskId: comments.taskId, total: count() })
               .from(comments)
+              .where(inArray(comments.taskId, this.#orgTaskIds()))
               .groupBy(comments.taskId)
               .all();
       attachmentCountRows =
@@ -541,6 +592,7 @@ export class D1Storage implements StorageProvider {
           : await this.#db
               .select({ taskId: attachments.taskId, total: count() })
               .from(attachments)
+              .where(inArray(attachments.taskId, this.#orgTaskIds()))
               .groupBy(attachments.taskId)
               .all();
     }
@@ -566,7 +618,11 @@ export class D1Storage implements StorageProvider {
   async getTask(id: string, opts?: OperationOptions): Promise<Task | null> {
     throwIfAborted(opts?.signal);
     const validId = parseOrThrow(IdSchema, id, "getTask");
-    const row = await this.#db.select().from(tasks).where(eq(tasks.id, validId)).get();
+    const row = await this.#db
+      .select()
+      .from(tasks)
+      .where(and(eq(tasks.id, validId), inArray(tasks.projectId, this.#orgProjectIds())))
+      .get();
     throwIfAborted(opts?.signal);
     if (!row) return null;
     const total = await this.#commentCount(validId);
@@ -578,9 +634,16 @@ export class D1Storage implements StorageProvider {
   async saveTask(input: CreateTaskInput, opts?: OperationOptions): Promise<Task> {
     throwIfAborted(opts?.signal);
     const projectId = parseOrThrow(IdSchema, input.projectId, "saveTask");
-    let task = buildTask(input, this.#deps, await this.#nextTaskNumber(projectId), opts?.actor);
+    let task = buildTask(input, this.#deps, await this.#nextTaskNumber(projectId), opts?.actor, {
+      userId: opts?.userId,
+      userAvatarUrl: opts?.userAvatarUrl,
+    });
 
-    const projectRow = await this.#db.select().from(projects).where(eq(projects.id, task.projectId)).get();
+    const projectRow = await this.#db
+      .select()
+      .from(projects)
+      .where(and(eq(projects.id, task.projectId), eq(projects.orgId, this.#orgId)))
+      .get();
     throwIfAborted(opts?.signal);
     if (!projectRow) throw new NotFoundError("project", task.projectId);
     if (hasNewDependencies(undefined, task)) {
@@ -631,16 +694,27 @@ export class D1Storage implements StorageProvider {
   async updateTask(id: string, patch: UpdateTaskInput, opts?: OperationOptions): Promise<Task> {
     throwIfAborted(opts?.signal);
     const validId = parseOrThrow(IdSchema, id, "updateTask");
-    const existingRow = await this.#db.select().from(tasks).where(eq(tasks.id, validId)).get();
+    const existingRow = await this.#db
+      .select()
+      .from(tasks)
+      .where(and(eq(tasks.id, validId), inArray(tasks.projectId, this.#orgProjectIds())))
+      .get();
     throwIfAborted(opts?.signal);
     if (!existingRow) throw new NotFoundError("task", validId);
 
     const existing = recordToTask(existingRow);
-    let next = applyTaskPatch(existing, patch, this.#deps.clock(), opts?.actor, opts?.overrideBlockedBy);
+    let next = applyTaskPatch(existing, patch, this.#deps.clock(), opts?.actor, opts?.overrideBlockedBy, {
+      userId: opts?.userId,
+      userAvatarUrl: opts?.userAvatarUrl,
+    });
     const movedProject = next.projectId !== existing.projectId;
 
     if (movedProject) {
-      const targetProject = await this.#db.select().from(projects).where(eq(projects.id, next.projectId)).get();
+      const targetProject = await this.#db
+        .select()
+        .from(projects)
+        .where(and(eq(projects.id, next.projectId), eq(projects.orgId, this.#orgId)))
+        .get();
       throwIfAborted(opts?.signal);
       if (!targetProject) throw new NotFoundError("project", next.projectId);
       next = renumberTask(next, await this.#nextTaskNumber(next.projectId));
@@ -698,7 +772,11 @@ export class D1Storage implements StorageProvider {
   async deleteTask(id: string, opts?: OperationOptions): Promise<void> {
     throwIfAborted(opts?.signal);
     const validId = parseOrThrow(IdSchema, id, "deleteTask");
-    const existingRow = await this.#db.select().from(tasks).where(eq(tasks.id, validId)).get();
+    const existingRow = await this.#db
+      .select()
+      .from(tasks)
+      .where(and(eq(tasks.id, validId), inArray(tasks.projectId, this.#orgProjectIds())))
+      .get();
     throwIfAborted(opts?.signal);
     if (!existingRow) throw new NotFoundError("task", validId);
 
@@ -721,12 +799,19 @@ export class D1Storage implements StorageProvider {
   async completeTask(id: string, opts?: OperationOptions): Promise<Task> {
     throwIfAborted(opts?.signal);
     const validId = parseOrThrow(IdSchema, id, "completeTask");
-    const existingRow = await this.#db.select().from(tasks).where(eq(tasks.id, validId)).get();
+    const existingRow = await this.#db
+      .select()
+      .from(tasks)
+      .where(and(eq(tasks.id, validId), inArray(tasks.projectId, this.#orgProjectIds())))
+      .get();
     throwIfAborted(opts?.signal);
     if (!existingRow) throw new NotFoundError("task", validId);
 
     const existing = recordToTask(existingRow);
-    const next = completeTaskEntity(existing, this.#deps.clock(), opts?.actor, opts?.overrideBlockedBy);
+    const next = completeTaskEntity(existing, this.#deps.clock(), opts?.actor, opts?.overrideBlockedBy, {
+      userId: opts?.userId,
+      userAvatarUrl: opts?.userAvatarUrl,
+    });
 
     if (next.status !== existing.status || next.updatedAt !== existing.updatedAt) {
       await this.#db
@@ -751,7 +836,11 @@ export class D1Storage implements StorageProvider {
   async getComments(taskId: string, opts?: OperationOptions): Promise<Comment[]> {
     throwIfAborted(opts?.signal);
     const validTaskId = parseOrThrow(IdSchema, taskId, "getComments");
-    const rows = await this.#db.select().from(comments).where(eq(comments.taskId, validTaskId)).all();
+    const rows = await this.#db
+      .select()
+      .from(comments)
+      .where(and(eq(comments.taskId, validTaskId), inArray(comments.taskId, this.#orgTaskIds())))
+      .all();
     throwIfAborted(opts?.signal);
     return rows.map(recordToComment).sort(compareComments).map(cloneComment);
   }
@@ -759,7 +848,11 @@ export class D1Storage implements StorageProvider {
   async getCheckpoints(taskId: string, opts?: OperationOptions): Promise<Checkpoint[]> {
     throwIfAborted(opts?.signal);
     const validTaskId = parseOrThrow(IdSchema, taskId, "getCheckpoints");
-    const rows = await this.#db.select().from(checkpoints).where(eq(checkpoints.taskId, validTaskId)).all();
+    const rows = await this.#db
+      .select()
+      .from(checkpoints)
+      .where(and(eq(checkpoints.taskId, validTaskId), inArray(checkpoints.taskId, this.#orgTaskIds())))
+      .all();
     throwIfAborted(opts?.signal);
     return rows.map(recordToCheckpoint).sort(compareCheckpoints);
   }
@@ -767,7 +860,11 @@ export class D1Storage implements StorageProvider {
   async saveCheckpoint(input: SaveCheckpointInput, opts?: OperationOptions): Promise<Checkpoint> {
     throwIfAborted(opts?.signal);
     const parsed = parseOrThrow(SaveCheckpointInputSchema, input, "saveCheckpoint");
-    const taskRow = await this.#db.select({ id: tasks.id }).from(tasks).where(eq(tasks.id, parsed.taskId)).get();
+    const taskRow = await this.#db
+      .select({ id: tasks.id })
+      .from(tasks)
+      .where(and(eq(tasks.id, parsed.taskId), inArray(tasks.projectId, this.#orgProjectIds())))
+      .get();
     throwIfAborted(opts?.signal);
     if (!taskRow) throw new NotFoundError("task", parsed.taskId);
 
@@ -792,7 +889,11 @@ export class D1Storage implements StorageProvider {
     throwIfAborted(opts?.signal);
     const parsed = IdSchema.safeParse(id);
     if (!parsed.success) return null;
-    const row = await this.#db.select().from(comments).where(eq(comments.id, parsed.data)).get();
+    const row = await this.#db
+      .select()
+      .from(comments)
+      .where(and(eq(comments.id, parsed.data), inArray(comments.taskId, this.#orgTaskIds())))
+      .get();
     throwIfAborted(opts?.signal);
     if (!row) return null;
     return cloneComment(recordToComment(row));
@@ -800,11 +901,25 @@ export class D1Storage implements StorageProvider {
 
   async addComment(input: CreateCommentInput, opts?: OperationOptions): Promise<Comment> {
     throwIfAborted(opts?.signal);
-    const comment = buildComment(input, this.#deps);
-    const taskRow = await this.#db.select().from(tasks).where(eq(tasks.id, comment.taskId)).get();
+    const comment = buildComment(
+      {
+        ...input,
+        ...(opts?.userId !== undefined && input.authorId === undefined ? { authorId: opts.userId } : {}),
+        ...(opts?.userAvatarUrl !== undefined && input.authorAvatarUrl === undefined ? { authorAvatarUrl: opts.userAvatarUrl } : {}),
+      },
+      this.#deps,
+    );
+    const taskRow = await this.#db
+      .select()
+      .from(tasks)
+      .where(and(eq(tasks.id, comment.taskId), inArray(tasks.projectId, this.#orgProjectIds())))
+      .get();
     throwIfAborted(opts?.signal);
     if (!taskRow) throw new NotFoundError("task", comment.taskId);
-    const touched = touchTaskEntity(recordToTask(taskRow), this.#deps.clock(), opts?.actor);
+    const touched = touchTaskEntity(recordToTask(taskRow), this.#deps.clock(), opts?.actor, {
+      userId: opts?.userId,
+      userAvatarUrl: opts?.userAvatarUrl,
+    });
 
     await this.#db.insert(comments).values(commentToRecord(comment));
     await this.#db
@@ -822,7 +937,10 @@ export class D1Storage implements StorageProvider {
   async deleteComment(id: string, opts?: OperationOptions): Promise<void> {
     throwIfAborted(opts?.signal);
     const validId = parseOrThrow(IdSchema, id, "deleteComment");
-    const deleted = await this.#db.delete(comments).where(eq(comments.id, validId)).returning({ id: comments.id });
+    const deleted = await this.#db
+      .delete(comments)
+      .where(and(eq(comments.id, validId), inArray(comments.taskId, this.#orgTaskIds())))
+      .returning({ id: comments.id });
     throwIfAborted(opts?.signal);
     if (deleted.length === 0) throw new NotFoundError("comment", validId);
   }
@@ -830,7 +948,11 @@ export class D1Storage implements StorageProvider {
   async getAttachments(taskId: string, opts?: OperationOptions): Promise<Attachment[]> {
     throwIfAborted(opts?.signal);
     const validTaskId = parseOrThrow(IdSchema, taskId, "getAttachments");
-    const rows = await this.#db.select().from(attachments).where(eq(attachments.taskId, validTaskId)).all();
+    const rows = await this.#db
+      .select()
+      .from(attachments)
+      .where(and(eq(attachments.taskId, validTaskId), inArray(attachments.taskId, this.#orgTaskIds())))
+      .all();
     throwIfAborted(opts?.signal);
     return rows.map(recordToAttachment).sort(compareAttachments).map(cloneAttachment);
   }
@@ -838,7 +960,11 @@ export class D1Storage implements StorageProvider {
   async getAttachment(id: string, opts?: OperationOptions): Promise<AttachmentContent | null> {
     throwIfAborted(opts?.signal);
     const validId = parseOrThrow(IdSchema, id, "getAttachment");
-    const row = await this.#db.select().from(attachments).where(eq(attachments.id, validId)).get();
+    const row = await this.#db
+      .select()
+      .from(attachments)
+      .where(and(eq(attachments.id, validId), inArray(attachments.taskId, this.#orgTaskIds())))
+      .get();
     throwIfAborted(opts?.signal);
     if (!row) return null;
     const attachment = recordToAttachment(row);
@@ -855,7 +981,11 @@ export class D1Storage implements StorageProvider {
   async addAttachment(input: CreateAttachmentInput, opts?: OperationOptions): Promise<Attachment> {
     throwIfAborted(opts?.signal);
     const content = buildAttachment(input, this.#deps, opts?.actor);
-    const taskRow = await this.#db.select().from(tasks).where(eq(tasks.id, content.taskId)).get();
+    const taskRow = await this.#db
+      .select()
+      .from(tasks)
+      .where(and(eq(tasks.id, content.taskId), inArray(tasks.projectId, this.#orgProjectIds())))
+      .get();
     throwIfAborted(opts?.signal);
     if (!taskRow) throw new NotFoundError("task", content.taskId);
 
@@ -875,7 +1005,10 @@ export class D1Storage implements StorageProvider {
     });
     await this.#db.insert(attachments).values(attachmentToRecord(meta));
 
-    const touched = touchTaskEntity(recordToTask(taskRow), this.#deps.clock(), opts?.actor);
+    const touched = touchTaskEntity(recordToTask(taskRow), this.#deps.clock(), opts?.actor, {
+      userId: opts?.userId,
+      userAvatarUrl: opts?.userAvatarUrl,
+    });
     await this.#db
       .update(tasks)
       .set({
@@ -893,7 +1026,7 @@ export class D1Storage implements StorageProvider {
     const validId = parseOrThrow(IdSchema, id, "deleteAttachment");
     const deleted = await this.#db
       .delete(attachments)
-      .where(eq(attachments.id, validId))
+      .where(and(eq(attachments.id, validId), inArray(attachments.taskId, this.#orgTaskIds())))
       .returning({ id: attachments.id, taskId: attachments.taskId });
     throwIfAborted(opts?.signal);
     const removed = deleted[0];
@@ -908,9 +1041,17 @@ export class D1Storage implements StorageProvider {
 
     let rows: WebhookRecord[];
     if (parsedFilter?.projectId !== undefined) {
-      rows = await this.#db.select().from(webhooks).where(eq(webhooks.projectId, parsedFilter.projectId)).all();
+      rows = await this.#db
+        .select()
+        .from(webhooks)
+        .where(and(eq(webhooks.projectId, parsedFilter.projectId), inArray(webhooks.projectId, this.#orgProjectIds())))
+        .all();
     } else {
-      rows = await this.#db.select().from(webhooks).all();
+      rows = await this.#db
+        .select()
+        .from(webhooks)
+        .where(inArray(webhooks.projectId, this.#orgProjectIds()))
+        .all();
     }
     throwIfAborted(opts?.signal);
     return rows.map(recordToWebhook).sort(compareWebhooks).map(cloneWebhook);
@@ -919,7 +1060,11 @@ export class D1Storage implements StorageProvider {
   async getWebhook(id: string, opts?: OperationOptions): Promise<Webhook | null> {
     throwIfAborted(opts?.signal);
     const validId = parseOrThrow(IdSchema, id, "getWebhook");
-    const row = await this.#db.select().from(webhooks).where(eq(webhooks.id, validId)).get();
+    const row = await this.#db
+      .select()
+      .from(webhooks)
+      .where(and(eq(webhooks.id, validId), inArray(webhooks.projectId, this.#orgProjectIds())))
+      .get();
     throwIfAborted(opts?.signal);
     if (!row) return null;
     return cloneWebhook(recordToWebhook(row));
@@ -928,16 +1073,37 @@ export class D1Storage implements StorageProvider {
   async getWebhookByToken(token: string, opts?: OperationOptions): Promise<Webhook | null> {
     throwIfAborted(opts?.signal);
     const validToken = parseOrThrow(WebhookTokenSchema, token, "getWebhookByToken");
-    const row = await this.#db.select().from(webhooks).where(eq(webhooks.token, validToken)).get();
+    const row = await this.#db
+      .select()
+      .from(webhooks)
+      .where(and(eq(webhooks.token, validToken), inArray(webhooks.projectId, this.#orgProjectIds())))
+      .get();
     throwIfAborted(opts?.signal);
     if (!row) return null;
     return cloneWebhook(recordToWebhook(row));
   }
 
+  async findWebhookOrgId(token: string, opts?: OperationOptions): Promise<string | null> {
+    throwIfAborted(opts?.signal);
+    const validToken = parseOrThrow(WebhookTokenSchema, token, "findWebhookOrgId");
+    const row = await this.#db
+      .select({ orgId: projects.orgId })
+      .from(webhooks)
+      .innerJoin(projects, eq(webhooks.projectId, projects.id))
+      .where(eq(webhooks.token, validToken))
+      .get();
+    throwIfAborted(opts?.signal);
+    return row?.orgId ?? null;
+  }
+
   async createWebhook(input: CreateWebhookInput, opts?: OperationOptions): Promise<Webhook> {
     throwIfAborted(opts?.signal);
     const webhook = buildWebhook(input, this.#deps);
-    const projectRow = await this.#db.select().from(projects).where(eq(projects.id, webhook.projectId)).get();
+    const projectRow = await this.#db
+      .select()
+      .from(projects)
+      .where(and(eq(projects.id, webhook.projectId), eq(projects.orgId, this.#orgId)))
+      .get();
     throwIfAborted(opts?.signal);
     if (!projectRow) throw new NotFoundError("project", webhook.projectId);
 
@@ -949,14 +1115,22 @@ export class D1Storage implements StorageProvider {
   async updateWebhook(id: string, patch: UpdateWebhookInput, opts?: OperationOptions): Promise<Webhook> {
     throwIfAborted(opts?.signal);
     const validId = parseOrThrow(IdSchema, id, "updateWebhook");
-    const existingRow = await this.#db.select().from(webhooks).where(eq(webhooks.id, validId)).get();
+    const existingRow = await this.#db
+      .select()
+      .from(webhooks)
+      .where(and(eq(webhooks.id, validId), inArray(webhooks.projectId, this.#orgProjectIds())))
+      .get();
     throwIfAborted(opts?.signal);
     if (!existingRow) throw new NotFoundError("webhook", validId);
 
     const existing = recordToWebhook(existingRow);
     const next = applyWebhookPatch(existing, patch, this.#deps);
     if (next.projectId !== existing.projectId) {
-      const targetProject = await this.#db.select().from(projects).where(eq(projects.id, next.projectId)).get();
+      const targetProject = await this.#db
+        .select()
+        .from(projects)
+        .where(and(eq(projects.id, next.projectId), eq(projects.orgId, this.#orgId)))
+        .get();
       throwIfAborted(opts?.signal);
       if (!targetProject) throw new NotFoundError("project", next.projectId);
     }
@@ -969,7 +1143,10 @@ export class D1Storage implements StorageProvider {
   async deleteWebhook(id: string, opts?: OperationOptions): Promise<void> {
     throwIfAborted(opts?.signal);
     const validId = parseOrThrow(IdSchema, id, "deleteWebhook");
-    const deleted = await this.#db.delete(webhooks).where(eq(webhooks.id, validId)).returning({ id: webhooks.id });
+    const deleted = await this.#db
+      .delete(webhooks)
+      .where(and(eq(webhooks.id, validId), inArray(webhooks.projectId, this.#orgProjectIds())))
+      .returning({ id: webhooks.id });
     throwIfAborted(opts?.signal);
     if (deleted.length === 0) throw new NotFoundError("webhook", validId);
   }
@@ -977,7 +1154,11 @@ export class D1Storage implements StorageProvider {
   async recordWebhookTrigger(id: string, opts?: OperationOptions): Promise<Webhook> {
     throwIfAborted(opts?.signal);
     const validId = parseOrThrow(IdSchema, id, "recordWebhookTrigger");
-    const existingRow = await this.#db.select().from(webhooks).where(eq(webhooks.id, validId)).get();
+    const existingRow = await this.#db
+      .select()
+      .from(webhooks)
+      .where(and(eq(webhooks.id, validId), inArray(webhooks.projectId, this.#orgProjectIds())))
+      .get();
     throwIfAborted(opts?.signal);
     if (!existingRow) throw new NotFoundError("webhook", validId);
 
@@ -1026,9 +1207,15 @@ export class D1Storage implements StorageProvider {
 
     const existingProject = await this.#db.select().from(projects).where(eq(projects.id, validated.project.id)).get();
     throwIfAborted(opts?.signal);
+    if (existingProject && existingProject.orgId !== this.#orgId) {
+      throw new ValidationError("importProject", [
+        { code: "custom", path: ["project", "id"], message: "Project belongs to another organisation", input: validated.project.id },
+      ]);
+    }
 
     const projectValues = {
       id: validated.project.id,
+      orgId: this.#orgId,
       name: validated.project.name,
       description: validated.project.description,
       kind: validated.project.kind,
@@ -1130,28 +1317,36 @@ export class D1Storage implements StorageProvider {
     }
   }
 
-  /** Keys of every project except `exceptId`. */
+  /** Keys of every project in this organisation except `exceptId`. */
   async #projectKeys(exceptId?: string): Promise<string[]> {
+    const condition =
+      exceptId === undefined
+        ? eq(projects.orgId, this.#orgId)
+        : and(eq(projects.orgId, this.#orgId), ne(projects.id, exceptId));
     const rows = await this.#db
       .select({ key: projects.key })
       .from(projects)
-      .where(exceptId === undefined ? undefined : ne(projects.id, exceptId))
+      .where(condition)
       .all();
     return rows.flatMap((row) => (row.key === null ? [] : [row.key]));
   }
 
-  /** Every task's ID and dependencies, for `assertTaskDependencies`. */
+  /** Every task's ID and dependencies in this organisation, for `assertTaskDependencies`. */
   async #dependencyGraph(): Promise<DependencyNode[]> {
-    const rows = await this.#db.select({ id: tasks.id, dependsOn: tasks.dependsOn }).from(tasks).all();
+    const rows = await this.#db
+      .select({ id: tasks.id, dependsOn: tasks.dependsOn })
+      .from(tasks)
+      .where(inArray(tasks.projectId, this.#orgProjectIds()))
+      .all();
     return rows.map((row) => (row.dependsOn === null ? { id: row.id } : { id: row.id, dependsOn: row.dependsOn }));
   }
 
-  /** Removes `removedIds` from every remaining task's `dependsOn`, leaving `updated_at` as it is. */
+  /** Removes `removedIds` from every remaining task's `dependsOn` in this organisation, leaving `updated_at` as it is. */
   async #dropDependencies(removedIds: ReadonlySet<string>): Promise<void> {
     const rows = await this.#db
       .select({ id: tasks.id, dependsOn: tasks.dependsOn })
       .from(tasks)
-      .where(isNotNull(tasks.dependsOn))
+      .where(and(isNotNull(tasks.dependsOn), inArray(tasks.projectId, this.#orgProjectIds())))
       .all();
     for (const row of rows) {
       const dependsOn = row.dependsOn ?? [];

@@ -4,12 +4,14 @@ import type { RealtimeEvent } from "@bitig/core";
 const HTTP_SWITCHING_PROTOCOLS = 101;
 const HTTP_UPGRADE_REQUIRED = 426;
 const WS_GOING_AWAY = 1001;
+const WS_POLICY_VIOLATION = 1008;
 const WS_INTERNAL_ERROR = 1011;
 
 /**
- * Coordinates live WebSocket connections for the workspace using the Durable
+ * Coordinates live WebSocket connections for one organisation using the Durable
  * Object WebSocket Hibernation API. The Worker calls `publish` via RPC whenever
- * a storage mutation succeeds, fanning the event out to every connected browser.
+ * a storage mutation succeeds, fanning the event out to connected members of
+ * that organisation.
  */
 export class RealtimeHub extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
@@ -25,14 +27,15 @@ export class RealtimeHub extends DurableObject<Env> {
       );
     }
 
+    const userId = request.headers.get("x-bitig-user-id")?.trim();
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
-    this.ctx.acceptWebSocket(server);
+    this.ctx.acceptWebSocket(server, userId ? [userId] : undefined);
     return new Response(null, { status: HTTP_SWITCHING_PROTOCOLS, webSocket: client });
   }
 
-  /** Broadcasts a mutation event to all active WebSocket connections. */
+  /** Broadcasts a mutation event to all active WebSocket connections in this organisation. */
   publish(event: RealtimeEvent): number {
     const payload = JSON.stringify(event);
     let delivered = 0;
@@ -46,6 +49,16 @@ export class RealtimeHub extends DurableObject<Env> {
       }
     }
     return delivered;
+  }
+
+  /** Closes all active WebSocket connections belonging to a removed or disabled user. */
+  disconnectUser(userId: string): number {
+    let closed = 0;
+    for (const ws of this.ctx.getWebSockets(userId)) {
+      this.safeClose(ws, WS_POLICY_VIOLATION, "Membership removed");
+      closed += 1;
+    }
+    return closed;
   }
 
   override webSocketClose(ws: WebSocket, code: number, reason: string): void {
@@ -65,4 +78,3 @@ export class RealtimeHub extends DurableObject<Env> {
     }
   }
 }
-

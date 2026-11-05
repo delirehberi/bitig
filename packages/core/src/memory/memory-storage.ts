@@ -191,7 +191,13 @@ export class InMemoryStorage implements StorageProvider {
   saveTask(input: CreateTaskInput, opts?: OperationOptions): Promise<Task> {
     return run(opts?.signal, () => {
       const projectId = parseOrThrow(IdSchema, input.projectId, "saveTask");
-      const task = buildTask(input, this.#deps, nextTaskNumber(this.#tasksOf(projectId)), opts?.actor);
+      const task = buildTask(
+        input,
+        this.#deps,
+        nextTaskNumber(this.#tasksOf(projectId)),
+        opts?.actor,
+        opts ? { userId: opts.userId, userAvatarUrl: opts.userAvatarUrl } : undefined,
+      );
       this.#requireProject(task.projectId);
       if (hasNewDependencies(undefined, task)) assertTaskDependencies(task, this.#tasks.values(), "saveTask");
       this.#tasks.set(task.id, task);
@@ -202,7 +208,14 @@ export class InMemoryStorage implements StorageProvider {
   updateTask(id: string, patch: UpdateTaskInput, opts?: OperationOptions): Promise<Task> {
     return run(opts?.signal, () => {
       const existing = this.#requireTask(parseId(id, "updateTask"));
-      let next = applyTaskPatch(existing, patch, this.#deps.clock(), opts?.actor, opts?.overrideBlockedBy);
+      let next = applyTaskPatch(
+        existing,
+        patch,
+        this.#deps.clock(),
+        opts?.actor,
+        opts?.overrideBlockedBy,
+        opts ? { userId: opts.userId, userAvatarUrl: opts.userAvatarUrl } : undefined,
+      );
       if (next.projectId !== existing.projectId) {
         this.#requireProject(next.projectId);
         next = renumberTask(next, nextTaskNumber(this.#tasksOf(next.projectId)));
@@ -224,7 +237,13 @@ export class InMemoryStorage implements StorageProvider {
   completeTask(id: string, opts?: OperationOptions): Promise<Task> {
     return run(opts?.signal, () => {
       const existing = this.#requireTask(parseId(id, "completeTask"));
-      const next = completeTaskEntity(existing, this.#deps.clock(), opts?.actor, opts?.overrideBlockedBy);
+      const next = completeTaskEntity(
+        existing,
+        this.#deps.clock(),
+        opts?.actor,
+        opts?.overrideBlockedBy,
+        opts ? { userId: opts.userId, userAvatarUrl: opts.userAvatarUrl } : undefined,
+      );
       this.#tasks.set(next.id, next);
       return this.#withTaskCounts(next);
     });
@@ -248,9 +267,21 @@ export class InMemoryStorage implements StorageProvider {
 
   addComment(input: CreateCommentInput, opts?: OperationOptions): Promise<Comment> {
     return run(opts?.signal, () => {
-      const comment = buildComment(input, this.#deps);
+      const enrichedInput: CreateCommentInput = {
+        ...input,
+        ...(opts?.userId !== undefined && input.authorId === undefined ? { authorId: opts.userId } : {}),
+        ...(opts?.userAvatarUrl !== undefined && input.authorAvatarUrl === undefined
+          ? { authorAvatarUrl: opts.userAvatarUrl }
+          : {}),
+      };
+      const comment = buildComment(enrichedInput, this.#deps);
       const task = this.#requireTask(comment.taskId);
-      const touched = touchTaskEntity(task, this.#deps.clock(), opts?.actor);
+      const touched = touchTaskEntity(
+        task,
+        this.#deps.clock(),
+        opts?.actor,
+        opts ? { userId: opts.userId, userAvatarUrl: opts.userAvatarUrl } : undefined,
+      );
       this.#comments.set(comment.id, comment);
       this.#tasks.set(touched.id, touched);
       return cloneComment(comment);
@@ -284,7 +315,12 @@ export class InMemoryStorage implements StorageProvider {
       const attachment = buildAttachment(input, this.#deps, opts?.actor);
       const task = this.#requireTask(attachment.taskId);
       assertTaskAttachmentQuota(this.#attachmentsOf([task.id]), attachment.size, "addAttachment");
-      const touched = touchTaskEntity(task, this.#deps.clock(), opts?.actor);
+      const touched = touchTaskEntity(
+        task,
+        this.#deps.clock(),
+        opts?.actor,
+        opts ? { userId: opts.userId, userAvatarUrl: opts.userAvatarUrl } : undefined,
+      );
       this.#attachments.set(attachment.id, attachment);
       this.#tasks.set(touched.id, touched);
       return stripAttachmentData(attachment);

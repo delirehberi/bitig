@@ -1,8 +1,7 @@
 import { useSyncExternalStore } from "react";
 
 /*
- * A small History API router. The dashboard has four screens, so a routing
- * library would cost more than it buys. The Worker serves index.html for every
+ * A small History API router. The Worker serves index.html for every
  * path that is not /api, /health or /mcp (`not_found_handling` in
  * apps/worker/wrangler.jsonc), so deep links and refreshes land here.
  */
@@ -24,7 +23,14 @@ export type Route =
   | { readonly name: "webhooks"; readonly projectId?: string; readonly taskRef?: string }
   | { readonly name: "settings"; readonly taskRef?: string }
   | { readonly name: "reports"; readonly taskRef?: string }
-  | { readonly name: "login"; readonly next?: string }
+  | { readonly name: "profile"; readonly taskRef?: string }
+  | { readonly name: "settings_profile"; readonly taskRef?: string }
+  | { readonly name: "settings_security"; readonly taskRef?: string }
+  | { readonly name: "org_settings"; readonly slug: string; readonly taskRef?: string }
+  | { readonly name: "org_members"; readonly slug: string; readonly taskRef?: string }
+  | { readonly name: "admin_users"; readonly taskRef?: string }
+  | { readonly name: "login"; readonly next?: string; readonly invite?: string }
+  | { readonly name: "register"; readonly next?: string; readonly invite?: string }
   | { readonly name: "not_found" };
 
 const NAVIGATE_EVENT = "bitig:navigate";
@@ -41,8 +47,10 @@ const BLOCKED_PARAM = "blocked";
 /** `?task=BIT-64` opens that task's detail view. */
 const TASK_PARAM = "task";
 const NEXT_PARAM = "next";
+const INVITE_PARAM = "invite";
 
 export const LOGIN_PATH = "/login";
+export const REGISTER_PATH = "/register";
 /** The dashboard's home; `/` is the public landing page. */
 export const APP_PATH = "/app";
 /** Time spent and completion reports, moved off the dashboard (#BIT-140). */
@@ -65,7 +73,21 @@ export function parseRoute(pathname: string, search: string): Route {
   const params = new URLSearchParams(search);
   const taskRef = params.get(TASK_PARAM)?.trim();
   const task = taskRef ? { taskRef } : {};
-  switch (trimTrailingSlash(pathname)) {
+  const trimmed = trimTrailingSlash(pathname);
+
+  const orgMatch = /^\/orgs\/([^/]+)\/(settings|members)$/.exec(trimmed);
+  if (orgMatch) {
+    const slug = decodeURIComponent(orgMatch[1] ?? "");
+    const sub = orgMatch[2];
+    if (slug && sub === "settings") {
+      return { name: "org_settings", slug, ...task };
+    }
+    if (slug && sub === "members") {
+      return { name: "org_members", slug, ...task };
+    }
+  }
+
+  switch (trimmed) {
     case "/":
       return { name: "landing" };
     case APP_PATH:
@@ -97,11 +119,33 @@ export function parseRoute(pathname: string, search: string): Route {
     }
     case "/settings":
       return { name: "settings", ...task };
+    case "/profile":
+      return { name: "profile", ...task };
+    case "/settings/profile":
+      return { name: "settings_profile", ...task };
+    case "/settings/security":
+      return { name: "settings_security", ...task };
+    case "/admin/users":
+      return { name: "admin_users", ...task };
     case REPORTS_PATH:
       return { name: "reports", ...task };
     case LOGIN_PATH: {
       const next = safeNextPath(params.get(NEXT_PARAM));
-      return next ? { name: "login", next } : { name: "login" };
+      const invite = params.get(INVITE_PARAM)?.trim();
+      return {
+        name: "login",
+        ...(next ? { next } : {}),
+        ...(invite ? { invite } : {}),
+      };
+    }
+    case REGISTER_PATH: {
+      const next = safeNextPath(params.get(NEXT_PARAM));
+      const invite = params.get(INVITE_PARAM)?.trim();
+      return {
+        name: "register",
+        ...(next ? { next } : {}),
+        ...(invite ? { invite } : {}),
+      };
     }
     default:
       return { name: "not_found" };
@@ -150,13 +194,53 @@ export function hrefFor(route: Route): string {
       if (route.taskRef) params.set(TASK_PARAM, route.taskRef);
       return withQuery("/settings", params);
     }
+    case "profile": {
+      const params = new URLSearchParams();
+      if (route.taskRef) params.set(TASK_PARAM, route.taskRef);
+      return withQuery("/profile", params);
+    }
+    case "settings_profile": {
+      const params = new URLSearchParams();
+      if (route.taskRef) params.set(TASK_PARAM, route.taskRef);
+      return withQuery("/settings/profile", params);
+    }
+    case "settings_security": {
+      const params = new URLSearchParams();
+      if (route.taskRef) params.set(TASK_PARAM, route.taskRef);
+      return withQuery("/settings/security", params);
+    }
+    case "org_settings": {
+      const params = new URLSearchParams();
+      if (route.taskRef) params.set(TASK_PARAM, route.taskRef);
+      return withQuery(`/orgs/${encodeURIComponent(route.slug)}/settings`, params);
+    }
+    case "org_members": {
+      const params = new URLSearchParams();
+      if (route.taskRef) params.set(TASK_PARAM, route.taskRef);
+      return withQuery(`/orgs/${encodeURIComponent(route.slug)}/members`, params);
+    }
+    case "admin_users": {
+      const params = new URLSearchParams();
+      if (route.taskRef) params.set(TASK_PARAM, route.taskRef);
+      return withQuery("/admin/users", params);
+    }
     case "reports": {
       const params = new URLSearchParams();
       if (route.taskRef) params.set(TASK_PARAM, route.taskRef);
       return withQuery(REPORTS_PATH, params);
     }
-    case "login":
-      return route.next ? `${LOGIN_PATH}?${new URLSearchParams({ [NEXT_PARAM]: route.next }).toString()}` : LOGIN_PATH;
+    case "login": {
+      const params = new URLSearchParams();
+      if (route.next) params.set(NEXT_PARAM, route.next);
+      if (route.invite) params.set(INVITE_PARAM, route.invite);
+      return withQuery(LOGIN_PATH, params);
+    }
+    case "register": {
+      const params = new URLSearchParams();
+      if (route.next) params.set(NEXT_PARAM, route.next);
+      if (route.invite) params.set(INVITE_PARAM, route.invite);
+      return withQuery(REGISTER_PATH, params);
+    }
   }
 }
 
@@ -176,7 +260,13 @@ export function taskHref(
     route.name === "tasks" ||
     route.name === "webhooks" ||
     route.name === "settings" ||
-    route.name === "reports"
+    route.name === "reports" ||
+    route.name === "profile" ||
+    route.name === "settings_profile" ||
+    route.name === "settings_security" ||
+    route.name === "org_settings" ||
+    route.name === "org_members" ||
+    route.name === "admin_users"
   ) {
     const params = new URLSearchParams(url.search);
     if (taskRef) params.set(TASK_PARAM, taskRef);

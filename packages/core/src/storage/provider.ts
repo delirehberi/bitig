@@ -27,6 +27,10 @@ export interface OperationOptions {
   readonly signal?: AbortSignalLike;
   /** Optional LLM / actor name that is performing the mutation (e.g. `"claude"`, `"antigravity"`). */
   readonly actor?: string | undefined;
+  /** Authenticated user ID when performed by a signed-in user or personal access token (#BIT-79). */
+  readonly userId?: string | undefined;
+  /** Authenticated user avatar URL snapshot (#BIT-79). */
+  readonly userAvatarUrl?: string | undefined;
   /**
    * Set when a person starts or completes a task despite unfinished dependencies (see
    * `checkStatusChange`): their ticket codes, or IDs when they have none. The status change then

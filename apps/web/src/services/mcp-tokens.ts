@@ -16,13 +16,30 @@ const HTTP_ERROR_MESSAGES: Readonly<Record<number, string>> = {
 
 class McpTokenRequestError extends Error {}
 
+function activeOrgHeader(): Record<string, string> {
+  try {
+    const org = typeof window !== "undefined" ? window.localStorage.getItem("bitig:active-org") : null;
+    if (org) {
+      return { "X-Bitig-Org": org };
+    }
+  } catch {
+    // ignore storage access errors
+  }
+  return {};
+}
+
 async function tokenRequest(
   path: string, method: string, signal: AbortSignal, body?: CreateMcpTokenInput,
 ): Promise<unknown> {
   try {
     const response = await fetch(`${TOKEN_API_PATH}${path}`, {
       method, credentials: "same-origin", cache: "no-store",
-      headers: { Accept: "application/json", "Content-Type": "application/json", "X-Bitig-Request": "true" },
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "X-Bitig-Request": "true",
+        ...activeOrgHeader(),
+      },
       signal: AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });

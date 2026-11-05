@@ -40,17 +40,20 @@ In Cloudflare storage mode, **Settings → MCP Tokens** generates separately nam
 
 Migration `0017_mcp_tokens.sql` is additive. Apply it through the established local/production migration process before using managed credentials; production migration and deployment require operator authorization. This change does not rotate either legacy secret. Without that migration, management/managed verification return safe unavailable errors while matching legacy credentials remain usable.
 
-### 2.3 Dashboard Sessions
-The dashboard signs in on its own `/login` page with an allowlisted NIP-07 identity:
+### 2.3 Dashboard Sessions, Email Codes & Multi-User Tenancy
+In Cloudflare storage mode, the dashboard supports multi-user accounts and organisation-scoped tenancy:
 
-- `POST /api/auth/challenge` creates an unpredictable five-minute nonce in a dedicated Durable Object, bound to the Worker's origin. The browser asks its NIP-07 extension to sign the explicit Bitig login event and submits it to `POST /api/auth/nostr`.
+- **One-Time Email Codes (Cloudflare Email Sending):** `POST /api/auth/code` and `POST /api/auth/register` generate a 6-digit verification code, store only its SHA-256 hash in `auth_codes` with a 10-minute TTL and a 5-attempt cap, and deliver the email via Cloudflare Email Sending (`env.EMAIL.send` with `EMAIL_FROM`). `POST /api/auth/verify` verifies the code in constant time, creates or updates the user in `users`, and creates a server-side session row in `sessions`.
+- **Server-Side Sessions:** A successful login sets a `__Host-bitig_session` cookie (`HttpOnly`, `Secure`, `SameSite=Strict`, `Path=/`, valid for 30 days) backed by a server-side row in `sessions` (storing only the SHA-256 token hash, user ID, user agent, IP, and expiry). Users can inspect and revoke individual device sessions at `/settings/security`, and account deletion or disabling immediately revokes all sessions and disconnects active WebSockets.
+- **Per-User Personal Access Tokens (`btg_...`):** Users can generate organisation-scoped access tokens in `/settings/security` (`POST /api/me/tokens`). Only the SHA-256 digest and prefix are stored in `access_tokens`. Tokens inherit the user's live membership role (`owner`, `editor`, `viewer`) in the target organisation.
+- **Organisation Isolation & RBAC:** Every project, task, comment, checkpoint, attachment, and webhook belongs to an organisation (`org_id`). Non-members receive `404 Not Found` so organisation and project existence is never leaked across tenants. Viewers are restricted to read-only operations (`403 Forbidden` on mutations), editors can create and update projects/tasks/comments/webhooks, and only owners can manage members, invitations, exports, or organisation settings.
+- **Soft-Delete Lifecycle:** Deleting a user account or organisation performs a soft-delete (`deleted_at` timestamp), revokes active sessions and tokens, and frees unique identifiers (`email`, `username`, `slug`) while preserving referential integrity.
+- **Nostr Sign-In:** `POST /api/auth/challenge` creates an unpredictable five-minute nonce in a dedicated Durable Object, bound to the Worker's origin. The browser asks its NIP-07 extension to sign the explicit Bitig login event and submits it to `POST /api/auth/nostr`.
 - The Worker verifies the event signature, exact origin/action/challenge tags and the `NOSTR_AUTH_PUBKEYS` allowlist, then atomically consumes the nonce. Expired, wrong-origin and replayed challenges fail.
-- A successful proof sets a `__Host-bitig_session` cookie: `HttpOnly`, `Secure`, `SameSite=Strict`, `Path=/`, valid for 7 days. The stateless value is `<expiry>:<pubkey>`, signed with HMAC-SHA256 under `SESSION_SECRET`; rotation signs everyone out.
-- Without `SESSION_SECRET` or an allowed public key, login answers `503`; Basic Auth API access keeps working.
-- No credential is stored in browser storage; JavaScript never sees the cookie.
-- `/api/*` 401 responses no longer carry `WWW-Authenticate: Basic`, so browsers never show their native prompt. Scripts can still send `Authorization: Basic`.
-- Failed logins and cookies with a forged signature count toward the failed-login budget (section 3.1). Login requests pass the same CSRF check as other mutations, and `SameSite=Strict` keeps the cookie off cross-site requests.
-- Realtime WebSocket upgrades (`GET /api/realtime`, backed by the `RealtimeHub` Durable Object) require the same session cookie or Basic Auth credentials (`apiAuth()`) and verify that any `Origin` header matches the Worker's origin or `ALLOWED_ORIGINS`, blocking cross-site WebSocket hijacking.
+- No credential is stored in browser storage; JavaScript never sees the session cookie.
+- `/api/*` 401 responses do not carry `WWW-Authenticate: Basic`, so browsers never show their native prompt.
+- Failed logins and invalid verification codes count toward the failed-login budget (section 3.1). Login requests pass the same CSRF check as other mutations, and `SameSite=Strict` keeps the cookie off cross-site requests.
+- Realtime WebSocket upgrades (`GET /api/realtime`, backed by the `RealtimeHub` Durable Object) require a valid session or token and scope broadcasts strictly to the authenticated organisation (`orgId`).
 
 ---
 

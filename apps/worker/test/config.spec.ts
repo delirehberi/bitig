@@ -69,4 +69,19 @@ describe("parseConfig", () => {
     expect(parsed.T3_CF_ACCESS_CLIENT_ID).toBe("cf-id.access");
     expect(parsed.T3_CF_ACCESS_CLIENT_SECRET).toBe("cf-secret-val");
   });
+
+  it("normalizes and validates RESEND_API_KEY, MAIL_FROM, and BOOTSTRAP_ADMIN_EMAIL", () => {
+    expect(parseConfig({}).RESEND_API_KEY).toBe("");
+    expect(parseConfig({}).MAIL_FROM).toBe("");
+    expect(parseConfig({}).BOOTSTRAP_ADMIN_EMAIL).toBe("");
+    const parsed = parseConfig({
+      RESEND_API_KEY: "  re_123  ",
+      MAIL_FROM: "  Bitig <noreply@bitig.test>  ",
+      BOOTSTRAP_ADMIN_EMAIL: "  Admin@Example.com  ",
+    });
+    expect(parsed.RESEND_API_KEY).toBe("re_123");
+    expect(parsed.MAIL_FROM).toBe("Bitig <noreply@bitig.test>");
+    expect(parsed.BOOTSTRAP_ADMIN_EMAIL).toBe("admin@example.com");
+    expect(() => parseConfig({ BOOTSTRAP_ADMIN_EMAIL: "not-an-email" })).toThrow(ConfigError);
+  });
 });

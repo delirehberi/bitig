@@ -62,9 +62,12 @@ export type AuthConfig =
   | BasicAuthCredentials
   | (() => string | null | undefined | Promise<string | null | undefined>);
 
+export type OrgConfig = string | (() => string | null | undefined);
+
 export interface ApiStorageOptions {
   readonly baseUrl?: string;
   readonly auth?: AuthConfig;
+  readonly org?: OrgConfig;
   readonly fetch?: typeof fetch;
   /** Called whenever the API answers 401, e.g. so a dashboard can send the user to sign in. */
   readonly onUnauthorized?: () => void;
@@ -92,14 +95,23 @@ function encodeBasicAuth(username: string, password = ""): string {
 export class ApiStorage implements StorageProvider {
   private readonly baseUrl: string;
   private readonly authConfig?: AuthConfig | undefined;
+  private readonly orgConfig?: OrgConfig | undefined;
   private readonly customFetch?: typeof fetch | undefined;
   private readonly onUnauthorized?: (() => void) | undefined;
 
   constructor(options: ApiStorageOptions = {}) {
     this.baseUrl = (options.baseUrl ?? "").replace(/\/+$/, "");
     this.authConfig = options.auth;
+    this.orgConfig = options.org;
     this.customFetch = options.fetch;
     this.onUnauthorized = options.onUnauthorized;
+  }
+
+  private resolveOrg(): string | undefined {
+    if (!this.orgConfig) return undefined;
+    const raw = typeof this.orgConfig === "function" ? this.orgConfig() : this.orgConfig;
+    const trimmed = raw?.trim();
+    return trimmed && trimmed.length > 0 ? trimmed : undefined;
   }
 
   private async getAuthHeader(): Promise<string | undefined> {
@@ -129,9 +141,13 @@ export class ApiStorage implements StorageProvider {
     throwIfAborted(opts?.signal);
 
     const authHeader = await this.getAuthHeader();
+    const orgRef = this.resolveOrg();
     const headers = new Headers(init.headers);
     if (!headers.has("X-Bitig-Request")) {
       headers.set("X-Bitig-Request", "true");
+    }
+    if (orgRef && !headers.has("X-Bitig-Org")) {
+      headers.set("X-Bitig-Org", orgRef);
     }
     if (opts?.actor && !headers.has("X-Bitig-Actor")) {
       headers.set("X-Bitig-Actor", opts.actor);

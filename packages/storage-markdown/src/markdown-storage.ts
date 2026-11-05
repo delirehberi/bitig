@@ -248,7 +248,13 @@ export class MarkdownStorage implements StorageProvider {
       throwIfAborted(opts?.signal);
       const projectId = parseOrThrow(IdSchema, input.projectId, "saveTask");
       const siblings = await this.#readProjectTasks(projectId, opts?.signal);
-      const task = buildTask(input, this.#deps, nextTaskNumber(siblings), opts?.actor);
+      const task = buildTask(
+        input,
+        this.#deps,
+        nextTaskNumber(siblings),
+        opts?.actor,
+        opts ? { userId: opts.userId, userAvatarUrl: opts.userAvatarUrl } : undefined,
+      );
       const pFilePath = projectFilePath(task.projectId);
       const pExists = await this.#fs.fileExists(pFilePath, { signal: opts?.signal });
       if (!pExists) throw new NotFoundError("project", task.projectId);
@@ -275,7 +281,14 @@ export class MarkdownStorage implements StorageProvider {
       if (text === null) throw new NotFoundError("task", validId);
 
       const existing = decodeTask(found.projectId, validId, text, found.filePath);
-      let next = applyTaskPatch(existing, patch, this.#deps.clock(), opts?.actor, opts?.overrideBlockedBy);
+      let next = applyTaskPatch(
+        existing,
+        patch,
+        this.#deps.clock(),
+        opts?.actor,
+        opts?.overrideBlockedBy,
+        opts ? { userId: opts.userId, userAvatarUrl: opts.userAvatarUrl } : undefined,
+      );
       if (hasNewDependencies(existing, next)) {
         assertTaskDependencies(next, await this.#readAllTasks(opts?.signal), "updateTask");
       }
@@ -338,7 +351,13 @@ export class MarkdownStorage implements StorageProvider {
       if (text === null) throw new NotFoundError("task", validId);
 
       const existing = decodeTask(found.projectId, validId, text, found.filePath);
-      const next = completeTaskEntity(existing, this.#deps.clock(), opts?.actor, opts?.overrideBlockedBy);
+      const next = completeTaskEntity(
+        existing,
+        this.#deps.clock(),
+        opts?.actor,
+        opts?.overrideBlockedBy,
+        opts ? { userId: opts.userId, userAvatarUrl: opts.userAvatarUrl } : undefined,
+      );
       await this.#fs.writeTextAtomic(found.filePath, encodeTask(next), { signal: opts?.signal });
       return this.#withTaskCounts(found.projectId, next, opts?.signal);
     }, { signal: opts?.signal });
@@ -359,7 +378,14 @@ export class MarkdownStorage implements StorageProvider {
 
   async addComment(input: CreateCommentInput, opts?: OperationOptions): Promise<Comment> {
     throwIfAborted(opts?.signal);
-    const comment = buildComment(input, this.#deps);
+    const enrichedInput: CreateCommentInput = {
+      ...input,
+      ...(opts?.userId !== undefined && input.authorId === undefined ? { authorId: opts.userId } : {}),
+      ...(opts?.userAvatarUrl !== undefined && input.authorAvatarUrl === undefined
+        ? { authorAvatarUrl: opts.userAvatarUrl }
+        : {}),
+    };
+    const comment = buildComment(enrichedInput, this.#deps);
 
     return this.#lock.withLock(async () => {
       throwIfAborted(opts?.signal);
@@ -368,7 +394,12 @@ export class MarkdownStorage implements StorageProvider {
       const text = await this.#fs.readText(found.filePath, { signal: opts?.signal });
       if (text === null) throw new NotFoundError("task", comment.taskId);
       const existing = decodeTask(found.projectId, comment.taskId, text, found.filePath);
-      const touched = touchTaskEntity(existing, this.#deps.clock(), opts?.actor);
+      const touched = touchTaskEntity(
+        existing,
+        this.#deps.clock(),
+        opts?.actor,
+        opts ? { userId: opts.userId, userAvatarUrl: opts.userAvatarUrl } : undefined,
+      );
       await this.#writeComments(found.projectId, [comment], opts?.signal);
       await this.#fs.writeTextAtomic(found.filePath, encodeTask(touched), { signal: opts?.signal });
       return cloneComment(comment);
@@ -440,7 +471,12 @@ export class MarkdownStorage implements StorageProvider {
       assertTaskAttachmentQuota(existingAttachments, attachment.size, "addAttachment");
 
       const existingTask = decodeTask(found.projectId, attachment.taskId, text, found.filePath);
-      const touched = touchTaskEntity(existingTask, this.#deps.clock(), opts?.actor);
+      const touched = touchTaskEntity(
+        existingTask,
+        this.#deps.clock(),
+        opts?.actor,
+        opts ? { userId: opts.userId, userAvatarUrl: opts.userAvatarUrl } : undefined,
+      );
       await this.#writeAttachmentsWithContent(found.projectId, [attachment], opts?.signal);
       await this.#fs.writeTextAtomic(found.filePath, encodeTask(touched), { signal: opts?.signal });
       return stripAttachmentData(attachment);
