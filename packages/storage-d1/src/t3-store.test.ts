@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import migration from "../migrations/0019_project_t3_threads.sql?raw";
 import subagentMigration from "../migrations/0021_agent_run_subagents.sql?raw";
+import gitMigration from "../migrations/0023_agent_run_git_metadata.sql?raw";
 import { defaultIdGenerator } from "@bitig/core";
 import { T3D1Store, type SaveProjectT3ThreadInput } from "./t3-store";
 
@@ -169,6 +170,9 @@ describe("T3D1Store umbrella and child runs (BIT-141)", () => {
     for (const statement of subagentMigration.split("--> statement-breakpoint")) {
       await env.DB.prepare(statement.trim()).run();
     }
+    for (const statement of gitMigration.split("--> statement-breakpoint")) {
+      await env.DB.prepare(statement.trim()).run();
+    }
     await env.DB.prepare("INSERT INTO tasks (id, title) VALUES (?, ?), (?, ?)")
       .bind(PARENT_TASK_ID, "Umbrella", CHILD_TASK_ID, "Child")
       .run();
@@ -186,6 +190,26 @@ describe("T3D1Store umbrella and child runs (BIT-141)", () => {
       updatedAt: STARTED_AT,
     };
   }
+
+  it("round trips Git metadata, preserves missing values, clears explicit values, and rejects stale reports", async () => {
+    const store = new T3D1Store(env.DB);
+    const run = await store.saveAgentRun(runInput(PARENT_TASK_ID, "thread-parent"));
+    expect(run.branch).toBeUndefined();
+    const metadata = { branch: "feature/bit-162", headSha: "a".repeat(40), diffStat: { filesChanged: 2, insertions: 8, deletions: 3 }, pullRequestUrls: ["https://github.com/example/repo/pull/1"] };
+    await store.updateAgentRunGitMetadata(run.taskId, run.id, run.threadId, metadata, LATER);
+    expect(await store.getAgentRunByTaskId(run.taskId)).toMatchObject(metadata);
+    await store.updateAgentRunGitMetadata(run.taskId, run.id, run.threadId, { branch: "renamed" });
+    expect(await store.getAgentRunByTaskId(run.taskId)).toMatchObject({ ...metadata, branch: "renamed" });
+    expect(await store.updateAgentRunGitMetadata(run.taskId, run.id, "stale-thread", { branch: "wrong" })).toBeUndefined();
+    expect(await store.updateAgentRunGitMetadata(run.taskId, defaultIdGenerator(), run.threadId, { branch: "wrong" })).toBeUndefined();
+    await store.updateAgentRunGitMetadata(run.taskId, run.id, run.threadId, { branch: null, headSha: null, diffStat: null, pullRequestUrls: [] });
+    expect(await store.getAgentRunByTaskId(run.taskId)).toMatchObject({ pullRequestUrls: [] });
+    expect((await store.getAgentRunByTaskId(run.taskId))?.headSha).toBeUndefined();
+    await store.updateAgentRunGitMetadata(run.taskId, run.id, run.threadId, metadata);
+    const replacement = await store.saveAgentRun(runInput(PARENT_TASK_ID, "replacement"));
+    expect(replacement.branch).toBeUndefined();
+    expect(replacement.pullRequestUrls).toBeUndefined();
+  });
 
   it("links a child run to its parent and lets exactly one caller claim the parent's wait", async () => {
     const store = new T3D1Store(env.DB);

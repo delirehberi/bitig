@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { Hono } from "hono";
 import { beforeEach, describe, expect, it } from "vitest";
 import type {
   AgentRun,
@@ -14,10 +15,14 @@ import type {
   T3TaskRunLiveResponse,
   Task,
 } from "@bitig/core";
-import { createApp } from "../src/index";
-import { T3D1Store } from "@bitig/storage-d1";
-import { defaultIdGenerator } from "@bitig/core";
+import { createApp, type AppEnv } from "../src/index";
+import { mcpRouter } from "../src/routes/mcp";
+import { parseConfig } from "../src/config";
+import { D1Storage, T3D1Store } from "@bitig/storage-d1";
+import { reportTaskT3GitMetadata } from "../src/t3/service";
+import { defaultIdGenerator, InMemoryStorage } from "@bitig/core";
 import { decryptT3Token, encryptT3Token } from "../src/t3/crypto";
+import { parseThreadGitMetadata } from "../src/t3/client";
 import { TEST_AUTH_HEADER, TEST_MCP_AUTH_HEADER, TEST_T3_ENCRYPTION_KEY } from "./constants";
 
 const BASE_URL = "https://bitig.test";
@@ -165,6 +170,10 @@ const STATEMENTS = [
     \`model\` text,
     \`provider_instance_id\` text,
     \`model_options\` text,
+    \`branch\` text,
+    \`head_sha\` text,
+    \`diff_stat\` text,
+    \`pull_request_urls\` text,
     \`workspace_strategy\` text,
     \`parent_task_id\` text,
     \`waiting_for_task_id\` text,
@@ -203,6 +212,7 @@ interface RecordedToolCall {
 }
 
 interface MockT3ServerState {
+  gitMetadata?: Record<string, unknown>;
   toolErrors?: Record<string, string>;
   expiresInSeconds: number;
   failMcpConnection: boolean;
@@ -422,6 +432,7 @@ function createMockT3Fetch(state: MockT3ServerState): typeof fetch {
               }
               payload = {
                 thread: {
+                  ...state.gitMetadata,
                   id: "thread-abc-123",
                   status: state.threadStatus,
                   pendingRequestCount: state.pendingRequestCount,
@@ -513,6 +524,82 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
     }
     return Promise.resolve(app.request(`${BASE_URL}${path}`, { ...init, headers }, env));
   }
+
+  it("refuses Git metadata reports from a viewer before writing the run store", async () => {
+    const storage = new InMemoryStorage();
+    const project = await storage.createProject({ name: "Viewer" });
+    const task = await storage.saveTask({ projectId: project.id, title: "Viewer run" });
+    const viewerApp = new Hono<AppEnv>();
+    viewerApp.use("*", async (c, next) => {
+      c.set("storage", storage);
+      c.set("orgRole", "viewer");
+      c.set("config", parseConfig(env));
+      await next();
+    });
+    viewerApp.route("/mcp", mcpRouter);
+    const response = await viewerApp.request(`${BASE_URL}/mcp`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "report_t3_git_metadata", arguments: { taskId: task.id, runId: defaultIdGenerator(), threadId: "thread-1", metadata: { branch: "forbidden" } } } }),
+    }, env);
+    expect(await response.text()).toContain("editor role required");
+    expect(await new T3D1Store(env.DB).getAgentRunByTaskId(task.id)).toBeUndefined();
+  });
+
+  it("parses documented host metadata without treating invalid or missing values as empty", () => {
+    const url = "https://github.com/example/repo/pull/1";
+    expect(parseThreadGitMetadata(null)).toEqual({});
+    expect(parseThreadGitMetadata({})).toEqual({});
+    expect(parseThreadGitMetadata({ branch: null, pullRequests: [] })).toEqual({ branch: null, pullRequestUrls: [] });
+    expect(parseThreadGitMetadata({ branch: "feature", pullRequests: [{ url }, { url }] })).toEqual({ branch: "feature", pullRequestUrls: [url] });
+    expect(parseThreadGitMetadata({ linkedPullRequest: { url } })).toEqual({ pullRequestUrls: [url] });
+    expect(parseThreadGitMetadata({ branch: 2, pullRequests: [{ url: "javascript:alert(1)" }] })).toEqual({});
+    expect(parseThreadGitMetadata({ pullRequests: [null] })).toEqual({});
+    expect(parseThreadGitMetadata({ pullRequests: null, linkedPullRequest: null })).toEqual({});
+  });
+
+  it("reports metadata through authenticated MCP and refreshes branch/PRs without state changes", async () => {
+    await connectT3Host();
+    const project = await (await request("/api/projects", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "Git metadata", key: "GIT" }) })).json<Project>();
+    const task = await (await request("/api/tasks", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ projectId: project.id, title: "Git metadata" }) })).json<Task>();
+    const store = new T3D1Store(env.DB);
+    const run = await store.saveAgentRun({ id: defaultIdGenerator(), taskId: task.id, t3ProjectId: "t3-project", threadId: "thread-abc-123", state: "working", startedAt: Date.now(), updatedAt: Date.now() });
+    const metadata = { branch: "feature/bit-162", headSha: "a".repeat(40), diffStat: { filesChanged: 2, insertions: 5, deletions: 1 }, pullRequestUrls: ["https://github.com/example/repo/pull/1"] };
+    async function report(overrides: Record<string, unknown> = {}) {
+      const response = await app.request(`${BASE_URL}/mcp`, {
+        method: "POST",
+        headers: { Authorization: TEST_MCP_AUTH_HEADER, "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "report_t3_git_metadata", arguments: { taskId: task.id, runId: run.id, threadId: run.threadId, metadata, ...overrides } } }),
+      }, env);
+      expect(response.status).toBe(200);
+      const raw = await response.text();
+      const line = raw.split("\n").find((item) => item.startsWith("data: "));
+      return JSON.parse(line ? line.slice(6) : raw) as { result?: { isError?: boolean }; error?: unknown };
+    }
+    expect((await report()).result?.isError).not.toBe(true);
+    expect(await store.getAgentRunByTaskId(task.id)).toMatchObject(metadata);
+    await expect(reportTaskT3GitMetadata({ store, storage: new D1Storage({ db: env.DB, orgId: defaultIdGenerator() }), encryptionKey: TEST_T3_ENCRYPTION_KEY }, { taskId: task.id, runId: run.id, threadId: run.threadId, metadata: { branch: "foreign" } })).rejects.toThrow();
+    expect((await store.getAgentRunByTaskId(task.id))?.branch).toBe(metadata.branch);
+    expect((await report({ threadId: "stale" })).result?.isError).toBe(true);
+    expect((await report({ runId: defaultIdGenerator() })).result?.isError).toBe(true);
+    expect((await report({ taskId: defaultIdGenerator() })).result?.isError).toBe(true);
+    const invalid = await report({ metadata: { pullRequestUrls: ["javascript:alert(1)"] } });
+    expect(Boolean(invalid.error) || invalid.result?.isError).toBe(true);
+    mockState.gitMetadata = { branch: "renamed", pullRequests: [{ url: "https://github.com/example/repo/pull/2" }] };
+    const live = await (await request(`/api/tasks/${task.id}/t3-run`)).json<T3TaskRunLiveResponse>();
+    expect(live.run).toMatchObject({ ...metadata, branch: "renamed", pullRequestUrls: ["https://github.com/example/repo/pull/2"], state: "working" });
+    expect(await store.getAgentRunByTaskId(task.id)).toEqual(live.run);
+    mockState.gitMetadata = {};
+    const missing = await (await request(`/api/tasks/${task.id}/t3-run`)).json<T3TaskRunLiveResponse>();
+    expect(missing.run).toEqual(live.run);
+    mockState.gitMetadata = { branch: null, pullRequests: [] };
+    const cleared = await (await request(`/api/tasks/${task.id}/t3-run`)).json<T3TaskRunLiveResponse>();
+    expect(cleared.run?.branch).toBeUndefined();
+    expect(cleared.run?.pullRequestUrls).toEqual([]);
+    mockState.failMcpConnection = true;
+    const offline = await (await request(`/api/tasks/${task.id}/t3-run`)).json<T3TaskRunLiveResponse>();
+    expect(offline.run).toMatchObject({ state: "offline", headSha: metadata.headSha, diffStat: metadata.diffStat });
+  });
 
   async function connectT3Host(): Promise<void> {
     const startRes = await request("/api/t3/oauth/start", {

@@ -2,8 +2,10 @@ import { Hono } from "hono";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { BITIG_SERVER_INSTRUCTIONS, registerBitigTools } from "@bitig/mcp-tools";
+import { hasMinimumOrgRole } from "@bitig/core";
+import { ForbiddenRoleError } from "../auth";
 import type { AppEnv } from "../index";
-import { launchTaskInT3 } from "../t3/service";
+import { launchTaskInT3, reportTaskT3GitMetadata } from "../t3/service";
 import { buildServiceDeps } from "./t3";
 import { handBackFinishedTaskInBackground } from "./tasks";
 
@@ -26,6 +28,13 @@ export const mcpRouter = new Hono<AppEnv>().all("*", async (c) => {
 
   const t3Deps = buildServiceDeps(c);
   registerBitigTools(server, storage, {
+    reportT3GitMetadata: (input, signal) => {
+      const role = c.get("orgRole");
+      if (!role || !hasMinimumOrgRole(role, "editor")) {
+        throw new ForbiddenRoleError("Forbidden: editor role required to report Git metadata");
+      }
+      return reportTaskT3GitMetadata(t3Deps, input, signal);
+    },
     fallbackActor: () => lastInitializedClientName,
     startT3Thread: (input) =>
       launchTaskInT3(t3Deps, {

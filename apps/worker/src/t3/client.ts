@@ -3,6 +3,9 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
   T3_ALLOWED_MCP_TOOLS,
+  T3GitMetadataSchema,
+  T3PullRequestUrlSchema,
+  type T3GitMetadata,
   T3_STOP_REASON_MAX,
   T3ModelCapabilitySchema,
   T3ModelOptionSchema,
@@ -343,6 +346,7 @@ export async function exchangeT3OAuthCode(input: {
 }
 
 export interface T3LiveThreadReadout {
+  gitMetadata?: T3GitMetadata | undefined;
   thread?: T3ThreadSummary | undefined;
   recentRuns?: T3RunSummary[] | undefined;
   pendingRequestIds: string[];
@@ -350,6 +354,31 @@ export interface T3LiveThreadReadout {
   pendingRequestId?: string | undefined;
   /** Why the thread stopped or failed (e.g. usage limit, credit exhaustion, runtime error, #BIT-132). */
   stopReason?: string | undefined;
+}
+
+/** Only parse documented, thread-scoped fields; malformed optional data must not clear saved values. */
+export function parseThreadGitMetadata(raw: unknown): T3GitMetadata {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const thread = raw as Record<string, unknown>;
+  const metadata: T3GitMetadata = {};
+  const branch = T3GitMetadataSchema.safeParse({ branch: thread.branch });
+  if (thread.branch !== undefined && branch.success) Object.assign(metadata, branch.data);
+  const prs = thread.pullRequests;
+  if (Array.isArray(prs)) {
+    const urls: string[] = [];
+    for (const pr of prs) {
+      if (!pr || typeof pr !== "object") return metadata;
+      const parsed = T3PullRequestUrlSchema.safeParse((pr as Record<string, unknown>).url);
+      if (!parsed.success) return metadata;
+      urls.push(parsed.data);
+    }
+    const parsed = T3GitMetadataSchema.safeParse({ pullRequestUrls: [...new Set(urls)] });
+    if (parsed.success) Object.assign(metadata, parsed.data);
+  } else if (prs === undefined && thread.linkedPullRequest && typeof thread.linkedPullRequest === "object") {
+    const parsed = T3PullRequestUrlSchema.safeParse((thread.linkedPullRequest as Record<string, unknown>).url);
+    if (parsed.success) metadata.pullRequestUrls = [parsed.data];
+  }
+  return metadata;
 }
 
 export interface T3McpClientOptions {
@@ -991,6 +1020,7 @@ export class T3McpClient {
       ]);
 
       const thread = parseThreadSummary(threadPayload.thread);
+      const gitMetadata = parseThreadGitMetadata(threadPayload.thread);
       const recentRuns = parseRecentRuns(threadPayload.recentRuns);
 
       const rawRequestIds: unknown[] = Array.isArray(pendingListPayload.requestIds)
@@ -1031,6 +1061,7 @@ export class T3McpClient {
           : undefined;
 
       return {
+        gitMetadata,
         ...(thread ? { thread } : {}),
         recentRuns,
         pendingRequestIds,

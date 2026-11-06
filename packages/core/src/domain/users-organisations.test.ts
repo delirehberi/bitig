@@ -135,5 +135,6 @@ describe("permissions", () => {
 
     expect(requiredOrgRoleForMcpTool("list_tasks")).toBe("viewer");
     expect(requiredOrgRoleForMcpTool("add_task")).toBe("editor");
+    expect(requiredOrgRoleForMcpTool("report_t3_git_metadata")).toBe("editor");
   });
 });

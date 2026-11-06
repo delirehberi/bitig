@@ -19,6 +19,8 @@ import {
   ProjectNameSchema,
   ProjectResourcesSchema,
   SaveCheckpointInputSchema,
+  ReportT3GitMetadataInputSchema,
+  type ReportT3GitMetadataInput,
   StorageError,
   TaskOrderSchema,
   TaskPrioritySchema,
@@ -99,6 +101,7 @@ export interface StartT3ThreadToolResult {
 }
 
 export interface RegisterBitigToolsOptions {
+  readonly reportT3GitMetadata?: ((input: ReportT3GitMetadataInput, signal: AbortSignal) => Promise<AgentRun>) | undefined;
   /**
    * Optional fallback actor name (or getter) when the MCP transport is stateless
    * and `server.server.getClientVersion()` is not populated on the per-request server instance.
@@ -998,6 +1001,25 @@ export function registerBitigTools(
   );
 
   // 19. start_t3_thread
+  server.registerTool(
+    "report_t3_git_metadata",
+    {
+      description: "Record Git metadata for the current task run. Requires the run ID from the launch instructions and your T3 thread ID. Omitted fields preserve saved values; null clears a field and [] clears PR links. Diff counts are tracked changes relative to HEAD, including staged and unstaged changes, excluding untracked files. Never guess metadata.",
+      inputSchema: ReportT3GitMetadataInputSchema.shape,
+    },
+    async (args, extra) => {
+      try {
+        const taskId = await resolveTaskRef(storage, args.taskId, { signal: extra.signal });
+        if (!await storage.getTask(taskId, { signal: extra.signal })) throw new NotFoundError("task", taskId);
+        if (!options?.reportT3GitMetadata) throw new Error("T3 metadata reporting is not configured on this server");
+        const run = await options.reportT3GitMetadata({ ...args, taskId }, extra.signal);
+        return formatSuccessResult({ run });
+      } catch (err) {
+        return formatErrorResult(err);
+      }
+    },
+  );
+
   server.registerTool(
     "start_t3_thread",
     {

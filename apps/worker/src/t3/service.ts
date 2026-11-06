@@ -1,5 +1,8 @@
 import {
   DEFAULT_PROJECT_T3_WORKSPACE_STRATEGY,
+  ReportT3GitMetadataInputSchema,
+  type ReportT3GitMetadataInput,
+  type T3GitMetadata,
   NotFoundError,
   PROJECT_T3_MESSAGES_PAGE_LIMIT,
   PROJECT_T3_MESSAGE_MAX_CHARS,
@@ -231,7 +234,9 @@ export async function launchTaskInT3(
 
   const comments = await deps.storage.getComments(task.id);
   const code = taskCode(task, project);
+  const gitMetadataRunId = defaultIdGenerator();
   const builtPrompt = buildT3LaunchPrompt({
+    gitMetadataRunId,
     task,
     ...(code ? { taskCode: code } : {}),
     projectName: project.name,
@@ -259,9 +264,8 @@ export async function launchTaskInT3(
           { actor },
         );
 
-  const existingRun = await deps.store.getAgentRunByTaskId(task.id);
   const run = await deps.store.saveAgentRun({
-    id: existingRun?.id ?? defaultIdGenerator(),
+    id: gitMetadataRunId,
     taskId: task.id,
     t3ProjectId: mapping.t3ProjectId,
     threadId: launched.threadId,
@@ -470,9 +474,39 @@ async function describeBusyRun(
   };
 }
 
+/** Records agent-reported Git data after organisation and run identity validation. */
+export async function reportTaskT3GitMetadata(
+  deps: T3ServiceDeps,
+  input: ReportT3GitMetadataInput,
+  signal?: AbortSignal,
+): Promise<AgentRun> {
+  const parsed = ReportT3GitMetadataInputSchema.parse(input);
+  signal?.throwIfAborted();
+  // The scoped storage enforces organisation ownership before the unscoped run-table update.
+  const operationOptions = signal ? { signal } : {};
+  const taskId = await resolveTaskRef(deps.storage, parsed.taskId, operationOptions);
+  if (!await deps.storage.getTask(taskId, operationOptions)) throw new NotFoundError("task", taskId);
+  signal?.throwIfAborted();
+  const run = await deps.store.updateAgentRunGitMetadata(taskId, parsed.runId, parsed.threadId, parsed.metadata, deps.now?.() ?? Date.now());
+  if (!run) makeValidationIssue("runId", "The run or thread no longer matches this task; metadata was not recorded.");
+  if (deps.publishRealtime) {
+    await deps.publishRealtime({ type: "agent_run.updated", run }).catch((err: unknown) => {
+      console.warn("Could not publish T3 Git metadata update", err);
+    });
+  }
+  return run;
+}
+
+async function persistLiveGitMetadata(deps: T3ServiceDeps, run: AgentRun, metadata: T3GitMetadata | undefined, now: number): Promise<AgentRun> {
+  if (!metadata || !Object.entries(metadata).some(([key, value]) =>
+    JSON.stringify(run[key as keyof T3GitMetadata] ?? null) !== JSON.stringify(value),
+  )) return run;
+  return (await deps.store.updateAgentRunGitMetadata(run.taskId, run.id, run.threadId, metadata, now)) ?? run;
+}
+
 /**
  * Checks the live T3 thread status when a task is opened.
- * Updates `agent_runs.state` in D1 and broadcasts `agent_run.updated` if changed,
+ * Updates run state and Git metadata in D1 and broadcasts `agent_run.updated` if changed,
  * but NEVER mutates the Bitig task's status (`in_progress`, `done`, `archived`, `needsHuman`).
  */
 export async function getTaskT3RunLiveStatus(
@@ -522,12 +556,13 @@ export async function getTaskT3RunLiveStatus(
       }),
     );
 
-    const updatedRun =
+    const stateUpdatedRun =
       nextState === existingRun.state
         ? existingRun
         : ((await deps.store.updateAgentRunState(taskId, { state: nextState, now })) ?? existingRun);
 
-    if (updatedRun.state !== existingRun.state && deps.publishRealtime) {
+    const updatedRun = await persistLiveGitMetadata(deps, stateUpdatedRun, live.gitMetadata, now);
+    if (updatedRun !== existingRun && deps.publishRealtime) {
       await deps.publishRealtime({ type: "agent_run.updated", run: updatedRun }).catch(() => undefined);
     }
     await afterRunStateChange(deps, existingRun, updatedRun, live.stopReason);
@@ -661,11 +696,12 @@ export async function listT3RunsLive(deps: T3ServiceDeps): Promise<T3RunsLiveRes
             pendingRequestIds: live.pendingRequestIds,
           }),
         );
-        const updatedRun =
+        const stateUpdatedRun =
           nextState === existingRun.state
             ? existingRun
             : ((await deps.store.updateAgentRunState(existingRun.taskId, { state: nextState, now })) ?? existingRun);
-        if (updatedRun.state !== existingRun.state && deps.publishRealtime) {
+        const updatedRun = await persistLiveGitMetadata(deps, stateUpdatedRun, live.gitMetadata, now);
+        if (updatedRun !== existingRun && deps.publishRealtime) {
           await deps.publishRealtime({ type: "agent_run.updated", run: updatedRun }).catch(() => undefined);
         }
         await afterRunStateChange(deps, existingRun, updatedRun, live.stopReason);

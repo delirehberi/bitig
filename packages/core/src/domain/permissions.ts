@@ -72,6 +72,7 @@ export const MCP_WRITE_TOOLS = new Set<string>([
   "update_webhook",
   "delete_webhook",
   "start_t3_thread",
+  "report_t3_git_metadata",
 ]);
 
 export function requiredOrgRoleForMcpTool(toolName: string): OrganisationRole {

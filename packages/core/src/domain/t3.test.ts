@@ -22,6 +22,7 @@ import {
   normalizeT3McpUrl,
   T3WorkspaceBusyError,
   AgentRunSchema,
+  T3GitMetadataSchema,
   T3_HANDBACK_CHECKLIST_MAX,
   buildT3SubagentCompletedComment,
   buildT3SubagentCompletedPrompt,
@@ -31,6 +32,25 @@ import {
 } from "./t3";
 import { BitigError, isBitigError } from "./errors";
 import type { Checkpoint, Comment, Task } from "./types";
+
+describe("Git metadata validation (BIT-162)", () => {
+  it("accepts absent and cleared metadata, full hashes, and zero diff counts", () => {
+    expect(T3GitMetadataSchema.parse({})).toEqual({});
+    expect(T3GitMetadataSchema.parse({ branch: null, headSha: null, diffStat: null, pullRequestUrls: [] })).toEqual({ branch: null, headSha: null, diffStat: null, pullRequestUrls: [] });
+    expect(T3GitMetadataSchema.safeParse({ headSha: "a".repeat(40), diffStat: { filesChanged: 0, insertions: 0, deletions: 0 } }).success).toBe(true);
+    expect(T3GitMetadataSchema.safeParse({ headSha: "a".repeat(64) }).success).toBe(true);
+  });
+  it.each([
+    { headSha: "not-a-commit" },
+    { branch: " " },
+    { diffStat: { filesChanged: -1, insertions: 0, deletions: 0 } },
+    { diffStat: { filesChanged: 1, insertions: 0.5, deletions: 0 } },
+    { pullRequestUrls: ["javascript:alert(1)"] },
+    { pullRequestUrls: ["file:///etc/passwd"] },
+  ])("rejects invalid metadata %j", (metadata) => {
+    expect(T3GitMetadataSchema.safeParse(metadata).success).toBe(false);
+  });
+});
 
 describe("normalizeT3McpUrl", () => {
   it("normalizes https origin or /mcp path", () => {
@@ -136,8 +156,12 @@ describe("buildT3LaunchPrompt", () => {
       task: sampleTask,
       taskCode: "BIT-107",
       comments: sampleComments,
+      gitMetadataRunId: "0196ed60-0000-7000-8000-000000000099",
     });
     expect(built.title).toBe("BIT-107 Add OAuth client");
+    expect(built.prompt).toContain("report_t3_git_metadata");
+    expect(built.prompt).toContain('runId "0196ed60-0000-7000-8000-000000000099"');
+    expect(built.prompt).toContain("git diff HEAD --numstat");
     expect(built.clientRequestId).toBe("BIT-107");
     expect(built.prompt).toContain("# BIT-107: Add OAuth client");
     expect(built.prompt).toContain("Connect Worker to T3 MCP.");

@@ -93,7 +93,34 @@ export const T3ModelSelectionSchema = z.strictObject({
 });
 export type T3ModelSelection = z.output<typeof T3ModelSelectionSchema>;
 
+export const T3_GIT_TEXT_MAX = 256;
+export const T3_PR_URL_MAX = 2048;
+export const T3_PR_COUNT_MAX = 100;
+export const T3_SHORT_SHA_LENGTH = 7;
+export const T3PullRequestUrlSchema = z.url({ protocol: /^https?$/ }).max(T3_PR_URL_MAX);
+export const T3DiffStatSchema = z.strictObject({
+  filesChanged: z.number().int().nonnegative(),
+  insertions: z.number().int().nonnegative(),
+  deletions: z.number().int().nonnegative(),
+});
+export const T3GitMetadataSchema = z.strictObject({
+  branch: z.string().trim().min(1).max(T3_GIT_TEXT_MAX).nullable().exactOptional(),
+  headSha: z.string().regex(/^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$/).nullable().exactOptional(),
+  /** Working-tree changes relative to HEAD (staged and unstaged); excludes untracked files. */
+  diffStat: T3DiffStatSchema.nullable().exactOptional(),
+  pullRequestUrls: z.array(T3PullRequestUrlSchema).max(T3_PR_COUNT_MAX).exactOptional(),
+});
+export type T3GitMetadata = z.output<typeof T3GitMetadataSchema>;
+export const ReportT3GitMetadataInputSchema = z.strictObject({
+  taskId: z.string().trim().min(1),
+  runId: IdSchema,
+  threadId: z.string().trim().min(1).max(T3_GIT_TEXT_MAX),
+  metadata: T3GitMetadataSchema,
+});
+export type ReportT3GitMetadataInput = z.output<typeof ReportT3GitMetadataInputSchema>;
+
 export const AgentRunSchema = z.strictObject({
+  ...T3GitMetadataSchema.shape,
   id: IdSchema,
   taskId: IdSchema,
   t3ProjectId: z.string().trim().min(1).max(200),
@@ -208,6 +235,7 @@ export interface T3RunSummary {
 export const T3_STOP_REASON_MAX = 500;
 
 export interface T3TaskRunLiveResponse {
+  /** Persisted Git/PR metadata is included on `run`, including when the host is offline. */
   readonly run: AgentRun | null;
   readonly pendingRequestId?: string | undefined;
   readonly pendingQuestions: T3PendingQuestion[];
@@ -644,6 +672,7 @@ export function computeT3ConnectionStatus(
 }
 
 export interface BuildT3LaunchPromptInput {
+  readonly gitMetadataRunId?: string | undefined;
   readonly task: Task;
   readonly taskCode?: string | undefined;
   readonly code?: string | undefined;
@@ -664,6 +693,7 @@ export interface BuiltT3LaunchPrompt {
  * with standing Bitig MCP instructions for launching a T3 thread on a task.
  */
 export function buildT3LaunchPrompt({
+  gitMetadataRunId,
   task,
   taskCode,
   code: codeAlias,
@@ -673,6 +703,9 @@ export function buildT3LaunchPrompt({
   const code = (taskCode ?? codeAlias ?? "").trim() || task.id;
   const title = `${code} ${task.title}`.slice(0, 512);
   const sections: string[] = [`# ${code}: ${task.title}`];
+  if (gitMetadataRunId) {
+    sections.push(`## Git metadata reporting\n\nAfter Git changes and before your final response, call report_t3_git_metadata with taskId "${code}", runId "${gitMetadataRunId}", your current T3 threadId, and metadata. Read branch with git branch --show-current, headSha with git rev-parse HEAD, and diffStat with git diff HEAD --numstat (tracked staged and unstaged changes; exclude untracked files; count binary files but not binary lines). diffStat is { filesChanged, insertions, deletions }. Include known HTTP(S) pullRequestUrls. Omit unknown fields, use null to clear branch/headSha/diffStat, and [] for a known empty PR list. Never guess values or substitute another run's identity. If reporting fails, mention it in your final task comment.`);
+  }
 
   if (task.description.trim().length > 0) {
     sections.push(`## Description\n\n${task.description.trim()}`);

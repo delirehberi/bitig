@@ -374,6 +374,10 @@ export const agentRuns = sqliteTable(
     /** JSON array of `{ id, value }` model options chosen on the last switch (#BIT-119). */
     modelOptions: text("model_options"),
     workspaceStrategy: text("workspace_strategy").$type<T3WorkspaceStrategy>(),
+    branch: text("branch"),
+    headSha: text("head_sha"),
+    diffStat: text("diff_stat"),
+    pullRequestUrls: text("pull_request_urls"),
     /** On a child task's run: the umbrella task whose session started it (#BIT-141). */
     parentTaskId: text("parent_task_id").references(() => tasks.id, { onDelete: "set null" }),
     /** On an umbrella task's run: the child task it waits on while `waiting_subagent` (#BIT-141). */

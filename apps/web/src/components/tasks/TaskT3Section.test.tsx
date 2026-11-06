@@ -1,5 +1,5 @@
 import { InMemoryStorage, type AgentRun, type AgentRunState, type Project, type Task } from "@bitig/core";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -50,11 +50,32 @@ describe("TaskT3Section", () => {
     task = await storage.saveTask({ projectId: project.id, title: "Run in T3" });
   });
 
+  it("renders saved Git metadata and safe PR links even while offline", async () => {
+    const url = "https://github.com/example/repo/pull/162";
+    const headSha = "abcdef0" + "1".repeat(33);
+    vi.mocked(fetchTaskT3Run).mockResolvedValue({ run: { ...makeRun(task.id, "offline"), branch: "feature/bit-162", headSha, diffStat: { filesChanged: 3, insertions: 12, deletions: 4 }, pullRequestUrls: [url, "javascript:alert(1)", url] }, pendingQuestions: [] });
+    render(<TaskT3Section task={task} project={project} hasUnfinishedDependencies={false} />);
+    expect(await screen.findByText("feature/bit-162")).toBeInTheDocument();
+    expect(screen.getByText("abcdef0")).toHaveAttribute("title", headSha);
+    expect(screen.getByText("3 files changed · +12 / −4")).toBeInTheDocument();
+    expect(screen.getAllByRole("link", { name: url })).toHaveLength(1);
+    expect(screen.getByRole("link", { name: url })).toHaveAttribute("href", url);
+    expect(screen.getByRole("link", { name: url })).toHaveAttribute("rel", "noopener noreferrer");
+    expect(screen.queryByRole("link", { name: /javascript/ })).not.toBeInTheDocument();
+  });
+
+  it("shows a known clean diff and hides missing metadata", async () => {
+    vi.mocked(fetchTaskT3Run).mockResolvedValue({ run: { ...makeRun(task.id, "finished"), diffStat: { filesChanged: 0, insertions: 0, deletions: 0 }, pullRequestUrls: [] }, pendingQuestions: [] });
+    render(<TaskT3Section task={task} project={project} hasUnfinishedDependencies={false} />);
+    expect(await screen.findByText("0 files changed · +0 / −0")).toBeInTheDocument();
+  });
+
   it("has no follow-up message input and points to comments while a run is reachable", async () => {
     vi.mocked(fetchTaskT3Run).mockResolvedValue({ run: makeRun(task.id, "finished"), pendingQuestions: [] });
     render(<TaskT3Section task={task} project={project} hasUnfinishedDependencies={false} />);
 
     expect(await screen.findByText(COMMENT_HINT)).toBeInTheDocument();
+    expect(screen.queryByTestId("t3-git-metadata")).not.toBeInTheDocument();
     expect(screen.queryByRole("textbox", { name: /message t3 thread/i })).not.toBeInTheDocument();
   });
 
@@ -75,7 +96,9 @@ describe("TaskT3Section", () => {
     );
 
     expect(await screen.findByTestId("t3-thread-chip")).toHaveTextContent("T3 thread · waiting for approval · gpt-6-sol");
-    expect(onT3ContextChange).toHaveBeenLastCalledWith({ run, capabilities: [] });
+    await waitFor(() => {
+      expect(onT3ContextChange).toHaveBeenLastCalledWith({ run, capabilities: [] });
+    });
   });
 
   it("displays stopReason when a run is failed or stopped (BIT-132)", async () => {

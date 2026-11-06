@@ -10,7 +10,7 @@ import {
   Square,
   Terminal,
 } from "lucide-react";
-import { isActiveAgentRunState, taskCode } from "@bitig/core";
+import { isActiveAgentRunState, taskCode, T3PullRequestUrlSchema, T3_SHORT_SHA_LENGTH } from "@bitig/core";
 import type {
   AgentRun,
   Project,
@@ -432,6 +432,23 @@ export function TaskT3Section({
               </button>
             )}
           </div>
+
+          {(run.branch || run.headSha || run.diffStat || run.pullRequestUrls?.length) ? (
+            <div data-testid="t3-git-metadata" className="flex flex-wrap items-center gap-x-3 gap-y-1 text-2xs text-ink-2">
+              {run.branch && <span className="inline-flex items-center gap-1 break-all"><GitBranch size={12} aria-hidden="true" />{run.branch}</span>}
+              {run.headSha && <code title={run.headSha} className="font-mono">{run.headSha.slice(0, T3_SHORT_SHA_LENGTH)}</code>}
+              {run.diffStat && (
+                <span title="Tracked changes relative to HEAD, including staged and unstaged changes; excludes untracked files">
+                  {run.diffStat.filesChanged} files changed · +{run.diffStat.insertions} / −{run.diffStat.deletions}
+                </span>
+              )}
+              {[...new Set(run.pullRequestUrls ?? [])].filter((url) => T3PullRequestUrlSchema.safeParse(url).success).map((url) => (
+                <a key={url} href={url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 break-all text-accent-ink hover:underline">
+                  {url}<ExternalLink size={11} aria-hidden="true" />
+                </a>
+              ))}
+            </div>
+          ) : null}
 
           {run.state === "waiting_subagent" && run.waitingForTaskId && (
             <div

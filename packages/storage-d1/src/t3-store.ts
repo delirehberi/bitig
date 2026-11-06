@@ -2,6 +2,8 @@ import { and, desc, eq, inArray, lt } from "drizzle-orm";
 import { drizzle, type DrizzleD1Database } from "drizzle-orm/d1";
 import {
   AgentRunSchema,
+  T3GitMetadataSchema,
+  type T3GitMetadata,
   DEFAULT_ORGANISATION_ID,
   ProjectT3ThreadSchema,
   T3ModelSelectionOptionsSchema,
@@ -95,7 +97,21 @@ function parseModelOptions(raw: string | null): T3ModelSelectionOption[] | undef
 
 function toAgentRun(row: AgentRunRecord): AgentRun {
   const modelOptions = parseModelOptions(row.modelOptions);
+  const metadata: T3GitMetadata = {};
+  for (const key of ["branch", "headSha", "diffStat", "pullRequestUrls"] as const) {
+    const raw = row[key];
+    if (raw == null) continue;
+    try {
+      const value: unknown = key === "diffStat" || key === "pullRequestUrls" ? JSON.parse(raw) : raw;
+      const parsed = T3GitMetadataSchema.safeParse({ [key]: value });
+      if (parsed.success) Object.assign(metadata, parsed.data);
+      else console.warn("ignoring invalid agent run Git metadata", key);
+    } catch (err) {
+      console.warn("ignoring unreadable agent run Git metadata", key, err);
+    }
+  }
   return AgentRunSchema.parse({
+    ...metadata,
     id: row.id,
     taskId: row.taskId,
     t3ProjectId: row.t3ProjectId,
@@ -348,6 +364,10 @@ export class T3D1Store {
 
   async saveAgentRun(input: SaveAgentRunInput): Promise<AgentRun> {
     const record: AgentRunRecord = {
+      branch: null,
+      headSha: null,
+      diffStat: null,
+      pullRequestUrls: null,
       id: input.id,
       taskId: input.taskId,
       t3ProjectId: input.t3ProjectId,
@@ -372,6 +392,10 @@ export class T3D1Store {
       .onConflictDoUpdate({
         target: agentRuns.taskId,
         set: {
+          branch: null,
+          headSha: null,
+          diffStat: null,
+          pullRequestUrls: null,
           id: record.id,
           t3ProjectId: record.t3ProjectId,
           threadId: record.threadId,
@@ -390,6 +414,25 @@ export class T3D1Store {
       });
 
     return toAgentRun(record);
+  }
+
+  /** Compare run and thread identity in SQL so a stale report cannot update a replacement run. */
+  async updateAgentRunGitMetadata(
+    taskId: string,
+    runId: string,
+    threadId: string,
+    metadata: T3GitMetadata,
+    now = Date.now(),
+  ): Promise<AgentRun | undefined> {
+    const parsed = T3GitMetadataSchema.parse(metadata);
+    const rows = await this.db.update(agentRuns).set({
+      ...(parsed.branch !== undefined ? { branch: parsed.branch } : {}),
+      ...(parsed.headSha !== undefined ? { headSha: parsed.headSha } : {}),
+      ...(parsed.diffStat !== undefined ? { diffStat: parsed.diffStat === null ? null : JSON.stringify(parsed.diffStat) } : {}),
+      ...(parsed.pullRequestUrls !== undefined ? { pullRequestUrls: JSON.stringify(parsed.pullRequestUrls) } : {}),
+      updatedAt: now,
+    }).where(and(eq(agentRuns.taskId, taskId), eq(agentRuns.id, runId), eq(agentRuns.threadId, threadId))).returning();
+    return rows[0] ? toAgentRun(rows[0]) : undefined;
   }
 
   async updateAgentRunState(
