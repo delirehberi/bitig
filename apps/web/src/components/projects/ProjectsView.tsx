@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { Archive, ArrowLeft, FolderPlus, Hand, Plus, RefreshCw, Search } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Archive, ArrowLeft, FolderPlus, Hand, Plus, RefreshCw, Search, X } from "lucide-react";
 import {
   PROJECT_KINDS,
   type AgentRun,
@@ -11,10 +11,11 @@ import {
   type UpdateProjectInput,
 } from "@bitig/core";
 import { useT3Runs } from "../../hooks/useT3Runs";
+import { T3ApiError, fetchT3Connection, registerT3HostFolder } from "../../services/t3";
 import { resolveProjectActiveSessions } from "./activeSessions";
 import { ProjectCard } from "./ProjectCard";
 import { ProjectDetailModal } from "./ProjectDetailModal";
-import { ProjectModal } from "./ProjectModal";
+import { ProjectModal, type ProjectModalSubmitExtras } from "./ProjectModal";
 import { DeleteProjectDialog } from "./DeleteProjectDialog";
 
 interface ProjectsViewProps {
@@ -31,6 +32,17 @@ interface ProjectsViewProps {
   readonly onArchivedViewChange?: (archived: boolean) => void;
   readonly agentRuns?: readonly AgentRun[] | undefined;
   readonly activeSessions?: readonly T3ProjectActiveSession[] | undefined;
+  /**
+   * Lets the New Project dialog register a folder on the T3 host (#BIT-148). Pass true only
+   * for an organisation owner in Cloudflare mode; the field then appears once a T3 host is
+   * confirmed connected.
+   */
+  readonly hostFolderEnabled?: boolean;
+}
+
+interface HostFolderNotice {
+  readonly tone: "success" | "error";
+  readonly text: string;
 }
 
 type ProjectTaskFilter = "" | "open" | "done" | "empty";
@@ -60,6 +72,7 @@ export function ProjectsView({
   onArchivedViewChange,
   agentRuns: agentRunsProp,
   activeSessions: activeSessionsProp,
+  hostFolderEnabled = false,
 }: ProjectsViewProps) {
   const [localArchivedView, setLocalArchivedView] = useState(false);
   const isArchivedView = archivedView ?? localArchivedView;
@@ -120,6 +133,30 @@ export function ProjectsView({
       project: null,
     }));
   }
+
+  const isCreating = modalState.isOpen && modalState.project === null;
+  const [hostConnected, setHostConnected] = useState(false);
+  const [hostFolderNotice, setHostFolderNotice] = useState<HostFolderNotice | null>(null);
+
+  // Re-checks the T3 connection each time the New Project dialog opens, so a host connected or
+  // disconnected in Settings is picked up without a reload.
+  useEffect(() => {
+    if (!hostFolderEnabled || !isCreating) return;
+    const controller = new AbortController();
+    fetchT3Connection(controller.signal)
+      .then((status) => {
+        setHostConnected(status.connected);
+      })
+      .catch((err: unknown) => {
+        if (controller.signal.aborted) return;
+        // The folder field is optional; without a confirmed host the dialog just hides it.
+        console.warn("could not check the T3 connection for the New Project dialog", err);
+        setHostConnected(false);
+      });
+    return () => {
+      controller.abort();
+    };
+  }, [hostFolderEnabled, isCreating, modalState.openKey]);
 
   const [deleteTarget, setDeleteTarget] = useState<Project | null>(null);
   const [viewProjectId, setViewProjectId] = useState<string | null>(null);
@@ -191,11 +228,31 @@ export function ProjectsView({
     setNeedsHumanOnly(false);
   }
 
-  async function handleModalSubmit(input: CreateProjectInput) {
+  async function handleModalSubmit(input: CreateProjectInput, extras?: ProjectModalSubmitExtras) {
     if (modalState.project) {
       await onUpdateProject(modalState.project.id, input);
-    } else {
-      await onCreateProject(input);
+      return;
+    }
+    const created = await onCreateProject(input);
+    const folder = extras?.hostFolderPath;
+    if (!folder) return;
+    // The project already exists, so a registration failure is reported as a notice rather
+    // than thrown: throwing would keep the dialog open and a resubmit would create a duplicate.
+    try {
+      const result = await registerT3HostFolder(created.id, folder);
+      setHostFolderNotice({
+        tone: "success",
+        text: result.created
+          ? `Registered ${folder} in T3 for "${created.name}".`
+          : `${folder} was already registered in T3; linked it to "${created.name}".`,
+      });
+    } catch (err: unknown) {
+      const reason = err instanceof T3ApiError ? err.message : "T3 could not be reached.";
+      if (!(err instanceof T3ApiError)) console.error("unexpected host folder registration failure", err);
+      setHostFolderNotice({
+        tone: "error",
+        text: `"${created.name}" was created, but its folder was not registered: ${reason} You can retry from the project's T3 panel.`,
+      });
     }
   }
 
@@ -347,6 +404,29 @@ export function ProjectsView({
         </div>
       )}
 
+      {hostFolderNotice && (
+        <div
+          role={hostFolderNotice.tone === "error" ? "alert" : "status"}
+          className={`flex items-start justify-between gap-3 rounded-md border p-4 text-sm font-medium ${
+            hostFolderNotice.tone === "error"
+              ? "border-danger/30 bg-danger-soft text-danger"
+              : "border-rule bg-paper-2 text-ink"
+          }`}
+        >
+          <span>{hostFolderNotice.text}</span>
+          <button
+            type="button"
+            onClick={() => {
+              setHostFolderNotice(null);
+            }}
+            aria-label="Dismiss"
+            className="text-ink-3 transition-colors hover:text-ink"
+          >
+            <X size={ICON_SIZE} />
+          </button>
+        </div>
+      )}
+
       {isLoading ? (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {[1, 2, 3].map((i) => (
@@ -444,6 +524,7 @@ export function ProjectsView({
         tasks={tasks}
         activeSessions={viewProject ? (activeSessionsByProject.get(viewProject.id) ?? []) : []}
         focusT3Composer={focusT3Composer}
+        canManageHostFolder={hostFolderEnabled}
         onClose={() => {
           setViewProjectId(null);
         }}
@@ -471,6 +552,7 @@ export function ProjectsView({
         project={modalState.project}
         onClose={closeProjectModal}
         onSubmit={handleModalSubmit}
+        hostFolderEnabled={hostFolderEnabled && hostConnected}
       />
 
       <DeleteProjectDialog

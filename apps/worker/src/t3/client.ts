@@ -1,9 +1,12 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import {
   T3_ALLOWED_MCP_TOOLS,
   T3GitMetadataSchema,
+  findHostFolderPathIssue,
+  hostFolderPathIssueMessage,
   T3PullRequestUrlSchema,
   type T3GitMetadata,
   T3_STOP_REASON_MAX,
@@ -32,7 +35,12 @@ import { z } from "zod";
 import { generateOauthState, generatePkcePair } from "./crypto";
 
 const BITIG_OAUTH_CLIENT_NAME = "Bitig";
+/** Requested only when the T3 host advertises no `scopes_supported`. */
 const DEFAULT_OAUTH_SCOPE = "mcp:tools";
+const OAUTH_SCOPES_MAX = 50;
+const OAUTH_SCOPE_TOKEN_MAX = 200;
+/** RFC 6749 §3.3 `scope-token`: printable ASCII except space, `"` and `\`. */
+const OAUTH_SCOPE_TOKEN = /^[\x21\x23-\x5B\x5D-\x7E]+$/u;
 const DEFAULT_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60;
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
@@ -49,11 +57,59 @@ export class T3OAuthError extends Error {
 export class T3McpError extends Error {
   override readonly name = "T3McpError";
   readonly code: string;
+  /**
+   * The `code` T3 put in a failed tool result, when it sent one (e.g. `capability_denied`).
+   * T3 reports tool failures as JSON text such as `{"_tag":"OrchestratorMcpFailure","code":…}`.
+   */
+  readonly t3Code: string | undefined;
+  /** The human-readable `message` from such a failure, without the JSON wrapper. */
+  readonly t3Message: string | undefined;
 
-  constructor(code: string, message: string) {
+  constructor(code: string, message: string, details?: { t3Code?: string | undefined; t3Message?: string | undefined }) {
     super(message);
     this.code = code;
+    this.t3Code = details?.t3Code;
+    this.t3Message = details?.t3Message;
   }
+}
+
+/** JSON-RPC code the MCP SDK uses when a request exceeds its `timeout`. */
+const MCP_REQUEST_TIMEOUT_CODE: number = ErrorCode.RequestTimeout;
+
+/** Bounds a single T3 host project operation (connect + one tool call). */
+export const T3_PROJECT_OPERATION_TIMEOUT_MS = 20_000;
+/** `t3_project_list` page size; T3 caps `limit` at 100. */
+const T3_PROJECT_LIST_PAGE_LIMIT = 100;
+/** Stops paging after this many pages, so a misbehaving host cannot keep the Worker busy. */
+const T3_PROJECT_LIST_MAX_PAGES = 50;
+
+export interface T3CallOptions {
+  /** Aborts the session, e.g. when the browser request that started it is cancelled. */
+  readonly signal?: AbortSignal | undefined;
+  /** Per-request timeout in milliseconds for connecting and each tool call. */
+  readonly timeoutMs?: number | undefined;
+}
+
+const T3ToolFailureSchema = z.looseObject({
+  code: z.string().trim().min(1).max(200),
+  message: z.string().trim().min(1).max(4000).optional(),
+});
+
+function parseT3ToolFailure(text: string | undefined): { t3Code?: string; t3Message?: string } {
+  if (!text) return {};
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    // Plain-text failures carry no structured code; the text itself becomes the message.
+    return {};
+  }
+  const parsed = T3ToolFailureSchema.safeParse(raw);
+  if (!parsed.success) return {};
+  return {
+    t3Code: parsed.data.code,
+    ...(parsed.data.message ? { t3Message: parsed.data.message } : {}),
+  };
 }
 
 export interface T3CloudflareAccessCredentials {
@@ -157,6 +213,41 @@ export interface StartOAuthFlowResult {
   redirectUri: string;
 }
 
+/**
+ * Reads `scopes_supported` from OAuth metadata. A malformed field yields no scopes rather than
+ * failing discovery, and invalid scope tokens are dropped.
+ */
+function parseScopesSupported(metadata: unknown): string[] {
+  if (!metadata || typeof metadata !== "object" || !("scopes_supported" in metadata)) return [];
+  const raw = metadata.scopes_supported;
+  if (!Array.isArray(raw)) return [];
+  const scopes = new Set<string>();
+  for (const item of raw) {
+    if (
+      typeof item === "string" &&
+      item.length <= OAUTH_SCOPE_TOKEN_MAX &&
+      OAUTH_SCOPE_TOKEN.test(item) &&
+      scopes.size < OAUTH_SCOPES_MAX
+    ) {
+      scopes.add(item);
+    }
+  }
+  return [...scopes];
+}
+
+/**
+ * The scope Bitig requests: every scope the T3 host advertises, so the owner can grant the full
+ * access that host project operations need (#BIT-148). The protected resource's list wins
+ * (RFC 9728), then the authorization server's (RFC 8414), then `mcp:tools`.
+ */
+export function resolveT3OAuthScope(resourceMetadata: unknown, authServerMetadata: unknown): string {
+  const fromResource = parseScopesSupported(resourceMetadata);
+  if (fromResource.length > 0) return fromResource.join(" ");
+  const fromAuthServer = parseScopesSupported(authServerMetadata);
+  if (fromAuthServer.length > 0) return fromAuthServer.join(" ");
+  return DEFAULT_OAUTH_SCOPE;
+}
+
 export async function startT3OAuthFlow(input: {
   mcpUrl: string;
   redirectUri: string;
@@ -167,6 +258,7 @@ export async function startT3OAuthFlow(input: {
   const { mcpUrl, origin } = normalizeT3McpUrl(input.mcpUrl);
 
   let authServerOrigin = origin;
+  let resourceMetadata: unknown = null;
   const resourceMetaResponse = await fetchFn(new URL("/.well-known/oauth-protected-resource", origin), {
     headers: { Accept: "application/json" },
     redirect: "manual",
@@ -183,6 +275,7 @@ export async function startT3OAuthFlow(input: {
 
   if (resourceMetaResponse.ok) {
     const rawMeta: unknown = await resourceMetaResponse.json().catch(() => ({}));
+    resourceMetadata = rawMeta;
     const parsedMeta = ProtectedResourceMetadataSchema.safeParse(rawMeta);
     const firstServer = parsedMeta.success ? parsedMeta.data.authorization_servers?.[0] : undefined;
     if (firstServer) {
@@ -275,7 +368,7 @@ export async function startT3OAuthFlow(input: {
   authUrl.searchParams.set("code_challenge", codeChallenge);
   authUrl.searchParams.set("code_challenge_method", "S256");
   authUrl.searchParams.set("resource", mcpUrl);
-  authUrl.searchParams.set("scope", DEFAULT_OAUTH_SCOPE);
+  authUrl.searchParams.set("scope", resolveT3OAuthScope(resourceMetadata, authMetaJson));
 
   return {
     authorizationUrl: authUrl.toString(),
@@ -391,7 +484,7 @@ function assertAllowedTool(name: string): asserts name is T3AllowedMcpTool {
   if (!(T3_ALLOWED_MCP_TOOLS as readonly string[]).includes(name)) {
     throw new T3McpError(
       "forbidden_tool",
-      `Tool "${name}" is not in T3_ALLOWED_MCP_TOOLS; Bitig never mutates T3 projects`,
+      `Tool "${name}" is not in T3_ALLOWED_MCP_TOOLS; Bitig only calls allowlisted T3 tools`,
     );
   }
 }
@@ -451,7 +544,11 @@ function extractToolPayload(result: {
 
   if (result.isError) {
     const firstText = contentItems.find(isTextContentItem);
-    throw new T3McpError("tool_error", firstText?.text ?? "T3 MCP tool returned an error");
+    throw new T3McpError(
+      "tool_error",
+      firstText?.text ?? "T3 MCP tool returned an error",
+      parseT3ToolFailure(firstText?.text),
+    );
   }
 
   if (result.structuredContent && typeof result.structuredContent === "object") {
@@ -711,6 +808,44 @@ async function fetchStopReasonFromActivity(
   return parseThreadStopReason(collected) ?? parseThreadStopReason(fallbackItems);
 }
 
+function parseRemoteProject(item: unknown): T3RemoteProject | undefined {
+  if (!item || typeof item !== "object") {
+    return undefined;
+  }
+  const rec = item as Record<string, unknown>;
+  const id = typeof rec.id === "string" ? rec.id.trim() : "";
+  const title =
+    typeof rec.title === "string" && rec.title.trim().length > 0
+      ? rec.title.trim()
+      : typeof rec.displayName === "string" && rec.displayName.trim().length > 0
+        ? rec.displayName.trim()
+        : id;
+  if (!id || !title) {
+    return undefined;
+  }
+  const parsed = T3RemoteProjectSchema.safeParse({
+    id,
+    title,
+    ...(typeof rec.workspaceRoot === "string" && rec.workspaceRoot.trim().length > 0
+      ? { workspaceRoot: rec.workspaceRoot.trim() }
+      : {}),
+    ...(typeof rec.displayName === "string" && rec.displayName.trim().length > 0
+      ? { displayName: rec.displayName.trim() }
+      : {}),
+  });
+  return parsed.success ? parsed.data : undefined;
+}
+
+function parseRemoteProjects(rawProjects: unknown): T3RemoteProject[] {
+  if (!Array.isArray(rawProjects)) return [];
+  const projects: T3RemoteProject[] = [];
+  for (const item of rawProjects) {
+    const project = parseRemoteProject(item);
+    if (project) projects.push(project);
+  }
+  return projects;
+}
+
 export class T3McpClient {
   private readonly mcpUrl: string;
   private readonly accessToken: string;
@@ -726,7 +861,12 @@ export class T3McpClient {
     run: (
       callTool: (name: T3AllowedMcpTool, args: Record<string, unknown>) => Promise<Record<string, unknown>>,
     ) => Promise<T>,
+    callOptions?: T3CallOptions,
   ): Promise<T> {
+    const requestOptions = {
+      ...(callOptions?.signal ? { signal: callOptions.signal } : {}),
+      ...(callOptions?.timeoutMs !== undefined ? { timeout: callOptions.timeoutMs } : {}),
+    };
     const transport = new StreamableHttpAdapter(new URL(this.mcpUrl), {
       requestInit: {
         headers: {
@@ -742,10 +882,12 @@ export class T3McpClient {
     });
 
     try {
-      await client.connect(transport);
+      callOptions?.signal?.throwIfAborted();
+      await client.connect(transport, requestOptions);
       return await run(async (name, args) => {
         assertAllowedTool(name);
-        const result = await client.callTool({ name, arguments: args });
+        callOptions?.signal?.throwIfAborted();
+        const result = await client.callTool({ name, arguments: args }, undefined, requestOptions);
         return extractToolPayload(
           result as unknown as {
             isError?: boolean | undefined;
@@ -758,6 +900,12 @@ export class T3McpClient {
       if (err instanceof T3McpError) {
         throw err;
       }
+      if (callOptions?.signal?.aborted) {
+        throw new T3McpError("aborted", "The T3 request was cancelled before it finished");
+      }
+      if (err instanceof McpError && err.code === MCP_REQUEST_TIMEOUT_CODE) {
+        throw new T3McpError("timeout", "The T3 host did not answer in time");
+      }
       throw new T3McpError("connection_error", err instanceof Error ? err.message : String(err));
     } finally {
       await transport.inner.terminateSession().catch(() => undefined);
@@ -768,39 +916,82 @@ export class T3McpClient {
   async listProjects(): Promise<T3RemoteProject[]> {
     return this.withSession(async (callTool) => {
       const payload = await callTool("t3_project_list", {});
-      const rawProjects = Array.isArray(payload.projects) ? payload.projects : [];
-      const projects: T3RemoteProject[] = [];
-      for (const item of rawProjects) {
-        if (!item || typeof item !== "object") {
-          continue;
-        }
-        const rec = item as Record<string, unknown>;
-        const id = typeof rec.id === "string" ? rec.id.trim() : "";
-        const title =
-          typeof rec.title === "string" && rec.title.trim().length > 0
-            ? rec.title.trim()
-            : typeof rec.displayName === "string" && rec.displayName.trim().length > 0
-              ? rec.displayName.trim()
-              : id;
-        if (!id || !title) {
-          continue;
-        }
-        const parsed = T3RemoteProjectSchema.safeParse({
-          id,
-          title,
-          ...(typeof rec.workspaceRoot === "string" && rec.workspaceRoot.trim().length > 0
-            ? { workspaceRoot: rec.workspaceRoot.trim() }
-            : {}),
-          ...(typeof rec.displayName === "string" && rec.displayName.trim().length > 0
-            ? { displayName: rec.displayName.trim() }
-            : {}),
-        });
-        if (parsed.success) {
-          projects.push(parsed.data);
-        }
-      }
-      return projects;
+      return parseRemoteProjects(payload.projects);
     });
+  }
+
+  /**
+   * Lists every T3 project, following `nextCursor` across pages. `t3_project_list` pages can
+   * shift while paging, so a project may appear twice; duplicates are dropped by ID.
+   */
+  async listAllProjects(options?: T3CallOptions): Promise<T3RemoteProject[]> {
+    return this.withSession(async (callTool) => {
+      const byId = new Map<string, T3RemoteProject>();
+      let cursor: number | undefined;
+      for (let page = 0; page < T3_PROJECT_LIST_MAX_PAGES; page += 1) {
+        const payload = await callTool("t3_project_list", {
+          limit: T3_PROJECT_LIST_PAGE_LIMIT,
+          ...(cursor !== undefined ? { cursor } : {}),
+        });
+        for (const project of parseRemoteProjects(payload.projects)) {
+          if (!byId.has(project.id)) byId.set(project.id, project);
+        }
+        const next = payload.nextCursor;
+        if (typeof next !== "number" || !Number.isInteger(next) || next < 0 || next === cursor) {
+          return [...byId.values()];
+        }
+        cursor = next;
+      }
+      throw new T3McpError(
+        "too_many_projects",
+        `T3 returned more than ${String(T3_PROJECT_LIST_MAX_PAGES * T3_PROJECT_LIST_PAGE_LIMIT)} projects; cannot check folder registration`,
+      );
+    }, options);
+  }
+
+  /**
+   * Registers an existing host folder as a T3 project (#BIT-148). Always sends `workspaceRoot`
+   * (without it T3 creates a brand-new repository) and never `createWorkspaceRootIfMissing`, so
+   * T3 fails instead of creating a missing folder.
+   */
+  async registerProject(
+    input: { readonly title: string; readonly workspaceRoot: string },
+    options?: T3CallOptions,
+  ): Promise<T3RemoteProject> {
+    const issue = findHostFolderPathIssue(input.workspaceRoot);
+    if (issue) {
+      throw new T3McpError("invalid_path", hostFolderPathIssueMessage(issue));
+    }
+    return this.withSession(async (callTool) => {
+      const payload = await callTool("t3_project_create", {
+        title: input.title,
+        workspaceRoot: input.workspaceRoot,
+      });
+      const project = parseRemoteProject(
+        payload.project && typeof payload.project === "object" ? payload.project : payload,
+      );
+      if (!project) {
+        throw new T3McpError("invalid_response", "T3 registered the folder but did not return the project ID");
+      }
+      return project;
+    }, options);
+  }
+
+  /**
+   * Unregisters a T3 project. T3 keeps the folder on disk; `force` is needed when the project
+   * still has threads.
+   */
+  async unregisterProject(
+    t3ProjectId: string,
+    input?: { readonly force?: boolean | undefined },
+    options?: T3CallOptions,
+  ): Promise<void> {
+    await this.withSession(async (callTool) => {
+      await callTool("t3_project_delete", {
+        projectId: t3ProjectId,
+        ...(input?.force ? { force: true } : {}),
+      });
+    }, options);
   }
 
   async listThreads(input?: {

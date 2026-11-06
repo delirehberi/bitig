@@ -18,6 +18,7 @@ export function isStorageMode(value: unknown): value is StorageMode {
 export * from "./domain/constants";
 export * from "./domain/schemas";
 export * from "./domain/t3";
+export * from "./domain/host-folder";
 export * from "./domain/realtime";
 export * from "./domain/mcp-tokens";
 export * from "./domain/users";

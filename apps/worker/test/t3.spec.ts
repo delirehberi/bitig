@@ -18,11 +18,12 @@ import type {
 import { createApp, type AppEnv } from "../src/index";
 import { mcpRouter } from "../src/routes/mcp";
 import { parseConfig } from "../src/config";
-import { D1Storage, T3D1Store } from "@bitig/storage-d1";
+import { D1AccessTokenStore, D1OrganisationStore, D1Storage, D1UserStore, T3D1Store } from "@bitig/storage-d1";
+import { sha256Hex } from "../src/auth-crypto";
 import { reportTaskT3GitMetadata } from "../src/t3/service";
-import { defaultIdGenerator, InMemoryStorage } from "@bitig/core";
+import { DEFAULT_ORGANISATION_ID, defaultIdGenerator, InMemoryStorage, type OrganisationRole } from "@bitig/core";
 import { decryptT3Token, encryptT3Token } from "../src/t3/crypto";
-import { parseThreadGitMetadata } from "../src/t3/client";
+import { parseThreadGitMetadata, resolveT3OAuthScope } from "../src/t3/client";
 import { TEST_AUTH_HEADER, TEST_MCP_AUTH_HEADER, TEST_T3_ENCRYPTION_KEY } from "./constants";
 
 const BASE_URL = "https://bitig.test";
@@ -235,6 +236,13 @@ interface MockT3ServerState {
   threadItems?: unknown[];
   /** Override `hasMore` on `t3_thread_read` (#BIT-131). */
   threadHasMore?: boolean;
+  /**
+   * Registered T3 projects for host folder tests (#BIT-148). When set, `t3_project_list` pages
+   * through them (`limit`/`cursor`), `t3_project_create` appends and `t3_project_delete` removes.
+   */
+  remoteProjects?: { id: string; title: string; workspaceRoot: string }[];
+  /** `scopes_supported` in the protected-resource metadata; defaults to `["mcp:tools"]`. */
+  resourceScopes?: unknown;
   toolCalls: RecordedToolCall[];
 }
 
@@ -248,7 +256,7 @@ function createMockT3Fetch(state: MockT3ServerState): typeof fetch {
         Response.json({
           resource: T3_MCP_URL,
           authorization_servers: [T3_ORIGIN],
-          scopes_supported: ["mcp:tools"],
+          scopes_supported: state.resourceScopes ?? ["mcp:tools"],
         }),
       );
     }
@@ -340,7 +348,28 @@ function createMockT3Fetch(state: MockT3ServerState): typeof fetch {
             }
 
             let payload: Record<string, unknown> = {};
-            if (toolName === "t3_project_list") {
+            const remoteProjects = state.remoteProjects;
+            if (toolName === "t3_project_list" && remoteProjects) {
+              const limit = typeof toolArgs.limit === "number" ? toolArgs.limit : 50;
+              const cursor = typeof toolArgs.cursor === "number" ? toolArgs.cursor : 0;
+              const next = cursor + limit;
+              payload = {
+                projects: remoteProjects.slice(cursor, next),
+                nextCursor: next < remoteProjects.length ? next : null,
+              };
+            } else if (toolName === "t3_project_create" && remoteProjects) {
+              const created = {
+                id: `t3-proj-${String(remoteProjects.length + 1)}`,
+                title: String(toolArgs.title),
+                workspaceRoot: String(toolArgs.workspaceRoot),
+              };
+              remoteProjects.push(created);
+              payload = { project: created };
+            } else if (toolName === "t3_project_delete" && remoteProjects) {
+              const index = remoteProjects.findIndex((project) => project.id === toolArgs.projectId);
+              if (index >= 0) remoteProjects.splice(index, 1);
+              payload = { ok: true };
+            } else if (toolName === "t3_project_list") {
               payload = {
                 projects: [
                   {
@@ -2243,5 +2272,399 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
     expect(String(sendCallFailure?.arguments.message)).toContain(
       "The T3 session of child task #BIT-3 failed before the task was done.",
     );
+  });
+  describe("host folder registration (BIT-148)", () => {
+    const FOLDER = "/var/www/acme";
+    const PROJECT_TOOLS = new Set(["t3_project_list", "t3_project_create", "t3_project_delete"]);
+
+    async function createProject(name: string, key: string): Promise<Project> {
+      const res = await request("/api/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, key }),
+      });
+      expect(res.status).toBe(201);
+      return res.json<Project>();
+    }
+
+    function registerFolder(projectId: string, body: unknown, headers?: Record<string, string>): Promise<Response> {
+      return request(`/api/t3/projects/${projectId}/host-folder`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...headers },
+        body: JSON.stringify(body),
+      });
+    }
+
+    function unregisterFolder(projectId: string, query = "", headers?: Record<string, string>): Promise<Response> {
+      return request(`/api/t3/projects/${projectId}/host-folder${query}`, { method: "DELETE", headers: { ...headers } });
+    }
+
+    function checkFolder(body: unknown, headers?: Record<string, string>): Promise<Response> {
+      return request("/api/t3/host-folders/check", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...headers },
+        body: JSON.stringify(body),
+      });
+    }
+
+    function projectToolCalls(): RecordedToolCall[] {
+      return mockState.toolCalls.filter((call) => PROJECT_TOOLS.has(call.name));
+    }
+
+    /** A personal access token for a member of the default organisation with the given role. */
+    async function memberAuthHeader(role: OrganisationRole): Promise<string> {
+      const user = await new D1UserStore(env.DB).create({
+        email: `${role}-${defaultIdGenerator()}@bitig.test`,
+        username: `${role}${String(Date.now())}`,
+        displayName: `Org ${role}`,
+      });
+      await new D1OrganisationStore(env.DB).addMember(DEFAULT_ORGANISATION_ID, user.id, role);
+      const rawToken = `btg_${defaultIdGenerator().replaceAll("-", "")}`;
+      await new D1AccessTokenStore(env.DB).create({
+        userId: user.id,
+        orgId: DEFAULT_ORGANISATION_ID,
+        name: `${role} token`,
+        tokenHash: await sha256Hex(rawToken),
+        prefix: rawToken.slice(0, 8),
+      });
+      return `Bearer ${rawToken}`;
+    }
+
+    beforeEach(() => {
+      mockState.remoteProjects = [];
+    });
+
+    it("registers an existing folder with an explicit workspaceRoot and links it", async () => {
+      await connectT3Host();
+      const project = await createProject("Acme", "ACM");
+
+      const res = await registerFolder(project.id, { workspaceRoot: `${FOLDER}/` });
+      expect(res.status).toBe(201);
+      const body = await res.json<{ mapping: T3ProjectMapping; created: boolean }>();
+      expect(body.created).toBe(true);
+      expect(body.mapping).toMatchObject({ projectId: project.id, t3ProjectId: "t3-proj-1", t3ProjectTitle: "Acme" });
+
+      const create = projectToolCalls().find((call) => call.name === "t3_project_create");
+      // The trailing slash is normalised; createWorkspaceRootIfMissing is never sent.
+      expect(create?.arguments).toEqual({ title: "Acme", workspaceRoot: FOLDER });
+      expect(await new T3D1Store(env.DB).getProjectMapping(project.id)).toMatchObject({ t3ProjectId: "t3-proj-1" });
+    });
+
+    it("makes retries idempotent without registering the folder twice", async () => {
+      await connectT3Host();
+      const project = await createProject("Retry", "RTY");
+
+      expect((await registerFolder(project.id, { workspaceRoot: FOLDER })).status).toBe(201);
+      const retry = await registerFolder(project.id, { workspaceRoot: FOLDER });
+      expect(retry.status).toBe(200);
+      expect((await retry.json<{ created: boolean }>()).created).toBe(false);
+
+      expect(projectToolCalls().filter((call) => call.name === "t3_project_create")).toHaveLength(1);
+      expect(mockState.remoteProjects).toHaveLength(1);
+      const mappings = await new T3D1Store(env.DB).listProjectMappings();
+      expect(mappings.filter((mapping) => mapping.t3ProjectId === "t3-proj-1")).toHaveLength(1);
+    });
+
+    it("links a folder T3 already registered but no Bitig project uses, e.g. after a failed save", async () => {
+      await connectT3Host();
+      const project = await createProject("Recovered", "REC");
+      mockState.remoteProjects = [{ id: "t3-existing", title: "acme", workspaceRoot: FOLDER }];
+
+      const res = await registerFolder(project.id, { workspaceRoot: FOLDER });
+      expect(res.status).toBe(200);
+      const body = await res.json<{ mapping: T3ProjectMapping; created: boolean }>();
+      expect(body).toMatchObject({ created: false, mapping: { t3ProjectId: "t3-existing" } });
+      expect(projectToolCalls().some((call) => call.name === "t3_project_create")).toBe(false);
+    });
+
+    it("finds an existing registration beyond the first page of T3 projects", async () => {
+      await connectT3Host();
+      const project = await createProject("Paged", "PGD");
+      mockState.remoteProjects = Array.from({ length: 150 }, (_, index) => ({
+        id: `t3-${String(index)}`,
+        title: `p${String(index)}`,
+        workspaceRoot: `/var/www/p${String(index)}`,
+      }));
+
+      const res = await registerFolder(project.id, { workspaceRoot: "/var/www/p140" });
+      expect(res.status).toBe(200);
+      expect((await res.json<{ mapping: T3ProjectMapping }>()).mapping.t3ProjectId).toBe("t3-140");
+      expect(projectToolCalls().filter((call) => call.name === "t3_project_list")).toHaveLength(2);
+    });
+
+    it("rejects a folder already linked to another Bitig project", async () => {
+      await connectT3Host();
+      const first = await createProject("First", "FST");
+      const second = await createProject("Second", "SCD");
+      expect((await registerFolder(first.id, { workspaceRoot: FOLDER })).status).toBe(201);
+
+      const res = await registerFolder(second.id, { workspaceRoot: FOLDER });
+      expect(res.status).toBe(409);
+      const body = await res.json<{ error: string; message: string }>();
+      expect(body.error).toBe("folder_mapped_to_other_project");
+      expect(body.message).toContain('"First"');
+      expect(await new T3D1Store(env.DB).getProjectMapping(second.id)).toBeUndefined();
+    });
+
+    it("rejects registering a second folder for an already linked project", async () => {
+      await connectT3Host();
+      const project = await createProject("Linked", "LNK");
+      expect((await registerFolder(project.id, { workspaceRoot: FOLDER })).status).toBe(201);
+
+      const res = await registerFolder(project.id, { workspaceRoot: "/var/www/other" });
+      expect(res.status).toBe(409);
+      expect((await res.json<{ error: string }>()).error).toBe("project_already_mapped");
+      expect(projectToolCalls().filter((call) => call.name === "t3_project_create")).toHaveLength(1);
+    });
+
+    it("reports a missing folder with an actionable error and saves no mapping", async () => {
+      await connectT3Host();
+      const project = await createProject("Missing", "MSG");
+      mockState.toolErrors = {
+        t3_project_create: JSON.stringify({
+          _tag: "OrchestratorMcpFailure",
+          code: "invalid_request",
+          message: "Workspace root /var/www/acme does not exist.",
+        }),
+      };
+
+      const res = await registerFolder(project.id, { workspaceRoot: FOLDER });
+      expect(res.status).toBe(422);
+      const body = await res.json<{ error: string; message: string }>();
+      expect(body.error).toBe("t3_rejected");
+      expect(body.message).toContain("does not exist");
+      expect(body.message).toContain("Check that the folder exists on the host");
+      expect(await new T3D1Store(env.DB).getProjectMapping(project.id)).toBeUndefined();
+    });
+
+    it("tells the owner to reconnect with full access when T3 denies project changes", async () => {
+      await connectT3Host();
+      const project = await createProject("Denied", "DND");
+      mockState.toolErrors = {
+        t3_project_create: JSON.stringify({
+          _tag: "OrchestratorMcpFailure",
+          code: "capability_denied",
+          message: "Changing projects or environment settings needs a live full-access/default calling thread or a full-access client.",
+        }),
+      };
+
+      const res = await registerFolder(project.id, { workspaceRoot: FOLDER });
+      expect(res.status).toBe(502);
+      const body = await res.json<{ error: string; message: string }>();
+      expect(body.error).toBe("t3_access_denied");
+      expect(body.message).toContain("Reconnect the T3 host with full access");
+    });
+
+    it("reports an offline host and saves no mapping", async () => {
+      await connectT3Host();
+      const project = await createProject("Offline", "OFL");
+      mockState.failMcpConnection = true;
+
+      const res = await registerFolder(project.id, { workspaceRoot: FOLDER });
+      expect(res.status).toBe(503);
+      const body = await res.json<{ error: string; message: string }>();
+      expect(body.error).toBe("host_offline");
+      expect(body.message).toContain("Check that T3 is running");
+      expect(await new T3D1Store(env.DB).getProjectMapping(project.id)).toBeUndefined();
+    });
+
+    it("asks the owner to connect a host first when none is connected", async () => {
+      const project = await createProject("No host", "NHS");
+      const res = await registerFolder(project.id, { workspaceRoot: FOLDER });
+      expect(res.status).toBe(400);
+      expect(await res.text()).toContain("No T3 Code host is connected");
+    });
+
+    it.each([
+      "www/acme",
+      "../acme",
+      "--upload-pack=touch /tmp/x",
+      "/var/www/-rf",
+      "/var/www/../etc",
+      "/var/www/acme\nrm",
+      "~",
+      "/",
+      "",
+    ])("rejects the invalid path %j before calling T3", async (workspaceRoot) => {
+      await connectT3Host();
+      const project = await createProject("Invalid", "INV");
+
+      const res = await registerFolder(project.id, { workspaceRoot });
+      expect(res.status).toBe(400);
+      expect((await res.json<{ error: string }>()).error).toBe("validation_error");
+      expect((await checkFolder({ workspaceRoot })).status).toBe(400);
+      expect(projectToolCalls()).toHaveLength(0);
+    });
+
+    it("rejects createWorkspaceRootIfMissing and other unknown fields", async () => {
+      await connectT3Host();
+      const project = await createProject("Strict", "STR");
+      const res = await registerFolder(project.id, { workspaceRoot: FOLDER, createWorkspaceRootIfMissing: true });
+      expect(res.status).toBe(400);
+      expect(projectToolCalls()).toHaveLength(0);
+    });
+
+    it("returns 404 for an unknown Bitig project", async () => {
+      await connectT3Host();
+      const res = await registerFolder(defaultIdGenerator(), { workspaceRoot: FOLDER });
+      expect(res.status).toBe(404);
+      expect(projectToolCalls()).toHaveLength(0);
+    });
+
+    it.each<OrganisationRole>(["editor", "viewer"])("refuses %s callers on every host folder route", async (role) => {
+      await connectT3Host();
+      const project = await createProject("Owner only", "OWN");
+      expect((await registerFolder(project.id, { workspaceRoot: FOLDER })).status).toBe(201);
+      const callsBefore = projectToolCalls().length;
+      const Authorization = await memberAuthHeader(role);
+
+      expect((await registerFolder(project.id, { workspaceRoot: "/var/www/b" }, { Authorization })).status).toBe(403);
+      expect((await unregisterFolder(project.id, "", { Authorization })).status).toBe(403);
+      expect((await checkFolder({ workspaceRoot: FOLDER }, { Authorization })).status).toBe(403);
+      expect(projectToolCalls()).toHaveLength(callsBefore);
+      expect(await new T3D1Store(env.DB).getProjectMapping(project.id)).toBeDefined();
+    });
+
+    it("refuses unauthenticated callers", async () => {
+      const res = await app.request(
+        `${BASE_URL}/api/t3/host-folders/check`,
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ workspaceRoot: FOLDER }) },
+        env,
+      );
+      expect(res.status).toBe(401);
+      expect(projectToolCalls()).toHaveLength(0);
+    });
+
+    it("unregisters only through t3_project_delete and removes the link", async () => {
+      await connectT3Host();
+      const project = await createProject("Detach", "DTC");
+      expect((await registerFolder(project.id, { workspaceRoot: FOLDER })).status).toBe(201);
+      mockState.toolCalls = [];
+
+      const res = await unregisterFolder(project.id);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ unregistered: true });
+      // Bitig never touches host files: the only change it asks of T3 is deleting the project
+      // record, which T3 documents as leaving the folder on disk.
+      expect(mockState.toolCalls.map((call) => call.name)).toEqual(["t3_project_list", "t3_project_delete"]);
+      expect(mockState.toolCalls[1]?.arguments).toEqual({ projectId: "t3-proj-1" });
+      expect(mockState.remoteProjects).toHaveLength(0);
+      expect(await new T3D1Store(env.DB).getProjectMapping(project.id)).toBeUndefined();
+
+      const again = await unregisterFolder(project.id);
+      expect(await again.json()).toEqual({ unregistered: false });
+    });
+
+    it("passes force only when asked and validates the flag", async () => {
+      await connectT3Host();
+      const project = await createProject("Force", "FRC");
+      expect((await registerFolder(project.id, { workspaceRoot: FOLDER })).status).toBe(201);
+
+      expect((await unregisterFolder(project.id, "?force=yes")).status).toBe(400);
+      expect((await unregisterFolder(project.id, "?force=true")).status).toBe(200);
+      const remove = mockState.toolCalls.find((call) => call.name === "t3_project_delete");
+      expect(remove?.arguments).toEqual({ projectId: "t3-proj-1", force: true });
+    });
+
+    it("only removes the link when the T3 project is already gone", async () => {
+      await connectT3Host();
+      const project = await createProject("Gone", "GNE");
+      expect((await registerFolder(project.id, { workspaceRoot: FOLDER })).status).toBe(201);
+      mockState.remoteProjects = [];
+
+      expect((await unregisterFolder(project.id)).status).toBe(200);
+      expect(projectToolCalls().some((call) => call.name === "t3_project_delete")).toBe(false);
+      expect(await new T3D1Store(env.DB).getProjectMapping(project.id)).toBeUndefined();
+    });
+
+    it("refuses to unregister while a session is active", async () => {
+      await connectT3Host();
+      const project = await createProject("Busy", "BSY");
+      expect((await registerFolder(project.id, { workspaceRoot: FOLDER })).status).toBe(201);
+      const task = await (
+        await request("/api/tasks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ projectId: project.id, title: "Running" }),
+        })
+      ).json<Task>();
+      const store = new T3D1Store(env.DB);
+      await store.saveAgentRun({
+        id: defaultIdGenerator(),
+        taskId: task.id,
+        t3ProjectId: "t3-proj-1",
+        threadId: "thread-busy",
+        state: "working",
+        startedAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+
+      const res = await unregisterFolder(project.id);
+      expect(res.status).toBe(409);
+      expect((await res.json<{ error: string }>()).error).toBe("project_busy");
+      expect(projectToolCalls().some((call) => call.name === "t3_project_delete")).toBe(false);
+      expect(await store.getProjectMapping(project.id)).toBeDefined();
+    });
+
+    it("refuses to unregister a T3 project another Bitig project also uses", async () => {
+      await connectT3Host();
+      const first = await createProject("Shared A", "SHA");
+      const second = await createProject("Shared B", "SHB");
+      expect((await registerFolder(first.id, { workspaceRoot: FOLDER })).status).toBe(201);
+      // A link made before #BIT-148 through the plain mapping route.
+      await new T3D1Store(env.DB).upsertProjectMapping({ projectId: second.id, t3ProjectId: "t3-proj-1", t3ProjectTitle: "Acme" });
+
+      const res = await unregisterFolder(first.id);
+      expect(res.status).toBe(409);
+      expect((await res.json<{ error: string }>()).error).toBe("t3_project_shared");
+      expect(projectToolCalls().some((call) => call.name === "t3_project_delete")).toBe(false);
+    });
+
+    it("checks whether a folder is registered and which project uses it", async () => {
+      await connectT3Host();
+      const project = await createProject("Checked", "CHK");
+      expect((await registerFolder(project.id, { workspaceRoot: FOLDER })).status).toBe(201);
+
+      const registered = await checkFolder({ workspaceRoot: FOLDER });
+      expect(registered.status).toBe(200);
+      expect(await registered.json()).toEqual({
+        workspaceRoot: FOLDER,
+        t3Project: { id: "t3-proj-1", title: "Checked" },
+        mappedProjectId: project.id,
+      });
+
+      const unregistered = await checkFolder({ workspaceRoot: "~/www/new" });
+      expect(await unregistered.json()).toEqual({ workspaceRoot: "~/www/new" });
+    });
+  });
+  describe("OAuth scope request (BIT-148)", () => {
+    it("requests every scope the host advertises, preferring the protected resource's list", () => {
+      expect(
+        resolveT3OAuthScope({ scopes_supported: ["orchestration:read", "orchestration:operate"] }, {}),
+      ).toBe("orchestration:read orchestration:operate");
+      expect(resolveT3OAuthScope({ scopes_supported: ["a"] }, { scopes_supported: ["b"] })).toBe("a");
+      expect(resolveT3OAuthScope({}, { scopes_supported: ["b", "b", "c"] })).toBe("b c");
+    });
+
+    it("falls back to mcp:tools and drops invalid scope tokens", () => {
+      expect(resolveT3OAuthScope(null, null)).toBe("mcp:tools");
+      expect(resolveT3OAuthScope({ scopes_supported: "orchestration:read" }, {})).toBe("mcp:tools");
+      expect(resolveT3OAuthScope({ scopes_supported: [] }, { scopes_supported: [] })).toBe("mcp:tools");
+      expect(
+        resolveT3OAuthScope({ scopes_supported: ["ok", "has space", 'quo"te', "back\\slash", 7, "x".repeat(201)] }, {}),
+      ).toBe("ok");
+    });
+
+    it("puts the advertised scopes in the authorization URL", async () => {
+      mockState.resourceScopes = ["orchestration:read", "orchestration:operate"];
+      const startRes = await request("/api/t3/oauth/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mcpUrl: T3_MCP_URL }),
+      });
+      expect(startRes.status).toBe(200);
+      const { authorizationUrl } = await startRes.json<{ authorizationUrl: string }>();
+      expect(new URL(authorizationUrl).searchParams.get("scope")).toBe("orchestration:read orchestration:operate");
+    });
   });
 });

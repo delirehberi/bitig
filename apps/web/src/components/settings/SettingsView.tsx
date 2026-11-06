@@ -427,8 +427,9 @@ function T3SettingsPanel({ mode, projects }: SettingsViewProps) {
                 </h2>
                 <p className="m-0 text-xs text-ink-2">
                   Link each Bitig project to an existing T3 project from{" "}
-                  <code className="font-mono">t3_project_list</code>. Bitig never creates, edits,
-                  deletes, or clones T3 projects.
+                  <code className="font-mono">t3_project_list</code>. To register a new folder on the
+                  host, open the project and use its T3 panel (owners only). Bitig never edits or clones
+                  T3 projects, and never creates or deletes files on the host.
                 </p>
               </div>
 

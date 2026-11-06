@@ -1,6 +1,7 @@
 import type {
   AgentRun,
   Comment,
+  HostFolderCheckResult,
   ProjectT3Thread,
   ProjectT3ThreadMessagesResponse,
   ProjectT3ThreadsResponse,
@@ -238,6 +239,71 @@ export async function deleteT3ProjectMapping(projectId: string): Promise<void> {
   if (!response.ok) {
     throw new T3ApiError(response.status, await parseErrorMessage(response, "Could not remove project mapping"));
   }
+}
+
+export interface RegisterHostFolderResponse {
+  readonly mapping: T3ProjectMapping;
+  /** False when the folder was already registered in T3 and only linked. */
+  readonly created: boolean;
+}
+
+function hostFolderPath(projectId: string): string {
+  return `/api/t3/projects/${encodeURIComponent(projectId)}/host-folder`;
+}
+
+/** Registers an existing folder on the T3 host as the project's T3 project (#BIT-148). Owner only. */
+export async function registerT3HostFolder(
+  projectId: string,
+  workspaceRoot: string,
+  signal?: AbortSignal,
+): Promise<RegisterHostFolderResponse> {
+  const response = await fetch(hostFolderPath(projectId), {
+    method: "PUT",
+    headers: { ...baseHeaders(), "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ workspaceRoot }),
+    ...(signal ? { signal } : {}),
+  });
+  if (!response.ok) {
+    throw new T3ApiError(response.status, await parseErrorMessage(response, "Could not register the folder in T3"));
+  }
+  return (await response.json()) as RegisterHostFolderResponse;
+}
+
+/**
+ * Unregisters the project's T3 project and removes the link. The folder stays on the host.
+ * `force` is needed when the T3 project still has threads.
+ */
+export async function unregisterT3HostFolder(
+  projectId: string,
+  options?: { readonly force?: boolean; readonly signal?: AbortSignal },
+): Promise<{ readonly unregistered: boolean }> {
+  const query = options?.force ? "?force=true" : "";
+  const response = await fetch(`${hostFolderPath(projectId)}${query}`, {
+    method: "DELETE",
+    headers: baseHeaders(),
+    credentials: "same-origin",
+    ...(options?.signal ? { signal: options.signal } : {}),
+  });
+  if (!response.ok) {
+    throw new T3ApiError(response.status, await parseErrorMessage(response, "Could not unregister the folder in T3"));
+  }
+  return (await response.json()) as { unregistered: boolean };
+}
+
+/** Whether a folder is already registered in T3, and which Bitig project uses it. Owner only. */
+export async function checkT3HostFolder(workspaceRoot: string, signal?: AbortSignal): Promise<HostFolderCheckResult> {
+  const response = await fetch("/api/t3/host-folders/check", {
+    method: "POST",
+    headers: { ...baseHeaders(), "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ workspaceRoot }),
+    ...(signal ? { signal } : {}),
+  });
+  if (!response.ok) {
+    throw new T3ApiError(response.status, await parseErrorMessage(response, "Could not check the folder in T3"));
+  }
+  return (await response.json()) as HostFolderCheckResult;
 }
 
 export async function fetchT3Runs(signal?: AbortSignal): Promise<T3RunsLiveResponse> {

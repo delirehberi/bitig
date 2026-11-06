@@ -26,6 +26,8 @@ interface ProjectDetailModalProps {
   readonly activeSessions?: readonly ResolvedProjectActiveSession[];
   /** Focuses the T3 message box when the modal opens (the card's Message action, #BIT-127). */
   readonly focusT3Composer?: boolean | undefined;
+  /** Lets an organisation owner register or unregister the project's T3 host folder (#BIT-148). */
+  readonly canManageHostFolder?: boolean | undefined;
   readonly onClose: () => void;
   readonly onEdit: (project: Project) => void;
   readonly onDelete: (project: Project) => void;
@@ -69,6 +71,7 @@ export function ProjectDetailModal({
   tasks,
   activeSessions = [],
   focusT3Composer = false,
+  canManageHostFolder = false,
   onClose,
   onEdit,
   onDelete,
@@ -164,7 +167,12 @@ export function ProjectDetailModal({
         )}
 
         {project.archived !== true && (
-          <ProjectT3Panel key={project.id} project={project} focusComposer={focusT3Composer} />
+          <ProjectT3Panel
+            key={project.id}
+            project={project}
+            focusComposer={focusT3Composer}
+            canManageHostFolder={canManageHostFolder}
+          />
         )}
 
         {activeSessions.length > 0 && (

@@ -79,7 +79,7 @@ interface WorkspaceProps {
 function Workspace({ mode, health, route }: WorkspaceProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const locationHref = useLocationHref();
-  const { profile, user } = useAuth();
+  const { profile, user, currentRole } = useAuth();
   const actorName = profile?.displayName ?? user ?? "you";
   const activeTab = route.name;
   const routeProjectId = route.name === "tasks" || route.name === "webhooks" ? route.projectId : undefined;
@@ -310,6 +310,7 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
                 onUpdateProject={updateProject}
                 onDeleteProject={deleteProject}
                 onSelectProject={handleSelectProject}
+                hostFolderEnabled={mode === "cloudflare" && currentRole === "owner"}
                 searchQuery={searchQuery}
                 archivedView={archivedProjectsOnly}
                 onArchivedViewChange={(archived) => {

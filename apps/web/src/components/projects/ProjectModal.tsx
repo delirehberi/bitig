@@ -1,7 +1,12 @@
 import { useState, type SyntheticEvent } from "react";
 import {
+  HOST_PROJECTS_ROOT_CONTAINER,
+  HOST_PROJECTS_ROOT_USER,
   PROJECT_KINDS,
   deriveProjectKey,
+  findHostFolderPathIssue,
+  hostFolderPathIssueMessage,
+  suggestHostFolderPath,
   type CreateProjectInput,
   type Project,
   type ProjectKind,
@@ -10,12 +15,24 @@ import { FolderKanban, X } from "lucide-react";
 import { toResources, type ResourceDraft } from "./resource-drafts";
 import { ResourcesEditor } from "./Resources";
 
+export interface ProjectModalSubmitExtras {
+  /** Existing folder on the connected T3 host to register for the new project (#BIT-148). */
+  readonly hostFolderPath?: string;
+}
+
 interface ProjectModalProps {
   readonly isOpen: boolean;
   readonly onClose: () => void;
-  readonly onSubmit: (input: CreateProjectInput) => Promise<void>;
+  readonly onSubmit: (input: CreateProjectInput, extras?: ProjectModalSubmitExtras) => Promise<void>;
   readonly project?: Project | null;
+  /**
+   * Shows the optional host folder field when creating a project. Set only for an organisation
+   * owner with a connected T3 host.
+   */
+  readonly hostFolderEnabled?: boolean;
 }
+
+const HOST_FOLDER_ROOTS = [HOST_PROJECTS_ROOT_USER, HOST_PROJECTS_ROOT_CONTAINER] as const;
 
 const ICON_SIZE = 16;
 
@@ -27,7 +44,7 @@ const KIND_LABELS: Record<ProjectKind, string> = {
   internal: "Internal",
 };
 
-export function ProjectModal({ isOpen, onClose, onSubmit, project }: ProjectModalProps) {
+export function ProjectModal({ isOpen, onClose, onSubmit, project, hostFolderEnabled = false }: ProjectModalProps) {
   const [name, setName] = useState(project?.name ?? "");
   const [description, setDescription] = useState(project?.description ?? "");
   const [kind, setKind] = useState<ProjectKind>(project?.kind ?? "hobby");
@@ -36,12 +53,14 @@ export function ProjectModal({ isOpen, onClose, onSubmit, project }: ProjectModa
   const [resources, setResources] = useState<ResourceDraft[]>(
     () => project?.resources?.map((resource) => ({ ...resource })) ?? [],
   );
+  const [hostFolderPath, setHostFolderPath] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   if (!isOpen) return null;
 
   const isEditing = Boolean(project);
+  const showHostFolder = hostFolderEnabled && !isEditing;
 
   async function handleSubmit(e: SyntheticEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -56,18 +75,29 @@ export function ProjectModal({ isOpen, onClose, onSubmit, project }: ProjectModa
       return;
     }
 
+    // Empty means "no folder": the project can be linked to T3 later from its T3 panel.
+    const folder = showHostFolder ? hostFolderPath : "";
+    if (folder !== "") {
+      const issue = findHostFolderPathIssue(folder);
+      if (issue) {
+        setError(hostFolderPathIssueMessage(issue));
+        return;
+      }
+    }
+
     setIsSubmitting(true);
     setError(null);
 
     try {
-      await onSubmit({
+      const input: CreateProjectInput = {
         name: name.trim(),
         description: description.trim(),
         kind,
         ...(key.trim() !== "" && key.trim().toUpperCase() !== project?.key ? { key: key.trim() } : {}),
         // When editing, an empty list is sent so removing every link clears them.
         ...(links.resources.length > 0 || isEditing ? { resources: links.resources } : {}),
-      });
+      };
+      await (folder !== "" ? onSubmit(input, { hostFolderPath: folder }) : onSubmit(input));
       onClose();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to save project");
@@ -196,6 +226,54 @@ export function ProjectModal({ isOpen, onClose, onSubmit, project }: ProjectModa
               disabled={isSubmitting}
             />
           </div>
+
+          {showHostFolder && (
+            <div>
+              <label htmlFor="project-host-folder" className="block text-xs font-semibold text-ink-2">
+                Folder on T3 host
+              </label>
+              <input
+                id="project-host-folder"
+                type="text"
+                value={hostFolderPath}
+                onChange={(e) => {
+                  setHostFolderPath(e.target.value);
+                }}
+                placeholder={suggestHostFolderPath(HOST_PROJECTS_ROOT_USER, name) || "e.g. ~/www/website-redesign"}
+                spellCheck={false}
+                autoComplete="off"
+                aria-describedby="project-host-folder-hint"
+                className="mt-1 w-full rounded-md border border-rule bg-paper-2 px-3 py-2 font-mono text-sm text-ink placeholder:text-ink-3 focus-visible:outline-focus"
+                disabled={isSubmitting}
+              />
+              {name.trim() !== "" && (
+                <div className="mt-1 flex flex-wrap gap-1">
+                  {HOST_FOLDER_ROOTS.map((root) => {
+                    const suggestion = suggestHostFolderPath(root, name);
+                    if (suggestion === "") return null;
+                    return (
+                      <button
+                        key={root}
+                        type="button"
+                        onClick={() => {
+                          setHostFolderPath(suggestion);
+                        }}
+                        disabled={isSubmitting}
+                        className="rounded-sm border border-rule px-2 py-0.5 font-mono text-xs text-ink-2 transition-colors hover:bg-paper-2 hover:text-ink"
+                      >
+                        {suggestion}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+              <p id="project-host-folder-hint" className="m-0 mt-1 text-xs text-ink-3">
+                An existing folder on the host, as an absolute or ~/ path ({HOST_PROJECTS_ROOT_USER} on
+                your own host, {HOST_PROJECTS_ROOT_CONTAINER} on containers). Bitig registers it with T3
+                and never creates or deletes files. Leave empty to link it later.
+              </p>
+            </div>
+          )}
 
           <fieldset className="m-0 border-0 p-0">
             <legend className="mb-1 block text-xs font-semibold text-ink-2">Links</legend>

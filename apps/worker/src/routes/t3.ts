@@ -1,7 +1,9 @@
 import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import {
+  CheckHostFolderInputSchema,
   NotFoundError,
+  RegisterHostFolderInputSchema,
   ReplyToT3RunInputSchema,
   RespondT3PendingRequestInputSchema,
   SendProjectT3MessageInputSchema,
@@ -11,13 +13,22 @@ import {
   T3WorkspaceBusyError,
   UpsertT3ProjectMappingInputSchema,
   ValidationError,
+  hasMinimumOrgRole,
 } from "@bitig/core";
 import { T3D1Store } from "@bitig/storage-d1";
 import type { Context } from "hono";
+import { ForbiddenRoleError } from "../auth";
 import type { AppEnv } from "../index";
 import { publishRealtimeEvent } from "../realtime";
 import { T3McpError, T3OAuthError, exchangeT3OAuthCode, startT3OAuthFlow } from "../t3/client";
 import { encryptT3Token } from "../t3/crypto";
+import {
+  HostFolderError,
+  checkHostFolder,
+  registerHostFolder,
+  unregisterHostFolder,
+  type HostFolderDeps,
+} from "../t3/host-folders";
 import {
   createActiveT3McpClient,
   getT3ConnectionStatus,
@@ -44,6 +55,34 @@ const HTTP_BAD_REQUEST = 400;
 const HTTP_CONFLICT = 409;
 const HTTP_BAD_GATEWAY = 502;
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
+const HTTP_OK = 200;
+const FORCE_QUERY_VALUES = new Set(["true", "false"]);
+
+/** Host project operations change the T3 host, so only the organisation owner may run them (#BIT-148). */
+function requireOrgOwner(c: Context<AppEnv>): void {
+  const role = c.get("orgRole");
+  if (!role || !hasMinimumOrgRole(role, "owner")) {
+    throw new ForbiddenRoleError("owner role required to manage folders on the T3 host");
+  }
+}
+
+function buildHostFolderDeps(c: Context<AppEnv>): HostFolderDeps {
+  return {
+    store: new T3D1Store(c.env.DB, c.get("orgId")),
+    storage: c.get("storage"),
+    encryptionKey: c.get("config").T3_ENCRYPTION_KEY,
+    fetchFn: c.get("t3Fetch"),
+    // Stops the T3 calls when the browser gives up on the request.
+    signal: c.req.raw.signal,
+  };
+}
+
+function hostFolderErrorResponse(err: unknown, c: Context<AppEnv>): Response {
+  if (err instanceof HostFolderError) {
+    return c.json({ error: err.code, message: err.message }, err.status);
+  }
+  return handleT3RouteError(err, c);
+}
 
 export function buildServiceDeps(c: Context<AppEnv>): T3ServiceDeps {
   const orgId = c.get("orgId");
@@ -244,6 +283,64 @@ export const t3ApiRouter = new Hono<AppEnv>()
       return c.json({ capabilities });
     } catch (err) {
       return handleT3RouteError(err, c);
+    }
+  })
+  .post(
+    "/host-folders/check",
+    zValidator("json", CheckHostFolderInputSchema, (result, c) => {
+      if (!result.success) {
+        return c.json({ error: "validation_error", details: result.error.issues }, HTTP_BAD_REQUEST);
+      }
+      return undefined;
+    }),
+    async (c) => {
+      requireOrgOwner(c);
+      try {
+        const result = await checkHostFolder(buildHostFolderDeps(c), c.req.valid("json").workspaceRoot);
+        return c.json(result);
+      } catch (err) {
+        return hostFolderErrorResponse(err, c);
+      }
+    },
+  )
+  .put(
+    "/projects/:projectId/host-folder",
+    zValidator("json", RegisterHostFolderInputSchema, (result, c) => {
+      if (!result.success) {
+        return c.json({ error: "validation_error", details: result.error.issues }, HTTP_BAD_REQUEST);
+      }
+      return undefined;
+    }),
+    async (c) => {
+      requireOrgOwner(c);
+      try {
+        const result = await registerHostFolder(
+          buildHostFolderDeps(c),
+          c.req.param("projectId"),
+          c.req.valid("json").workspaceRoot,
+        );
+        return c.json(result, result.created ? HTTP_CREATED : HTTP_OK);
+      } catch (err) {
+        return hostFolderErrorResponse(err, c);
+      }
+    },
+  )
+  .delete("/projects/:projectId/host-folder", async (c) => {
+    requireOrgOwner(c);
+    const force = c.req.query("force");
+    if (force !== undefined && !FORCE_QUERY_VALUES.has(force)) {
+      return c.json(
+        { error: "validation_error", message: "force must be true or false" },
+        HTTP_BAD_REQUEST,
+      );
+    }
+    try {
+      const result = await unregisterHostFolder(buildHostFolderDeps(c), c.req.param("projectId"), {
+        force: force === "true",
+      });
+      return c.json(result);
+    } catch (err) {
+      return hostFolderErrorResponse(err, c);
     }
   })
   .get("/mappings", async (c) => {

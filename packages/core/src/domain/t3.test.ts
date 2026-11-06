@@ -330,15 +330,21 @@ describe("deriveLiveAgentRunState", () => {
 });
 
 describe("T3_ALLOWED_MCP_TOOLS", () => {
-  it("never includes project mutation tools and allows thread listing and organization", () => {
+  it("allows only folder registration among project mutation tools, plus thread listing and organization", () => {
     const allowed = new Set<string>(T3_ALLOWED_MCP_TOOLS);
     expect(allowed.has("t3_thread_list")).toBe(true);
     expect(allowed.has("t3_thread_organize")).toBe(true);
     expect(allowed.has("t3_thread_configure")).toBe(true);
-    expect(allowed.has("t3_project_create")).toBe(false);
+    // Registering and unregistering an existing host folder (#BIT-148).
+    expect(allowed.has("t3_project_create")).toBe(true);
+    expect(allowed.has("t3_project_delete")).toBe(true);
     expect(allowed.has("t3_project_update")).toBe(false);
-    expect(allowed.has("t3_project_delete")).toBe(false);
     expect(allowed.has("t3_project_clone")).toBe(false);
+  });
+
+  it("adds exactly t3_project_create and t3_project_delete as project mutation tools", () => {
+    const projectTools = T3_ALLOWED_MCP_TOOLS.filter((tool) => tool.startsWith("t3_project_"));
+    expect([...projectTools].sort()).toEqual(["t3_project_create", "t3_project_delete", "t3_project_list"]);
   });
 });
 

@@ -34,11 +34,18 @@ export type T3WorkspaceStrategy = (typeof T3_WORKSPACE_STRATEGIES)[number];
 export const T3WorkspaceStrategySchema = z.enum(T3_WORKSPACE_STRATEGIES);
 
 /**
- * Only these read-only project and thread orchestration tools may ever be called on a T3 host.
- * Bitig never creates, edits, deletes, or clones T3 projects.
+ * Only these project and thread orchestration tools may ever be called on a T3 host.
+ *
+ * Project changes are limited to registering an existing host folder as a T3 project
+ * (`t3_project_create`, always with an explicit `workspaceRoot` and never with
+ * `createWorkspaceRootIfMissing`) and unregistering it (`t3_project_delete`, which leaves the
+ * folder on disk), both owner-only (#BIT-148). Bitig never edits or clones T3 projects and
+ * never creates, moves or deletes files on the host.
  */
 export const T3_ALLOWED_MCP_TOOLS = [
   "t3_project_list",
+  "t3_project_create",
+  "t3_project_delete",
   "orchestrator_capabilities",
   "t3_thread_list",
   "t3_thread_launch",

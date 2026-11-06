@@ -38,6 +38,7 @@ import {
 } from "../../services/t3";
 import { Markdown } from "../Markdown";
 import { T3ModelPicker } from "../tasks/T3ModelPicker";
+import { ProjectHostFolder } from "./ProjectHostFolder";
 import { STATE_BADGE_CLASSES, STATE_LABELS } from "../tasks/t3-run-state";
 
 const ICON_SIZE = 12;
@@ -51,6 +52,8 @@ interface ProjectT3PanelProps {
   readonly project: Project;
   /** Focuses the message box on mount, e.g. when opened from the project card's Message action. */
   readonly focusComposer?: boolean | undefined;
+  /** Shows the owner's register/unregister controls for the project's host folder (#BIT-148). */
+  readonly canManageHostFolder?: boolean | undefined;
 }
 
 /** T3 links come from the host; only http(s) URLs are rendered as links. */
@@ -457,7 +460,7 @@ function ProjectT3ThreadItem({ projectId, thread, capabilities, onUpdated, onSet
  * Sends messages to a project's T3 workspace without a task (#BIT-127), e.g. to check the
  * environment, and lists the threads Bitig started for the project with follow-ups and model switching.
  */
-export function ProjectT3Panel({ project, focusComposer = false }: ProjectT3PanelProps) {
+export function ProjectT3Panel({ project, focusComposer = false, canManageHostFolder = false }: ProjectT3PanelProps) {
   const [connection, setConnection] = useState<T3ConnectionStatus | null>(null);
   const [mapping, setMapping] = useState<T3ProjectMapping | undefined>(undefined);
   const [capabilities, setCapabilities] = useState<T3ModelCapability[]>([]);
@@ -472,6 +475,8 @@ export function ProjectT3Panel({ project, focusComposer = false }: ProjectT3Pane
   const [sendError, setSendError] = useState<string | null>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const settledThreadIds = useRef(new Set<string>());
+  // Bumped after the host folder link changes, so threads and capabilities load for the new link.
+  const [reloadKey, setReloadKey] = useState(0);
 
   const isConnected = Boolean(connection?.connected && !connection.expired);
   const isMapped = mapping !== undefined;
@@ -512,7 +517,7 @@ export function ProjectT3Panel({ project, focusComposer = false }: ProjectT3Pane
     return () => {
       controller.abort();
     };
-  }, [project.id]);
+  }, [project.id, reloadKey]);
 
   useEffect(() => {
     if (focusComposer && !isLoading && isReady) {
@@ -564,7 +569,9 @@ export function ProjectT3Panel({ project, focusComposer = false }: ProjectT3Pane
       ? "T3 OAuth token has expired. Reconnect in Settings."
       : "Connect a T3 Code host in Settings to message this project.";
   } else if (!isMapped) {
-    gateReason = `Map project "${project.name}" to a T3 project in Settings first.`;
+    gateReason = canManageHostFolder
+      ? `Register a folder on the T3 host below, or map "${project.name}" to an existing T3 project in Settings.`
+      : `Map project "${project.name}" to a T3 project in Settings first.`;
   }
 
   return (
@@ -595,6 +602,18 @@ export function ProjectT3Panel({ project, focusComposer = false }: ProjectT3Pane
           </button>
         )}
       </div>
+
+      {!isLoading && isConnected && canManageHostFolder && (
+        <ProjectHostFolder
+          project={project}
+          mapping={mapping}
+          onMappingChange={(next) => {
+            setMapping(next);
+            setThreads([]);
+            setReloadKey((key) => key + 1);
+          }}
+        />
+      )}
 
       {isLoading ? (
         <p className="m-0 text-xs text-ink-3">Loading T3…</p>
