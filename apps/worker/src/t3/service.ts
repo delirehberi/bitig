@@ -1294,6 +1294,11 @@ export interface ReplyToTaskT3RunInput {
   body: string;
   author?: string | undefined;
   modelSelection?: T3ModelSelection | undefined;
+  /**
+   * When true, settles the existing T3 thread and launches a fresh checkpoint-seeded T3 thread
+   * for the follow-up reply instead of reusing the long-running thread (#BIT-165).
+   */
+  freshSession?: boolean | undefined;
   actor: string;
 }
 
@@ -1304,15 +1309,30 @@ export interface ReplyToTaskT3RunResult {
   run: AgentRun;
 }
 
+function extractPriorGitMetadata(run: AgentRun): T3GitMetadata | undefined {
+  const metadata: T3GitMetadata = {
+    ...(run.branch !== undefined ? { branch: run.branch } : {}),
+    ...(run.headSha !== undefined ? { headSha: run.headSha } : {}),
+    ...(run.diffStat !== undefined ? { diffStat: run.diffStat } : {}),
+    ...(run.pullRequestUrls !== undefined ? { pullRequestUrls: run.pullRequestUrls } : {}),
+  };
+  return Object.keys(metadata).length > 0 ? metadata : undefined;
+}
+
 /**
- * A person's reply to a task's T3 thread (#BIT-119). When `modelSelection` differs from the thread's
- * current model, the thread must be waiting or past its turn (see `canSwitchT3Model`); it is switched
- * with `t3_thread_configure` and the switch is recorded on the run and as an agent comment. The reply
- * is then saved as a comment and sent with `t3_thread_send`, prefixed after a switch with a line
- * asking the new model to restore context from the task's checkpoint.
+ * A person's reply to a task's T3 thread (#BIT-119, #BIT-165).
  *
- * Throws `T3ModelSwitchConflictError` before anything is saved when the switch is not allowed. If
- * T3 fails after the switch, the comments stay saved and the error reaches the caller.
+ * When `freshSession: true` is chosen (#BIT-165), the existing thread must be waiting or past its
+ * turn (see `canSwitchT3Model`); it is settled (`t3_thread_organize` `action: "settle"`), a compact
+ * fresh-session prompt combining the task goal, latest checkpoint, prior Git metadata, and the
+ * follow-up instruction is built, and a new T3 thread is launched (`t3_thread_launch`) and stored
+ * in `agent_runs`.
+ *
+ * Otherwise, when `modelSelection` differs from the thread's current model, the thread is switched
+ * with `t3_thread_configure` and the reply is sent to the existing thread with `t3_thread_send`,
+ * prefixed after a switch with a line asking the new model to restore context from the checkpoint.
+ *
+ * Throws `T3ModelSwitchConflictError` before anything is saved when the thread is mid-turn.
  */
 export async function replyToTaskT3Run(
   deps: T3ServiceDeps,
@@ -1336,6 +1356,126 @@ export async function replyToTaskT3Run(
     fetchFn: deps.fetchFn,
     now,
   });
+
+  if (input.freshSession) {
+    const live = await mcpClient.readThreadLiveStatus(existingRun.threadId);
+    const liveState = deriveLiveAgentRunState({
+      thread: live.thread,
+      recentRuns: live.recentRuns,
+      pendingRequestIds: live.pendingRequestIds,
+    });
+    const midTurn = Boolean(live.thread?.activeRunId) && liveState !== "waiting_for_approval";
+    if (!canSwitchT3Model(liveState) || midTurn) {
+      throw new T3ModelSwitchConflictError(midTurn ? "working" : liveState);
+    }
+
+    let switchComment: Comment | undefined;
+    let targetModel = existingRun.model;
+    let targetProviderInstanceId = existingRun.providerInstanceId;
+    let targetOptions: readonly T3ModelSelectionOption[] | undefined = existingRun.modelOptions;
+
+    if (input.modelSelection) {
+      const selection = input.modelSelection;
+      const current = await mcpClient.readThreadModel(existingRun.threadId);
+      const known = current ?? storedT3ModelSelection(existingRun);
+      targetModel = selection.model;
+      targetProviderInstanceId = selection.providerInstanceId;
+      targetOptions = selection.options;
+      if (!known || !isSameT3ModelSelection(known, selection)) {
+        const fromLabel = formatT3ModelSelection(
+          known ?? { ...(existingRun.model ? { model: existingRun.model } : {}) },
+        );
+        const toLabel = formatT3ModelSelection(selection);
+        switchComment = await deps.storage.addComment(
+          {
+            taskId: task.id,
+            body: buildT3ModelSwitchComment(fromLabel, toLabel),
+            authorType: "agent",
+            author: T3_MODEL_SWITCH_COMMENT_AUTHOR,
+          },
+          { actor: input.actor },
+        );
+      }
+    }
+
+    const [project, priorComments, checkpoint, parentTask] = await Promise.all([
+      deps.storage.getProject(task.projectId),
+      deps.storage.getComments(task.id),
+      latestCheckpoint(deps.storage, task.id),
+      existingRun.parentTaskId ? deps.storage.getTask(existingRun.parentTaskId) : Promise.resolve(null),
+    ]);
+    const parentLabel = parentTask ? await labelTask(deps.storage, parentTask) : undefined;
+
+    const comment = await deps.storage.addComment(
+      {
+        taskId: task.id,
+        body: input.body,
+        authorType: "human",
+        ...(input.author ? { author: input.author } : {}),
+      },
+      { actor: input.actor },
+    );
+
+    await mcpClient.settleThread(existingRun.threadId);
+
+    const code = taskCode(task, project ?? undefined);
+    const gitMetadataRunId = defaultIdGenerator();
+    const priorGitMetadata = extractPriorGitMetadata(existingRun);
+    const workspaceStrategy: T3WorkspaceStrategy = existingRun.workspaceStrategy ?? "worktree";
+    const builtPrompt = buildT3LaunchPrompt({
+      gitMetadataRunId,
+      task,
+      ...(code ? { taskCode: code } : {}),
+      ...(project ? { projectName: project.name } : {}),
+      comments: priorComments,
+      ...(parentLabel ? { parentTaskCode: parentLabel } : {}),
+      checkpoint: checkpoint ?? null,
+      ...(priorGitMetadata ? { priorGitMetadata } : {}),
+      followUpComment: {
+        author: comment.author ?? DEFAULT_COMMENT_AUTHOR_LABEL,
+        body: comment.body,
+      },
+      clientRequestId: `${code ?? task.id}:${gitMetadataRunId}`,
+    });
+
+    const launched = await mcpClient.launchThread({
+      projectId: existingRun.t3ProjectId,
+      title: builtPrompt.title,
+      prompt: builtPrompt.prompt,
+      clientRequestId: builtPrompt.clientRequestId,
+      workspaceStrategy,
+      providerInstanceId: targetProviderInstanceId,
+      model: targetModel,
+      options: targetOptions,
+    });
+
+    const run = await deps.store.saveAgentRun({
+      id: gitMetadataRunId,
+      taskId: task.id,
+      t3ProjectId: existingRun.t3ProjectId,
+      threadId: launched.threadId,
+      link: launched.link,
+      state: "working",
+      model: targetModel,
+      ...(targetModel && targetProviderInstanceId ? { providerInstanceId: targetProviderInstanceId } : {}),
+      modelOptions: targetOptions,
+      workspaceStrategy,
+      ...(existingRun.parentTaskId ? { parentTaskId: existingRun.parentTaskId } : {}),
+      startedBy: input.actor,
+      startedAt: now,
+      updatedAt: now,
+    });
+
+    if (deps.publishRealtime) {
+      await deps.publishRealtime({ type: "agent_run.updated", run }).catch(() => undefined);
+    }
+
+    return {
+      comment,
+      ...(switchComment ? { switchComment } : {}),
+      run,
+    };
+  }
 
   let run = existingRun;
   let switchedTo: string | undefined;

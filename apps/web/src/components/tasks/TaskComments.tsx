@@ -65,21 +65,32 @@ export function TaskComments({ storage, taskId, onResolve, t3 }: TaskCommentsPro
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [modelSelection, setModelSelection] = useState<T3ModelSelection | null>(null);
+  const [freshSession, setFreshSession] = useState(false);
 
   // Offline runs cannot be reached; without a model list there is nothing to pick.
-  const showModelPicker = t3 !== undefined && t3.run.state !== "offline" && t3.capabilities.length > 0;
+  const hasReachableT3Run = t3 !== undefined && t3.run.state !== "offline";
+  const showModelPicker = hasReachableT3Run && t3.capabilities.length > 0;
   const canSwitch = t3 !== undefined && canSwitchT3Model(t3.run.state);
   const switchSelection = showModelPicker && canSwitch ? modelSelection : null;
+  const startFreshSession = hasReachableT3Run && canSwitch && freshSession;
 
-  async function sendWithModelSwitch(body: string, selection: T3ModelSelection): Promise<void> {
-    const result = await replyToTaskT3Run(taskId, { body, modelSelection: selection });
-    // Show the saved comments and the run's new model at once; the server's realtime events follow.
+  async function sendT3Reply(
+    body: string,
+    options: { readonly selection?: T3ModelSelection | undefined; readonly freshSession?: boolean | undefined },
+  ): Promise<void> {
+    const result = await replyToTaskT3Run(taskId, {
+      body,
+      ...(options.selection ? { modelSelection: options.selection } : {}),
+      ...(options.freshSession ? { freshSession: true } : {}),
+    });
+    // Show the saved comments and the run's new state/thread at once; the server's realtime events follow.
     if (result.switchComment) {
       dispatchRealtimeEvent({ type: "comment.created", comment: result.switchComment });
     }
     dispatchRealtimeEvent({ type: "comment.created", comment: result.comment });
     dispatchRealtimeEvent({ type: "agent_run.updated", run: result.run });
     setModelSelection(null);
+    setFreshSession(false);
   }
 
   async function submit(resolveNeedsHuman = false) {
@@ -87,8 +98,11 @@ export function TaskComments({ storage, taskId, onResolve, t3 }: TaskCommentsPro
     setIsSaving(true);
     setSaveError(null);
     try {
-      if (switchSelection) {
-        await sendWithModelSwitch(draft, switchSelection);
+      if (switchSelection || startFreshSession) {
+        await sendT3Reply(draft, {
+          ...(switchSelection ? { selection: switchSelection } : {}),
+          ...(startFreshSession ? { freshSession: true } : {}),
+        });
       } else {
         await addComment(draft);
       }
@@ -170,19 +184,32 @@ export function TaskComments({ storage, taskId, onResolve, t3 }: TaskCommentsPro
           placeholder="Add a comment or answer a question…"
           className="w-full rounded-md border border-rule bg-paper px-3 py-2 text-sm text-ink placeholder:text-ink-3 focus-visible:outline-focus"
         />
-        {showModelPicker && (
-          <div className="mt-2 flex flex-col gap-1">
-            <T3ModelPicker
-              idSuffix={`reply-${taskId}`}
-              keepLabel={`Keep current model (${t3.run.model ?? "default model"})`}
-              capabilities={t3.capabilities}
-              value={switchSelection}
-              onChange={setModelSelection}
-              disabled={isSaving || !canSwitch}
-            />
+        {hasReachableT3Run && (
+          <div className="mt-2 flex flex-col gap-1.5">
+            {showModelPicker && (
+              <T3ModelPicker
+                idSuffix={`reply-${taskId}`}
+                keepLabel={`Keep current model (${t3.run.model ?? "default model"})`}
+                capabilities={t3.capabilities}
+                value={switchSelection}
+                onChange={setModelSelection}
+                disabled={isSaving || !canSwitch}
+              />
+            )}
+            <label className="inline-flex items-center gap-1.5 text-xs text-ink-2">
+              <input
+                type="checkbox"
+                checked={startFreshSession}
+                disabled={isSaving || !canSwitch}
+                onChange={(e) => {
+                  setFreshSession(e.target.checked);
+                }}
+              />
+              Start in fresh T3 session (from checkpoint)
+            </label>
             {!canSwitch && (
               <p className="m-0 text-2xs text-ink-3">
-                The model can change once the T3 thread waits for you or its turn ends.
+                The model or session can change once the T3 thread waits for you or its turn ends.
               </p>
             )}
           </div>

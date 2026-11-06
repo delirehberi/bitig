@@ -272,11 +272,45 @@ describe("TaskComments", () => {
       expect(screen.getByLabelText("Add a comment")).toHaveValue("Faster please");
     });
 
-    it("disables the picker while the thread is mid-turn", async () => {
+    it("disables the picker and fresh session toggle while the thread is mid-turn", async () => {
       render(<TaskComments storage={storage} taskId={task.id} t3={{ run: makeRun(task.id, "working"), capabilities: CAPABILITIES }} />);
       expect(await screen.findByText("No comments yet")).toBeInTheDocument();
       expect(screen.getByLabelText("Reply with model")).toBeDisabled();
-      expect(screen.getByText(/model can change once the T3 thread waits/i)).toBeInTheDocument();
+      expect(screen.getByRole("checkbox", { name: "Start in fresh T3 session (from checkpoint)" })).toBeDisabled();
+      expect(screen.getByText(/model or session can change once the T3 thread waits/i)).toBeInTheDocument();
+    });
+
+    it("starts a fresh checkpoint-seeded T3 session when the toggle is checked, then resets it (BIT-165)", async () => {
+      const user = userEvent.setup();
+      const run = makeRun(task.id, "finished");
+      vi.mocked(replyToTaskT3Run).mockResolvedValue({
+        comment: {
+          id: "01940000-0000-7000-8000-0000000000c3",
+          taskId: task.id,
+          body: "Start fresh from the latest checkpoint",
+          authorType: "human",
+          createdAt: "2026-11-02T00:00:00.000Z",
+        },
+        run: { ...run, id: "01940000-0000-7000-8000-000000000002", threadId: "thread-2", state: "working" },
+      });
+      render(<TaskComments storage={storage} taskId={task.id} t3={{ run, capabilities: [] }} />);
+      expect(await screen.findByText("No comments yet")).toBeInTheDocument();
+
+      const freshToggle = screen.getByRole("checkbox", { name: "Start in fresh T3 session (from checkpoint)" });
+      expect(freshToggle).not.toBeChecked();
+      await user.click(freshToggle);
+      expect(freshToggle).toBeChecked();
+
+      await user.type(screen.getByLabelText("Add a comment"), "Start fresh from the latest checkpoint");
+      await user.click(screen.getByRole("button", { name: "Comment" }));
+
+      expect(replyToTaskT3Run).toHaveBeenCalledWith(task.id, {
+        body: "Start fresh from the latest checkpoint",
+        freshSession: true,
+      });
+      expect(await screen.findByText("Start fresh from the latest checkpoint")).toBeInTheDocument();
+      expect(freshToggle).not.toBeChecked();
+      expect(screen.getByLabelText("Add a comment")).toHaveValue("");
     });
   });
 });

@@ -195,6 +195,53 @@ describe("buildT3LaunchPrompt", () => {
     expect(built.prompt).toContain("do not start, update, or complete BIT-100");
     expect(built.prompt).toContain('complete_task({ id: "BIT-108" })');
   });
+
+  it("embeds the latest checkpoint snapshot, prior Git state, follow-up instruction, and custom clientRequestId for a fresh session (BIT-165)", () => {
+    const checkpoint: Checkpoint = {
+      id: "0196ed60-0000-7000-8000-000000000088",
+      taskId: sampleTask.id,
+      stepIndex: 3,
+      status: "IN_PROGRESS",
+      stateSnapshot: {
+        summary: "Implemented OAuth client and encrypted storage.",
+        modifiedArtifacts: ["apps/worker/src/t3/client.ts", "packages/storage-d1/src/t3-store.ts"],
+        decisionsMade: ["Used PKCE S256", "AES-256-GCM encryption"],
+        nextStepInstructions: "Add Worker route tests for token refresh.",
+      },
+      createdAt: "2026-11-01T12:00:00.000Z",
+    };
+    const built = buildT3LaunchPrompt({
+      task: sampleTask,
+      taskCode: "BIT-107",
+      comments: sampleComments,
+      checkpoint,
+      priorGitMetadata: {
+        branch: "feature/bit-107",
+        headSha: "1234567" + "0".repeat(33),
+        diffStat: { filesChanged: 4, insertions: 120, deletions: 15 },
+        pullRequestUrls: ["https://github.com/example/bitig/pull/42"],
+      },
+      followUpComment: {
+        author: "emre",
+        body: "Please also handle expired state tokens gracefully.",
+      },
+      clientRequestId: "BIT-107:run-fresh-1",
+    });
+
+    expect(built.clientRequestId).toBe("BIT-107:run-fresh-1");
+    expect(built.prompt).toContain("## Latest Checkpoint (from prior session)");
+    expect(built.prompt).toContain("- **Step:** 3 (IN_PROGRESS)");
+    expect(built.prompt).toContain("- **Summary:** Implemented OAuth client and encrypted storage.");
+    expect(built.prompt).toContain("- **Modified Artifacts:** apps/worker/src/t3/client.ts, packages/storage-d1/src/t3-store.ts");
+    expect(built.prompt).toContain("- **Decisions Made:** Used PKCE S256; AES-256-GCM encryption");
+    expect(built.prompt).toContain("- **Next Step Instructions:** Add Worker route tests for token refresh.");
+    expect(built.prompt).toContain(
+      "- **Prior Git State:** branch `feature/bit-107` · commit `1234567` · 4 files changed (+120 / -15) · PRs: https://github.com/example/bitig/pull/42",
+    );
+    expect(built.prompt).toContain("## Follow-Up Instruction (Fresh T3 Session)");
+    expect(built.prompt).toContain("Follow this instruction from **emre**:");
+    expect(built.prompt).toContain("Please also handle expired state tokens gracefully.");
+  });
 });
 
 describe("T3 subagent handback (BIT-141)", () => {
@@ -399,8 +446,10 @@ describe("T3 model switching (BIT-119)", () => {
       ReplyToT3RunInputSchema.safeParse({
         body: "Go on",
         modelSelection: { providerInstanceId: "codex", model: "gpt-6-sol", options: [{ id: "reasoningEffort", value: "high" }] },
+        freshSession: true,
       }).success,
     ).toBe(true);
+    expect(ReplyToT3RunInputSchema.safeParse({ body: "Go on", freshSession: "yes" }).success).toBe(false);
     expect(ReplyToT3RunInputSchema.safeParse({ body: "Go on", modelSelection: { model: "x" } }).success).toBe(false);
     expect(
       T3ModelCapabilitySchema.safeParse({

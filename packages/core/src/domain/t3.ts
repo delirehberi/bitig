@@ -356,13 +356,15 @@ export const SendT3MessageInputSchema = z.strictObject({
 export type SendT3MessageInput = z.input<typeof SendT3MessageInputSchema>;
 
 /**
- * A person's reply to a waiting T3 thread (#BIT-119): saved as a Bitig comment and sent to the thread.
- * With `modelSelection`, the thread switches to that model first.
+ * A person's reply to a waiting T3 thread (#BIT-119, #BIT-165): saved as a Bitig comment and sent
+ * to the thread. With `modelSelection`, the thread switches to that model first; with `freshSession`,
+ * the previous thread is settled and a fresh checkpoint-seeded T3 thread is launched instead.
  */
 export const ReplyToT3RunInputSchema = z.strictObject({
   body: CommentBodySchema,
   author: CommentAuthorSchema.exactOptional(),
   modelSelection: T3ModelSelectionSchema.exactOptional(),
+  freshSession: z.boolean().exactOptional(),
 });
 
 export type ReplyToT3RunInput = z.input<typeof ReplyToT3RunInputSchema>;
@@ -687,12 +689,66 @@ export interface BuildT3LaunchPromptInput {
   readonly comments?: readonly Comment[] | undefined;
   /** Set when an umbrella task's session started this task as a child session (#BIT-141). */
   readonly parentTaskCode?: string | undefined;
+  /** Latest checkpoint snapshot to seed a fresh follow-up session (#BIT-165). */
+  readonly checkpoint?: Checkpoint | null | undefined;
+  /** Prior run's Git branch/commit/diff/PR summary when relaunching in a fresh session (#BIT-165). */
+  readonly priorGitMetadata?: T3GitMetadata | undefined;
+  /** The person's follow-up instruction that triggered a fresh session (#BIT-165). */
+  readonly followUpComment?: { readonly author: string; readonly body: string } | undefined;
+  /** Override `clientRequestId` so a relaunched thread gets a distinct idempotency key (#BIT-165). */
+  readonly clientRequestId?: string | undefined;
 }
 
 export interface BuiltT3LaunchPrompt {
   readonly title: string;
   readonly clientRequestId: string;
   readonly prompt: string;
+}
+
+function formatPriorGitSummaryLines(git: T3GitMetadata): string[] {
+  const parts: string[] = [];
+  if (git.branch) {
+    parts.push(`branch \`${git.branch}\``);
+  }
+  if (git.headSha) {
+    parts.push(`commit \`${git.headSha.slice(0, T3_SHORT_SHA_LENGTH)}\``);
+  }
+  if (git.diffStat) {
+    parts.push(
+      `${String(git.diffStat.filesChanged)} files changed (+${String(git.diffStat.insertions)} / -${String(git.diffStat.deletions)})`,
+    );
+  }
+  if (git.pullRequestUrls && git.pullRequestUrls.length > 0) {
+    parts.push(`PRs: ${git.pullRequestUrls.join(", ")}`);
+  }
+  return parts.length > 0 ? [`- **Prior Git State:** ${parts.join(" · ")}`] : [];
+}
+
+function formatCheckpointSnapshotSection(checkpoint: Checkpoint, priorGitMetadata?: T3GitMetadata): string {
+  const { stateSnapshot } = checkpoint;
+  const lines: string[] = [
+    "## Latest Checkpoint (from prior session)",
+    "",
+    `- **Step:** ${String(checkpoint.stepIndex)} (${checkpoint.status})`,
+    `- **Summary:** ${truncateText(stateSnapshot.summary, T3_HANDBACK_TEXT_MAX)}`,
+  ];
+  if (stateSnapshot.modifiedArtifacts.length > 0) {
+    lines.push(
+      `- **Modified Artifacts:** ${truncateText(stateSnapshot.modifiedArtifacts.join(", "), T3_HANDBACK_TEXT_MAX)}`,
+    );
+  }
+  if (stateSnapshot.decisionsMade.length > 0) {
+    lines.push(`- **Decisions Made:** ${truncateText(stateSnapshot.decisionsMade.join("; "), T3_HANDBACK_TEXT_MAX)}`);
+  }
+  if (stateSnapshot.nextStepInstructions.trim().length > 0) {
+    lines.push(
+      `- **Next Step Instructions:** ${truncateText(stateSnapshot.nextStepInstructions, T3_HANDBACK_TEXT_MAX)}`,
+    );
+  }
+  if (priorGitMetadata) {
+    lines.push(...formatPriorGitSummaryLines(priorGitMetadata));
+  }
+  return lines.join("\n");
 }
 
 /**
@@ -706,6 +762,10 @@ export function buildT3LaunchPrompt({
   code: codeAlias,
   comments = [],
   parentTaskCode,
+  checkpoint,
+  priorGitMetadata,
+  followUpComment,
+  clientRequestId,
 }: BuildT3LaunchPromptInput): BuiltT3LaunchPrompt {
   const code = (taskCode ?? codeAlias ?? "").trim() || task.id;
   const title = `${code} ${task.title}`.slice(0, 512);
@@ -725,6 +785,15 @@ export function buildT3LaunchPrompt({
     sections.push(`## Checklist\n\n${items}`);
   }
 
+  if (checkpoint) {
+    sections.push(formatCheckpointSnapshotSection(checkpoint, priorGitMetadata));
+  } else if (priorGitMetadata) {
+    const gitLines = formatPriorGitSummaryLines(priorGitMetadata);
+    if (gitLines.length > 0) {
+      sections.push(["## Prior Session Git State", "", ...gitLines].join("\n"));
+    }
+  }
+
   if (comments.length > 0) {
     const recent = comments.slice(-T3_PROMPT_COMMENTS_LIMIT);
     const formatted = recent
@@ -734,6 +803,18 @@ export function buildT3LaunchPrompt({
       })
       .join("\n");
     sections.push(`## Recent Comments\n\n${formatted}`);
+  }
+
+  if (followUpComment) {
+    sections.push(
+      [
+        "## Follow-Up Instruction (Fresh T3 Session)",
+        "",
+        `This is a fresh T3 session continuing ${code} after the previous thread was settled. Follow this instruction from **${followUpComment.author}**:`,
+        "",
+        followUpComment.body.trim(),
+      ].join("\n"),
+    );
   }
 
   const parentCode = parentTaskCode?.trim();
@@ -765,7 +846,7 @@ export function buildT3LaunchPrompt({
 
   return {
     title,
-    clientRequestId: code,
+    clientRequestId: (clientRequestId ?? "").trim() || code,
     prompt: sections.join("\n\n"),
   };
 }

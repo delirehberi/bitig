@@ -1317,6 +1317,170 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
     expect((await reply(task.id, { body: "x", modelSelection: { model: "gpt-6-sol" } })).status).toBe(400);
   });
 
+  it("starts a fresh checkpoint-seeded T3 thread and settles the prior thread when freshSession is true (BIT-165)", async () => {
+    await connectT3Host();
+    const project = await (
+      await request("/api/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Bitig", key: "BIT" }),
+      })
+    ).json<Project>();
+    await request(`/api/t3/mappings/${project.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ t3ProjectId: "t3-proj-bitig", t3ProjectTitle: "Bitig Workspace" }),
+    });
+    const task = await (
+      await request("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: project.id,
+          title: "Long-running migration",
+          description: "Migrate worker endpoints",
+        }),
+      })
+    ).json<Task>();
+
+    function reply(taskId: string, payload: Record<string, unknown>): Promise<Response> {
+      return request(`/api/tasks/${taskId}/t3-run/reply`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Bitig-Actor": "emre" },
+        body: JSON.stringify(payload),
+      });
+    }
+
+    mockState.launchThreadId = "thread-initial-1";
+    const initialLaunchRes = await request(`/api/tasks/${task.id}/t3-run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        workspaceStrategy: "worktree",
+        providerInstanceId: "prov-claude",
+        model: "claude-opus-4-7",
+      }),
+    });
+    expect(initialLaunchRes.status).toBe(201);
+    const initialLaunched = await initialLaunchRes.json<{ run: AgentRun }>();
+
+    // Save a checkpoint and Git metadata from the prior session
+    const storage = new D1Storage({ db: env.DB, orgId: DEFAULT_ORGANISATION_ID });
+    await storage.saveCheckpoint({
+      taskId: task.id,
+      stepIndex: 1,
+      status: "COMPLETED",
+      stateSnapshot: {
+        summary: "Completed schema and storage changes.",
+        modifiedArtifacts: ["packages/core/src/domain/t3.ts"],
+        decisionsMade: ["Used exactOptional boolean flag"],
+        nextStepInstructions: "Wire worker reply endpoint and UI toggle.",
+      },
+    });
+    const store = new T3D1Store(env.DB);
+    const fullSha = "1234567890abcdef1234567890abcdef12345678";
+    await store.updateAgentRunGitMetadata(
+      task.id,
+      initialLaunched.run.id,
+      "thread-initial-1",
+      {
+        branch: "feat/bit-165",
+        headSha: fullSha,
+        diffStat: { filesChanged: 2, insertions: 48, deletions: 4 },
+      },
+      Date.now(),
+    );
+
+    // Mid-turn: freshSession is refused with 409 before saving comments or settling the thread
+    mockState.threadStatus = "running";
+    mockState.recentRunStatus = "running";
+    mockState.activeRunId = "run-busy";
+    const busyRes = await reply(task.id, {
+      body: "Start fresh while busy",
+      freshSession: true,
+    });
+    expect(busyRes.status).toBe(409);
+    expect(await busyRes.json<{ error: string; state: string }>()).toMatchObject({
+      error: "thread_busy",
+      state: "working",
+    });
+    expect(mockState.toolCalls.some((c) => c.name === "t3_thread_organize")).toBe(false);
+    expect(mockState.toolCalls.filter((c) => c.name === "t3_thread_launch")).toHaveLength(1);
+
+    // Finished turn: freshSession settles the old thread and launches a new checkpoint-seeded thread
+    mockState.threadStatus = "idle";
+    mockState.recentRunStatus = "completed";
+    mockState.activeRunId = null;
+    mockState.launchThreadId = "thread-fresh-2";
+
+    const codexSelection = {
+      providerInstanceId: "prov-codex",
+      model: "gpt-6-sol",
+      options: [{ id: "reasoningEffort", value: "high" }],
+    };
+    const freshRes = await reply(task.id, {
+      body: "Now add the UI checkbox and run tests.",
+      author: "emre",
+      freshSession: true,
+      modelSelection: codexSelection,
+    });
+    expect(freshRes.status).toBe(201);
+    const freshBody = await freshRes.json<{
+      comment: { body: string };
+      switchComment?: { body: string };
+      run: AgentRun;
+    }>();
+
+    // 1. Old thread was settled via t3_thread_organize action: "settle", and t3_thread_send was NOT called
+    const settleCalls = mockState.toolCalls.filter((c) => c.name === "t3_thread_organize");
+    expect(settleCalls).toHaveLength(1);
+    expect(settleCalls[0]?.arguments).toEqual({
+      action: "settle",
+      threadId: "thread-initial-1",
+    });
+    expect(mockState.toolCalls.some((c) => c.name === "t3_thread_send")).toBe(false);
+
+    // 2. New thread was launched with checkpoint, prior Git state, and follow-up comment in its prompt
+    const launchCalls = mockState.toolCalls.filter((c) => c.name === "t3_thread_launch");
+    expect(launchCalls).toHaveLength(2);
+    const freshLaunchArgs = launchCalls[1]?.arguments;
+    expect(freshLaunchArgs).toMatchObject({
+      projectId: "t3-proj-bitig",
+      title: `BIT-${String(task.number)} Long-running migration`,
+      workspaceStrategy: { type: "worktree", baseRef: "HEAD" },
+      modelSelection: {
+        instanceId: "prov-codex",
+        model: "gpt-6-sol",
+        options: [{ id: "reasoningEffort", value: "high" }],
+      },
+    });
+    const freshPrompt = String(freshLaunchArgs?.message);
+    expect(freshPrompt).toContain("## Latest Checkpoint (from prior session)");
+    expect(freshPrompt).toContain("Completed schema and storage changes.");
+    expect(freshPrompt).toContain("packages/core/src/domain/t3.ts");
+    expect(freshPrompt).toContain("- **Prior Git State:** branch `feat/bit-165` · commit `1234567` · 2 files changed (+48 / -4)");
+    expect(freshPrompt).toContain("## Follow-Up Instruction (Fresh T3 Session)");
+    expect(freshPrompt).toContain("Follow this instruction from **emre**:\n\nNow add the UI checkbox and run tests.");
+    expect(freshPrompt).toContain(`runId "${freshBody.run.id}"`);
+
+    // 3. agent_runs points to the new threadId and model selection, with fresh Git metadata reset
+    expect(freshBody.run).toMatchObject({
+      taskId: task.id,
+      threadId: "thread-fresh-2",
+      state: "working",
+      model: "gpt-6-sol",
+      providerInstanceId: "prov-codex",
+      modelOptions: [{ id: "reasoningEffort", value: "high" }],
+      workspaceStrategy: "worktree",
+      startedBy: "emre",
+    });
+    expect(freshBody.run.id).not.toBe(initialLaunched.run.id);
+    expect(freshBody.run.branch).toBeUndefined();
+    expect(freshBody.switchComment?.body).toBe(
+      "Model switched from claude-opus-4-7 (prov-claude) to gpt-6-sol (prov-codex, reasoningEffort: high).",
+    );
+  });
+
   it("attaches CF-Access-Client-Id and CF-Access-Client-Secret headers when configured and surfaces a clear error when Cloudflare Access redirects to login", async () => {
     let requireServiceToken = true;
     const baseMockFetch = createMockT3Fetch(mockState);

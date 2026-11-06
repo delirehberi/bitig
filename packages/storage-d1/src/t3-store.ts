@@ -70,6 +70,7 @@ export interface SaveAgentRunInput {
   state: AgentRunState;
   model?: string | undefined;
   providerInstanceId?: string | undefined;
+  modelOptions?: readonly T3ModelSelectionOption[] | undefined;
   workspaceStrategy?: T3WorkspaceStrategy | undefined;
   /** The umbrella task whose session started this run (#BIT-141); cleared when absent. */
   parentTaskId?: string | undefined;
@@ -376,7 +377,7 @@ export class T3D1Store {
       state: input.state,
       model: input.model ?? null,
       providerInstanceId: input.providerInstanceId ?? null,
-      modelOptions: null,
+      modelOptions: serializeModelOptions(input.modelOptions),
       workspaceStrategy: input.workspaceStrategy ?? null,
       parentTaskId: input.parentTaskId ?? null,
       // A new launch never waits on a child yet; a relaunch drops any earlier wait.

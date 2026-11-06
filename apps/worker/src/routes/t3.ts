@@ -533,6 +533,7 @@ export const t3TaskRunsRouter = new Hono<AppEnv>()
           body: input.body,
           author: input.author,
           modelSelection: input.modelSelection,
+          freshSession: input.freshSession,
           actor,
         });
         return c.json(result, HTTP_CREATED);
