@@ -438,7 +438,7 @@ export function TaskT3Section({
               {run.branch && <span className="inline-flex items-center gap-1 break-all"><GitBranch size={12} aria-hidden="true" />{run.branch}</span>}
               {run.headSha && <code title={run.headSha} className="font-mono">{run.headSha.slice(0, T3_SHORT_SHA_LENGTH)}</code>}
               {run.diffStat && (
-                <span title="Tracked changes relative to HEAD, including staged and unstaged changes; excludes untracked files">
+                <span title="Tracked changes in the working tree or latest task commit; excludes untracked files">
                   {run.diffStat.filesChanged} files changed · +{run.diffStat.insertions} / −{run.diffStat.deletions}
                 </span>
               )}

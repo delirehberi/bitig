@@ -474,6 +474,26 @@ export function parseThreadGitMetadata(raw: unknown): T3GitMetadata {
   return metadata;
 }
 
+/**
+ * Extracts the current checked-out local branch from `t3_worktree_list` (`refs[]`),
+ * used when `t3_thread_read` has `branch: null` (for example on root-checkout threads).
+ */
+export function parseWorktreeCurrentBranch(raw: unknown): string | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const refs = (raw as Record<string, unknown>).refs;
+  if (!Array.isArray(refs)) return undefined;
+  for (const ref of refs) {
+    if (!ref || typeof ref !== "object") continue;
+    const rec = ref as Record<string, unknown>;
+    if (rec.current !== true || rec.isRemote === true || typeof rec.name !== "string") continue;
+    const parsed = T3GitMetadataSchema.safeParse({ branch: rec.name });
+    if (parsed.success && typeof parsed.data.branch === "string") {
+      return parsed.data.branch;
+    }
+  }
+  return undefined;
+}
+
 export interface T3McpClientOptions {
   mcpUrl: string;
   accessToken: string;
@@ -1212,6 +1232,17 @@ export class T3McpClient {
 
       const thread = parseThreadSummary(threadPayload.thread);
       const gitMetadata = parseThreadGitMetadata(threadPayload.thread);
+      if (typeof gitMetadata.branch !== "string") {
+        const worktreeListPayload = await callTool("t3_worktree_list", {
+          threadId,
+          refKind: "local",
+          limit: 200,
+        }).catch((): Record<string, unknown> => ({}));
+        const currentBranch = parseWorktreeCurrentBranch(worktreeListPayload);
+        if (currentBranch) {
+          gitMetadata.branch = currentBranch;
+        }
+      }
       const recentRuns = parseRecentRuns(threadPayload.recentRuns);
 
       const rawRequestIds: unknown[] = Array.isArray(pendingListPayload.requestIds)

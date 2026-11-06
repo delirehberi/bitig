@@ -50,6 +50,7 @@ export const T3_ALLOWED_MCP_TOOLS = [
   "t3_thread_list",
   "t3_thread_launch",
   "t3_thread_read",
+  "t3_worktree_list",
   "t3_pending_request",
   "t3_thread_send",
   "t3_thread_interrupt",
@@ -113,14 +114,14 @@ export const T3DiffStatSchema = z.strictObject({
 export const T3GitMetadataSchema = z.strictObject({
   branch: z.string().trim().min(1).max(T3_GIT_TEXT_MAX).nullable().exactOptional(),
   headSha: z.string().regex(/^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$/).nullable().exactOptional(),
-  /** Working-tree changes relative to HEAD (staged and unstaged); excludes untracked files. */
+  /** Tracked changes in the working tree or latest task commit; excludes untracked files. */
   diffStat: T3DiffStatSchema.nullable().exactOptional(),
   pullRequestUrls: z.array(T3PullRequestUrlSchema).max(T3_PR_COUNT_MAX).exactOptional(),
 });
 export type T3GitMetadata = z.output<typeof T3GitMetadataSchema>;
 export const ReportT3GitMetadataInputSchema = z.strictObject({
   taskId: z.string().trim().min(1),
-  runId: IdSchema,
+  runId: IdSchema.exactOptional(),
   threadId: z.string().trim().min(1).max(T3_GIT_TEXT_MAX),
   metadata: T3GitMetadataSchema,
 });
@@ -771,7 +772,7 @@ export function buildT3LaunchPrompt({
   const title = `${code} ${task.title}`.slice(0, 512);
   const sections: string[] = [`# ${code}: ${task.title}`];
   if (gitMetadataRunId) {
-    sections.push(`## Git metadata reporting\n\nAfter Git changes and before your final response, call report_t3_git_metadata with taskId "${code}", runId "${gitMetadataRunId}", your current T3 threadId, and metadata. Read branch with git branch --show-current, headSha with git rev-parse HEAD, and diffStat with git diff HEAD --numstat (tracked staged and unstaged changes; exclude untracked files; count binary files but not binary lines). diffStat is { filesChanged, insertions, deletions }. Include known HTTP(S) pullRequestUrls. Omit unknown fields, use null to clear branch/headSha/diffStat, and [] for a known empty PR list. Never guess values or substitute another run's identity. If reporting fails, mention it in your final task comment.`);
+    sections.push(`## Git metadata reporting\n\nAfter Git changes and before your final response, call report_t3_git_metadata with taskId "${code}", runId "${gitMetadataRunId}", your current T3 threadId, and metadata. Read branch with git branch --show-current (if you merged the branch into master or main and detached the worktree, report that target branch instead of null), headSha with git rev-parse HEAD, and diffStat with git diff HEAD --numstat when uncommitted tracked changes exist, or git show --numstat --format="" HEAD when your changes are already committed (exclude untracked files; count binary files but not binary lines). diffStat is { filesChanged, insertions, deletions }. Include known HTTP(S) pullRequestUrls. Omit unknown fields, use null to clear branch/headSha/diffStat, and [] for a known empty PR list. Never guess values or substitute another run's identity. If reporting fails, mention it in your final task comment.`);
   }
 
   if (task.description.trim().length > 0) {

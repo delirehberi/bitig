@@ -1004,7 +1004,7 @@ export function registerBitigTools(
   server.registerTool(
     "report_t3_git_metadata",
     {
-      description: "Record Git metadata for the current task run. Requires the run ID from the launch instructions and your T3 thread ID. Omitted fields preserve saved values; null clears a field and [] clears PR links. Diff counts are tracked changes relative to HEAD, including staged and unstaged changes, excluding untracked files. Never guess metadata.",
+      description: "Record Git metadata for the current task run. Pass your T3 thread ID (and the run ID from the launch instructions when known). Omitted fields preserve saved values; null clears a field and [] clears PR links. Diff counts are tracked changes in the working tree or latest task commit, excluding untracked files. Never guess metadata.",
       inputSchema: ReportT3GitMetadataInputSchema.shape,
     },
     async (args, extra) => {

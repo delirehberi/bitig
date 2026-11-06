@@ -23,7 +23,7 @@ import { sha256Hex } from "../src/auth-crypto";
 import { reportTaskT3GitMetadata } from "../src/t3/service";
 import { DEFAULT_ORGANISATION_ID, defaultIdGenerator, InMemoryStorage, type OrganisationRole } from "@bitig/core";
 import { decryptT3Token, encryptT3Token } from "../src/t3/crypto";
-import { parseThreadGitMetadata, resolveT3OAuthScope } from "../src/t3/client";
+import { parseThreadGitMetadata, parseWorktreeCurrentBranch, resolveT3OAuthScope } from "../src/t3/client";
 import { TEST_AUTH_HEADER, TEST_MCP_AUTH_HEADER, TEST_T3_ENCRYPTION_KEY } from "./constants";
 
 const BASE_URL = "https://bitig.test";
@@ -214,6 +214,7 @@ interface RecordedToolCall {
 
 interface MockT3ServerState {
   gitMetadata?: Record<string, unknown>;
+  worktreeRefs?: Record<string, unknown>[];
   toolErrors?: Record<string, string>;
   expiresInSeconds: number;
   failMcpConnection: boolean;
@@ -473,6 +474,10 @@ function createMockT3Fetch(state: MockT3ServerState): typeof fetch {
                 nextPosition: lastPos,
                 hasMore: state.threadHasMore ?? false,
               };
+            } else if (toolName === "t3_worktree_list") {
+              payload = {
+                refs: state.worktreeRefs ?? [],
+              };
             } else if (toolName === "t3_pending_request") {
               if (toolArgs.action === "list") {
                 payload = { requestIds: state.pendingRequestIds };
@@ -575,7 +580,7 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
     expect(await new T3D1Store(env.DB).getAgentRunByTaskId(task.id)).toBeUndefined();
   });
 
-  it("parses documented host metadata without treating invalid or missing values as empty", () => {
+  it("parses documented host metadata and current worktree branch without treating invalid or missing values as empty", () => {
     const url = "https://github.com/example/repo/pull/1";
     expect(parseThreadGitMetadata(null)).toEqual({});
     expect(parseThreadGitMetadata({})).toEqual({});
@@ -585,9 +590,12 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
     expect(parseThreadGitMetadata({ branch: 2, pullRequests: [{ url: "javascript:alert(1)" }] })).toEqual({});
     expect(parseThreadGitMetadata({ pullRequests: [null] })).toEqual({});
     expect(parseThreadGitMetadata({ pullRequests: null, linkedPullRequest: null })).toEqual({});
+    expect(parseWorktreeCurrentBranch(null)).toBeUndefined();
+    expect(parseWorktreeCurrentBranch({ refs: [{ name: "origin/master", current: true, isRemote: true }, { name: "master", current: true, isRemote: false }] })).toBe("master");
+    expect(parseWorktreeCurrentBranch({ refs: [{ name: "feature", current: false, isRemote: false }] })).toBeUndefined();
   });
 
-  it("reports metadata through authenticated MCP and refreshes branch/PRs without state changes", async () => {
+  it("reports metadata through authenticated MCP (with or without runId) and refreshes branch/PRs including root-checkout worktree fallback", async () => {
     await connectT3Host();
     const project = await (await request("/api/projects", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "Git metadata", key: "GIT" }) })).json<Project>();
     const task = await (await request("/api/tasks", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ projectId: project.id, title: "Git metadata" }) })).json<Task>();
@@ -607,8 +615,11 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
     }
     expect((await report()).result?.isError).not.toBe(true);
     expect(await store.getAgentRunByTaskId(task.id)).toMatchObject(metadata);
+    // Reporting without runId still matches taskId + threadId (supports pre-existing threads)
+    expect((await report({ runId: undefined, metadata: { branch: "feature/no-run-id" } })).result?.isError).not.toBe(true);
+    expect((await store.getAgentRunByTaskId(task.id))?.branch).toBe("feature/no-run-id");
     await expect(reportTaskT3GitMetadata({ store, storage: new D1Storage({ db: env.DB, orgId: defaultIdGenerator() }), encryptionKey: TEST_T3_ENCRYPTION_KEY }, { taskId: task.id, runId: run.id, threadId: run.threadId, metadata: { branch: "foreign" } })).rejects.toThrow();
-    expect((await store.getAgentRunByTaskId(task.id))?.branch).toBe(metadata.branch);
+    expect((await store.getAgentRunByTaskId(task.id))?.branch).toBe("feature/no-run-id");
     expect((await report({ threadId: "stale" })).result?.isError).toBe(true);
     expect((await report({ runId: defaultIdGenerator() })).result?.isError).toBe(true);
     expect((await report({ taskId: defaultIdGenerator() })).result?.isError).toBe(true);
@@ -618,9 +629,16 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
     const live = await (await request(`/api/tasks/${task.id}/t3-run`)).json<T3TaskRunLiveResponse>();
     expect(live.run).toMatchObject({ ...metadata, branch: "renamed", pullRequestUrls: ["https://github.com/example/repo/pull/2"], state: "working" });
     expect(await store.getAgentRunByTaskId(task.id)).toEqual(live.run);
+    // When t3_thread_read returns branch: null (e.g. root checkout), t3_worktree_list resolves the checked-out branch
+    mockState.gitMetadata = { branch: null, pullRequests: [] };
+    mockState.worktreeRefs = [{ name: "master", current: true, isRemote: false }];
+    const rootBranchLive = await (await request(`/api/tasks/${task.id}/t3-run`)).json<T3TaskRunLiveResponse>();
+    expect(rootBranchLive.run?.branch).toBe("master");
+    expect(rootBranchLive.run?.pullRequestUrls).toEqual([]);
+    mockState.worktreeRefs = [];
     mockState.gitMetadata = {};
     const missing = await (await request(`/api/tasks/${task.id}/t3-run`)).json<T3TaskRunLiveResponse>();
-    expect(missing.run).toEqual(live.run);
+    expect(missing.run).toEqual(rootBranchLive.run);
     mockState.gitMetadata = { branch: null, pullRequests: [] };
     const cleared = await (await request(`/api/tasks/${task.id}/t3-run`)).json<T3TaskRunLiveResponse>();
     expect(cleared.run?.branch).toBeUndefined();

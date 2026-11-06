@@ -162,6 +162,7 @@ describe("buildT3LaunchPrompt", () => {
     expect(built.prompt).toContain("report_t3_git_metadata");
     expect(built.prompt).toContain('runId "0196ed60-0000-7000-8000-000000000099"');
     expect(built.prompt).toContain("git diff HEAD --numstat");
+    expect(built.prompt).toContain('git show --numstat --format="" HEAD');
     expect(built.clientRequestId).toBe("BIT-107");
     expect(built.prompt).toContain("# BIT-107: Add OAuth client");
     expect(built.prompt).toContain("Connect Worker to T3 MCP.");

@@ -420,19 +420,22 @@ export class T3D1Store {
   /** Compare run and thread identity in SQL so a stale report cannot update a replacement run. */
   async updateAgentRunGitMetadata(
     taskId: string,
-    runId: string,
+    runId: string | undefined,
     threadId: string,
     metadata: T3GitMetadata,
     now = Date.now(),
   ): Promise<AgentRun | undefined> {
     const parsed = T3GitMetadataSchema.parse(metadata);
+    const whereClause = runId
+      ? and(eq(agentRuns.taskId, taskId), eq(agentRuns.id, runId), eq(agentRuns.threadId, threadId))
+      : and(eq(agentRuns.taskId, taskId), eq(agentRuns.threadId, threadId));
     const rows = await this.db.update(agentRuns).set({
       ...(parsed.branch !== undefined ? { branch: parsed.branch } : {}),
       ...(parsed.headSha !== undefined ? { headSha: parsed.headSha } : {}),
       ...(parsed.diffStat !== undefined ? { diffStat: parsed.diffStat === null ? null : JSON.stringify(parsed.diffStat) } : {}),
       ...(parsed.pullRequestUrls !== undefined ? { pullRequestUrls: JSON.stringify(parsed.pullRequestUrls) } : {}),
       updatedAt: now,
-    }).where(and(eq(agentRuns.taskId, taskId), eq(agentRuns.id, runId), eq(agentRuns.threadId, threadId))).returning();
+    }).where(whereClause).returning();
     return rows[0] ? toAgentRun(rows[0]) : undefined;
   }
 
