@@ -264,7 +264,7 @@ export async function launchTaskInT3(
           { actor },
         );
 
-  const run = await deps.store.saveAgentRun({
+  const savedRun = await deps.store.saveAgentRun({
     id: gitMetadataRunId,
     taskId: task.id,
     t3ProjectId: mapping.t3ProjectId,
@@ -279,6 +279,7 @@ export async function launchTaskInT3(
     startedAt: now,
     updatedAt: now,
   });
+  const run = await persistLiveGitMetadata(deps, savedRun, launched.gitMetadata, now);
 
   if (deps.publishRealtime) {
     await deps.publishRealtime({ type: "agent_run.updated", run }).catch(() => undefined);
@@ -671,7 +672,7 @@ export async function listT3RunsLive(deps: T3ServiceDeps): Promise<T3RunsLiveRes
         }),
       );
       const nextLink = listedThread.link ?? existingRun.link;
-      const updatedRun =
+      const stateUpdatedRun =
         nextState === existingRun.state && nextLink === existingRun.link
           ? existingRun
           : ((await deps.store.updateAgentRunState(existingRun.taskId, {
@@ -679,6 +680,17 @@ export async function listT3RunsLive(deps: T3ServiceDeps): Promise<T3RunsLiveRes
               ...(nextLink ? { link: nextLink } : {}),
               now,
             })) ?? existingRun);
+      const listedGitMetadata = listedThread.gitMetadata
+        ? {
+            ...(typeof listedThread.gitMetadata.branch === "string"
+              ? { branch: listedThread.gitMetadata.branch }
+              : {}),
+            ...(listedThread.gitMetadata.pullRequestUrls !== undefined
+              ? { pullRequestUrls: listedThread.gitMetadata.pullRequestUrls }
+              : {}),
+          }
+        : undefined;
+      const updatedRun = await persistLiveGitMetadata(deps, stateUpdatedRun, listedGitMetadata, now);
       if (updatedRun.state !== existingRun.state && deps.publishRealtime) {
         await deps.publishRealtime({ type: "agent_run.updated", run: updatedRun }).catch(() => undefined);
       }
@@ -1449,7 +1461,7 @@ export async function replyToTaskT3Run(
       options: targetOptions,
     });
 
-    const run = await deps.store.saveAgentRun({
+    const savedRun = await deps.store.saveAgentRun({
       id: gitMetadataRunId,
       taskId: task.id,
       t3ProjectId: existingRun.t3ProjectId,
@@ -1465,6 +1477,7 @@ export async function replyToTaskT3Run(
       startedAt: now,
       updatedAt: now,
     });
+    const run = await persistLiveGitMetadata(deps, savedRun, launched.gitMetadata, now);
 
     if (deps.publishRealtime) {
       await deps.publishRealtime({ type: "agent_run.updated", run }).catch(() => undefined);

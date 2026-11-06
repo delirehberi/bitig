@@ -19,6 +19,7 @@ import {
   compareTasks,
   formatDuration,
   getTaskTiming,
+  type AgentRun,
   type Project,
   type Task,
   type TaskPriority,
@@ -29,6 +30,7 @@ import { ApprovalBadge } from "./Approval";
 import { NeedsHumanBadge } from "./NeedsHuman";
 import { BlockedBadge } from "./Blocked";
 import { TaskCode } from "./TaskCode";
+import { T3GitBadges } from "./T3GitBadges";
 
 export type SortColumn = "title" | "project" | "status" | "priority" | "dueDate";
 export type SortDirection = "asc" | "desc";
@@ -41,6 +43,7 @@ interface SortState {
 interface TaskListProps {
   readonly tasks: Task[];
   readonly projects: Project[];
+  readonly agentRuns?: readonly AgentRun[] | undefined;
   readonly onView: (task: Task) => void;
   readonly onEdit: (task: Task) => void;
   readonly onDelete: (task: Task) => void;
@@ -136,6 +139,7 @@ function sortTasksByColumn(
 export function TaskList({
   tasks,
   projects,
+  agentRuns,
   onView,
   onEdit,
   onDelete,
@@ -157,6 +161,7 @@ export function TaskList({
   }
 
   const projectsById = new Map(projects.map((p) => [p.id, p]));
+  const runsByTaskId = new Map((agentRuns ?? []).map((r) => [r.taskId, r]));
   const sortedTasks = sortTasksByColumn(activeTasks, projectsById, sort, showProject);
 
   function handleSort(column: SortColumn) {
@@ -217,6 +222,7 @@ export function TaskList({
         <tbody className="divide-y divide-rule font-body">
           {sortedTasks.map((task) => {
             const project = projectsById.get(task.projectId);
+            const agentRun = runsByTaskId.get(task.id);
             const isDone = task.status === "done";
             const hasRecordedTime =
               task.startedAt !== undefined || task.completedAt !== undefined;
@@ -257,8 +263,8 @@ export function TaskList({
                   </button>
                 </td>
                 <td className="py-3 px-3 min-w-[200px]">
-                  <div className="flex flex-col">
-                    <span className="flex items-center gap-2">
+                  <div className="flex flex-col gap-1">
+                    <span className="flex flex-wrap items-center gap-2">
                       <TaskCode task={task} project={project} />
                       <button
                         type="button"
@@ -313,6 +319,14 @@ export function TaskList({
                       <NeedsHumanBadge reason={task.needsHuman} />
                       <BlockedBadge task={task} />
                     </span>
+                    {agentRun && (
+                      <T3GitBadges
+                        branch={agentRun.branch}
+                        headSha={agentRun.headSha}
+                        diffStat={agentRun.diffStat}
+                        pullRequestUrls={agentRun.pullRequestUrls}
+                      />
+                    )}
                     {task.description && (
                       <span className="line-clamp-1 text-2xs text-ink-3">
                         {task.description}

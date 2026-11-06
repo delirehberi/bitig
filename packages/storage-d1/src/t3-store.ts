@@ -429,10 +429,27 @@ export class T3D1Store {
     const whereClause = runId
       ? and(eq(agentRuns.taskId, taskId), eq(agentRuns.id, runId), eq(agentRuns.threadId, threadId))
       : and(eq(agentRuns.taskId, taskId), eq(agentRuns.threadId, threadId));
+    let nextDiffStat = parsed.diffStat;
+    if (
+      nextDiffStat?.filesChanged === 0 &&
+      nextDiffStat.insertions === 0 &&
+      nextDiffStat.deletions === 0
+    ) {
+      const existingRows = await this.db.select().from(agentRuns).where(whereClause).limit(1);
+      const existingRun = existingRows[0] ? toAgentRun(existingRows[0]) : undefined;
+      if (
+        existingRun?.diffStat &&
+        (existingRun.diffStat.filesChanged > 0 ||
+          existingRun.diffStat.insertions > 0 ||
+          existingRun.diffStat.deletions > 0)
+      ) {
+        nextDiffStat = existingRun.diffStat;
+      }
+    }
     const rows = await this.db.update(agentRuns).set({
       ...(parsed.branch !== undefined ? { branch: parsed.branch } : {}),
       ...(parsed.headSha !== undefined ? { headSha: parsed.headSha } : {}),
-      ...(parsed.diffStat !== undefined ? { diffStat: parsed.diffStat === null ? null : JSON.stringify(parsed.diffStat) } : {}),
+      ...(nextDiffStat !== undefined ? { diffStat: nextDiffStat === null ? null : JSON.stringify(nextDiffStat) } : {}),
       ...(parsed.pullRequestUrls !== undefined ? { pullRequestUrls: JSON.stringify(parsed.pullRequestUrls) } : {}),
       updatedAt: now,
     }).where(whereClause).returning();

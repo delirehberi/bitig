@@ -5,6 +5,7 @@ import {
   buildMentionIndex,
   dependencyLinks,
   compareTasks,
+  type AgentRun,
   type CreateTaskInput,
   type Project,
   type StorageProvider,
@@ -28,6 +29,7 @@ import { buildBlockersResolver } from "../../domain/task-mentions";
 interface TasksViewProps {
   readonly tasks: Task[];
   readonly projects: Project[];
+  readonly agentRuns?: readonly AgentRun[] | undefined;
   readonly isLoading: boolean;
   readonly error: string | null;
   readonly selectedProjectId?: string | undefined;
@@ -60,6 +62,7 @@ const ICON_SIZE = 16;
 export function TasksView({
   tasks,
   projects,
+  agentRuns,
   isLoading,
   error,
   selectedProjectId,
@@ -436,6 +439,7 @@ export function TasksView({
         <TaskBoard
           tasks={filteredTasks}
           projects={projects}
+          agentRuns={agentRuns}
           showProject={!selectedProjectId}
           onView={openTask}
           onEdit={(t) => {
@@ -458,6 +462,7 @@ export function TasksView({
         <TaskList
           tasks={filteredTasks}
           projects={projects}
+          agentRuns={agentRuns}
           showProject={!selectedProjectId}
           onView={openTask}
           onEdit={(t) => {
@@ -478,6 +483,7 @@ export function TasksView({
       <TaskDetailModal
         task={viewTask}
         projects={projects}
+        agentRun={viewTask ? agentRuns?.find((r) => r.taskId === viewTask.id) : undefined}
         onClose={closeTask}
         onEdit={(t) => {
           closeTask();

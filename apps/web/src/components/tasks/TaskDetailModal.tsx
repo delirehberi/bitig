@@ -61,6 +61,8 @@ interface TaskDetailModalProps {
   readonly links?: TaskLinks | undefined;
   /** The tasks this task depends on and the tasks waiting on it; omit to hide them. */
   readonly dependencies?: DependencyLinks | undefined;
+  /** Cached T3 agent run for immediate display before live status settles. */
+  readonly agentRun?: AgentRun | null | undefined;
 }
 
 const ICON_SIZE = 16;
@@ -137,6 +139,7 @@ export function TaskDetailModal({
   storage,
   links,
   dependencies,
+  agentRun,
 }: TaskDetailModalProps) {
   const isOpen = task !== null;
   // A toggled checklist shows at once and gives way to the saved task once the save settles
@@ -289,6 +292,23 @@ export function TaskDetailModal({
           </div>
         )}
 
+        {storage && (
+          <TaskT3Section
+            key={`t3-${task.id}`}
+            task={task}
+            project={project}
+            projects={projects}
+            storage={storage}
+            initialRun={agentRun}
+            hasUnfinishedDependencies={Boolean(
+              dependencies?.dependsOn.some(
+                (dep) => dep.status !== "done" && dep.status !== "archived",
+              ),
+            )}
+            onT3ContextChange={handleT3ContextChange}
+          />
+        )}
+
         <div className="mb-5">
           {task.description ? (
             <Markdown content={task.description} />
@@ -323,22 +343,6 @@ export function TaskDetailModal({
 
         {/* Prefixed: sibling keys must be unique, and TaskComments already uses the bare task ID (#BIT-120). */}
         {storage && <TaskCheckpoint key={`checkpoint-${task.id}`} storage={storage} taskId={task.id} />}
-
-        {storage && (
-          <TaskT3Section
-            key={`t3-${task.id}`}
-            task={task}
-            project={project}
-            projects={projects}
-            storage={storage}
-            hasUnfinishedDependencies={Boolean(
-              dependencies?.dependsOn.some(
-                (dep) => dep.status !== "done" && dep.status !== "archived",
-              ),
-            )}
-            onT3ContextChange={handleT3ContextChange}
-          />
-        )}
 
         {dependencies && <TaskDependencies dependencies={dependencies} />}
         {links && <LinkedTasks links={links} />}

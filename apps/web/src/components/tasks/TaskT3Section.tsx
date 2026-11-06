@@ -47,6 +47,7 @@ interface TaskT3SectionProps {
   readonly projects?: readonly Project[] | undefined;
   readonly storage?: StorageProvider | undefined;
   readonly hasUnfinishedDependencies: boolean;
+  readonly initialRun?: AgentRun | null | undefined;
   readonly onTaskUpdated?: ((task: Task) => void) | undefined;
   /** Reports the task's run and the T3 model list, so the comment box can switch models (#BIT-119). */
   readonly onT3ContextChange?: ((context: { run: AgentRun | null; capabilities: T3ModelCapability[] }) => void) | undefined;
@@ -65,11 +66,12 @@ export function TaskT3Section({
   projects,
   storage,
   hasUnfinishedDependencies,
+  initialRun,
   onTaskUpdated,
   onT3ContextChange,
 }: TaskT3SectionProps) {
   const locationHref = useLocationHref();
-  const [run, setRun] = useState<AgentRun | null>(null);
+  const [run, setRun] = useState<AgentRun | null>(initialRun ?? null);
   const [pendingRequestId, setPendingRequestId] = useState<string | undefined>(undefined);
   const [pendingQuestions, setPendingQuestions] = useState<T3PendingQuestion[]>([]);
   const [stopReason, setStopReason] = useState<string | undefined>(undefined);
@@ -108,44 +110,44 @@ export function TaskT3Section({
   useEffect(() => {
     const controller = new AbortController();
 
-    void Promise.all([
-      fetchTaskT3Run(task.id, controller.signal).catch(
-        (): T3TaskRunLiveResponse => ({
-          run: null,
-          pendingQuestions: [],
-        }),
-      ),
+    const runPromise = fetchTaskT3Run(task.id, controller.signal)
+      .then((liveRun) => {
+        if (controller.signal.aborted) return;
+        setRun(liveRun.run);
+        setPendingRequestId(liveRun.pendingRequestId);
+        setPendingQuestions(liveRun.pendingQuestions);
+        setStopReason(liveRun.stopReason);
+      })
+      .catch(() => undefined);
+
+    const connPromise = Promise.all([
       fetchT3Connection(controller.signal).catch(
         (): T3ConnectionStatus => ({ connected: false }),
       ),
       fetchT3ProjectMappings(controller.signal).catch(
         (): T3ProjectMapping[] => [],
       ),
-    ])
-      .then(async ([liveRun, conn, mappings]) => {
-        const caps =
-          conn.connected && !conn.expired
-            ? await fetchT3Capabilities(controller.signal).catch(
-                (): T3ModelCapability[] => [],
-              )
-            : [];
-        if (controller.signal.aborted) return;
-        setRun(liveRun.run);
-        setPendingRequestId(liveRun.pendingRequestId);
-        setPendingQuestions(liveRun.pendingQuestions);
-        setStopReason(liveRun.stopReason);
-        setConnection(conn);
-        setMapping(mappings.find((m) => m.projectId === task.projectId));
+    ]).then(async ([conn, mappings]) => {
+      const caps =
+        conn.connected && !conn.expired
+          ? await fetchT3Capabilities(controller.signal).catch(
+              (): T3ModelCapability[] => [],
+            )
+          : [];
+      if (controller.signal.aborted) return;
+      setConnection(conn);
+      setMapping(mappings.find((m) => m.projectId === task.projectId));
 
-        if (conn.connected && !conn.expired) {
-          setCapabilities(caps);
-        }
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) {
-          setIsLoading(false);
-        }
-      });
+      if (conn.connected && !conn.expired) {
+        setCapabilities(caps);
+      }
+    });
+
+    void Promise.all([runPromise, connPromise]).finally(() => {
+      if (!controller.signal.aborted) {
+        setIsLoading(false);
+      }
+    });
 
     return () => {
       controller.abort();
@@ -434,16 +436,40 @@ export function TaskT3Section({
           </div>
 
           {(run.branch || run.headSha || run.diffStat || run.pullRequestUrls?.length) ? (
-            <div data-testid="t3-git-metadata" className="flex flex-wrap items-center gap-x-3 gap-y-1 text-2xs text-ink-2">
-              {run.branch && <span className="inline-flex items-center gap-1 break-all"><GitBranch size={12} aria-hidden="true" />{run.branch}</span>}
-              {run.headSha && <code title={run.headSha} className="font-mono">{run.headSha.slice(0, T3_SHORT_SHA_LENGTH)}</code>}
+            <div
+              data-testid="t3-git-metadata"
+              className="flex flex-wrap items-center gap-2 rounded-md border border-rule bg-paper px-2.5 py-1.5 text-2xs text-ink-2"
+            >
+              {run.branch && (
+                <span className="inline-flex items-center gap-1 rounded bg-paper-2 px-1.5 py-0.5 font-mono font-medium text-ink break-all">
+                  <GitBranch size={12} aria-hidden="true" className="shrink-0 text-accent-ink" />
+                  {run.branch}
+                </span>
+              )}
+              {run.headSha && (
+                <code
+                  title={run.headSha}
+                  className="inline-flex items-center gap-1 rounded bg-paper-2 px-1.5 py-0.5 font-mono text-ink-2"
+                >
+                  {run.headSha.slice(0, T3_SHORT_SHA_LENGTH)}
+                </code>
+              )}
               {run.diffStat && (
-                <span title="Tracked changes in the working tree or latest task commit; excludes untracked files">
+                <span
+                  title="Tracked changes in the working tree or latest task commit; excludes untracked files"
+                  className="inline-flex items-center gap-1 rounded bg-paper-2 px-1.5 py-0.5 font-mono text-ink-2"
+                >
                   {run.diffStat.filesChanged} files changed · +{run.diffStat.insertions} / −{run.diffStat.deletions}
                 </span>
               )}
               {[...new Set(run.pullRequestUrls ?? [])].filter((url) => T3PullRequestUrlSchema.safeParse(url).success).map((url) => (
-                <a key={url} href={url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 break-all text-accent-ink hover:underline">
+                <a
+                  key={url}
+                  href={url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 rounded bg-accent-soft px-1.5 py-0.5 font-medium text-accent-ink hover:underline break-all"
+                >
                   {url}<ExternalLink size={11} aria-hidden="true" />
                 </a>
               ))}

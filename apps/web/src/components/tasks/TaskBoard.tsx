@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type DragEvent } from "react";
 import { Archive, Inbox, X } from "lucide-react";
 import {
   TASK_STATUSES,
+  type AgentRun,
   type Project,
   type Task,
   type TaskStatus,
@@ -19,6 +20,7 @@ interface TaskBoardProps {
   /** In `compareTasks` order; each column keeps it. */
   readonly tasks: Task[];
   readonly projects: Project[];
+  readonly agentRuns?: readonly AgentRun[] | undefined;
   readonly onView: (task: Task) => void;
   readonly onEdit: (task: Task) => void;
   readonly onDelete: (task: Task) => void;
@@ -56,6 +58,7 @@ interface DropTarget {
 export function TaskBoard({
   tasks,
   projects,
+  agentRuns,
   onView,
   onEdit,
   onDelete,
@@ -72,6 +75,7 @@ export function TaskBoard({
   // A keyboard move re-renders the card elsewhere; keep focus on its handle.
   const refocusId = useRef<string | null>(null);
   const boardRef = useRef<HTMLDivElement>(null);
+  const runsByTaskId = new Map((agentRuns ?? []).map((r) => [r.taskId, r]));
 
   const columns = new Map(
     TASK_STATUSES.map((status) => [
@@ -193,6 +197,7 @@ export function TaskBoard({
                 <TaskCard
                   task={task}
                   projects={projects}
+                  agentRun={runsByTaskId.get(task.id)}
                   showProject={showProject}
                   onView={onView}
                   onEdit={onEdit}
@@ -350,6 +355,7 @@ export function TaskBoard({
                         <TaskCard
                           task={task}
                           projects={projects}
+                          agentRun={runsByTaskId.get(task.id)}
                           showProject={showProject}
                           onView={onView}
                           onEdit={onEdit}

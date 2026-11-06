@@ -1073,6 +1073,7 @@ export class T3McpClient {
           ...(typeof rec.updatedAt === "string" && rec.updatedAt.trim().length > 0
             ? { updatedAt: rec.updatedAt.trim() }
             : {}),
+          gitMetadata: parseThreadGitMetadata(rec),
         });
       }
       return threads;
@@ -1163,7 +1164,7 @@ export class T3McpClient {
     model?: string | undefined;
     /** Model options (e.g. effort) sent with the model, in the `t3_thread_configure` shape. */
     options?: readonly T3ModelSelectionOption[] | undefined;
-  }): Promise<{ threadId: string; link?: string | undefined }> {
+  }): Promise<{ threadId: string; link?: string | undefined; gitMetadata?: T3GitMetadata | undefined }> {
     return this.withSession(async (callTool) => {
       const args: Record<string, unknown> = {
         projectId: input.projectId,
@@ -1209,16 +1210,29 @@ export class T3McpClient {
           : typeof threadObj?.link === "string" && threadObj.link.trim().length > 0
             ? threadObj.link.trim()
             : undefined;
+      const gitMetadata = parseThreadGitMetadata(threadObj ?? payload);
+      if (typeof gitMetadata.branch !== "string") {
+        const worktreeListPayload = await callTool("t3_worktree_list", {
+          threadId,
+          refKind: "local",
+          limit: 200,
+        }).catch((): Record<string, unknown> => ({}));
+        const currentBranch = parseWorktreeCurrentBranch(worktreeListPayload);
+        if (currentBranch) {
+          gitMetadata.branch = currentBranch;
+        }
+      }
       return {
         threadId,
         ...(link ? { link } : {}),
+        ...(Object.keys(gitMetadata).length > 0 ? { gitMetadata } : {}),
       };
     });
   }
 
   async readThreadLiveStatus(threadId: string): Promise<T3LiveThreadReadout> {
     return this.withSession(async (callTool) => {
-      const [threadPayload, pendingListPayload] = await Promise.all([
+      const [threadPayload, pendingListPayload, worktreeListPayload] = await Promise.all([
         callTool("t3_thread_read", {
           threadId,
           limit: 5,
@@ -1228,16 +1242,16 @@ export class T3McpClient {
           action: "list",
           threadId,
         }).catch((): Record<string, unknown> => ({})),
+        callTool("t3_worktree_list", {
+          threadId,
+          refKind: "local",
+          limit: 200,
+        }).catch((): Record<string, unknown> => ({})),
       ]);
 
       const thread = parseThreadSummary(threadPayload.thread);
       const gitMetadata = parseThreadGitMetadata(threadPayload.thread);
       if (typeof gitMetadata.branch !== "string") {
-        const worktreeListPayload = await callTool("t3_worktree_list", {
-          threadId,
-          refKind: "local",
-          limit: 200,
-        }).catch((): Record<string, unknown> => ({}));
         const currentBranch = parseWorktreeCurrentBranch(worktreeListPayload);
         if (currentBranch) {
           gitMetadata.branch = currentBranch;

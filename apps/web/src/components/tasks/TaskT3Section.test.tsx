@@ -70,6 +70,28 @@ describe("TaskT3Section", () => {
     expect(await screen.findByText("0 files changed · +0 / −0")).toBeInTheDocument();
   });
 
+  it("renders initialRun Git metadata immediately without waiting for network fetches", () => {
+    vi.mocked(fetchTaskT3Run).mockReturnValue(new Promise(() => undefined));
+    const initialRun: AgentRun = {
+      ...makeRun(task.id, "working"),
+      branch: "t3code/bit-162",
+      headSha: "1234567890abcdef1234567890abcdef12345678",
+      diffStat: { filesChanged: 5, insertions: 80, deletions: 12 },
+    };
+    render(
+      <TaskT3Section
+        task={task}
+        project={project}
+        initialRun={initialRun}
+        hasUnfinishedDependencies={false}
+      />,
+    );
+    expect(screen.getByTestId("t3-git-metadata")).toBeInTheDocument();
+    expect(screen.getByText("t3code/bit-162")).toBeInTheDocument();
+    expect(screen.getByText("1234567")).toBeInTheDocument();
+    expect(screen.getByText("5 files changed · +80 / −12")).toBeInTheDocument();
+  });
+
   it("has no follow-up message input and points to comments while a run is reachable", async () => {
     vi.mocked(fetchTaskT3Run).mockResolvedValue({ run: makeRun(task.id, "finished"), pendingQuestions: [] });
     render(<TaskT3Section task={task} project={project} hasUnfinishedDependencies={false} />);

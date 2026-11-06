@@ -4,6 +4,7 @@ import type { Task } from "@bitig/core";
 import { formatFullTimestamp, formatTimeAgo } from "../../domain/time-ago";
 import { Link } from "../../routing/Link";
 import { taskHref, useLocationHref } from "../../routing/router";
+import { T3GitBadges } from "../tasks/T3GitBadges";
 import type { AttentionItem, AttentionReason } from "./dashboard-model";
 
 interface NeedsYouProps {
@@ -101,6 +102,12 @@ function NeedsYouRow({
               </>
             )}
           </span>
+          <T3GitBadges
+            branch={item.branch}
+            headSha={item.headSha}
+            diffStat={item.diffStat}
+            pullRequestUrls={item.pullRequestUrls}
+          />
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {item.threadLink && (

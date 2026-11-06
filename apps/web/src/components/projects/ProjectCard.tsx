@@ -12,6 +12,7 @@ import {
 import type { ActiveAgentRunState, Project, ProjectKind, Task } from "@bitig/core";
 import { Link } from "../../routing/Link";
 import { taskHref, useLocationHref } from "../../routing/router";
+import { T3GitBadges } from "../tasks/T3GitBadges";
 import type { ResolvedProjectActiveSession } from "./activeSessions";
 import { ResourceLinks } from "./Resources";
 
@@ -107,7 +108,13 @@ export function ProjectActiveSessionsList({
                   </span>
                 )}
               </div>
-              <div className="flex shrink-0 items-center gap-1.5">
+              <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+                <T3GitBadges
+                  branch={session.branch}
+                  headSha={session.headSha}
+                  diffStat={session.diffStat}
+                  pullRequestUrls={session.pullRequestUrls}
+                />
                 <span
                   className={`inline-flex items-center gap-1 rounded-pill border px-2 py-0.5 text-2xs font-semibold ${SESSION_BADGE_CLASSES[session.state]}`}
                 >

@@ -42,6 +42,7 @@ import { useHealth, type HealthState } from "./hooks/useHealth";
 import { useProjects } from "./hooks/useProjects";
 import { dispatchRealtimeEvent, useRealtime } from "./hooks/useRealtime";
 import { useStorage } from "./hooks/useStorage";
+import { useT3Runs } from "./hooks/useT3Runs";
 import { useTasks, type StatusChangeChoice } from "./hooks/useTasks";
 import { useWebhooks } from "./hooks/useWebhooks";
 import { LandingPage } from "./landing/LandingPage";
@@ -121,6 +122,10 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
     updateWebhook,
     deleteWebhook,
   } = useWebhooks(storage);
+
+  const { runs: agentRuns } = useT3Runs({
+    enabled: mode === "cloudflare" && (activeTab === "tasks" || viewTaskRef !== undefined),
+  });
 
   // Most recently worked on first, wherever projects are listed.
   const recentProjects = useMemo(() => sortProjectsByActivity(projects, tasks), [projects, tasks]);
@@ -329,6 +334,7 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
               <TasksView
                 tasks={tasks}
                 projects={recentProjects}
+                agentRuns={agentRuns}
                 isLoading={isTasksLoading}
                 error={tasksError}
                 selectedProjectId={selectedProjectId}
@@ -385,6 +391,7 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
                 <TaskDetailModal
                   task={viewTask}
                   projects={recentProjects}
+                  agentRun={viewTask ? agentRuns.find((r) => r.taskId === viewTask.id) : undefined}
                   onClose={() => {
                     handleViewTask(undefined);
                   }}

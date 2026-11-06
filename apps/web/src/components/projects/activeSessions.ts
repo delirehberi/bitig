@@ -17,6 +17,10 @@ export interface ResolvedProjectActiveSession {
   readonly title: string;
   readonly link?: string | undefined;
   readonly model?: string | undefined;
+  readonly branch?: string | undefined;
+  readonly headSha?: string | undefined;
+  readonly diffStat?: AgentRun["diffStat"];
+  readonly pullRequestUrls?: readonly string[] | undefined;
   /** When the run started; only known for task runs Bitig launched. */
   readonly startedAt?: string | undefined;
   /** The last time the run or thread changed. */
@@ -100,6 +104,10 @@ export function resolveProjectActiveSessions(
       title: task.title,
       ...(link ? { link } : {}),
       ...(run.model ? { model: run.model } : {}),
+      ...(run.branch ? { branch: run.branch } : {}),
+      ...(run.headSha ? { headSha: run.headSha } : {}),
+      ...(run.diffStat ? { diffStat: run.diffStat } : {}),
+      ...(run.pullRequestUrls && run.pullRequestUrls.length > 0 ? { pullRequestUrls: run.pullRequestUrls } : {}),
       startedAt: run.startedAt,
       updatedAt: run.updatedAt,
       ...resolveWaitingDetails(run.state, run.waitingForTaskId),
@@ -124,6 +132,12 @@ export function resolveProjectActiveSessions(
       title: task?.title ?? session.title ?? session.threadId,
       ...(link ? { link } : {}),
       ...(session.model ? { model: session.model } : {}),
+      ...(existingRun?.branch ? { branch: existingRun.branch } : {}),
+      ...(existingRun?.headSha ? { headSha: existingRun.headSha } : {}),
+      ...(existingRun?.diffStat ? { diffStat: existingRun.diffStat } : {}),
+      ...(existingRun?.pullRequestUrls && existingRun.pullRequestUrls.length > 0
+        ? { pullRequestUrls: existingRun.pullRequestUrls }
+        : {}),
       ...(session.updatedAt ? { updatedAt: session.updatedAt } : {}),
       ...resolveWaitingDetails(
         session.state,

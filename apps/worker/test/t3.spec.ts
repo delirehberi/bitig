@@ -615,6 +615,9 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
     }
     expect((await report()).result?.isError).not.toBe(true);
     expect(await store.getAgentRunByTaskId(task.id)).toMatchObject(metadata);
+    // A follow-up 0/0/0 diffStat report on a later turn preserves the non-zero diffStat from earlier in the run
+    expect((await report({ metadata: { diffStat: { filesChanged: 0, insertions: 0, deletions: 0 } } })).result?.isError).not.toBe(true);
+    expect(await store.getAgentRunByTaskId(task.id)).toMatchObject(metadata);
     // Reporting without runId still matches taskId + threadId (supports pre-existing threads)
     expect((await report({ runId: undefined, metadata: { branch: "feature/no-run-id" } })).result?.isError).not.toBe(true);
     expect((await store.getAgentRunByTaskId(task.id))?.branch).toBe("feature/no-run-id");

@@ -45,6 +45,10 @@ export interface AttentionItem {
   readonly detail?: string | undefined;
   /** The T3 thread, when one is known. */
   readonly threadLink?: string | undefined;
+  readonly branch?: string | undefined;
+  readonly headSha?: string | undefined;
+  readonly diffStat?: AgentRun["diffStat"];
+  readonly pullRequestUrls?: readonly string[] | undefined;
 }
 
 export interface StalledTask {
@@ -89,6 +93,7 @@ export function buildAttentionItems({ projects, tasks, runs, sessions }: Dashboa
   const projectsById = new Map(projects.map((project) => [project.id, project]));
   const visibleTasks = tasksInProjects(projects, tasks);
   const tasksById = new Map(visibleTasks.map((task) => [task.id, task]));
+  const runsByTaskId = new Map(runs.map((run) => [run.taskId, run]));
   const byTask = new Map<string, AttentionItem>();
   const threadItems: AttentionItem[] = [];
 
@@ -99,7 +104,21 @@ export function buildAttentionItems({ projects, tasks, runs, sessions }: Dashboa
 
   function taskItem(task: Task, reason: AttentionReason, since: string, extra: Partial<AttentionItem> = {}): AttentionItem {
     const project = projectsById.get(task.projectId);
-    return { key: task.id, reason, title: task.title, task, project, code: taskCode(task, project), since, ...extra };
+    const run = runsByTaskId.get(task.id);
+    return {
+      key: task.id,
+      reason,
+      title: task.title,
+      task,
+      project,
+      code: taskCode(task, project),
+      since,
+      ...(run?.branch ? { branch: run.branch } : {}),
+      ...(run?.headSha ? { headSha: run.headSha } : {}),
+      ...(run?.diffStat ? { diffStat: run.diffStat } : {}),
+      ...(run?.pullRequestUrls && run.pullRequestUrls.length > 0 ? { pullRequestUrls: run.pullRequestUrls } : {}),
+      ...extra,
+    };
   }
 
   for (const session of sessions) {
@@ -119,6 +138,10 @@ export function buildAttentionItems({ projects, tasks, runs, sessions }: Dashboa
       code: session.taskCode,
       since,
       threadLink: session.link,
+      ...(session.branch ? { branch: session.branch } : {}),
+      ...(session.headSha ? { headSha: session.headSha } : {}),
+      ...(session.diffStat ? { diffStat: session.diffStat } : {}),
+      ...(session.pullRequestUrls && session.pullRequestUrls.length > 0 ? { pullRequestUrls: session.pullRequestUrls } : {}),
     });
   }
 

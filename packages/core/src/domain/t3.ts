@@ -263,6 +263,7 @@ export interface T3ThreadListItem {
   readonly model?: string | undefined;
   readonly providerInstanceId?: string | undefined;
   readonly updatedAt?: string | undefined;
+  readonly gitMetadata?: T3GitMetadata | undefined;
 }
 
 export interface T3ProjectActiveSession {
@@ -772,7 +773,7 @@ export function buildT3LaunchPrompt({
   const title = `${code} ${task.title}`.slice(0, 512);
   const sections: string[] = [`# ${code}: ${task.title}`];
   if (gitMetadataRunId) {
-    sections.push(`## Git metadata reporting\n\nAfter Git changes and before your final response, call report_t3_git_metadata with taskId "${code}", runId "${gitMetadataRunId}", your current T3 threadId, and metadata. Read branch with git branch --show-current (if you merged the branch into master or main and detached the worktree, report that target branch instead of null), headSha with git rev-parse HEAD, and diffStat with git diff HEAD --numstat when uncommitted tracked changes exist, or git show --numstat --format="" HEAD when your changes are already committed (exclude untracked files; count binary files but not binary lines). diffStat is { filesChanged, insertions, deletions }. Include known HTTP(S) pullRequestUrls. Omit unknown fields, use null to clear branch/headSha/diffStat, and [] for a known empty PR list. Never guess values or substitute another run's identity. If reporting fails, mention it in your final task comment.`);
+    sections.push(`## Git metadata reporting\n\nBefore every final response (whether completing the task, pausing for human input, or replying to a follow-up comment), call report_t3_git_metadata with taskId "${code}", runId "${gitMetadataRunId}", your current T3 threadId, and metadata. Read branch with git branch --show-current (if you merged the branch into master or main and detached the worktree, report that target branch instead of null), headSha with git rev-parse HEAD, and diffStat with git diff HEAD --numstat when uncommitted tracked changes exist, or git show --numstat --format="" HEAD when your changes are already committed (exclude untracked files; count binary files but not binary lines). diffStat is { filesChanged, insertions, deletions }. Include known HTTP(S) pullRequestUrls. Omit unknown fields, use null to clear branch/headSha/diffStat, and [] for a known empty PR list. Never guess values or substitute another run's identity. If reporting fails, mention it in your final task comment.`);
   }
 
   if (task.description.trim().length > 0) {

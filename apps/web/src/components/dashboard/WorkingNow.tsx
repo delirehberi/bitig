@@ -5,6 +5,7 @@ import { Link } from "../../routing/Link";
 import { taskHref, useLocationHref } from "../../routing/router";
 import type { ResolvedProjectActiveSession } from "../projects/activeSessions";
 import { ChecklistProgressBadge } from "../tasks/Checklist";
+import { T3GitBadges } from "../tasks/T3GitBadges";
 import { STATE_BADGE_CLASSES, STATE_LABELS } from "../tasks/t3-run-state";
 
 interface WorkingNowProps {
@@ -138,6 +139,12 @@ export function WorkingNow({ sessions, projects, tasks, now, isLoading = false, 
                     </>
                   )}
                 </span>
+                <T3GitBadges
+                  branch={session.branch}
+                  headSha={session.headSha}
+                  diffStat={session.diffStat}
+                  pullRequestUrls={session.pullRequestUrls}
+                />
                 {waitingRef !== undefined && (
                   <p className="m-0 flex flex-wrap items-center gap-1.5 text-sm text-ink-2">
                     <span className="font-semibold text-ink">Waiting on:</span>

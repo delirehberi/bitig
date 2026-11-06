@@ -15,6 +15,7 @@ import {
   TASK_STATUSES,
   formatDuration,
   getTaskTiming,
+  type AgentRun,
   type Project,
   type Task,
   type TaskPriority,
@@ -25,10 +26,12 @@ import { ApprovalNote } from "./Approval";
 import { BlockedBadge } from "./Blocked";
 import { NeedsHumanNote } from "./NeedsHuman";
 import { TaskCode } from "./TaskCode";
+import { T3GitBadges } from "./T3GitBadges";
 
 interface TaskCardProps {
   readonly task: Task;
   readonly projects: Project[];
+  readonly agentRun?: AgentRun | undefined;
   readonly onView: (task: Task) => void;
   readonly onEdit: (task: Task) => void;
   readonly onDelete: (task: Task) => void;
@@ -56,6 +59,7 @@ const ICON_SIZE = 14;
 export function TaskCard({
   task,
   projects,
+  agentRun,
   onView,
   onEdit,
   onDelete,
@@ -218,6 +222,16 @@ export function TaskCard({
           <div className="mt-3">
             <NeedsHumanNote reason={task.needsHuman} compact />
           </div>
+        )}
+
+        {!isArchived && agentRun && (
+          <T3GitBadges
+            branch={agentRun.branch}
+            headSha={agentRun.headSha}
+            diffStat={agentRun.diffStat}
+            pullRequestUrls={agentRun.pullRequestUrls}
+            className="mt-2.5"
+          />
         )}
 
         {!isArchived && task.labels && task.labels.length > 0 && (
