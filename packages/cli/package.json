@@ -1,0 +1,31 @@
+{
+  "name": "@bitig/cli",
+  "version": "0.1.0",
+  "description": "The bitig connect agent & skill provisioner",
+  "type": "module",
+  "bin": {
+    "bitig": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "templates"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@clack/prompts": "^1.8.1",
+    "commander": "^13.1.0",
+    "open": "^11.0.4",
+    "smol-toml": "^1.9.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "esbuild": "^0.28.1",
+    "vitest": "^4.1.11"
+  }
+}
