@@ -1,3 +1,4 @@
+import { useState } from "react";
 import {
   Archive,
   ArchiveRestore,
@@ -6,23 +7,29 @@ import {
   FolderKanban,
   ListTodo,
   MessageSquare,
+  Play,
+  Square,
   Terminal,
   Trash2,
 } from "lucide-react";
 import type { ActiveAgentRunState, Project, ProjectKind, Task } from "@bitig/core";
+import { dispatchRealtimeEvent } from "../../hooks/useRealtime";
 import { Link } from "../../routing/Link";
 import { taskHref, useLocationHref } from "../../routing/router";
+import { dispatchTaskT3Run, stopTaskT3Run } from "../../services/t3";
 import { T3GitBadges } from "../tasks/T3GitBadges";
 import type { ResolvedProjectActiveSession } from "./activeSessions";
 import { ResourceLinks } from "./Resources";
 
 const SESSION_STATE_LABELS: Record<ActiveAgentRunState, string> = {
+  queued: "queued",
   working: "working",
   waiting_for_approval: "waiting for approval",
   waiting_subagent: "waiting for subagent",
 };
 
 const SESSION_BADGE_CLASSES: Record<ActiveAgentRunState, string> = {
+  queued: "border-accent/40 bg-accent-soft text-accent-ink",
   working: "border-accent/40 bg-accent-soft text-accent-ink",
   waiting_for_approval: "border-danger/40 bg-danger-soft text-danger",
   waiting_subagent: "border-accent/40 bg-accent-soft text-accent-ink",
@@ -38,7 +45,36 @@ export function ProjectActiveSessionsList({
   readonly onNavigateTask?: (() => void) | undefined;
 }) {
   const locationHref = useLocationHref();
+  const [busyTaskId, setBusyTaskId] = useState<string | null>(null);
   if (sessions.length === 0) return null;
+
+  async function handleDispatchQueued(taskId: string) {
+    setBusyTaskId(taskId);
+    try {
+      const updated = await dispatchTaskT3Run(taskId);
+      if (updated.run) {
+        dispatchRealtimeEvent({ type: "agent_run.updated", run: updated.run });
+      }
+    } catch {
+      // Errors surface on the task page or next refresh
+    } finally {
+      setBusyTaskId(null);
+    }
+  }
+
+  async function handleCancelQueued(taskId: string) {
+    setBusyTaskId(taskId);
+    try {
+      const updated = await stopTaskT3Run(taskId);
+      if (updated.run) {
+        dispatchRealtimeEvent({ type: "agent_run.updated", run: updated.run });
+      }
+    } catch {
+      // Errors surface on the task page or next refresh
+    } finally {
+      setBusyTaskId(null);
+    }
+  }
 
   return (
     <div
@@ -55,17 +91,19 @@ export function ProjectActiveSessionsList({
       </div>
       <ul className="m-0 flex list-none flex-col gap-1.5 p-0">
         {sessions.map((session) => {
+          const sessionTaskId = session.taskId;
           const waitingCode = session.waitingForTaskCode;
           const waitingRef = waitingCode ?? session.waitingForTaskId;
+          const isTaskBusy = sessionTaskId !== undefined && busyTaskId === sessionTaskId;
           return (
             <li
               key={session.threadId}
               className="flex flex-wrap items-center justify-between gap-2 text-xs"
             >
               <div className="flex min-w-0 flex-wrap items-baseline gap-1.5">
-                {session.taskId ? (
+                {sessionTaskId ? (
                   <Link
-                    href={taskHref(session.taskCode ?? session.taskId, locationHref)}
+                    href={taskHref(session.taskCode ?? sessionTaskId, locationHref)}
                     onClick={() => {
                       onNavigateTask?.();
                     }}
@@ -121,6 +159,34 @@ export function ProjectActiveSessionsList({
                   {SESSION_STATE_LABELS[session.state]}
                   {session.model ? ` · ${session.model}` : ""}
                 </span>
+                {session.state === "queued" && sessionTaskId && (
+                  <>
+                    <button
+                      type="button"
+                      disabled={isTaskBusy}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void handleDispatchQueued(sessionTaskId);
+                      }}
+                      className="inline-flex items-center gap-0.5 rounded-pill border border-accent/40 bg-paper px-2 py-0.5 text-2xs font-semibold text-accent-ink hover:bg-accent-soft disabled:opacity-50"
+                    >
+                      <Play size={10} aria-hidden="true" />
+                      <span>Dispatch now</span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isTaskBusy}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void handleCancelQueued(sessionTaskId);
+                      }}
+                      className="inline-flex items-center gap-0.5 rounded-pill border border-danger/40 bg-paper px-2 py-0.5 text-2xs font-semibold text-danger hover:bg-danger-soft disabled:opacity-50"
+                    >
+                      <Square size={10} aria-hidden="true" />
+                      <span>Cancel queued run</span>
+                    </button>
+                  </>
+                )}
                 {session.link && (
                   <a
                     href={session.link}

@@ -439,6 +439,31 @@ export const mcpTokens = sqliteTable(
   ],
 );
 
+export type T3RunRequestKind = "launch" | "reply" | "message";
+export type T3RunRequestState = "queued" | "dispatching" | "delivered" | "failed" | "cancelled";
+
+export const t3RunRequests = sqliteTable(
+  "t3_run_requests",
+  {
+    sequence: integer("sequence").primaryKey({ autoIncrement: true }),
+    id: text("id").notNull().unique(),
+    orgId: text("org_id").notNull(),
+    taskId: text("task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    kind: text("kind").$type<T3RunRequestKind>().notNull(),
+    payload: text("payload").notNull(),
+    state: text("state").$type<T3RunRequestState>().notNull().default("queued"),
+    claimToken: text("claim_token"),
+    leaseUntil: integer("lease_until"),
+    attempted: integer("attempted").notNull().default(0),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [
+    index("t3_run_requests_pending_idx").on(table.orgId, table.taskId, table.state, table.sequence),
+  ],
+);
+
 export type UserRecord = typeof users.$inferSelect;
 export type InsertUserRecord = typeof users.$inferInsert;
 export type OrganisationRecord = typeof organisations.$inferSelect;
@@ -476,3 +501,5 @@ export type T3ProjectMappingRecord = typeof t3ProjectMappings.$inferSelect;
 export type InsertT3ProjectMappingRecord = typeof t3ProjectMappings.$inferInsert;
 export type AgentRunRecord = typeof agentRuns.$inferSelect;
 export type InsertAgentRunRecord = typeof agentRuns.$inferInsert;
+export type T3RunRequestRecord = typeof t3RunRequests.$inferSelect;
+export type InsertT3RunRequestRecord = typeof t3RunRequests.$inferInsert;

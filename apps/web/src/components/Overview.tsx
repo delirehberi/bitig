@@ -4,7 +4,7 @@ import { dispatchRealtimeEvent } from "../hooks/useRealtime";
 import { useT3Runs } from "../hooks/useT3Runs";
 import { Link } from "../routing/Link";
 import { hrefFor } from "../routing/router";
-import { startTaskT3Run } from "../services/t3";
+import { dispatchTaskT3Run, startTaskT3Run, stopTaskT3Run } from "../services/t3";
 import { buildAttentionItems, findStalledTasks, workingSessions } from "./dashboard/dashboard-model";
 import { NeedsYou } from "./dashboard/NeedsYou";
 import { Stalled } from "./dashboard/Stalled";
@@ -20,6 +20,10 @@ interface OverviewProps {
   readonly onArchiveTask?: (task: Task) => void;
   /** Overrides the T3 launch from the Stalled list; defaults to the Worker API in `cloudflare` mode. */
   readonly onStartT3Thread?: (task: Task) => Promise<void>;
+  /** Overrides dispatching a queued run from Agents working now; defaults to the Worker API in `cloudflare` mode. */
+  readonly onDispatchQueuedRun?: (taskId: string) => Promise<void>;
+  /** Overrides cancelling a queued run from Agents working now; defaults to the Worker API in `cloudflare` mode. */
+  readonly onCancelQueuedRun?: (taskId: string) => Promise<void>;
   /** T3 runs and sessions supplied by the caller (tests); the dashboard loads them itself otherwise. */
   readonly agentRuns?: readonly AgentRun[];
   readonly activeSessions?: readonly T3ProjectActiveSession[];
@@ -41,12 +45,28 @@ async function startT3ThreadFromDashboard(task: Task): Promise<void> {
   dispatchRealtimeEvent({ type: "agent_run.updated", run: launched.run });
 }
 
+async function dispatchQueuedRunFromDashboard(taskId: string): Promise<void> {
+  const updated = await dispatchTaskT3Run(taskId);
+  if (updated.run) {
+    dispatchRealtimeEvent({ type: "agent_run.updated", run: updated.run });
+  }
+}
+
+async function cancelQueuedRunFromDashboard(taskId: string): Promise<void> {
+  const updated = await stopTaskT3Run(taskId);
+  if (updated.run) {
+    dispatchRealtimeEvent({ type: "agent_run.updated", run: updated.run });
+  }
+}
+
 export function Overview({
   mode,
   projects = [],
   tasks = [],
   onArchiveTask,
   onStartT3Thread,
+  onDispatchQueuedRun,
+  onCancelQueuedRun,
   agentRuns,
   activeSessions,
   now = new Date(),
@@ -71,6 +91,8 @@ export function Overview({
   const stalled = useMemo(() => findStalledTasks(dashboardInput, new Date(nowTime)), [dashboardInput, nowTime]);
 
   const startT3Thread = onStartT3Thread ?? (t3Available ? startT3ThreadFromDashboard : undefined);
+  const dispatchQueued = onDispatchQueuedRun ?? (t3Available ? dispatchQueuedRunFromDashboard : undefined);
+  const cancelQueued = onCancelQueuedRun ?? (t3Available ? cancelQueuedRunFromDashboard : undefined);
 
   return (
     <div className="flex flex-col gap-8">
@@ -106,6 +128,8 @@ export function Overview({
               onRetry={() => {
                 void t3Runs.refresh();
               }}
+              onDispatchQueuedRun={dispatchQueued}
+              onCancelQueuedRun={cancelQueued}
             />
           )}
           <Stalled stalled={stalled} now={now} onStartT3Thread={startT3Thread} />

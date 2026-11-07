@@ -2,6 +2,7 @@ import type { AgentRunState } from "@bitig/core";
 
 /** Display labels and badge styles for T3 thread states, shared by task and project T3 panels. */
 export const STATE_LABELS: Record<AgentRunState, string> = {
+  queued: "queued",
   working: "working",
   waiting_for_approval: "waiting for approval",
   waiting_subagent: "waiting for subagent",
@@ -12,6 +13,7 @@ export const STATE_LABELS: Record<AgentRunState, string> = {
 };
 
 export const STATE_BADGE_CLASSES: Record<AgentRunState, string> = {
+  queued: "border-accent/40 bg-accent-soft text-accent-ink",
   working: "border-accent/40 bg-accent-soft text-accent-ink",
   waiting_for_approval: "border-danger/40 bg-danger-soft text-danger",
   waiting_subagent: "border-accent/40 bg-accent-soft text-accent-ink",

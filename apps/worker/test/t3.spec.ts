@@ -31,6 +31,7 @@ const T3_ORIGIN = "https://t3.example.test";
 const T3_MCP_URL = `${T3_ORIGIN}/mcp`;
 
 const STATEMENTS = [
+  "DROP TABLE IF EXISTS `t3_run_requests`",
   "DROP TABLE IF EXISTS `project_t3_threads`",
   "DROP TABLE IF EXISTS `agent_runs`",
   "DROP TABLE IF EXISTS `t3_project_mappings`",
@@ -186,6 +187,20 @@ const STATEMENTS = [
   "CREATE UNIQUE INDEX `agent_runs_task_id_idx` ON `agent_runs` (`task_id`)",
   "CREATE INDEX `agent_runs_thread_id_idx` ON `agent_runs` (`thread_id`)",
   "CREATE INDEX `agent_runs_waiting_for_task_id_idx` ON `agent_runs` (`waiting_for_task_id`)",
+  `CREATE TABLE \`t3_run_requests\` (
+    \`sequence\` integer PRIMARY KEY AUTOINCREMENT,
+    \`id\` text NOT NULL UNIQUE,
+    \`org_id\` text NOT NULL,
+    \`task_id\` text NOT NULL REFERENCES \`tasks\` (\`id\`) ON DELETE CASCADE,
+    \`kind\` text NOT NULL,
+    \`payload\` text NOT NULL,
+    \`state\` text NOT NULL DEFAULT 'queued',
+    \`claim_token\` text,
+    \`lease_until\` integer,
+    \`attempted\` integer NOT NULL DEFAULT 0,
+    \`created_at\` integer NOT NULL
+  )`,
+  "CREATE INDEX `t3_run_requests_pending_idx` ON `t3_run_requests` (`org_id`, `task_id`, `state`, `sequence`)",
   `CREATE TABLE \`project_t3_threads\` (
     \`id\` text PRIMARY KEY NOT NULL,
     \`project_id\` text NOT NULL,
@@ -1090,20 +1105,19 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
       .first<{ state: string }>();
     expect(storedRun?.state).toBe("working");
 
-    // T3 failure: the comment is still created and listed
+    // T3 failure: the comment is still created, queued in D1, and dispatched once T3 reconnects (#BIT-161)
     mockState.failMcpConnection = true;
     const failedRes = await postComment(task.id, { body: "Are you there?" });
     expect(failedRes.status).toBe(201);
     const comments = await (await request(`/api/tasks/${task.id}/comments`)).json<{ body: string }[]>();
     expect(comments.map((c) => c.body)).toContain("Are you there?");
 
-    // An offline run is skipped without contacting T3
-    const offline = await (await request(`/api/tasks/${task.id}/t3-run`)).json<T3TaskRunLiveResponse>();
-    expect(offline.run?.state).toBe("offline");
+    const queued = await (await request(`/api/tasks/${task.id}/t3-run`)).json<T3TaskRunLiveResponse>();
+    expect(queued.run?.state).toBe("queued");
     mockState.failMcpConnection = false;
-    const callsBefore = mockState.toolCalls.length;
-    expect((await postComment(task.id, { body: "Ping while offline" })).status).toBe(201);
-    expect(mockState.toolCalls).toHaveLength(callsBefore);
+    const sendBeforeReconnect = sendCount();
+    expect((await postComment(task.id, { body: "Ping after reconnect" })).status).toBe(201);
+    expect(sendCount()).toBe(sendBeforeReconnect + 2);
   });
 
   it("marks the T3 thread as settled when archiving a task, and still archives when T3 is unreachable", async () => {
@@ -1325,12 +1339,14 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
     expect(back.run.model).toBe("claude-opus-4-7");
     expect(back.run.modelOptions).toBeUndefined();
 
-    // T3 unreachable: a 502 and nothing is saved
+    // T3 unreachable: the reply is saved and durably queued in D1 (#BIT-161)
     mockState.failMcpConnection = true;
     const commentCount = (await listComments()).length;
     const downRes = await reply(task.id, { body: "Anyone?", modelSelection: codexSelection });
-    expect(downRes.status).toBe(502);
-    expect(await listComments()).toHaveLength(commentCount);
+    expect(downRes.status).toBe(201);
+    const downBody = await downRes.json<{ run: AgentRun }>();
+    expect(downBody.run.state).toBe("queued");
+    expect(await listComments()).toHaveLength(commentCount + 1);
 
     // Invalid input is rejected
     mockState.failMcpConnection = false;
@@ -2850,6 +2866,165 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
       expect(startRes.status).toBe(200);
       const { authorizationUrl } = await startRes.json<{ authorizationUrl: string }>();
       expect(new URL(authorizationUrl).searchParams.get("scope")).toBe("orchestration:read orchestration:operate");
+    });
+  });
+
+  describe("offline queueing and single-flight reconnect dispatch (#BIT-161)", () => {
+    async function setupMappedProjectAndTask(title = "Offline queued task"): Promise<{ project: Project; task: Task }> {
+      const project = await (
+        await request("/api/projects", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: "Bitig", key: "BIT" }),
+        })
+      ).json<Project>();
+      await request(`/api/t3/mappings/${project.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ t3ProjectId: "t3-proj-bitig", t3ProjectTitle: "Bitig Workspace" }),
+      });
+      const task = await (
+        await request("/api/tasks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ projectId: project.id, title }),
+        })
+      ).json<Task>();
+      return { project, task };
+    }
+
+    it("queues an approved launch and follow-up replies while the host is unreachable, then dispatches once in order on reconnect", async () => {
+      await connectT3Host();
+      const { task } = await setupMappedProjectAndTask("Queue launch & replies");
+
+      // Host goes offline before launch
+      mockState.failMcpConnection = true;
+
+      const launchRes = await request(`/api/tasks/${task.id}/t3-run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          workspaceStrategy: "worktree",
+          providerInstanceId: "prov-claude",
+          model: "claude-opus-4-7",
+        }),
+      });
+      expect(launchRes.status).toBe(201);
+      const launched = await launchRes.json<{ run: AgentRun; task: Task }>();
+      expect(launched.run.state).toBe("queued");
+      expect(launched.run.threadId).toBe(`queued:${launched.run.id}`);
+      expect(launched.task.status).toBe("in_progress");
+      expect(mockState.toolCalls.filter((c) => c.name === "t3_thread_launch")).toHaveLength(0);
+
+      // Queue two follow-up replies while still offline
+      const reply1Res = await request(`/api/tasks/${task.id}/t3-run/reply`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ body: "First queued follow-up", author: "emre" }),
+      });
+      expect(reply1Res.status).toBe(201);
+      const reply1 = await reply1Res.json<{ comment: { id: string }; run: AgentRun }>();
+      expect(reply1.run.state).toBe("queued");
+
+      const comment2Res = await request(`/api/tasks/${task.id}/comments`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ body: "Second queued comment", author: "emre" }),
+      });
+      expect(comment2Res.status).toBe(201);
+      const comment2 = await comment2Res.json<{ id: string }>();
+
+      // Live status while still offline keeps state = "queued"
+      const stillOffline = await (await request(`/api/tasks/${task.id}/t3-run`)).json<T3TaskRunLiveResponse>();
+      expect(stillOffline.run?.state).toBe("queued");
+
+      // Host comes back online: concurrent dispatch + live status calls must launch at most once
+      mockState.failMcpConnection = false;
+      const [dispatchRes, liveRes] = await Promise.all([
+        request(`/api/tasks/${task.id}/t3-run/dispatch`, { method: "POST" }),
+        request(`/api/tasks/${task.id}/t3-run`),
+      ]);
+      expect(dispatchRes.status).toBe(200);
+      expect(liveRes.status).toBe(200);
+      const dispatched = await dispatchRes.json<T3TaskRunLiveResponse>();
+      expect(dispatched.run?.state).toBe("working");
+      expect(dispatched.run?.threadId).toBe("thread-abc-123");
+
+      const launchCalls = mockState.toolCalls.filter((c) => c.name === "t3_thread_launch");
+      expect(launchCalls).toHaveLength(1);
+      expect(launchCalls[0]?.arguments).toMatchObject({
+        projectId: "t3-proj-bitig",
+        clientRequestId: "BIT-1",
+      });
+
+      const sendCalls = mockState.toolCalls.filter((c) => c.name === "t3_thread_send");
+      expect(sendCalls).toHaveLength(2);
+      expect(String(sendCalls[0]?.arguments.message)).toContain("First queued follow-up");
+      expect(String(sendCalls[1]?.arguments.message)).toContain("Second queued comment");
+      expect(String(sendCalls[0]?.arguments.clientRequestId)).toContain(reply1.comment.id);
+      expect(String(sendCalls[1]?.arguments.clientRequestId)).toContain(comment2.id);
+
+      // Calling dispatch again is a no-op and never re-launches
+      const secondDispatch = await (
+        await request(`/api/tasks/${task.id}/t3-run/dispatch`, { method: "POST" })
+      ).json<T3TaskRunLiveResponse>();
+      expect(secondDispatch.run?.state).toBe("working");
+      expect(mockState.toolCalls.filter((c) => c.name === "t3_thread_launch")).toHaveLength(1);
+      expect(mockState.toolCalls.filter((c) => c.name === "t3_thread_send")).toHaveLength(2);
+    });
+
+    it("queues a launch when the OAuth token is expired and dispatches automatically upon OAuth callback reconnect", async () => {
+      await connectT3Host();
+      await env.DB.prepare("UPDATE t3_connections SET expires_at = ?").bind(Date.now() - 60_000).run();
+      const { task } = await setupMappedProjectAndTask("Expired token queue");
+
+      const launchRes = await request(`/api/tasks/${task.id}/t3-run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workspaceStrategy: "worktree" }),
+      });
+      expect(launchRes.status).toBe(201);
+      const launched = await launchRes.json<{ run: AgentRun }>();
+      expect(launched.run.state).toBe("queued");
+      expect(mockState.toolCalls.filter((c) => c.name === "t3_thread_launch")).toHaveLength(0);
+
+      // Reconnect OAuth with a valid token: callback drains the queued launch immediately
+      mockState.expiresInSeconds = 3600;
+      await connectT3Host();
+
+      const launchCalls = mockState.toolCalls.filter((c) => c.name === "t3_thread_launch");
+      expect(launchCalls).toHaveLength(1);
+      expect(launchCalls[0]?.arguments.clientRequestId).toBe("BIT-1");
+
+      const live = await (await request(`/api/tasks/${task.id}/t3-run`)).json<T3TaskRunLiveResponse>();
+      expect(live.run?.state).toBe("working");
+      expect(live.run?.threadId).toBe("thread-abc-123");
+    });
+
+    it("cancels a queued run while offline and does not dispatch it when the host later reconnects", async () => {
+      await connectT3Host();
+      const { task } = await setupMappedProjectAndTask("Cancel while queued");
+      mockState.failMcpConnection = true;
+
+      const launchRes = await request(`/api/tasks/${task.id}/t3-run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workspaceStrategy: "worktree" }),
+      });
+      expect(launchRes.status).toBe(201);
+      expect((await launchRes.json<{ run: AgentRun }>()).run.state).toBe("queued");
+
+      const stopRes = await request(`/api/tasks/${task.id}/t3-run/stop`, { method: "POST" });
+      expect(stopRes.status).toBe(200);
+      const stopped = await stopRes.json<T3TaskRunLiveResponse>();
+      expect(stopped.run?.state).toBe("stopped");
+
+      // Reconnect host and check runs + live status: cancelled run must not launch
+      mockState.failMcpConnection = false;
+      await request("/api/t3/runs");
+      const afterReconnect = await (await request(`/api/tasks/${task.id}/t3-run`)).json<T3TaskRunLiveResponse>();
+      expect(afterReconnect.run?.state).toBe("stopped");
+      expect(mockState.toolCalls.filter((c) => c.name === "t3_thread_launch")).toHaveLength(0);
     });
   });
 });

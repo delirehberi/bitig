@@ -92,7 +92,7 @@ async function readWorkspaceBusySession(response: Response): Promise<T3Workspace
   const state = rec.state;
   if (
     !threadId ||
-    (state !== "working" && state !== "waiting_for_approval" && state !== "waiting_subagent")
+    (state !== "queued" && state !== "working" && state !== "waiting_for_approval" && state !== "waiting_subagent")
   ) {
     return undefined;
   }
@@ -333,6 +333,24 @@ export async function fetchTaskT3Run(
   });
   if (!response.ok) {
     throw new T3ApiError(response.status, await parseErrorMessage(response, "Could not load T3 thread status"));
+  }
+  return (await response.json()) as T3TaskRunLiveResponse;
+}
+
+export async function dispatchTaskT3Run(taskId: string): Promise<T3TaskRunLiveResponse> {
+  const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/t3-run/dispatch`, {
+    method: "POST",
+    headers: baseHeaders(),
+    credentials: "same-origin",
+  });
+  if (!response.ok) {
+    const busySession =
+      response.status === HTTP_CONFLICT ? await readWorkspaceBusySession(response.clone()) : undefined;
+    const message = await parseErrorMessage(response, "Could not dispatch queued T3 thread");
+    if (busySession) {
+      throw new T3WorkspaceBusyApiError(response.status, message, busySession);
+    }
+    throw new T3ApiError(response.status, message);
   }
   return (await response.json()) as T3TaskRunLiveResponse;
 }

@@ -1,4 +1,5 @@
-import { ExternalLink, Loader, RefreshCw } from "lucide-react";
+import { useState } from "react";
+import { ExternalLink, Loader, Play, RefreshCw, Square } from "lucide-react";
 import { taskCode, type Project, type Task } from "@bitig/core";
 import { formatFullTimestamp, formatTimeAgo } from "../../domain/time-ago";
 import { Link } from "../../routing/Link";
@@ -9,7 +10,7 @@ import { T3GitBadges } from "../tasks/T3GitBadges";
 import { STATE_BADGE_CLASSES, STATE_LABELS } from "../tasks/t3-run-state";
 
 interface WorkingNowProps {
-  /** Active sessions (`working` or `waiting_subagent`), already ordered. */
+  /** Active sessions (`queued`, `working`, or `waiting_subagent`), already ordered. */
   readonly sessions: readonly ResolvedProjectActiveSession[];
   readonly projects: readonly Project[];
   readonly tasks: readonly Task[];
@@ -18,6 +19,8 @@ interface WorkingNowProps {
   /** A failed load of T3 sessions; the list may be stale or empty because of it. */
   readonly error?: string | null | undefined;
   readonly onRetry?: (() => void) | undefined;
+  readonly onDispatchQueuedRun?: ((taskId: string) => Promise<void>) | undefined;
+  readonly onCancelQueuedRun?: ((taskId: string) => Promise<void>) | undefined;
 }
 
 function nextSubtask(task: Task | undefined): string | undefined {
@@ -25,10 +28,40 @@ function nextSubtask(task: Task | undefined): string | undefined {
 }
 
 /** Every T3 thread an agent is working on, across projects. */
-export function WorkingNow({ sessions, projects, tasks, now, isLoading = false, error, onRetry }: WorkingNowProps) {
+export function WorkingNow({
+  sessions,
+  projects,
+  tasks,
+  now,
+  isLoading = false,
+  error,
+  onRetry,
+  onDispatchQueuedRun,
+  onCancelQueuedRun,
+}: WorkingNowProps) {
   const locationHref = useLocationHref();
   const projectsById = new Map(projects.map((project) => [project.id, project]));
   const tasksById = new Map(tasks.map((task) => [task.id, task]));
+  const [busyTaskId, setBusyTaskId] = useState<string | null>(null);
+  const [actionErrors, setActionErrors] = useState<Record<string, string | undefined>>({});
+
+  async function runQueuedAction(taskId: string, action: (id: string) => Promise<void>) {
+    setBusyTaskId(taskId);
+    setActionErrors((prev) => ({
+      ...prev,
+      [taskId]: undefined,
+    }));
+    try {
+      await action(taskId);
+    } catch (err) {
+      setActionErrors((prev) => ({
+        ...prev,
+        [taskId]: err instanceof Error ? err.message : "Action failed",
+      }));
+    } finally {
+      setBusyTaskId(null);
+    }
+  }
 
   return (
     <section
@@ -73,7 +106,8 @@ export function WorkingNow({ sessions, projects, tasks, now, isLoading = false, 
       ) : (
         <ul className="m-0 flex list-none flex-col gap-2 p-0" aria-label="Agents working now">
           {sessions.map((session) => {
-            const task = session.taskId === undefined ? undefined : tasksById.get(session.taskId);
+            const sessionTaskId = session.taskId;
+            const task = sessionTaskId === undefined ? undefined : tasksById.get(sessionTaskId);
             const project = projectsById.get(session.projectId);
             const since = session.startedAt ?? session.updatedAt;
             const next = nextSubtask(task);
@@ -87,6 +121,8 @@ export function WorkingNow({ sessions, projects, tasks, now, isLoading = false, 
               (waitingTask ? taskCode(waitingTask, waitingProject) : undefined);
             const waitingTitle = session.waitingForTaskTitle ?? waitingTask?.title;
             const waitingRef = waitingCode ?? waitingForId;
+            const isTaskBusy = sessionTaskId !== undefined && busyTaskId === sessionTaskId;
+            const taskError = sessionTaskId !== undefined ? actionErrors[sessionTaskId] : undefined;
             return (
               <li key={session.threadId} className="flex flex-col gap-1.5 rounded-md border border-rule bg-paper-2 p-3">
                 <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
@@ -96,11 +132,11 @@ export function WorkingNow({ sessions, projects, tasks, now, isLoading = false, 
                     >
                       {STATE_LABELS[session.state]}
                     </span>
-                    {session.taskId === undefined ? (
+                    {sessionTaskId === undefined ? (
                       <span className="truncate text-sm font-semibold text-ink">{session.title}</span>
                     ) : (
                       <Link
-                        href={taskHref(session.taskCode ?? session.taskId, locationHref)}
+                        href={taskHref(session.taskCode ?? sessionTaskId, locationHref)}
                         aria-label={label}
                         className="flex min-w-0 items-baseline gap-2 text-sm font-semibold text-ink hover:text-accent-ink hover:underline"
                       >
@@ -111,8 +147,38 @@ export function WorkingNow({ sessions, projects, tasks, now, isLoading = false, 
                       </Link>
                     )}
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     <ChecklistProgressBadge checklist={task?.checklist} />
+                    {session.state === "queued" && sessionTaskId !== undefined && (
+                      <>
+                        {onDispatchQueuedRun && (
+                          <button
+                            type="button"
+                            disabled={isTaskBusy}
+                            onClick={() => {
+                              void runQueuedAction(sessionTaskId, onDispatchQueuedRun);
+                            }}
+                            className="inline-flex items-center gap-1 rounded-md border border-accent/40 bg-paper px-2 py-1 text-2xs font-semibold text-accent-ink transition-colors hover:bg-accent-soft focus-visible:outline-focus disabled:opacity-50"
+                          >
+                            <Play size={11} aria-hidden="true" />
+                            <span>Dispatch now</span>
+                          </button>
+                        )}
+                        {onCancelQueuedRun && (
+                          <button
+                            type="button"
+                            disabled={isTaskBusy}
+                            onClick={() => {
+                              void runQueuedAction(sessionTaskId, onCancelQueuedRun);
+                            }}
+                            className="inline-flex items-center gap-1 rounded-md border border-danger/40 bg-paper px-2 py-1 text-2xs font-semibold text-danger transition-colors hover:bg-danger-soft focus-visible:outline-focus disabled:opacity-50"
+                          >
+                            <Square size={11} aria-hidden="true" />
+                            <span>Cancel queued run</span>
+                          </button>
+                        )}
+                      </>
+                    )}
                     {session.link && (
                       <a
                         href={session.link}
@@ -127,12 +193,21 @@ export function WorkingNow({ sessions, projects, tasks, now, isLoading = false, 
                     )}
                   </div>
                 </div>
+                {taskError && (
+                  <p role="alert" className="m-0 text-xs text-danger">
+                    {taskError}
+                  </p>
+                )}
                 <span className="text-xs text-ink-3">
                   {project?.name ?? "Unknown project"}
                   {session.model && ` · ${session.model}`}
                   {since && (
                     <>
-                      {session.startedAt ? " · started " : " · active "}
+                      {session.state === "queued"
+                        ? " · queued "
+                        : session.startedAt
+                          ? " · started "
+                          : " · active "}
                       <time dateTime={since} title={formatFullTimestamp(since)}>
                         {formatTimeAgo(since, now)}
                       </time>

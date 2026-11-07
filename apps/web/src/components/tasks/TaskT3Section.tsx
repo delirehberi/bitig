@@ -30,6 +30,7 @@ import { STATE_BADGE_CLASSES, STATE_LABELS } from "./t3-run-state";
 import { Link } from "../../routing/Link";
 import { hrefFor, taskHref, useLocationHref } from "../../routing/router";
 import {
+  dispatchTaskT3Run,
   fetchT3Capabilities,
   fetchT3Connection,
   fetchT3ProjectMappings,
@@ -247,7 +248,7 @@ export function TaskT3Section({
 
   const isDone = task.status === "done" || task.status === "archived";
   const isAwaitingApproval = task.pendingApproval === true;
-  const isConnected = Boolean(connection?.connected && !connection.expired);
+  const isConnected = Boolean(connection?.connected);
   const isMapped = Boolean(mapping);
 
   let gateReason: string | null = null;
@@ -256,9 +257,7 @@ export function TaskT3Section({
   } else if (hasUnfinishedDependencies && !isDone) {
     gateReason = "Finish blocking dependencies before starting this task in T3.";
   } else if (!isConnected) {
-    gateReason = connection?.expired
-      ? "T3 OAuth token has expired. Reconnect in Settings."
-      : "Connect a T3 Code host in Settings to launch threads.";
+    gateReason = "Connect a T3 Code host in Settings to launch threads.";
   } else if (!isMapped) {
     gateReason = `Map project "${project?.name ?? task.projectId}" to a T3 project in Settings first.`;
   }
@@ -296,6 +295,26 @@ export function TaskT3Section({
         setBusySession(err.session);
       }
       setError(err instanceof Error ? err.message : "Could not start T3 thread.");
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function handleDispatchRun() {
+    setIsBusy(true);
+    setError(null);
+    setBusySession(null);
+    try {
+      const updated = await dispatchTaskT3Run(task.id);
+      setRun(updated.run);
+      setPendingRequestId(updated.pendingRequestId);
+      setPendingQuestions(updated.pendingQuestions);
+      setStopReason(updated.stopReason);
+    } catch (err) {
+      if (err instanceof T3WorkspaceBusyApiError) {
+        setBusySession(err.session);
+      }
+      setError(err instanceof Error ? err.message : "Could not dispatch queued T3 thread.");
     } finally {
       setIsBusy(false);
     }
@@ -421,19 +440,45 @@ export function TaskT3Section({
             </span>
 
             {isActiveAgentRunState(run.state) && (
-              <button
-                type="button"
-                onClick={() => {
-                  void handleStopRun();
-                }}
-                disabled={isBusy}
-                className="inline-flex items-center gap-1 rounded-md border border-danger/40 bg-paper px-2.5 py-1 text-2xs font-semibold text-danger hover:bg-danger-soft disabled:opacity-50"
-              >
-                <Square size={11} aria-hidden="true" />
-                Stop thread
-              </button>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {run.state === "queued" && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void handleDispatchRun();
+                    }}
+                    disabled={isBusy}
+                    className="inline-flex items-center gap-1 rounded-md border border-accent/40 bg-paper px-2.5 py-1 text-2xs font-semibold text-accent-ink hover:bg-accent-soft disabled:opacity-50"
+                  >
+                    <Play size={11} aria-hidden="true" />
+                    Dispatch now
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    void handleStopRun();
+                  }}
+                  disabled={isBusy}
+                  className="inline-flex items-center gap-1 rounded-md border border-danger/40 bg-paper px-2.5 py-1 text-2xs font-semibold text-danger hover:bg-danger-soft disabled:opacity-50"
+                >
+                  <Square size={11} aria-hidden="true" />
+                  {run.state === "queued" ? "Cancel queued run" : "Stop thread"}
+                </button>
+              </div>
             )}
           </div>
+
+          {run.state === "queued" && (
+            <div
+              data-testid="t3-thread-queued"
+              className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-accent/30 bg-accent-soft px-2.5 py-2 text-xs text-accent-ink"
+            >
+              <span>
+                Queued in D1 while the T3 host is offline or unreachable. It will dispatch once when the host reconnects.
+              </span>
+            </div>
+          )}
 
           {(run.branch || run.headSha || run.diffStat || run.pullRequestUrls?.length) ? (
             <div

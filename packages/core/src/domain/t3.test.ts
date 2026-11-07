@@ -366,7 +366,8 @@ describe("deriveLiveAgentRunState", () => {
     expect(deriveLiveAgentRunState({ threadStatus: "interrupted" })).toBe("stopped");
   });
 
-  it("identifies working, waiting_for_approval, and waiting_subagent as active agent run states", () => {
+  it("identifies queued, working, waiting_for_approval, and waiting_subagent as active agent run states", () => {
+    expect(isActiveAgentRunState("queued")).toBe(true);
     expect(isActiveAgentRunState("working")).toBe(true);
     expect(isActiveAgentRunState("waiting_for_approval")).toBe(true);
     expect(isActiveAgentRunState("waiting_subagent")).toBe(true);
@@ -402,6 +403,7 @@ describe("T3 model switching (BIT-119)", () => {
     expect(canSwitchT3Model("finished")).toBe(true);
     expect(canSwitchT3Model("stopped")).toBe(true);
     expect(canSwitchT3Model("failed")).toBe(true);
+    expect(canSwitchT3Model("queued")).toBe(false);
     expect(canSwitchT3Model("working")).toBe(false);
     expect(canSwitchT3Model("offline")).toBe(false);
   });

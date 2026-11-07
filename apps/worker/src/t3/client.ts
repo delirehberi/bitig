@@ -1376,12 +1376,17 @@ export class T3McpClient {
     });
   }
 
-  async sendThreadMessage(input: { threadId: string; prompt: string }): Promise<void> {
+  async sendThreadMessage(input: {
+    threadId: string;
+    prompt: string;
+    clientRequestId?: string | undefined;
+  }): Promise<void> {
     await this.withSession(async (callTool) => {
       await callTool("t3_thread_send", {
         threadId: input.threadId,
         message: input.prompt,
         mode: "auto",
+        ...(input.clientRequestId ? { clientRequestId: input.clientRequestId } : {}),
       });
     });
   }

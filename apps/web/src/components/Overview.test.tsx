@@ -248,4 +248,28 @@ describe("Overview", () => {
     expect(await within(working).findByRole("alert")).toHaveTextContent(/Could not load T3 sessions/);
     expect(within(working).getByRole("button", { name: "Retry" })).toBeInTheDocument();
   });
+
+  it("shows queued runs in Agents working now with Dispatch now and Cancel queued run controls (#BIT-161)", async () => {
+    const user = userEvent.setup();
+    const onDispatchQueuedRun = vi.fn<(taskId: string) => Promise<void>>().mockResolvedValue(undefined);
+    const onCancelQueuedRun = vi.fn<(taskId: string) => Promise<void>>().mockResolvedValue(undefined);
+    const queuedTask = task(15, { title: "Queued offline task" });
+
+    renderOverview({
+      tasks: [queuedTask],
+      agentRuns: [run(queuedTask, "queued", { threadId: "queued:run-15", model: "opus" })],
+      onDispatchQueuedRun,
+      onCancelQueuedRun,
+    });
+
+    const working = screen.getByRole("region", { name: /Agents working now/ });
+    expect(within(working).getByText("queued")).toBeInTheDocument();
+    expect(within(working).getByRole("link", { name: "ALP-15 Queued offline task" })).toBeInTheDocument();
+
+    await user.click(within(working).getByRole("button", { name: /dispatch now/i }));
+    expect(onDispatchQueuedRun).toHaveBeenCalledWith(queuedTask.id);
+
+    await user.click(within(working).getByRole("button", { name: /cancel queued run/i }));
+    expect(onCancelQueuedRun).toHaveBeenCalledWith(queuedTask.id);
+  });
 });

@@ -119,6 +119,25 @@ export async function getT3ConnectionStatus(
   );
 }
 
+const EXPIRED_T3_TOKEN_MESSAGE =
+  "The T3 Code OAuth token has expired. Reconnect in Settings before starting or controlling a thread.";
+
+export async function requireT3ConnectionForQueue(deps: {
+  store: T3D1Store;
+  encryptionKey: string;
+}): Promise<void> {
+  if (!deps.encryptionKey) {
+    makeValidationIssue(
+      "t3Connection",
+      "T3_ENCRYPTION_KEY is not configured on this Worker; cannot use T3 integration",
+    );
+  }
+  const connection = await deps.store.getConnection();
+  if (!connection) {
+    makeValidationIssue("t3Connection", "No T3 Code host is connected. Connect one in Settings first.");
+  }
+}
+
 export async function createActiveT3McpClient(deps: {
   store: T3D1Store;
   encryptionKey: string;
@@ -137,10 +156,7 @@ export async function createActiveT3McpClient(deps: {
   }
   const now = deps.now ?? Date.now();
   if (connection.expiresAt <= now) {
-    makeValidationIssue(
-      "t3Connection",
-      "The T3 Code OAuth token has expired. Reconnect in Settings before starting or controlling a thread.",
-    );
+    makeValidationIssue("t3Connection", EXPIRED_T3_TOKEN_MESSAGE);
   }
   const accessToken = await decryptT3Token(
     {
@@ -154,6 +170,43 @@ export async function createActiveT3McpClient(deps: {
     accessToken,
     fetchFn: deps.fetchFn,
   });
+}
+
+function isQueueableT3Error(err: unknown): boolean {
+  if (
+    err instanceof T3McpError &&
+    (err.code === "connection_error" || err.code === "timeout" || err.code === "aborted")
+  ) {
+    return true;
+  }
+  if (err instanceof ValidationError) {
+    return err.issues.some((issue) => issue.message === EXPIRED_T3_TOKEN_MESSAGE);
+  }
+  return false;
+}
+
+interface QueuedLaunchPayload {
+  t3ProjectId: string;
+  title: string;
+  prompt: string;
+  clientRequestId: string;
+  workspaceStrategy: T3WorkspaceStrategy;
+  providerInstanceId?: string | undefined;
+  model?: string | undefined;
+  options?: readonly T3ModelSelectionOption[] | undefined;
+  settleThreadId?: string | undefined;
+  parentTaskId?: string | undefined;
+  childLabel?: string | undefined;
+  childTitle?: string | undefined;
+  actor: string;
+}
+
+interface QueuedMessagePayload {
+  prompt: string;
+  clientRequestId: string;
+  modelSelection?: T3ModelSelection | undefined;
+  actor?: string | undefined;
+  taskLabel?: string | undefined;
 }
 
 export interface LaunchTaskInT3Options {
@@ -175,12 +228,283 @@ export interface LaunchTaskInT3Result {
   code?: string | undefined;
 }
 
+async function assertRootWorkspaceFreeOffline(
+  deps: T3ServiceDeps,
+  t3ProjectId: string,
+  ignoredTaskId?: string,
+  currentTaskId?: string,
+): Promise<void> {
+  const candidates = (await deps.store.listAgentRuns()).filter(
+    (run) =>
+      run.t3ProjectId === t3ProjectId &&
+      run.workspaceStrategy === "root" &&
+      run.taskId !== ignoredTaskId &&
+      run.taskId !== currentTaskId &&
+      isActiveAgentRunState(run.state),
+  );
+  const firstBusy = candidates[0];
+  if (firstBusy && isActiveAgentRunState(firstBusy.state)) {
+    throw new T3WorkspaceBusyError(await describeBusyRun(deps.storage, firstBusy, firstBusy.state));
+  }
+}
+
+/**
+ * Single-flight dispatcher for a task's queued T3 launch/reply requests (#BIT-161).
+ * Claims one request at a time with a lease and token fencing in D1, preserves the original
+ * `clientRequestId` across retries, and keeps the request queued when the T3 host is unreachable
+ * or its OAuth token is expired.
+ */
+export async function dispatchQueuedTaskT3Run(
+  deps: T3ServiceDeps,
+  taskId: string,
+  existingMcpClient?: T3McpClient,
+): Promise<{
+  run: AgentRun | null;
+  dispatched: boolean;
+  switchComment?: Comment | undefined;
+}> {
+  const now = deps.now ? deps.now() : Date.now();
+  let mcpClient = existingMcpClient;
+  if (!mcpClient) {
+    try {
+      mcpClient = await createActiveT3McpClient({
+        store: deps.store,
+        encryptionKey: deps.encryptionKey,
+        fetchFn: deps.fetchFn,
+        now,
+      });
+    } catch (err) {
+      if (isQueueableT3Error(err)) {
+        return {
+          run: (await deps.store.getAgentRunByTaskId(taskId)) ?? null,
+          dispatched: false,
+        };
+      }
+      throw err;
+    }
+  }
+
+  let dispatched = false;
+  let lastSwitchComment: Comment | undefined;
+
+  for (;;) {
+    const stepNow = deps.now ? deps.now() : Date.now();
+    const claimed = await deps.store.requests.claim(taskId, defaultIdGenerator(), stepNow);
+    if (!claimed) {
+      break;
+    }
+
+    try {
+      if (claimed.kind === "launch") {
+        const payload = JSON.parse(claimed.payload) as QueuedLaunchPayload;
+        if (payload.workspaceStrategy === "root") {
+          await assertRootWorkspaceFree(
+            deps,
+            mcpClient,
+            payload.t3ProjectId,
+            stepNow,
+            payload.parentTaskId,
+            taskId,
+          );
+        }
+
+        const claimToken = claimed.claim_token;
+        if (!claimToken || !(await deps.store.requests.markAttempted(claimed.id, claimToken))) {
+          break;
+        }
+
+        if (payload.settleThreadId && !payload.settleThreadId.startsWith("queued:")) {
+          await mcpClient.settleThread(payload.settleThreadId);
+        }
+
+        const launched = await mcpClient.launchThread({
+          projectId: payload.t3ProjectId,
+          title: payload.title,
+          prompt: payload.prompt,
+          clientRequestId: payload.clientRequestId,
+          workspaceStrategy: payload.workspaceStrategy,
+          providerInstanceId: payload.providerInstanceId,
+          model: payload.model,
+          options: payload.options,
+        });
+
+        const savedRun = await deps.store.saveAgentRun({
+          id: claimed.id,
+          taskId,
+          t3ProjectId: payload.t3ProjectId,
+          threadId: launched.threadId,
+          link: launched.link,
+          state: "working",
+          model: payload.model,
+          ...(payload.model && payload.providerInstanceId
+            ? { providerInstanceId: payload.providerInstanceId }
+            : {}),
+          ...(payload.options ? { modelOptions: payload.options } : {}),
+          workspaceStrategy: payload.workspaceStrategy,
+          ...(payload.parentTaskId ? { parentTaskId: payload.parentTaskId } : {}),
+          startedBy: payload.actor,
+          startedAt: stepNow,
+          updatedAt: stepNow,
+        });
+        await persistLiveGitMetadata(deps, savedRun, launched.gitMetadata, stepNow);
+        await deps.store.requests.finish(claimed, "delivered", stepNow);
+        dispatched = true;
+
+        const currentRun = (await deps.store.getAgentRunByTaskId(taskId)) ?? savedRun;
+        if (deps.publishRealtime) {
+          await deps.publishRealtime({ type: "agent_run.updated", run: currentRun }).catch(() => undefined);
+        }
+
+        if (payload.parentTaskId) {
+          const waitingRun = await deps.store.setAgentRunWaitingFor(payload.parentTaskId, {
+            childTaskId: taskId,
+            now: stepNow,
+          });
+          if (waitingRun && deps.publishRealtime) {
+            await deps.publishRealtime({ type: "agent_run.updated", run: waitingRun }).catch(() => undefined);
+          }
+          await deps.storage.addComment(
+            {
+              taskId: payload.parentTaskId,
+              body: buildT3SubagentStartedComment({
+                childLabel: payload.childLabel ?? taskId,
+                childTitle: payload.childTitle ?? payload.title,
+                link: currentRun.link,
+              }),
+              authorType: "agent",
+              author: T3_BITIG_COMMENT_AUTHOR,
+            },
+            { actor: payload.actor },
+          );
+        }
+      } else {
+        const payload = JSON.parse(claimed.payload) as QueuedMessagePayload;
+        const currentRun = await deps.store.getAgentRunByTaskId(taskId);
+        if (!currentRun || currentRun.threadId.startsWith("queued:")) {
+          await deps.store.requests.finish(claimed, "queued", stepNow);
+          break;
+        }
+
+        let switchedTo: string | undefined;
+        if (payload.modelSelection) {
+          const switched = await switchT3ThreadModel(
+            mcpClient,
+            currentRun.threadId,
+            currentRun,
+            payload.modelSelection,
+          );
+          if (switched) {
+            await deps.store.updateAgentRunModel(taskId, {
+              selection: payload.modelSelection,
+              now: stepNow,
+            });
+            switchedTo = switched.to;
+            lastSwitchComment = await deps.storage.addComment(
+              {
+                taskId,
+                body: buildT3ModelSwitchComment(switched.from, switched.to),
+                authorType: "agent",
+                author: T3_MODEL_SWITCH_COMMENT_AUTHOR,
+              },
+              { actor: payload.actor ?? T3_MODEL_SWITCH_COMMENT_AUTHOR },
+            );
+          }
+        }
+
+        const claimToken = claimed.claim_token;
+        if (!claimToken || !(await deps.store.requests.markAttempted(claimed.id, claimToken))) {
+          break;
+        }
+
+        const prompt =
+          switchedTo && payload.taskLabel
+            ? `${buildT3ModelSwitchNotice(payload.taskLabel, switchedTo)}\n\n${payload.prompt}`
+            : payload.prompt;
+
+        await mcpClient.sendThreadMessage({
+          threadId: currentRun.threadId,
+          prompt,
+          clientRequestId: payload.clientRequestId,
+        });
+
+        await deps.store.requests.finish(claimed, "delivered", stepNow);
+        dispatched = true;
+
+        const updatedRun = await deps.store.getAgentRunByTaskId(taskId);
+        if (updatedRun && deps.publishRealtime) {
+          await deps.publishRealtime({ type: "agent_run.updated", run: updatedRun }).catch(() => undefined);
+        }
+      }
+    } catch (err) {
+      if (isQueueableT3Error(err)) {
+        await deps.store.requests.finish(claimed, "queued", stepNow);
+        const queuedRun = await deps.store.getAgentRunByTaskId(taskId);
+        if (queuedRun && deps.publishRealtime) {
+          await deps.publishRealtime({ type: "agent_run.updated", run: queuedRun }).catch(() => undefined);
+        }
+        return {
+          run: queuedRun ?? null,
+          dispatched,
+          ...(lastSwitchComment ? { switchComment: lastSwitchComment } : {}),
+        };
+      }
+      await deps.store.requests.finish(claimed, "failed", stepNow);
+      const failedRun = await deps.store.getAgentRunByTaskId(taskId);
+      if (failedRun && deps.publishRealtime) {
+        await deps.publishRealtime({ type: "agent_run.updated", run: failedRun }).catch(() => undefined);
+      }
+      throw err;
+    }
+  }
+
+  return {
+    run: (await deps.store.getAgentRunByTaskId(taskId)) ?? null,
+    dispatched,
+    ...(lastSwitchComment ? { switchComment: lastSwitchComment } : {}),
+  };
+}
+
+/**
+ * Drains all queued task runs/replies for the organisation when the T3 host is reachable (#BIT-161).
+ */
+export async function drainAllQueuedT3Runs(
+  deps: T3ServiceDeps,
+  existingMcpClient?: T3McpClient,
+): Promise<void> {
+  const pendingTaskIds = await deps.store.requests.listPendingTaskIds();
+  if (pendingTaskIds.length === 0) {
+    return;
+  }
+  const now = deps.now ? deps.now() : Date.now();
+  let mcpClient = existingMcpClient;
+  if (!mcpClient) {
+    try {
+      mcpClient = await createActiveT3McpClient({
+        store: deps.store,
+        encryptionKey: deps.encryptionKey,
+        fetchFn: deps.fetchFn,
+        now,
+      });
+    } catch {
+      return;
+    }
+  }
+  for (const taskId of pendingTaskIds) {
+    try {
+      await dispatchQueuedTaskT3Run(deps, taskId, mcpClient);
+    } catch {
+      // Non-fatal during background/batch drain; individual task errors surface on direct actions.
+    }
+  }
+}
+
 /**
  * Starts a T3 thread for a Bitig task after verifying:
  * 1. The task exists and is not waiting for human approval (`pendingApproval`).
  * 2. All tasks in `dependsOn` are finished (`done` or `archived`).
  * 3. The task's Bitig project is mapped to an existing T3 project.
- * 4. A valid, non-expired T3 OAuth connection is configured.
+ * 4. A T3 OAuth connection is configured. When the host is offline or its token is expired,
+ *    the approved launch is durably queued in D1 (`state: "queued"`) and dispatched once on reconnect (#BIT-161).
  *
  * With `parentTaskRef` (#BIT-141), the task starts as a child session of an umbrella task: a
  * dependency on that umbrella task does not block it, the child run records the umbrella task,
@@ -219,17 +543,41 @@ export async function launchTaskInT3(
     );
   }
 
-  const mcpClient = await createActiveT3McpClient({
+  await requireT3ConnectionForQueue({
     store: deps.store,
     encryptionKey: deps.encryptionKey,
-    fetchFn: deps.fetchFn,
-    now,
   });
+
+  let mcpClient: T3McpClient | undefined;
+  try {
+    mcpClient = await createActiveT3McpClient({
+      store: deps.store,
+      encryptionKey: deps.encryptionKey,
+      fetchFn: deps.fetchFn,
+      now,
+    });
+  } catch (err) {
+    if (!isQueueableT3Error(err)) {
+      throw err;
+    }
+    mcpClient = undefined;
+  }
 
   const workspaceStrategy: T3WorkspaceStrategy = options.workspaceStrategy ?? "worktree";
   if (workspaceStrategy === "root") {
-    // The umbrella session ends its turn and waits while its child works, so it never collides with it.
-    await assertRootWorkspaceFree(deps, mcpClient, mapping.t3ProjectId, now, parent?.task.id);
+    if (mcpClient) {
+      try {
+        await assertRootWorkspaceFree(deps, mcpClient, mapping.t3ProjectId, now, parent?.task.id, task.id);
+      } catch (err) {
+        if (!isQueueableT3Error(err)) {
+          throw err;
+        }
+        mcpClient = undefined;
+        await assertRootWorkspaceFreeOffline(deps, mapping.t3ProjectId, parent?.task.id, task.id);
+      }
+    } else {
+      await assertRootWorkspaceFreeOffline(deps, mapping.t3ProjectId, parent?.task.id, task.id);
+    }
   }
 
   const comments = await deps.storage.getComments(task.id);
@@ -244,16 +592,6 @@ export async function launchTaskInT3(
     ...(parent ? { parentTaskCode: parent.label } : {}),
   });
 
-  const launched = await mcpClient.launchThread({
-    projectId: mapping.t3ProjectId,
-    title: builtPrompt.title,
-    prompt: builtPrompt.prompt,
-    clientRequestId: builtPrompt.clientRequestId,
-    workspaceStrategy,
-    providerInstanceId: options.providerInstanceId,
-    model: options.model,
-  });
-
   const actor = (options.actor?.trim() ?? "") || "t3";
   const updatedTask =
     task.status === "in_progress"
@@ -264,49 +602,81 @@ export async function launchTaskInT3(
           { actor },
         );
 
-  const savedRun = await deps.store.saveAgentRun({
+  const launchPayload: QueuedLaunchPayload = {
+    t3ProjectId: mapping.t3ProjectId,
+    title: builtPrompt.title,
+    prompt: builtPrompt.prompt,
+    clientRequestId: builtPrompt.clientRequestId,
+    workspaceStrategy,
+    ...(options.providerInstanceId ? { providerInstanceId: options.providerInstanceId } : {}),
+    ...(options.model ? { model: options.model } : {}),
+    ...(parent
+      ? {
+          parentTaskId: parent.task.id,
+          childLabel: code ?? task.id,
+          childTitle: task.title,
+        }
+      : {}),
+    actor,
+  };
+
+  await deps.store.requests.enqueue({
     id: gitMetadataRunId,
     taskId: task.id,
-    t3ProjectId: mapping.t3ProjectId,
-    threadId: launched.threadId,
-    link: launched.link,
-    state: "working",
-    model: options.model,
-    ...(options.model && options.providerInstanceId ? { providerInstanceId: options.providerInstanceId } : {}),
-    workspaceStrategy,
-    ...(parent ? { parentTaskId: parent.task.id } : {}),
-    startedBy: actor,
-    startedAt: now,
-    updatedAt: now,
+    kind: "launch",
+    payload: JSON.stringify(launchPayload),
+    now,
+    launch: {
+      id: gitMetadataRunId,
+      taskId: task.id,
+      t3ProjectId: mapping.t3ProjectId,
+      threadId: `queued:${gitMetadataRunId}`,
+      state: "queued",
+      model: options.model,
+      ...(options.model && options.providerInstanceId ? { providerInstanceId: options.providerInstanceId } : {}),
+      workspaceStrategy,
+      ...(parent ? { parentTaskId: parent.task.id } : {}),
+      startedBy: actor,
+      startedAt: now,
+      updatedAt: now,
+    },
   });
-  const run = await persistLiveGitMetadata(deps, savedRun, launched.gitMetadata, now);
 
-  if (deps.publishRealtime) {
-    await deps.publishRealtime({ type: "agent_run.updated", run }).catch(() => undefined);
+  if (mcpClient) {
+    const dispatched = await dispatchQueuedTaskT3Run(deps, task.id, mcpClient);
+    const finalRun = dispatched.run ?? (await deps.store.getAgentRunByTaskId(task.id));
+    if (!finalRun) {
+      throw new Error("Queued run was not persisted");
+    }
+    if (!dispatched.dispatched && parent) {
+      const waitingRun = await deps.store.setAgentRunWaitingFor(parent.task.id, { childTaskId: task.id, now });
+      if (waitingRun && deps.publishRealtime) {
+        await deps.publishRealtime({ type: "agent_run.updated", run: waitingRun }).catch(() => undefined);
+      }
+    }
+    return {
+      run: finalRun,
+      task: updatedTask,
+      ...(code ? { code } : {}),
+    };
   }
 
+  const queuedRun = await deps.store.getAgentRunByTaskId(task.id);
+  if (!queuedRun) {
+    throw new Error("Queued run was not persisted");
+  }
+  if (deps.publishRealtime) {
+    await deps.publishRealtime({ type: "agent_run.updated", run: queuedRun }).catch(() => undefined);
+  }
   if (parent) {
     const waitingRun = await deps.store.setAgentRunWaitingFor(parent.task.id, { childTaskId: task.id, now });
     if (waitingRun && deps.publishRealtime) {
       await deps.publishRealtime({ type: "agent_run.updated", run: waitingRun }).catch(() => undefined);
     }
-    await deps.storage.addComment(
-      {
-        taskId: parent.task.id,
-        body: buildT3SubagentStartedComment({
-          childLabel: code ?? task.id,
-          childTitle: task.title,
-          link: run.link,
-        }),
-        authorType: "agent",
-        author: T3_BITIG_COMMENT_AUTHOR,
-      },
-      { actor },
-    );
   }
 
   return {
-    run,
+    run: queuedRun,
     task: updatedTask,
     ...(code ? { code } : {}),
   };
@@ -393,16 +763,24 @@ async function assertRootWorkspaceFree(
   t3ProjectId: string,
   now: number,
   ignoredTaskId?: string,
+  currentTaskId?: string,
 ): Promise<void> {
   const candidates = (await deps.store.listAgentRuns()).filter(
     (run) =>
       run.t3ProjectId === t3ProjectId &&
       run.workspaceStrategy === "root" &&
       run.taskId !== ignoredTaskId &&
+      run.taskId !== currentTaskId &&
       isActiveAgentRunState(run.state),
   );
   if (candidates.length === 0) {
     return;
+  }
+
+  for (const run of candidates) {
+    if (run.threadId.startsWith("queued:")) {
+      throw new T3WorkspaceBusyError(await describeBusyRun(deps.storage, run, "queued"));
+    }
   }
 
   // A T3McpError here propagates: the host is unreachable, so the launch could not succeed either.
@@ -514,7 +892,7 @@ export async function getTaskT3RunLiveStatus(
   deps: T3ServiceDeps,
   taskId: string,
 ): Promise<T3TaskRunLiveResponse> {
-  const existingRun = await deps.store.getAgentRunByTaskId(taskId);
+  let existingRun = await deps.store.getAgentRunByTaskId(taskId);
   if (!existingRun) {
     return {
       run: null,
@@ -523,6 +901,7 @@ export async function getTaskT3RunLiveStatus(
   }
 
   const now = deps.now ? deps.now() : Date.now();
+  const hasPendingBefore = await deps.store.requests.hasPending(taskId);
   let mcpClient: T3McpClient;
   try {
     mcpClient = await createActiveT3McpClient({
@@ -532,6 +911,19 @@ export async function getTaskT3RunLiveStatus(
       now,
     });
   } catch {
+    if (hasPendingBefore || existingRun.state === "queued") {
+      const queuedRun =
+        existingRun.state === "queued"
+          ? existingRun
+          : ((await deps.store.updateAgentRunState(taskId, { state: "queued", now })) ?? existingRun);
+      if (queuedRun.state !== existingRun.state && deps.publishRealtime) {
+        await deps.publishRealtime({ type: "agent_run.updated", run: queuedRun }).catch(() => undefined);
+      }
+      return {
+        run: queuedRun,
+        pendingQuestions: [],
+      };
+    }
     const offlineRun =
       existingRun.state === "offline"
         ? existingRun
@@ -541,6 +933,26 @@ export async function getTaskT3RunLiveStatus(
     }
     return {
       run: offlineRun,
+      pendingQuestions: [],
+    };
+  }
+
+  if (hasPendingBefore || existingRun.state === "queued") {
+    try {
+      const dispatched = await dispatchQueuedTaskT3Run(deps, taskId, mcpClient);
+      if (dispatched.run) {
+        existingRun = dispatched.run;
+      }
+    } catch (err) {
+      if (!(err instanceof T3McpError)) {
+        throw err;
+      }
+    }
+  }
+
+  if ((await deps.store.requests.hasPending(taskId)) || existingRun.threadId.startsWith("queued:")) {
+    return {
+      run: (await deps.store.getAgentRunByTaskId(taskId)) ?? existingRun,
       pendingQuestions: [],
     };
   }
@@ -576,6 +988,12 @@ export async function getTaskT3RunLiveStatus(
     };
   } catch (err) {
     if (err instanceof T3McpError) {
+      if (await deps.store.requests.hasPending(taskId)) {
+        return {
+          run: (await deps.store.getAgentRunByTaskId(taskId)) ?? existingRun,
+          pendingQuestions: [],
+        };
+      }
       const offlineRun =
         existingRun.state === "offline"
           ? existingRun
@@ -598,19 +1016,7 @@ export async function getTaskT3RunLiveStatus(
  * on the T3 host are reconciled in D1 without opening each task modal individually.
  */
 export async function listT3RunsLive(deps: T3ServiceDeps): Promise<T3RunsLiveResponse> {
-  const [existingRuns, mappings, projectThreads] = await Promise.all([
-    deps.store.listAgentRuns(),
-    deps.store.listProjectMappings(),
-    deps.store.listProjectThreads(),
-  ]);
-  const projectThreadsById = new Map(projectThreads.map((t) => [t.threadId, t]));
-  if (existingRuns.length === 0 && mappings.length === 0) {
-    return { runs: [], activeSessions: [] };
-  }
-
-  const projectIdByT3ProjectId = new Map(mappings.map((m) => [m.t3ProjectId, m.projectId]));
   const now = deps.now ? deps.now() : Date.now();
-
   let mcpClient: T3McpClient | undefined;
   try {
     mcpClient = await createActiveT3McpClient({
@@ -622,6 +1028,22 @@ export async function listT3RunsLive(deps: T3ServiceDeps): Promise<T3RunsLiveRes
   } catch {
     mcpClient = undefined;
   }
+
+  if (mcpClient) {
+    await drainAllQueuedT3Runs(deps, mcpClient);
+  }
+
+  const [existingRuns, mappings, projectThreads] = await Promise.all([
+    deps.store.listAgentRuns(),
+    deps.store.listProjectMappings(),
+    deps.store.listProjectThreads(),
+  ]);
+  const projectThreadsById = new Map(projectThreads.map((t) => [t.threadId, t]));
+  if (existingRuns.length === 0 && mappings.length === 0) {
+    return { runs: [], activeSessions: [] };
+  }
+
+  const projectIdByT3ProjectId = new Map(mappings.map((m) => [m.t3ProjectId, m.projectId]));
 
   let threads: T3ThreadListItem[] = [];
   let hostReachable = false;
@@ -654,7 +1076,7 @@ export async function listT3RunsLive(deps: T3ServiceDeps): Promise<T3RunsLiveRes
     ...existingRuns.filter((run) => run.waitingForTaskId),
   ];
   for (const existingRun of reconcileOrder) {
-    if (!hostReachable || !mcpClient) {
+    if (!hostReachable || !mcpClient || existingRun.state === "queued" || existingRun.threadId.startsWith("queued:")) {
       pushRun(existingRun, existingRun);
       continue;
     }
@@ -1016,41 +1438,11 @@ async function resolveUmbrellaRunState(
   return (await deps.store.getAgentRunByTaskId(run.taskId))?.state ?? liveState;
 }
 
-/** Run states in which a new comment is not forwarded: the T3 host cannot be reached. */
-const COMMENT_FORWARD_SKIPPED_STATES: ReadonlySet<AgentRunState> = new Set<AgentRunState>(["offline"]);
+/** Run states in which a thread cannot be settled on archive because it is offline or not yet launched. */
+const SETTLE_SKIPPED_STATES: ReadonlySet<AgentRunState> = new Set<AgentRunState>(["offline", "queued"]);
 
 /** Shown as the comment author in the T3 prompt when the comment has no explicit author. */
 const DEFAULT_COMMENT_AUTHOR_LABEL = "a person";
-
-/** Sends a prompt to the run's T3 thread, marks the run as working, and broadcasts the change. */
-async function sendPromptToT3Run(
-  deps: T3ServiceDeps,
-  existingRun: AgentRun,
-  prompt: string,
-): Promise<T3TaskRunLiveResponse> {
-  const now = deps.now ? deps.now() : Date.now();
-  const mcpClient = await createActiveT3McpClient({
-    store: deps.store,
-    encryptionKey: deps.encryptionKey,
-    fetchFn: deps.fetchFn,
-    now,
-  });
-
-  await mcpClient.sendThreadMessage({
-    threadId: existingRun.threadId,
-    prompt,
-  });
-
-  const updatedRun =
-    (await deps.store.updateAgentRunState(existingRun.taskId, { state: "working", now })) ?? existingRun;
-  if (deps.publishRealtime) {
-    await deps.publishRealtime({ type: "agent_run.updated", run: updatedRun }).catch(() => undefined);
-  }
-  return {
-    run: updatedRun,
-    pendingQuestions: [],
-  };
-}
 
 /** Builds the follow-up prompt a T3 agent receives for a new comment on its task. */
 export function buildT3CommentPrompt(input: { taskLabel: string; author: string; body: string }): string {
@@ -1059,8 +1451,9 @@ export function buildT3CommentPrompt(input: { taskLabel: string; author: string;
 
 /**
  * Forwards a person's comment to the task's T3 thread so a waiting agent continues with it.
- * Agent comments are never forwarded, so an agent cannot wake itself up. Returns whether the
- * comment was sent; it is skipped when T3 is not configured, the task has no run, or the run is offline.
+ * When the T3 host is offline or the task's run is already queued, the comment prompt is durably
+ * queued in D1 and dispatched once on reconnect (#BIT-161).
+ * Agent comments are never forwarded, so an agent cannot wake itself up.
  */
 export async function forwardCommentToT3Run(deps: T3ServiceDeps, comment: Comment): Promise<boolean> {
   if (comment.authorType !== "human") return false;
@@ -1068,34 +1461,54 @@ export async function forwardCommentToT3Run(deps: T3ServiceDeps, comment: Commen
 
   const existingRun = await deps.store.getAgentRunByTaskId(comment.taskId);
   if (!existingRun) return false;
-  if (COMMENT_FORWARD_SKIPPED_STATES.has(existingRun.state)) return false;
+  if (!(await deps.store.getConnection())) return false;
 
   const task = await deps.storage.getTask(comment.taskId);
   if (!task) {
     throw new NotFoundError("task", comment.taskId);
   }
   const project = await deps.storage.getProject(task.projectId);
+  const taskLabel = taskCode(task, project ?? undefined) ?? `"${task.title}"`;
   const prompt = buildT3CommentPrompt({
-    taskLabel: taskCode(task, project ?? undefined) ?? `"${task.title}"`,
+    taskLabel,
     author: comment.author ?? DEFAULT_COMMENT_AUTHOR_LABEL,
     body: comment.body,
   });
 
-  await sendPromptToT3Run(deps, existingRun, prompt);
+  const now = deps.now ? deps.now() : Date.now();
+  const requestId = defaultIdGenerator();
+  const payload: QueuedMessagePayload = {
+    prompt,
+    clientRequestId: `${comment.id}:${requestId}`,
+    taskLabel,
+  };
+
+  await deps.store.requests.enqueue({
+    id: requestId,
+    taskId: comment.taskId,
+    kind: "message",
+    payload: JSON.stringify(payload),
+    now,
+  });
+
+  const dispatched = await dispatchQueuedTaskT3Run(deps, comment.taskId);
+  if (!dispatched.dispatched && dispatched.run && deps.publishRealtime) {
+    await deps.publishRealtime({ type: "agent_run.updated", run: dispatched.run }).catch(() => undefined);
+  }
   return true;
 }
 
 /**
  * Marks the task's T3 thread as settled (`t3_thread_organize` with `action: "settle"`)
  * when a task is archived (#BIT-117). Returns whether the thread was settled; it is skipped
- * when T3 is not configured, the task has no run, or the run is offline.
+ * when T3 is not configured, the task has no run, or the run is offline or queued.
  */
 export async function settleTaskT3Run(deps: T3ServiceDeps, taskId: string): Promise<boolean> {
   if (!deps.encryptionKey) return false;
 
   const existingRun = await deps.store.getAgentRunByTaskId(taskId);
   if (!existingRun) return false;
-  if (COMMENT_FORWARD_SKIPPED_STATES.has(existingRun.state)) return false;
+  if (SETTLE_SKIPPED_STATES.has(existingRun.state) || existingRun.threadId.startsWith("queued:")) return false;
 
   const now = deps.now ? deps.now() : Date.now();
   const mcpClient = await createActiveT3McpClient({
@@ -1127,14 +1540,35 @@ export async function stopTaskT3Run(
     throw new NotFoundError("task", taskId);
   }
   const now = deps.now ? deps.now() : Date.now();
-  const mcpClient = await createActiveT3McpClient({
-    store: deps.store,
-    encryptionKey: deps.encryptionKey,
-    fetchFn: deps.fetchFn,
-    now,
-  });
+  const hasQueuedLaunchOnly = existingRun.threadId.startsWith("queued:");
+  await deps.store.requests.cancel(taskId, now);
 
-  await mcpClient.interruptThread(existingRun.threadId);
+  if (!hasQueuedLaunchOnly) {
+    let mcpClient: T3McpClient | undefined;
+    try {
+      mcpClient = await createActiveT3McpClient({
+        store: deps.store,
+        encryptionKey: deps.encryptionKey,
+        fetchFn: deps.fetchFn,
+        now,
+      });
+    } catch (err) {
+      if (existingRun.state !== "queued" || !isQueueableT3Error(err)) {
+        throw err;
+      }
+      mcpClient = undefined;
+    }
+
+    if (mcpClient) {
+      try {
+        await mcpClient.interruptThread(existingRun.threadId);
+      } catch (err) {
+        if (existingRun.state !== "queued" || !isQueueableT3Error(err)) {
+          throw err;
+        }
+      }
+    }
+  }
 
   // A person stopping an umbrella session also ends its wait on a child task (#BIT-141).
   const updatedRun =
@@ -1332,7 +1766,7 @@ function extractPriorGitMetadata(run: AgentRun): T3GitMetadata | undefined {
 }
 
 /**
- * A person's reply to a task's T3 thread (#BIT-119, #BIT-165).
+ * A person's reply to a task's T3 thread (#BIT-119, #BIT-165, #BIT-161).
  *
  * When `freshSession: true` is chosen (#BIT-165), the existing thread must be waiting or past its
  * turn (see `canSwitchT3Model`); it is settled (`t3_thread_organize` `action: "settle"`), a compact
@@ -1343,6 +1777,10 @@ function extractPriorGitMetadata(run: AgentRun): T3GitMetadata | undefined {
  * Otherwise, when `modelSelection` differs from the thread's current model, the thread is switched
  * with `t3_thread_configure` and the reply is sent to the existing thread with `t3_thread_send`,
  * prefixed after a switch with a line asking the new model to restore context from the checkpoint.
+ *
+ * When the T3 host is offline or its OAuth token is expired, the reply (and any requested model
+ * switch or fresh-session launch) is durably queued in D1 (`state: "queued"`) and dispatched once
+ * on reconnect (#BIT-161).
  *
  * Throws `T3ModelSwitchConflictError` before anything is saved when the thread is mid-turn.
  */
@@ -1361,24 +1799,46 @@ export async function replyToTaskT3Run(
     makeValidationIssue("taskId", "This task has no T3 thread. Start it in T3 first.");
   }
 
-  const now = deps.now ? deps.now() : Date.now();
-  const mcpClient = await createActiveT3McpClient({
+  await requireT3ConnectionForQueue({
     store: deps.store,
     encryptionKey: deps.encryptionKey,
-    fetchFn: deps.fetchFn,
-    now,
   });
 
-  if (input.freshSession) {
-    const live = await mcpClient.readThreadLiveStatus(existingRun.threadId);
-    const liveState = deriveLiveAgentRunState({
-      thread: live.thread,
-      recentRuns: live.recentRuns,
-      pendingRequestIds: live.pendingRequestIds,
+  const now = deps.now ? deps.now() : Date.now();
+  let mcpClient: T3McpClient | undefined;
+  try {
+    mcpClient = await createActiveT3McpClient({
+      store: deps.store,
+      encryptionKey: deps.encryptionKey,
+      fetchFn: deps.fetchFn,
+      now,
     });
-    const midTurn = Boolean(live.thread?.activeRunId) && liveState !== "waiting_for_approval";
-    if (!canSwitchT3Model(liveState) || midTurn) {
-      throw new T3ModelSwitchConflictError(midTurn ? "working" : liveState);
+  } catch (err) {
+    if (!isQueueableT3Error(err)) {
+      throw err;
+    }
+    mcpClient = undefined;
+  }
+
+  if (input.freshSession) {
+    if (mcpClient && !existingRun.threadId.startsWith("queued:")) {
+      try {
+        const live = await mcpClient.readThreadLiveStatus(existingRun.threadId);
+        const liveState = deriveLiveAgentRunState({
+          thread: live.thread,
+          recentRuns: live.recentRuns,
+          pendingRequestIds: live.pendingRequestIds,
+        });
+        const midTurn = Boolean(live.thread?.activeRunId) && liveState !== "waiting_for_approval";
+        if (!canSwitchT3Model(liveState) || midTurn) {
+          throw new T3ModelSwitchConflictError(midTurn ? "working" : liveState);
+        }
+      } catch (err) {
+        if (!isQueueableT3Error(err)) {
+          throw err;
+        }
+        mcpClient = undefined;
+      }
     }
 
     let switchComment: Comment | undefined;
@@ -1388,7 +1848,17 @@ export async function replyToTaskT3Run(
 
     if (input.modelSelection) {
       const selection = input.modelSelection;
-      const current = await mcpClient.readThreadModel(existingRun.threadId);
+      let current: T3ModelSelection | undefined;
+      if (mcpClient && !existingRun.threadId.startsWith("queued:")) {
+        try {
+          current = await mcpClient.readThreadModel(existingRun.threadId);
+        } catch (err) {
+          if (!isQueueableT3Error(err)) {
+            throw err;
+          }
+          mcpClient = undefined;
+        }
+      }
       const known = current ?? storedT3ModelSelection(existingRun);
       targetModel = selection.model;
       targetProviderInstanceId = selection.providerInstanceId;
@@ -1428,8 +1898,6 @@ export async function replyToTaskT3Run(
       { actor: input.actor },
     );
 
-    await mcpClient.settleThread(existingRun.threadId);
-
     const code = taskCode(task, project ?? undefined);
     const gitMetadataRunId = defaultIdGenerator();
     const priorGitMetadata = extractPriorGitMetadata(existingRun);
@@ -1450,64 +1918,100 @@ export async function replyToTaskT3Run(
       clientRequestId: `${code ?? task.id}:${gitMetadataRunId}`,
     });
 
-    const launched = await mcpClient.launchThread({
-      projectId: existingRun.t3ProjectId,
+    await deps.store.requests.cancel(task.id, now);
+    const launchPayload: QueuedLaunchPayload = {
+      t3ProjectId: existingRun.t3ProjectId,
       title: builtPrompt.title,
       prompt: builtPrompt.prompt,
       clientRequestId: builtPrompt.clientRequestId,
       workspaceStrategy,
-      providerInstanceId: targetProviderInstanceId,
-      model: targetModel,
-      options: targetOptions,
-    });
+      ...(targetProviderInstanceId ? { providerInstanceId: targetProviderInstanceId } : {}),
+      ...(targetModel ? { model: targetModel } : {}),
+      ...(targetOptions ? { options: targetOptions } : {}),
+      ...(!existingRun.threadId.startsWith("queued:") ? { settleThreadId: existingRun.threadId } : {}),
+      ...(existingRun.parentTaskId ? { parentTaskId: existingRun.parentTaskId } : {}),
+      actor: input.actor,
+    };
 
-    const savedRun = await deps.store.saveAgentRun({
+    await deps.store.requests.enqueue({
       id: gitMetadataRunId,
       taskId: task.id,
-      t3ProjectId: existingRun.t3ProjectId,
-      threadId: launched.threadId,
-      link: launched.link,
-      state: "working",
-      model: targetModel,
-      ...(targetModel && targetProviderInstanceId ? { providerInstanceId: targetProviderInstanceId } : {}),
-      modelOptions: targetOptions,
-      workspaceStrategy,
-      ...(existingRun.parentTaskId ? { parentTaskId: existingRun.parentTaskId } : {}),
-      startedBy: input.actor,
-      startedAt: now,
-      updatedAt: now,
+      kind: "launch",
+      payload: JSON.stringify(launchPayload),
+      now,
+      launch: {
+        id: gitMetadataRunId,
+        taskId: task.id,
+        t3ProjectId: existingRun.t3ProjectId,
+        threadId: `queued:${gitMetadataRunId}`,
+        state: "queued",
+        model: targetModel,
+        ...(targetModel && targetProviderInstanceId ? { providerInstanceId: targetProviderInstanceId } : {}),
+        modelOptions: targetOptions,
+        workspaceStrategy,
+        ...(existingRun.parentTaskId ? { parentTaskId: existingRun.parentTaskId } : {}),
+        startedBy: input.actor,
+        startedAt: now,
+        updatedAt: now,
+      },
     });
-    const run = await persistLiveGitMetadata(deps, savedRun, launched.gitMetadata, now);
 
-    if (deps.publishRealtime) {
-      await deps.publishRealtime({ type: "agent_run.updated", run }).catch(() => undefined);
+    if (mcpClient) {
+      const dispatched = await dispatchQueuedTaskT3Run(deps, task.id, mcpClient);
+      const finalRun = dispatched.run ?? (await deps.store.getAgentRunByTaskId(task.id));
+      if (!finalRun) {
+        throw new Error("Queued run was not persisted");
+      }
+      return {
+        comment,
+        ...(switchComment ? { switchComment } : {}),
+        run: finalRun,
+      };
     }
 
+    const queuedRun = await deps.store.getAgentRunByTaskId(task.id);
+    if (!queuedRun) {
+      throw new Error("Queued run was not persisted");
+    }
+    if (deps.publishRealtime) {
+      await deps.publishRealtime({ type: "agent_run.updated", run: queuedRun }).catch(() => undefined);
+    }
     return {
       comment,
       ...(switchComment ? { switchComment } : {}),
-      run,
+      run: queuedRun,
     };
   }
 
   let run = existingRun;
   let switchedTo: string | undefined;
   let switchComment: Comment | undefined;
-  if (input.modelSelection) {
-    const selection = input.modelSelection;
-    const switched = await switchT3ThreadModel(mcpClient, existingRun.threadId, existingRun, selection);
-    if (switched) {
-      run = (await deps.store.updateAgentRunModel(task.id, { selection, now })) ?? existingRun;
-      switchedTo = switched.to;
-      switchComment = await deps.storage.addComment(
-        {
-          taskId: task.id,
-          body: buildT3ModelSwitchComment(switched.from, switched.to),
-          authorType: "agent",
-          author: T3_MODEL_SWITCH_COMMENT_AUTHOR,
-        },
-        { actor: input.actor },
-      );
+  let modelSelectionToQueue = input.modelSelection;
+  const hasPriorQueuedRequests = await deps.store.requests.hasPending(task.id);
+
+  if (input.modelSelection && mcpClient && !hasPriorQueuedRequests && !existingRun.threadId.startsWith("queued:")) {
+    try {
+      const selection = input.modelSelection;
+      const switched = await switchT3ThreadModel(mcpClient, existingRun.threadId, existingRun, selection);
+      modelSelectionToQueue = undefined;
+      if (switched) {
+        run = (await deps.store.updateAgentRunModel(task.id, { selection, now })) ?? existingRun;
+        switchedTo = switched.to;
+        switchComment = await deps.storage.addComment(
+          {
+            taskId: task.id,
+            body: buildT3ModelSwitchComment(switched.from, switched.to),
+            authorType: "agent",
+            author: T3_MODEL_SWITCH_COMMENT_AUTHOR,
+          },
+          { actor: input.actor },
+        );
+      }
+    } catch (err) {
+      if (!isQueueableT3Error(err)) {
+        throw err;
+      }
+      mcpClient = undefined;
     }
   }
 
@@ -1529,12 +2033,41 @@ export async function replyToTaskT3Run(
     body: comment.body,
   });
   const prompt = switchedTo ? `${buildT3ModelSwitchNotice(taskLabel, switchedTo)}\n\n${replyPrompt}` : replyPrompt;
+  const requestId = defaultIdGenerator();
+  const messagePayload: QueuedMessagePayload = {
+    prompt,
+    clientRequestId: `${comment.id}:${requestId}`,
+    ...(modelSelectionToQueue ? { modelSelection: modelSelectionToQueue } : {}),
+    actor: input.actor,
+    taskLabel,
+  };
 
-  const sent = await sendPromptToT3Run(deps, run, prompt);
+  await deps.store.requests.enqueue({
+    id: requestId,
+    taskId: task.id,
+    kind: "reply",
+    payload: JSON.stringify(messagePayload),
+    now,
+  });
+
+  if (mcpClient) {
+    const dispatched = await dispatchQueuedTaskT3Run(deps, task.id, mcpClient);
+    const finalSwitchComment = switchComment ?? dispatched.switchComment;
+    return {
+      comment,
+      ...(finalSwitchComment ? { switchComment: finalSwitchComment } : {}),
+      run: dispatched.run ?? (await deps.store.getAgentRunByTaskId(task.id)) ?? run,
+    };
+  }
+
+  const queuedRun = (await deps.store.getAgentRunByTaskId(task.id)) ?? run;
+  if (deps.publishRealtime) {
+    await deps.publishRealtime({ type: "agent_run.updated", run: queuedRun }).catch(() => undefined);
+  }
   return {
     comment,
     ...(switchComment ? { switchComment } : {}),
-    run: sent.run ?? run,
+    run: queuedRun,
   };
 }
 

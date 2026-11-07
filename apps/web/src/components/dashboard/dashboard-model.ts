@@ -160,10 +160,13 @@ export function buildAttentionItems({ projects, tasks, runs, sessions }: Dashboa
   return [...byTask.values(), ...threadItems].sort(compareAttention);
 }
 
-/** Threads an agent is working on right now (including umbrella sessions waiting on a child task), longest running first. */
+/** Threads an agent is working on right now (including queued runs and umbrella sessions waiting on a child task), longest running first. */
 export function workingSessions(sessions: readonly ResolvedProjectActiveSession[]): ResolvedProjectActiveSession[] {
   return sessions
-    .filter((session) => session.state === "working" || session.state === "waiting_subagent")
+    .filter(
+      (session) =>
+        session.state === "queued" || session.state === "working" || session.state === "waiting_subagent",
+    )
     .sort((a, b) => {
       const aSince = a.startedAt ?? a.updatedAt ?? "";
       const bSince = b.startedAt ?? b.updatedAt ?? "";

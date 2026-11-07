@@ -5,6 +5,7 @@ import { COMMENT_BODY_MAX } from "./constants";
 import { BitigError, ERROR_CODES, ValidationError } from "./errors";
 
 export const AGENT_RUN_STATES = [
+  "queued",
   "working",
   "waiting_for_approval",
   /** The session handed a related task to a child T3 session and waits for it to finish (#BIT-141). */
@@ -18,7 +19,7 @@ export const AGENT_RUN_STATES = [
 export type AgentRunState = (typeof AGENT_RUN_STATES)[number];
 export const AgentRunStateSchema = z.enum(AGENT_RUN_STATES);
 
-export const ACTIVE_AGENT_RUN_STATES = ["working", "waiting_for_approval", "waiting_subagent"] as const;
+export const ACTIVE_AGENT_RUN_STATES = ["queued", "working", "waiting_for_approval", "waiting_subagent"] as const;
 export type ActiveAgentRunState = (typeof ACTIVE_AGENT_RUN_STATES)[number];
 
 /**

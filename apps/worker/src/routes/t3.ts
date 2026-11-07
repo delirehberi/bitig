@@ -15,11 +15,11 @@ import {
   ValidationError,
   hasMinimumOrgRole,
 } from "@bitig/core";
-import { T3D1Store } from "@bitig/storage-d1";
+import { D1Storage, T3D1Store } from "@bitig/storage-d1";
 import type { Context } from "hono";
 import { ForbiddenRoleError } from "../auth";
 import type { AppEnv } from "../index";
-import { publishRealtimeEvent } from "../realtime";
+import { publishRealtimeEvent, withRealtimeBroadcast } from "../realtime";
 import { T3McpError, T3OAuthError, exchangeT3OAuthCode, startT3OAuthFlow } from "../t3/client";
 import { encryptT3Token } from "../t3/crypto";
 import {
@@ -31,6 +31,7 @@ import {
 } from "../t3/host-folders";
 import {
   createActiveT3McpClient,
+  drainAllQueuedT3Runs,
   getT3ConnectionStatus,
   getTaskT3RunLiveStatus,
   launchProjectThreadInT3,
@@ -182,6 +183,20 @@ export const t3OauthCallbackRouter = new Hono<AppEnv>().get("/", async (c) => {
       expiresAt,
       now,
     });
+
+    const orgStorage = c.get("customStorageFactory")
+      ? c.get("storage")
+      : withRealtimeBroadcast(
+          new D1Storage({ db: c.env.DB, bucket: c.env.ATTACHMENTS, orgId: stateRecord.orgId }),
+          (event) => publishRealtimeEvent(c.env, event, stateRecord.orgId),
+        );
+    await drainAllQueuedT3Runs({
+      store: new T3D1Store(c.env.DB, stateRecord.orgId),
+      storage: orgStorage,
+      encryptionKey,
+      fetchFn: c.get("t3Fetch"),
+      publishRealtime: (event) => publishRealtimeEvent(c.env, event, stateRecord.orgId),
+    }).catch(() => undefined);
 
     const redirectUrl = new URL("/settings?t3=connected", c.req.url);
     return c.redirect(redirectUrl.toString(), HTTP_FOUND);
@@ -487,8 +502,25 @@ export const t3TaskRunsRouter = new Hono<AppEnv>()
     if (!task) {
       throw new NotFoundError("task", id);
     }
-    const status = await getTaskT3RunLiveStatus(buildServiceDeps(c), id);
-    return c.json(status);
+    try {
+      const status = await getTaskT3RunLiveStatus(buildServiceDeps(c), id);
+      return c.json(status);
+    } catch (err) {
+      return handleT3RouteError(err, c);
+    }
+  })
+  .post("/:id/t3-run/dispatch", async (c) => {
+    const id = c.req.param("id");
+    const task = await c.get("storage").getTask(id);
+    if (!task) {
+      throw new NotFoundError("task", id);
+    }
+    try {
+      const status = await getTaskT3RunLiveStatus(buildServiceDeps(c), id);
+      return c.json(status);
+    } catch (err) {
+      return handleT3RouteError(err, c);
+    }
   })
   .post(
     "/:id/t3-run",

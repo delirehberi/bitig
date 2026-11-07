@@ -19,6 +19,7 @@ import {
   type TaskActor,
 } from "@bitig/core";
 import * as schema from "./schema";
+import { T3RequestStore } from "./t3-request-store";
 import {
   agentRuns,
   projects,
@@ -185,6 +186,7 @@ function toProjectMapping(row: T3ProjectMappingRecord): T3ProjectMapping {
  * Markdown storage adapters remain untouched.
  */
 export class T3D1Store {
+  readonly requests: T3RequestStore;
   private readonly db: DrizzleD1Database<typeof schema>;
   private readonly orgId: string;
   private readonly explicitOrgScope: boolean;
@@ -192,6 +194,7 @@ export class T3D1Store {
   constructor(d1: D1Database, orgId?: string) {
     this.db = drizzle(d1, { schema });
     this.orgId = orgId ?? DEFAULT_ORGANISATION_ID;
+    this.requests = new T3RequestStore(d1, this.orgId);
     this.explicitOrgScope = orgId !== undefined;
   }
 
@@ -458,24 +461,27 @@ export class T3D1Store {
 
   async updateAgentRunState(
     taskId: string,
-    patch: { state: AgentRunState; link?: string | undefined; now?: number },
+    patch: { state: AgentRunState; threadId?: string | undefined; link?: string | undefined; now?: number },
   ): Promise<AgentRun | undefined> {
     const existing = await this.getAgentRunByTaskId(taskId);
     if (!existing) {
       return undefined;
     }
     const updatedAt = patch.now ?? Date.now();
+    const nextThreadId = patch.threadId ?? existing.threadId;
     const nextLink = patch.link ?? existing.link ?? null;
     await this.db
       .update(agentRuns)
       .set({
         state: patch.state,
+        threadId: nextThreadId,
         link: nextLink,
         updatedAt,
       })
       .where(eq(agentRuns.taskId, taskId));
     return {
       ...existing,
+      threadId: nextThreadId,
       ...(nextLink ? { link: nextLink } : {}),
       state: patch.state,
       updatedAt: toTimestamp(new Date(updatedAt)),

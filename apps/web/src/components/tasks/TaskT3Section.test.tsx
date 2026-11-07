@@ -3,11 +3,13 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  dispatchTaskT3Run,
   fetchT3Connection,
   fetchT3ProjectMappings,
   fetchT3Runs,
   fetchTaskT3Run,
   startTaskT3Run,
+  stopTaskT3Run,
   T3WorkspaceBusyApiError,
 } from "../../services/t3";
 import type * as T3Service from "../../services/t3";
@@ -15,6 +17,7 @@ import { TaskT3Section } from "./TaskT3Section";
 
 vi.mock("../../services/t3", async (importActual) => ({
   T3WorkspaceBusyApiError: (await importActual<typeof T3Service>()).T3WorkspaceBusyApiError,
+  dispatchTaskT3Run: vi.fn(),
   fetchT3Runs: vi.fn(() => Promise.resolve({ runs: [] })),
   fetchTaskT3Run: vi.fn(),
   fetchT3Connection: vi.fn(() => Promise.resolve({ connected: false })),
@@ -135,6 +138,42 @@ describe("TaskT3Section", () => {
     expect(await screen.findByTestId("t3-thread-stop-reason")).toHaveTextContent(
       "Usage limit reached: Claude API rate limit reached. Try again later.",
     );
+  });
+
+  it("surfaces queued runs with Dispatch now and Cancel queued run controls (#BIT-161)", async () => {
+    const user = userEvent.setup();
+    const queuedRun: AgentRun = {
+      ...makeRun(task.id, "queued"),
+      threadId: "queued:01940000-0000-7000-8000-000000000001",
+      model: "claude-opus-4-7",
+    };
+    const workingRun: AgentRun = {
+      ...makeRun(task.id, "working"),
+      threadId: "thread-live",
+      model: "claude-opus-4-7",
+    };
+    const stoppedRun: AgentRun = {
+      ...makeRun(task.id, "stopped"),
+      threadId: "queued:01940000-0000-7000-8000-000000000001",
+    };
+    vi.mocked(fetchTaskT3Run).mockResolvedValue({ run: queuedRun, pendingQuestions: [] });
+    vi.mocked(dispatchTaskT3Run).mockResolvedValue({ run: workingRun, pendingQuestions: [] });
+    vi.mocked(stopTaskT3Run).mockResolvedValue({ run: stoppedRun, pendingQuestions: [] });
+
+    const { unmount } = render(<TaskT3Section task={task} project={project} hasUnfinishedDependencies={false} />);
+    expect(await screen.findByTestId("t3-thread-chip")).toHaveTextContent("T3 thread · queued · claude-opus-4-7");
+    expect(screen.getByTestId("t3-thread-queued")).toHaveTextContent(/Queued in D1/i);
+
+    await user.click(screen.getByRole("button", { name: /dispatch now/i }));
+    expect(dispatchTaskT3Run).toHaveBeenCalledWith(task.id);
+    expect(await screen.findByTestId("t3-thread-chip")).toHaveTextContent("T3 thread · working · claude-opus-4-7");
+    unmount();
+
+    vi.mocked(fetchTaskT3Run).mockResolvedValue({ run: queuedRun, pendingQuestions: [] });
+    render(<TaskT3Section task={task} project={project} hasUnfinishedDependencies={false} />);
+    await user.click(await screen.findByRole("button", { name: /cancel queued run/i }));
+    expect(stopTaskT3Run).toHaveBeenCalledWith(task.id);
+    expect(await screen.findByTestId("t3-thread-chip")).toHaveTextContent("T3 thread · stopped");
   });
 
   it("displays the waited-on child task code, title, and thread link when in waiting_subagent state (BIT-141)", async () => {

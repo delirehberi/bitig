@@ -3,7 +3,9 @@ import { beforeEach, describe, expect, it } from "vitest";
 import migration from "../migrations/0019_project_t3_threads.sql?raw";
 import subagentMigration from "../migrations/0021_agent_run_subagents.sql?raw";
 import gitMigration from "../migrations/0023_agent_run_git_metadata.sql?raw";
+import requestMigration from "../migrations/0024_t3_run_requests.sql?raw";
 import { defaultIdGenerator } from "@bitig/core";
+import { T3_REQUEST_LEASE_MS } from "./t3-request-store";
 import { T3D1Store, type SaveProjectT3ThreadInput } from "./t3-store";
 
 const PROJECT_ID = "01a14ecf-281e-7436-8c52-a524c5fabc2f";
@@ -140,6 +142,7 @@ const CHILD_TASK_ID = "01a14ecf-281e-7436-8c52-a524c5fabd02";
 
 /** `agent_runs` as it stood before #BIT-141, so the test also applies migration 0021. */
 const AGENT_RUN_SETUP = [
+  "DROP TABLE IF EXISTS `t3_run_requests`",
   "DROP TABLE IF EXISTS `agent_runs`",
   "DROP TABLE IF EXISTS `tasks`",
   "CREATE TABLE `tasks` (`id` text PRIMARY KEY NOT NULL, `title` text NOT NULL)",
@@ -171,6 +174,9 @@ describe("T3D1Store umbrella and child runs (BIT-141)", () => {
       await env.DB.prepare(statement.trim()).run();
     }
     for (const statement of gitMigration.split("--> statement-breakpoint")) {
+      await env.DB.prepare(statement.trim()).run();
+    }
+    for (const statement of requestMigration.split("--> statement-breakpoint")) {
       await env.DB.prepare(statement.trim()).run();
     }
     await env.DB.prepare("INSERT INTO tasks (id, title) VALUES (?, ?), (?, ?)")
@@ -248,5 +254,98 @@ describe("T3D1Store umbrella and child runs (BIT-141)", () => {
     await env.DB.prepare("PRAGMA foreign_keys = ON").run();
     await env.DB.prepare("DELETE FROM tasks WHERE id = ?").bind(PARENT_TASK_ID).run();
     expect((await store.getAgentRunByTaskId(CHILD_TASK_ID))?.parentTaskId).toBeUndefined();
+  });
+
+  it("enqueues launches and replies in order, enforces single-flight claims with token fencing, and cancels unattempted requests (BIT-161)", async () => {
+    const store = new T3D1Store(env.DB);
+    const runId = defaultIdGenerator();
+    await store.requests.enqueue({
+      id: runId,
+      taskId: PARENT_TASK_ID,
+      kind: "launch",
+      payload: JSON.stringify({ title: "BIT-1", prompt: "go" }),
+      now: STARTED_AT,
+      launch: {
+        id: runId,
+        taskId: PARENT_TASK_ID,
+        t3ProjectId: "t3-project",
+        threadId: `queued:${runId}`,
+        state: "queued",
+        model: "claude-opus-4-7",
+        providerInstanceId: "prov-claude",
+        modelOptions: [{ id: "effort", value: "high" }],
+        workspaceStrategy: "worktree",
+        startedBy: "emre",
+        startedAt: STARTED_AT,
+        updatedAt: STARTED_AT,
+      },
+    });
+
+    expect(await store.requests.hasPending(PARENT_TASK_ID)).toBe(true);
+    expect(await store.requests.listPendingTaskIds()).toEqual([PARENT_TASK_ID]);
+    const queuedRun = await store.getAgentRunByTaskId(PARENT_TASK_ID);
+    expect(queuedRun).toMatchObject({
+      id: runId,
+      state: "queued",
+      threadId: `queued:${runId}`,
+      model: "claude-opus-4-7",
+      providerInstanceId: "prov-claude",
+      modelOptions: [{ id: "effort", value: "high" }],
+    });
+
+    // Duplicate launch enqueue while pending is ignored
+    const secondRunId = defaultIdGenerator();
+    await store.requests.enqueue({
+      id: secondRunId,
+      taskId: PARENT_TASK_ID,
+      kind: "launch",
+      payload: JSON.stringify({ title: "duplicate" }),
+      now: LATER,
+      launch: {
+        id: secondRunId,
+        taskId: PARENT_TASK_ID,
+        t3ProjectId: "t3-project",
+        threadId: `queued:${secondRunId}`,
+        state: "queued",
+        startedAt: LATER,
+        updatedAt: LATER,
+      },
+    });
+    expect((await store.getAgentRunByTaskId(PARENT_TASK_ID))?.id).toBe(runId);
+
+    // Follow-up reply can be enqueued behind the launch
+    const replyId = defaultIdGenerator();
+    await store.requests.enqueue({
+      id: replyId,
+      taskId: PARENT_TASK_ID,
+      kind: "reply",
+      payload: JSON.stringify({ prompt: "follow-up" }),
+      now: LATER,
+    });
+
+    // Only one caller can claim while the lease is active
+    const claimed1 = await store.requests.claim(PARENT_TASK_ID, "token-1", STARTED_AT);
+    expect(claimed1).toMatchObject({ id: runId, kind: "launch", claim_token: "token-1", attempted: 0 });
+    expect((await store.getAgentRunByTaskId(PARENT_TASK_ID))?.state).toBe("working");
+    expect(await store.requests.claim(PARENT_TASK_ID, "token-2", STARTED_AT + 1000)).toBeNull();
+
+    // After lease expiry, a new caller can re-claim and fence out the stale token
+    const expiredAt = STARTED_AT + T3_REQUEST_LEASE_MS + 1;
+    const reclaimed = await store.requests.claim(PARENT_TASK_ID, "token-2", expiredAt);
+    expect(reclaimed).toMatchObject({ id: runId, claim_token: "token-2" });
+    expect(await store.requests.markAttempted(runId, "token-1")).toBe(false);
+    expect(await store.requests.markAttempted(runId, "token-2")).toBe(true);
+
+    if (!reclaimed) {
+      throw new Error("Expected reclaimed request");
+    }
+    // Finishing the launch while the reply is still queued keeps agent_runs.state = 'queued' until the reply drains
+    await store.requests.finish(reclaimed, "delivered", expiredAt);
+    expect((await store.getAgentRunByTaskId(PARENT_TASK_ID))?.state).toBe("queued");
+
+    // Unattempted reply can be cancelled before it is claimed
+    expect(await store.requests.cancel(PARENT_TASK_ID, expiredAt + 100)).toBe(true);
+    expect(await store.requests.hasPending(PARENT_TASK_ID)).toBe(false);
+    expect((await store.getAgentRunByTaskId(PARENT_TASK_ID))?.state).toBe("stopped");
   });
 });
