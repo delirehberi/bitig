@@ -83,7 +83,7 @@ export function parseRoute(pathname: string, search: string): Route {
 
   const taskPageMatch = /^\/tasks\/([^/]+)$/.exec(trimmed);
   if (taskPageMatch) {
-    let ref = "";
+    let ref: string;
     try {
       ref = decodeURIComponent(taskPageMatch[1] ?? "").trim();
     } catch {

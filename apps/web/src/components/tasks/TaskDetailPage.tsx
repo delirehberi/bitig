@@ -45,12 +45,11 @@ import { Markdown } from "../Markdown";
 import { ChecklistView } from "./Checklist";
 import { TaskAttachments } from "./TaskAttachments";
 import {
-  agentNameForT3,
   TaskComposer,
   type TaskCommentsT3Context,
 } from "./TaskComments";
 import { TaskT3Section } from "./TaskT3Section";
-import { STATE_LABELS } from "./t3-run-state";
+import { agentNameForT3, STATE_LABELS } from "./t3-run-state";
 
 export interface TaskDetailPageProps {
   readonly task: Task;
@@ -267,7 +266,7 @@ export function TaskDetailPage({
 
   function handleCopyLink() {
     const shareUrl = new URL(taskPageHref( taskRef(task, projects) ), window.location.origin).href;
-    void navigator.clipboard?.writeText(shareUrl).catch(() => undefined);
+    void navigator.clipboard.writeText(shareUrl).catch(() => undefined);
     setCopied(true);
     window.setTimeout(() => {
       setCopied(false);

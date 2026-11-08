@@ -71,14 +71,13 @@ describe("TaskDetailPage", () => {
     });
 
     vi.spyOn(t3Service, "fetchT3Connection").mockResolvedValue({
-      enabled: true,
       connected: true,
     });
     vi.spyOn(t3Service, "fetchT3ProjectMappings").mockResolvedValue([
       {
         projectId: project.id,
         t3ProjectId: "t3-proj",
-        t3ProjectName: "Bitig",
+        t3ProjectTitle: "Bitig",
         updatedAt: "2026-11-07T10:00:00.000Z",
       },
     ]);
@@ -97,7 +96,6 @@ describe("TaskDetailPage", () => {
         authorType: "human",
         createdAt: "2026-11-07T10:30:00.000Z",
       },
-      switchedSession: false,
     });
   });
 
@@ -172,7 +170,6 @@ describe("TaskDetailPage", () => {
         status: "IN_PROGRESS",
         createdBy: "codex",
         createdAt: t2,
-        updatedAt: t2,
         stateSnapshot: {
           summary: "Added /tasks/:code route",
           modifiedArtifacts: ["router.ts"],
@@ -243,7 +240,7 @@ describe("TaskDetailPage", () => {
 
     // Verify chronological order inside the thread
     const thread = screen.getByTestId("task-thread");
-    const textContent = thread.textContent ?? "";
+    const textContent = thread.textContent;
     const descIdx = textContent.indexOf("The task detail modal has outgrown a dialog.");
     const runStartIdx = textContent.indexOf("started a T3 run");
     const statusEventIdx = textContent.indexOf("moved from To Do to In Progress");

@@ -24,12 +24,20 @@ const HTTP_NO_CONTENT = 204;
 const HTTP_BAD_REQUEST = 400;
 
 /**
- * Forwards a new comment to the task's T3 thread (#BIT-112). Comment creation never fails because
- * of T3: errors are logged with context. On Workers this runs after the response via `waitUntil`;
+ * Forwards a new comment to the task's T3 thread (#BIT-112, #BIT-166). Comment creation never fails
+ * because of T3: errors are logged with context. On Workers this runs after the response via `waitUntil`;
  * without an execution context (e.g. `app.request` in tests) it is awaited instead.
  */
 async function forwardCommentInBackground(c: Context<AppEnv>, comment: Comment): Promise<void> {
-  const work = forwardCommentToT3Run(buildServiceDeps(c), comment).then(
+  const isHumanSession =
+    Boolean(c.get("user")) &&
+    comment.authorType === "human" &&
+    !c.req.header("X-Bitig-Agent");
+  const actor = c.req.header("X-Bitig-Actor") ?? comment.author ?? "you";
+  const work = forwardCommentToT3Run(buildServiceDeps(c), comment, {
+    allowCommandLaunch: isHumanSession,
+    actor,
+  }).then(
     () => undefined,
     (error: unknown) => {
       console.error("forwarding comment to T3 run failed", { commentId: comment.id, taskId: comment.taskId, error });

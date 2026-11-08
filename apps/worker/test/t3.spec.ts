@@ -3027,4 +3027,229 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
       expect(mockState.toolCalls.filter((c) => c.name === "t3_thread_launch")).toHaveLength(0);
     });
   });
+
+  describe("explicit /t3 run human comment commands & scoped launch permissions (#BIT-166)", () => {
+    async function createProjectAndMap(name = "Bitig", key = "BIT"): Promise<Project> {
+      const project = await (
+        await request("/api/projects", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name, key }),
+        })
+      ).json<Project>();
+      await request(`/api/t3/mappings/${project.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ t3ProjectId: "t3-proj-bitig", t3ProjectTitle: "Bitig Workspace" }),
+      });
+      return project;
+    }
+
+    async function createTask(projectId: string, body: Record<string, unknown>): Promise<Task> {
+      const res = await request("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId, ...body }),
+      });
+      expect(res.status).toBe(201);
+      return res.json<Task>();
+    }
+
+    it("launches a T3 thread with scoped parameters from an authenticated human /t3 run comment and via POST /:id/t3-run", async () => {
+      await connectT3Host();
+      const project = await createProjectAndMap();
+      const task = await createTask(project.id, { title: "Launch from comment" });
+
+      const commentRes = await request(`/api/tasks/${task.id}/comments`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          body: "/t3 run model=prov-claude::claude-opus-4-7 worktree scope=approval-required\nFocus on security gates.",
+          author: "emre",
+        }),
+      });
+      expect(commentRes.status).toBe(201);
+
+      const launchCalls = mockState.toolCalls.filter((c) => c.name === "t3_thread_launch");
+      expect(launchCalls).toHaveLength(1);
+      expect(launchCalls[0]?.arguments).toMatchObject({
+        projectId: "t3-proj-bitig",
+        title: "BIT-1 Launch from comment",
+        clientRequestId: "BIT-1",
+        workspaceStrategy: { type: "worktree", baseRef: "HEAD" },
+        modelSelection: { instanceId: "prov-claude", model: "claude-opus-4-7" },
+        runtimeMode: "approval-required",
+      });
+
+      const store = new T3D1Store(env.DB);
+      const run = await store.getAgentRunByTaskId(task.id);
+      expect(run).toMatchObject({
+        taskId: task.id,
+        threadId: "thread-abc-123",
+        state: "working",
+        workspaceStrategy: "worktree",
+        providerInstanceId: "prov-claude",
+        model: "claude-opus-4-7",
+        startedBy: "emre",
+      });
+      const updatedTask = await (await request(`/api/tasks/${task.id}`)).json<Task>();
+      expect(updatedTask.status).toBe("in_progress");
+
+      // Direct POST /:id/t3-run also forwards runtimeMode
+      const task2 = await createTask(project.id, { title: "Direct launch with scope" });
+      mockState.launchThreadId = "thread-direct-scope";
+      const directRes = await request(`/api/tasks/${task2.id}/t3-run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          workspaceStrategy: "root",
+          providerInstanceId: "prov-codex",
+          model: "gpt-6-sol",
+          runtimeMode: "auto-accept-edits",
+        }),
+      });
+      expect(directRes.status).toBe(201);
+      const latestLaunch = mockState.toolCalls.filter((c) => c.name === "t3_thread_launch").at(-1);
+      expect(latestLaunch?.arguments).toMatchObject({
+        projectId: "t3-proj-bitig",
+        clientRequestId: "BIT-2",
+        modelSelection: { instanceId: "prov-codex", model: "gpt-6-sol" },
+        runtimeMode: "auto-accept-edits",
+      });
+      expect(latestLaunch?.arguments.workspaceStrategy).toBeUndefined();
+    });
+
+    it("never launches a T3 run from ordinary comments, agent comments, X-Bitig-Agent headers, or MCP add_comment", async () => {
+      await connectT3Host();
+      const project = await createProjectAndMap();
+      const task = await createTask(project.id, { title: "No unauthorized launches" });
+
+      // 1. Ordinary human comment without /t3 run
+      expect(
+        (
+          await request(`/api/tasks/${task.id}/comments`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ body: "Can someone run /t3 run on this?", author: "emre" }),
+          })
+        ).status,
+      ).toBe(201);
+
+      // 2. authorType: "agent" comment with /t3 run
+      expect(
+        (
+          await request(`/api/tasks/${task.id}/comments`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ body: "/t3 run", authorType: "agent", author: "claude" }),
+          })
+        ).status,
+      ).toBe(201);
+
+      // 3. Request carrying X-Bitig-Agent header
+      expect(
+        (
+          await request(`/api/tasks/${task.id}/comments`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Bitig-Agent": "claude-code",
+            },
+            body: JSON.stringify({ body: "/t3 run", authorType: "human", author: "emre" }),
+          })
+        ).status,
+      ).toBe(201);
+
+      // 4. MCP add_comment tool call with /t3 run
+      const mcpRes = await app.request(
+        `${BASE_URL}/mcp`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: TEST_MCP_AUTH_HEADER,
+            "Content-Type": "application/json",
+            Accept: "application/json, text/event-stream",
+          },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "tools/call",
+            params: {
+              name: "add_comment",
+              arguments: { taskId: task.id, body: "/t3 run model=claude-opus-4-7 worktree" },
+            },
+          }),
+        },
+        env,
+      );
+      expect(mcpRes.status).toBe(200);
+
+      expect(mockState.toolCalls.filter((c) => c.name === "t3_thread_launch")).toHaveLength(0);
+      expect(await new T3D1Store(env.DB).getAgentRunByTaskId(task.id)).toBeUndefined();
+      const unchangedTask = await (await request(`/api/tasks/${task.id}`)).json<Task>();
+      expect(unchangedTask.status).toBe("todo");
+    });
+
+    it("enforces pendingApproval, dependsOn, project mapping, active host connection, and no-active-run gates for /t3 run comments", async () => {
+      await connectT3Host();
+      const project = await createProjectAndMap();
+      const unmappedProject = await (
+        await request("/api/projects", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: "Unmapped", key: "UNM" }),
+        })
+      ).json<Project>();
+
+      const depTask = await createTask(project.id, { title: "Blocker" });
+      const pendingTask = await createTask(project.id, { title: "Needs approval", pendingApproval: true });
+      const blockedTask = await createTask(project.id, { title: "Blocked", dependsOn: [depTask.id] });
+      const unmappedTask = await createTask(unmappedProject.id, { title: "Unmapped task" });
+
+      async function postRunCommand(taskId: string, cmd = "/t3 run"): Promise<void> {
+        const res = await request(`/api/tasks/${taskId}/comments`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ body: cmd, author: "emre" }),
+        });
+        expect(res.status).toBe(201);
+      }
+
+      // 1. pendingApproval: true blocks launch
+      await postRunCommand(pendingTask.id);
+      // 2. unfinished dependsOn blocks launch
+      await postRunCommand(blockedTask.id);
+      // 3. unmapped project blocks launch
+      await postRunCommand(unmappedTask.id);
+
+      expect(mockState.toolCalls.filter((c) => c.name === "t3_thread_launch")).toHaveLength(0);
+      const store = new T3D1Store(env.DB);
+      expect(await store.getAgentRunByTaskId(pendingTask.id)).toBeUndefined();
+      expect(await store.getAgentRunByTaskId(blockedTask.id)).toBeUndefined();
+      expect(await store.getAgentRunByTaskId(unmappedTask.id)).toBeUndefined();
+
+      // 4. Disconnected or unreachable host connection blocks launch (does not queue or mutate task status)
+      mockState.failMcpConnection = true;
+      await postRunCommand(depTask.id);
+      expect(await store.getAgentRunByTaskId(depTask.id)).toBeUndefined();
+      expect((await (await request(`/api/tasks/${depTask.id}`)).json<Task>()).status).toBe("todo");
+
+      mockState.failMcpConnection = false;
+      await request("/api/t3/connection", { method: "DELETE" });
+      await postRunCommand(depTask.id);
+      expect(await store.getAgentRunByTaskId(depTask.id)).toBeUndefined();
+
+      // Reconnect and launch depTask via /t3 run
+      await connectT3Host();
+      await postRunCommand(depTask.id, "/t3 run root");
+      expect(mockState.toolCalls.filter((c) => c.name === "t3_thread_launch")).toHaveLength(1);
+      expect((await store.getAgentRunByTaskId(depTask.id))?.state).toBe("working");
+
+      // 5. Task with an already active run ignores a second /t3 run command and does not forward it as a message
+      await postRunCommand(depTask.id, "/t3 run worktree");
+      expect(mockState.toolCalls.filter((c) => c.name === "t3_thread_launch")).toHaveLength(1);
+      expect(mockState.toolCalls.filter((c) => c.name === "t3_thread_send")).toHaveLength(0);
+    });
+  });
 });
+

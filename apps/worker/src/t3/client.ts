@@ -26,6 +26,7 @@ import {
   type T3PendingQuestion,
   type T3RemoteProject,
   type T3RunSummary,
+  type T3RuntimeMode,
   type T3ThreadListItem,
   type T3ThreadMessage,
   type T3ThreadSummary,
@@ -1164,6 +1165,8 @@ export class T3McpClient {
     model?: string | undefined;
     /** Model options (e.g. effort) sent with the model, in the `t3_thread_configure` shape. */
     options?: readonly T3ModelSelectionOption[] | undefined;
+    /** Permission/approval scope for the T3 thread (#BIT-166). */
+    runtimeMode?: T3RuntimeMode | undefined;
   }): Promise<{ threadId: string; link?: string | undefined; gitMetadata?: T3GitMetadata | undefined }> {
     return this.withSession(async (callTool) => {
       const args: Record<string, unknown> = {
@@ -1186,6 +1189,9 @@ export class T3McpClient {
             ? { options: input.options.map((opt) => ({ id: opt.id, value: opt.value })) }
             : {}),
         };
+      }
+      if (input.runtimeMode) {
+        args.runtimeMode = input.runtimeMode;
       }
 
       const payload = await callTool("t3_thread_launch", args);

@@ -27,6 +27,7 @@ import {
   formatT3ModelSelection,
   isActiveAgentRunState,
   isSameT3ModelSelection,
+  parseT3RunCommentCommand,
   resolveTaskRef,
   taskCode,
   type ActiveAgentRunState,
@@ -46,6 +47,7 @@ import {
   type T3ModelSelectionOption,
   type T3ProjectActiveSession,
   type T3RunsLiveResponse,
+  type T3RuntimeMode,
   type T3SubagentHandbackInput,
   type T3TaskRunLiveResponse,
   type T3ThreadListItem,
@@ -194,6 +196,7 @@ interface QueuedLaunchPayload {
   providerInstanceId?: string | undefined;
   model?: string | undefined;
   options?: readonly T3ModelSelectionOption[] | undefined;
+  runtimeMode?: T3RuntimeMode | undefined;
   settleThreadId?: string | undefined;
   parentTaskId?: string | undefined;
   childLabel?: string | undefined;
@@ -214,7 +217,13 @@ export interface LaunchTaskInT3Options {
   workspaceStrategy?: T3WorkspaceStrategy | undefined;
   providerInstanceId?: string | undefined;
   model?: string | undefined;
+  runtimeMode?: T3RuntimeMode | undefined;
   actor?: string | undefined;
+  /**
+   * When true (e.g. for `/t3 run` comment commands, #BIT-166), requires an active and reachable
+   * T3 host connection before launching or mutating task status instead of queueing offline.
+   */
+  requireActiveConnection?: boolean | undefined;
   /**
    * The umbrella task whose session starts this task as a child session (#BIT-141), as an ID or
    * ticket code. Its run then waits (`waiting_subagent`) until this task is done.
@@ -326,6 +335,7 @@ export async function dispatchQueuedTaskT3Run(
           providerInstanceId: payload.providerInstanceId,
           model: payload.model,
           options: payload.options,
+          runtimeMode: payload.runtimeMode,
         });
 
         const savedRun = await deps.store.saveAgentRun({
@@ -557,7 +567,7 @@ export async function launchTaskInT3(
       now,
     });
   } catch (err) {
-    if (!isQueueableT3Error(err)) {
+    if (options.requireActiveConnection || !isQueueableT3Error(err)) {
       throw err;
     }
     mcpClient = undefined;
@@ -569,7 +579,7 @@ export async function launchTaskInT3(
       try {
         await assertRootWorkspaceFree(deps, mcpClient, mapping.t3ProjectId, now, parent?.task.id, task.id);
       } catch (err) {
-        if (!isQueueableT3Error(err)) {
+        if (options.requireActiveConnection || !isQueueableT3Error(err)) {
           throw err;
         }
         mcpClient = undefined;
@@ -593,6 +603,63 @@ export async function launchTaskInT3(
   });
 
   const actor = (options.actor?.trim() ?? "") || "t3";
+
+  if (options.requireActiveConnection && mcpClient) {
+    const existingRun = await deps.store.getAgentRunByTaskId(task.id);
+    if (existingRun && !existingRun.threadId.startsWith("queued:")) {
+      await mcpClient.settleThread(existingRun.threadId);
+    }
+
+    const launched = await mcpClient.launchThread({
+      projectId: mapping.t3ProjectId,
+      title: builtPrompt.title,
+      prompt: builtPrompt.prompt,
+      clientRequestId: existingRun
+        ? `${builtPrompt.clientRequestId}:${gitMetadataRunId}`
+        : builtPrompt.clientRequestId,
+      workspaceStrategy,
+      providerInstanceId: options.providerInstanceId,
+      model: options.model,
+      runtimeMode: options.runtimeMode,
+    });
+
+    const updatedTask =
+      task.status === "in_progress"
+        ? task
+        : await deps.storage.updateTask(
+            task.id,
+            { status: "in_progress" },
+            { actor },
+          );
+
+    const savedRun = await deps.store.saveAgentRun({
+      id: gitMetadataRunId,
+      taskId: task.id,
+      t3ProjectId: mapping.t3ProjectId,
+      threadId: launched.threadId,
+      link: launched.link,
+      state: "working",
+      model: options.model,
+      ...(options.model && options.providerInstanceId
+        ? { providerInstanceId: options.providerInstanceId }
+        : {}),
+      workspaceStrategy,
+      ...(parent ? { parentTaskId: parent.task.id } : {}),
+      startedBy: actor,
+      startedAt: now,
+      updatedAt: now,
+    });
+    const finalRun = await persistLiveGitMetadata(deps, savedRun, launched.gitMetadata, now);
+    if (deps.publishRealtime) {
+      await deps.publishRealtime({ type: "agent_run.updated", run: finalRun }).catch(() => undefined);
+    }
+    return {
+      run: finalRun,
+      task: updatedTask,
+      ...(code ? { code } : {}),
+    };
+  }
+
   const updatedTask =
     task.status === "in_progress"
       ? task
@@ -610,6 +677,7 @@ export async function launchTaskInT3(
     workspaceStrategy,
     ...(options.providerInstanceId ? { providerInstanceId: options.providerInstanceId } : {}),
     ...(options.model ? { model: options.model } : {}),
+    ...(options.runtimeMode ? { runtimeMode: options.runtimeMode } : {}),
     ...(parent
       ? {
           parentTaskId: parent.task.id,
@@ -1449,17 +1517,50 @@ export function buildT3CommentPrompt(input: { taskLabel: string; author: string;
   return `New comment on ${input.taskLabel} from ${input.author}:\n\n${input.body}`;
 }
 
+export interface ForwardCommentToT3Options {
+  /**
+   * Whether an explicit `/t3 run` command in this comment is permitted to start a new T3 run (#BIT-166).
+   * Must only be true when the caller is an authenticated human session (never MCP or an agent header).
+   */
+  readonly allowCommandLaunch?: boolean | undefined;
+  readonly actor?: string | undefined;
+}
+
 /**
- * Forwards a person's comment to the task's T3 thread so a waiting agent continues with it.
- * When the T3 host is offline or the task's run is already queued, the comment prompt is durably
- * queued in D1 and dispatched once on reconnect (#BIT-161).
- * Agent comments are never forwarded, so an agent cannot wake itself up.
+ * Forwards a person's comment to the task's T3 thread so a waiting agent continues with it,
+ * or launches a new T3 run when an authenticated human comment starts with `/t3 run` on an
+ * approved, unblocked task with no active run (#BIT-166).
+ *
+ * When the T3 host is offline or the task's run is already queued, follow-up comment prompts are
+ * durably queued in D1 and dispatched once on reconnect (#BIT-161).
+ * Agent comments are never forwarded and never launch a run.
  */
-export async function forwardCommentToT3Run(deps: T3ServiceDeps, comment: Comment): Promise<boolean> {
+export async function forwardCommentToT3Run(
+  deps: T3ServiceDeps,
+  comment: Comment,
+  options?: ForwardCommentToT3Options,
+): Promise<boolean> {
   if (comment.authorType !== "human") return false;
   if (!deps.encryptionKey) return false;
 
   const existingRun = await deps.store.getAgentRunByTaskId(comment.taskId);
+  const command = parseT3RunCommentCommand(comment.body);
+  if (command !== null) {
+    if (options?.allowCommandLaunch === false) return false;
+    if (existingRun && isActiveAgentRunState(existingRun.state)) return false;
+
+    await launchTaskInT3(deps, {
+      taskRef: comment.taskId,
+      workspaceStrategy: command.workspaceStrategy,
+      providerInstanceId: command.providerInstanceId,
+      model: command.model,
+      runtimeMode: command.runtimeMode,
+      actor: options?.actor ?? comment.author ?? DEFAULT_COMMENT_AUTHOR_LABEL,
+      requireActiveConnection: true,
+    });
+    return true;
+  }
+
   if (!existingRun) return false;
   if (!(await deps.store.getConnection())) return false;
 

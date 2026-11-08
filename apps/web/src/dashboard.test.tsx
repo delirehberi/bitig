@@ -1061,7 +1061,6 @@ describe("Dashboard routing", () => {
 
     const todoColumn = screen.getByTestId("column-todo");
     const inProgressColumn = screen.getByTestId("column-in_progress");
-    const doneColumn = screen.getByTestId("column-done");
 
     expect(within(todoColumn).getByText("Alpha task")).toBeInTheDocument();
 

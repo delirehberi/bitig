@@ -19,6 +19,7 @@ import type {
   T3ModelCapability,
   T3PendingQuestion,
   T3ProjectMapping,
+  T3RuntimeMode,
   T3TaskRunLiveResponse,
   T3WorkspaceBusySession,
   T3WorkspaceStrategy,
@@ -81,6 +82,7 @@ export function TaskT3Section({
   const [mapping, setMapping] = useState<T3ProjectMapping | undefined>(undefined);
   const [capabilities, setCapabilities] = useState<T3ModelCapability[]>([]);
   const [selectedModelKey, setSelectedModelKey] = useState("");
+  const [selectedRuntimeMode, setSelectedRuntimeMode] = useState<"" | T3RuntimeMode>("");
   const [useWorktree, setUseWorktree] = useState(true);
   const [isLoading, setIsLoading] = useState(true);
   const [isBusy, setIsBusy] = useState(false);
@@ -284,6 +286,7 @@ export function TaskT3Section({
         workspaceStrategy,
         ...(providerInstanceId ? { providerInstanceId } : {}),
         ...(model ? { model } : {}),
+        ...(selectedRuntimeMode ? { runtimeMode: selectedRuntimeMode } : {}),
       });
       setRun(launched.run);
       setStopReason(undefined);
@@ -675,6 +678,21 @@ export function TaskT3Section({
                 <GitBranch size={12} aria-hidden="true" />
                 <span>Isolated git worktree</span>
               </label>
+
+              <select
+                aria-label="T3 permission scope"
+                value={selectedRuntimeMode}
+                onChange={(e) => {
+                  setSelectedRuntimeMode(e.target.value as "" | T3RuntimeMode);
+                }}
+                className="rounded-md border border-rule bg-paper px-2 py-1 text-xs text-ink"
+              >
+                <option value="">Default permissions</option>
+                <option value="approval-required">Approval required</option>
+                <option value="auto-accept-edits">Auto-accept edits</option>
+                <option value="auto">Auto</option>
+                <option value="full-access">Full access</option>
+              </select>
 
               {capabilities.length > 0 && (
                 <select

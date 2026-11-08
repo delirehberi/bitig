@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   dispatchTaskT3Run,
+  fetchT3Capabilities,
   fetchT3Connection,
   fetchT3ProjectMappings,
   fetchT3Runs,
@@ -298,5 +299,43 @@ describe("TaskT3Section", () => {
       expect(screen.getByRole("link", { name: /open busy thread/i })).toHaveAttribute("href", BUSY_LINK);
       expect(startTaskT3Run).toHaveBeenCalledWith(task.id, { workspaceStrategy: "root" });
     });
+
+    it("passes selected workspace strategy, model, and permission scope (runtimeMode) when launching (#BIT-166)", async () => {
+      const user = userEvent.setup();
+      vi.mocked(fetchT3Capabilities).mockResolvedValue([
+        {
+          providerInstanceId: "prov-claude",
+          displayName: "Claude Code",
+          model: "claude-opus-4-7",
+          label: "Claude Opus 4.7",
+        },
+      ]);
+      vi.mocked(startTaskT3Run).mockResolvedValue({
+        run: {
+          ...makeRun(task.id, "working"),
+          workspaceStrategy: "worktree",
+          providerInstanceId: "prov-claude",
+          model: "claude-opus-4-7",
+        },
+        task: { ...task, status: "in_progress" },
+      });
+
+      render(<TaskT3Section task={task} project={project} hasUnfinishedDependencies={false} />);
+
+      const scopeSelect = await screen.findByRole("combobox", { name: /t3 permission scope/i });
+      const modelSelect = await screen.findByRole("combobox", { name: /t3 model/i });
+
+      await user.selectOptions(scopeSelect, "approval-required");
+      await user.selectOptions(modelSelect, "prov-claude::claude-opus-4-7");
+      await user.click(screen.getByRole("button", { name: /start in t3/i }));
+
+      expect(startTaskT3Run).toHaveBeenCalledWith(task.id, {
+        workspaceStrategy: "worktree",
+        providerInstanceId: "prov-claude",
+        model: "claude-opus-4-7",
+        runtimeMode: "approval-required",
+      });
+    });
   });
 });
+

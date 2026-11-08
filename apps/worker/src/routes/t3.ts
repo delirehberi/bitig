@@ -540,6 +540,7 @@ export const t3TaskRunsRouter = new Hono<AppEnv>()
           workspaceStrategy: input.workspaceStrategy,
           providerInstanceId: input.providerInstanceId,
           model: input.model,
+          runtimeMode: input.runtimeMode,
           actor,
         });
         return c.json(result, HTTP_CREATED);

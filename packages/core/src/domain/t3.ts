@@ -34,6 +34,16 @@ export const T3_WORKSPACE_STRATEGIES = ["worktree", "root"] as const;
 export type T3WorkspaceStrategy = (typeof T3_WORKSPACE_STRATEGIES)[number];
 export const T3WorkspaceStrategySchema = z.enum(T3_WORKSPACE_STRATEGIES);
 
+/** Permission and approval scope modes accepted by T3's `t3_thread_launch` `runtimeMode` (#BIT-166). */
+export const T3_RUNTIME_MODES = [
+  "approval-required",
+  "auto-accept-edits",
+  "auto",
+  "full-access",
+] as const;
+export type T3RuntimeMode = (typeof T3_RUNTIME_MODES)[number];
+export const T3RuntimeModeSchema = z.enum(T3_RUNTIME_MODES);
+
 /**
  * Only these project and thread orchestration tools may ever be called on a T3 host.
  *
@@ -347,9 +357,133 @@ export const StartT3ThreadInputSchema = z.strictObject({
   workspaceStrategy: T3WorkspaceStrategySchema.exactOptional(),
   providerInstanceId: z.string().trim().min(1).max(200).exactOptional(),
   model: z.string().trim().min(1).max(200).exactOptional(),
+  runtimeMode: T3RuntimeModeSchema.exactOptional(),
 });
 
 export type StartT3ThreadInput = z.input<typeof StartT3ThreadInputSchema>;
+
+export interface ParsedT3RunCommand {
+  readonly workspaceStrategy?: T3WorkspaceStrategy | undefined;
+  readonly providerInstanceId?: string | undefined;
+  readonly model?: string | undefined;
+  readonly runtimeMode?: T3RuntimeMode | undefined;
+  readonly note?: string | undefined;
+}
+
+const T3_RUN_COMMAND_MAX_FIELD = 200;
+
+/**
+ * Parses an explicit `/t3 run` human comment command (#BIT-166), e.g.:
+ * - `/t3 run`
+ * - `/t3 run model=claude-opus-4-7 worktree`
+ * - `/t3 run model=prov-claude::claude-opus-4-7 root scope=approval-required`
+ * - `/t3 run provider=prov-codex model=gpt-6-sol mode=auto-accept-edits`
+ *
+ * Only matches when the comment's first non-empty line starts with `/t3 run`. Returns `null`
+ * for ordinary comments or when any token on the `/t3 run` line is unrecognized or invalid.
+ */
+export function parseT3RunCommentCommand(body: string): ParsedT3RunCommand | null {
+  const trimmed = body.trim();
+  if (!trimmed) return null;
+
+  const lines = trimmed.split(/\r?\n/u);
+  const firstLine = (lines[0] ?? "").trim();
+  const match = /^\/t3\s+run(?:\s+(.*))?$/iu.exec(firstLine);
+  if (!match) return null;
+
+  const rawArgs = (match[1] ?? "").trim();
+  const tokens = rawArgs.length > 0 ? rawArgs.split(/\s+/u) : [];
+
+  let workspaceStrategy: T3WorkspaceStrategy | undefined;
+  let providerInstanceId: string | undefined;
+  let model: string | undefined;
+  let runtimeMode: T3RuntimeMode | undefined;
+
+  for (const rawToken of tokens) {
+    const token = rawToken.replace(/^--/u, "");
+    if (!token) return null;
+
+    const eqIndex = token.indexOf("=");
+    if (eqIndex >= 0) {
+      const key = token.slice(0, eqIndex).trim().toLowerCase();
+      const val = token.slice(eqIndex + 1).trim();
+      if (!key || !val) return null;
+
+      if (key === "workspace" || key === "workspacestrategy") {
+        const parsedWs = T3WorkspaceStrategySchema.safeParse(val.toLowerCase());
+        if (!parsedWs.success) return null;
+        if (workspaceStrategy && workspaceStrategy !== parsedWs.data) return null;
+        workspaceStrategy = parsedWs.data;
+        continue;
+      }
+
+      if (key === "model") {
+        if (val.length > T3_RUN_COMMAND_MAX_FIELD * 2 + 2) return null;
+        if (val.includes("::")) {
+          const parts = val.split("::");
+          if (parts.length !== 2) return null;
+          const prov = (parts[0] ?? "").trim();
+          const mod = (parts[1] ?? "").trim();
+          if (!prov || !mod || prov.length > T3_RUN_COMMAND_MAX_FIELD || mod.length > T3_RUN_COMMAND_MAX_FIELD) {
+            return null;
+          }
+          if (providerInstanceId && providerInstanceId !== prov) return null;
+          if (model && model !== mod) return null;
+          providerInstanceId = prov;
+          model = mod;
+        } else {
+          if (val.length > T3_RUN_COMMAND_MAX_FIELD) return null;
+          if (model && model !== val) return null;
+          model = val;
+        }
+        continue;
+      }
+
+      if (key === "provider" || key === "providerinstanceid") {
+        if (val.length > T3_RUN_COMMAND_MAX_FIELD) return null;
+        if (providerInstanceId && providerInstanceId !== val) return null;
+        providerInstanceId = val;
+        continue;
+      }
+
+      if (key === "scope" || key === "mode" || key === "runtimemode" || key === "permissions") {
+        const parsedMode = T3RuntimeModeSchema.safeParse(val.toLowerCase());
+        if (!parsedMode.success) return null;
+        if (runtimeMode && runtimeMode !== parsedMode.data) return null;
+        runtimeMode = parsedMode.data;
+        continue;
+      }
+
+      return null;
+    }
+
+    const lower = token.toLowerCase();
+    const parsedWs = T3WorkspaceStrategySchema.safeParse(lower);
+    if (parsedWs.success) {
+      if (workspaceStrategy && workspaceStrategy !== parsedWs.data) return null;
+      workspaceStrategy = parsedWs.data;
+      continue;
+    }
+
+    const parsedMode = T3RuntimeModeSchema.safeParse(lower);
+    if (parsedMode.success) {
+      if (runtimeMode && runtimeMode !== parsedMode.data) return null;
+      runtimeMode = parsedMode.data;
+      continue;
+    }
+
+    return null;
+  }
+
+  const note = lines.slice(1).join("\n").trim();
+  return {
+    ...(workspaceStrategy ? { workspaceStrategy } : {}),
+    ...(providerInstanceId ? { providerInstanceId } : {}),
+    ...(model ? { model } : {}),
+    ...(runtimeMode ? { runtimeMode } : {}),
+    ...(note ? { note } : {}),
+  };
+}
 
 export const SendT3MessageInputSchema = z.strictObject({
   message: z.string().trim().min(1).max(20_000),

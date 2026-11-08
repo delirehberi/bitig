@@ -2,10 +2,8 @@ import { useState } from "react";
 import { ArrowRight, Bot, MessageSquare, Paperclip, Trash2, User } from "lucide-react";
 import {
   canSwitchT3Model,
-  type AgentRun,
   type Comment,
   type StorageProvider,
-  type T3ModelCapability,
   type T3ModelSelection,
 } from "@bitig/core";
 import { useComments } from "../../hooks/useComments";
@@ -44,46 +42,11 @@ function CommentItem({ comment, onDelete }: { readonly comment: Comment; readonl
   );
 }
 
-/** The task's T3 thread, when it has one, so a reply can switch the thread's model (#BIT-119). */
-export interface TaskCommentsT3Context {
-  readonly run: AgentRun;
-  readonly capabilities: readonly T3ModelCapability[];
-}
+import { agentNameForT3, type TaskCommentsT3Context } from "./t3-run-state";
 
-/** Picks a human-friendly agent label (e.g. "Codex", "Claude") from the T3 run and capability list. */
-export function agentNameForT3(
-  t3: TaskCommentsT3Context | undefined,
-  fallbackAuthor?: string | undefined,
-): string {
-  if (t3) {
-    const { run, capabilities } = t3;
-    const byProvider = run.providerInstanceId
-      ? capabilities.find((c) => c.providerInstanceId === run.providerInstanceId)
-      : undefined;
-    if (byProvider?.displayName) return byProvider.displayName;
-    const byModel = run.model ? capabilities.find((c) => c.model === run.model) : undefined;
-    if (byModel?.displayName) return byModel.displayName;
-    const prov = run.providerInstanceId?.toLowerCase();
-    if (prov?.includes("codex")) return "Codex";
-    if (prov?.includes("claude")) return "Claude";
-    if (prov?.includes("antigravity") || prov?.includes("gemini")) return "Antigravity";
-    const model = run.model?.toLowerCase();
-    if (model?.startsWith("gpt-") || model?.startsWith("o1") || model?.startsWith("o3") || model?.includes("codex")) {
-      return "Codex";
-    }
-    if (model?.startsWith("claude")) return "Claude";
-    if (model?.startsWith("gemini")) return "Antigravity";
-    if (run.providerInstanceId) {
-      return run.providerInstanceId.charAt(0).toUpperCase() + run.providerInstanceId.slice(1);
-    }
-  }
-  if (fallbackAuthor && fallbackAuthor.trim().length > 0) {
-    return fallbackAuthor;
-  }
-  return "Agent";
-}
+export type { TaskCommentsT3Context };
 
-export async function sendTaskT3Reply(
+async function sendTaskT3Reply(
   taskId: string,
   body: string,
   options: { readonly selection?: T3ModelSelection | undefined; readonly freshSession?: boolean | undefined } = {},

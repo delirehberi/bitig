@@ -5,6 +5,7 @@ import {
   ReplyToT3RunInputSchema,
   SendProjectT3MessageInputSchema,
   StartProjectT3ThreadInputSchema,
+  StartT3ThreadInputSchema,
   buildProjectT3LaunchPrompt,
   buildProjectT3ModelSwitchNotice,
   buildProjectT3ThreadTitle,
@@ -20,6 +21,7 @@ import {
   isActiveAgentRunState,
   isSameT3ModelSelection,
   normalizeT3McpUrl,
+  parseT3RunCommentCommand,
   T3WorkspaceBusyError,
   AgentRunSchema,
   T3GitMetadataSchema,
@@ -548,3 +550,73 @@ describe("T3WorkspaceBusyError (BIT-134)", () => {
     expect(new T3WorkspaceBusyError({ threadId: "t-1", state: "working" }).message).toContain("(t-1) is working");
   });
 });
+
+describe("StartT3ThreadInputSchema & parseT3RunCommentCommand (BIT-166)", () => {
+  it("validates runtimeMode in StartT3ThreadInputSchema", () => {
+    expect(StartT3ThreadInputSchema.parse({})).toEqual({});
+    expect(
+      StartT3ThreadInputSchema.parse({
+        workspaceStrategy: "worktree",
+        providerInstanceId: "prov-claude",
+        model: "claude-opus-4-7",
+        runtimeMode: "approval-required",
+      }),
+    ).toEqual({
+      workspaceStrategy: "worktree",
+      providerInstanceId: "prov-claude",
+      model: "claude-opus-4-7",
+      runtimeMode: "approval-required",
+    });
+    expect(StartT3ThreadInputSchema.safeParse({ runtimeMode: "auto-accept-edits" }).success).toBe(true);
+    expect(StartT3ThreadInputSchema.safeParse({ runtimeMode: "auto" }).success).toBe(true);
+    expect(StartT3ThreadInputSchema.safeParse({ runtimeMode: "full-access" }).success).toBe(true);
+    expect(StartT3ThreadInputSchema.safeParse({ runtimeMode: "invalid-mode" }).success).toBe(false);
+  });
+
+  it("parses bare /t3 run and scoped parameters", () => {
+    expect(parseT3RunCommentCommand("/t3 run")).toEqual({});
+    expect(parseT3RunCommentCommand("  /T3   RUN  \nPlease focus on edge cases.")).toEqual({
+      note: "Please focus on edge cases.",
+    });
+    expect(parseT3RunCommentCommand("/t3 run model=claude-opus-4-7 worktree")).toEqual({
+      model: "claude-opus-4-7",
+      workspaceStrategy: "worktree",
+    });
+    expect(
+      parseT3RunCommentCommand("/t3 run model=prov-claude::claude-opus-4-7 root scope=approval-required"),
+    ).toEqual({
+      providerInstanceId: "prov-claude",
+      model: "claude-opus-4-7",
+      workspaceStrategy: "root",
+      runtimeMode: "approval-required",
+    });
+    expect(
+      parseT3RunCommentCommand(
+        "/t3 run --provider=prov-codex --model=gpt-6-sol --workspace=worktree --mode=auto-accept-edits",
+      ),
+    ).toEqual({
+      providerInstanceId: "prov-codex",
+      model: "gpt-6-sol",
+      workspaceStrategy: "worktree",
+      runtimeMode: "auto-accept-edits",
+    });
+    expect(parseT3RunCommentCommand("/t3 run full-access")).toEqual({
+      runtimeMode: "full-access",
+    });
+  });
+
+  it("returns null for ordinary comments, non-run slash commands, or invalid/conflicting arguments", () => {
+    expect(parseT3RunCommentCommand("")).toBeNull();
+    expect(parseT3RunCommentCommand("Let's run /t3 run soon")).toBeNull();
+    expect(parseT3RunCommentCommand("/t3 stop")).toBeNull();
+    expect(parseT3RunCommentCommand("/t3 runner")).toBeNull();
+    expect(parseT3RunCommentCommand("/t3 run worktree root")).toBeNull();
+    expect(parseT3RunCommentCommand("/t3 run workspace=invalid")).toBeNull();
+    expect(parseT3RunCommentCommand("/t3 run scope=unknown")).toBeNull();
+    expect(parseT3RunCommentCommand("/t3 run model=")).toBeNull();
+    expect(parseT3RunCommentCommand("/t3 run model=::claude")).toBeNull();
+    expect(parseT3RunCommentCommand("/t3 run provider=p1 model=p2::claude")).toBeNull();
+    expect(parseT3RunCommentCommand("/t3 run unknown-flag")).toBeNull();
+  });
+});
+
