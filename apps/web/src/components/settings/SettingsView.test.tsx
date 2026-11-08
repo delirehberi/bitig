@@ -28,9 +28,14 @@ describe("Settings tabs", () => {
     await user.keyboard("{Home}");
     expect(t3Tab).toHaveFocus();
     await user.keyboard("{End}");
+    expect(screen.getByRole("tab", { name: "Notifications" })).toHaveFocus();
+    await user.keyboard("{ArrowLeft}");
     expect(screen.getByRole("tab", { name: "MCP Tokens" })).toHaveFocus();
     await user.keyboard("{ArrowLeft}");
     expect(t3Tab).toHaveFocus();
+    await user.keyboard("{ArrowLeft}");
+    expect(screen.getByRole("tab", { name: "Notifications" })).toHaveFocus();
+    expect(screen.getByRole("tabpanel")).toHaveAttribute("aria-labelledby", "settings-tab-notifications");
   });
 
   it("clears the one-time secret when leaving the MCP tab", async () => {

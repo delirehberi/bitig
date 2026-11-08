@@ -38,6 +38,7 @@ import { WebhooksView } from "./components/webhooks/WebhooksView";
 import { FeatureFlagsProvider } from "./domain/feature-context";
 import { DEFAULT_MODE } from "./domain/modes";
 import type { AddAttachmentFileInput } from "./hooks/useAttachments";
+import { useNotificationDispatcher } from "./hooks/useBrowserNotifications";
 import { useFeatureFlags } from "./hooks/useFeatureFlags";
 import { useHealth, type HealthState } from "./hooks/useHealth";
 import { useProjects } from "./hooks/useProjects";
@@ -133,6 +134,8 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
 
   // Most recently worked on first, wherever projects are listed.
   const recentProjects = useMemo(() => sortProjectsByActivity(projects, tasks), [projects, tasks]);
+
+  useNotificationDispatcher({ projects, tasks, agentRuns });
 
   const selectedProjectId = routeProjectId;
 

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { McpTokensPanel } from "./McpTokensPanel";
+import { NotificationsPanel } from "./NotificationsPanel";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -37,18 +38,34 @@ function formatExpiryDate(iso: string | undefined): string {
   return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString();
 }
 
+const SETTINGS_TABS = [
+  { id: "t3", label: "T3 Code" },
+  { id: "mcp", label: "MCP Tokens" },
+  { id: "notifications", label: "Notifications" },
+] as const;
+type SettingsTab = (typeof SETTINGS_TABS)[number]["id"];
+
+/** The tab a Home/End/arrow key moves focus to, wrapping around at either end. */
+function adjacentTab(current: SettingsTab, key: string): SettingsTab {
+  const ids = SETTINGS_TABS.map((item) => item.id);
+  const last = ids.length - 1;
+  const index = ids.indexOf(current);
+  const nextIndex =
+    key === "Home" ? 0 : key === "End" ? last : key === "ArrowRight" ? (index + 1) % ids.length : (index - 1 + ids.length) % ids.length;
+  return ids[nextIndex] ?? current;
+}
+
 export function SettingsView({ mode, projects }: SettingsViewProps) {
-  const [tab, setTab] = useState<"t3" | "mcp">("t3");
-  const tabs = [{ id: "t3", label: "T3 Code" }, { id: "mcp", label: "MCP Tokens" }] as const;
+  const [tab, setTab] = useState<SettingsTab>("t3");
 
   return (
     <div className="mx-auto flex max-w-4xl flex-col gap-6">
       <header className="flex flex-col gap-1">
         <h1 className="m-0 font-display text-2xl font-bold text-ink">Settings</h1>
-        <p className="m-0 text-sm text-ink-2">Manage MCP client access and your T3 Code integration.</p>
+        <p className="m-0 text-sm text-ink-2">Manage MCP client access, your T3 Code integration, and browser notifications.</p>
       </header>
       <div role="tablist" aria-label="Settings" className="flex gap-2 border-b border-rule pb-2">
-        {tabs.map((item) => (
+        {SETTINGS_TABS.map((item) => (
           <button key={item.id} id={`settings-tab-${item.id}`} type="button" role="tab"
             aria-selected={tab === item.id} aria-controls={`settings-panel-${item.id}`} tabIndex={tab === item.id ? 0 : -1}
             className={`rounded-md px-4 py-2 text-sm font-semibold ${tab === item.id ? "bg-accent-soft text-accent-ink" : "text-ink-2 hover:bg-paper-2"}`}
@@ -56,7 +73,7 @@ export function SettingsView({ mode, projects }: SettingsViewProps) {
             onKeyDown={(event) => {
               if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
               event.preventDefault();
-              const next = event.key === "Home" ? "t3" : event.key === "End" ? "mcp" : tab === "t3" ? "mcp" : "t3";
+              const next = adjacentTab(tab, event.key);
               setTab(next);
               document.getElementById(`settings-tab-${next}`)?.focus();
             }}>
@@ -65,7 +82,7 @@ export function SettingsView({ mode, projects }: SettingsViewProps) {
         ))}
       </div>
       <div role="tabpanel" id={`settings-panel-${tab}`} aria-labelledby={`settings-tab-${tab}`} tabIndex={0}>
-        {tab === "t3" ? <T3SettingsPanel mode={mode} projects={projects} /> : mode === "cloudflare" ? <McpTokensPanel /> : (
+        {tab === "t3" ? <T3SettingsPanel mode={mode} projects={projects} /> : tab === "notifications" ? <NotificationsPanel /> : mode === "cloudflare" ? <McpTokensPanel /> : (
           <p role="note" className="rounded-lg border border-rule bg-paper-2 p-5 text-sm text-ink-2">MCP token management requires the Cloudflare Worker storage mode.</p>
         )}
       </div>
