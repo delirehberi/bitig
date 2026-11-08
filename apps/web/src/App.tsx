@@ -31,6 +31,7 @@ import { SettingsView } from "./components/settings/SettingsView";
 import { BlockedTaskDialog, type BlockedStatusChange } from "./components/tasks/BlockedTaskDialog";
 import { DeleteTaskDialog } from "./components/tasks/DeleteTaskDialog";
 import { TaskDetailModal } from "./components/tasks/TaskDetailModal";
+import { TaskDetailPage } from "./components/tasks/TaskDetailPage";
 import { TaskModal } from "./components/tasks/TaskModal";
 import { TasksView } from "./components/tasks/TasksView";
 import { WebhooksView } from "./components/webhooks/WebhooksView";
@@ -48,6 +49,7 @@ import { useWebhooks } from "./hooks/useWebhooks";
 import { LandingPage } from "./landing/LandingPage";
 import { findTaskByRef } from "./domain/task-ref";
 import { TaskMentionsProvider } from "./domain/task-mentions-context";
+import { Link } from "./routing/Link";
 import { hrefFor, navigate, taskHref, useLocationHref, useRoute, type Route } from "./routing/router";
 
 type WorkspaceRoute = Extract<Route, { name: NavigationTab }>;
@@ -124,7 +126,9 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
   } = useWebhooks(storage);
 
   const { runs: agentRuns } = useT3Runs({
-    enabled: mode === "cloudflare" && (activeTab === "tasks" || viewTaskRef !== undefined),
+    enabled:
+      mode === "cloudflare" &&
+      (activeTab === "tasks" || activeTab === "task" || viewTaskRef !== undefined),
   });
 
   // Most recently worked on first, wherever projects are listed.
@@ -192,6 +196,11 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
   const [deleteTarget, setDeleteTarget] = useState<Task | null>(null);
   const [blockedChange, setBlockedChange] = useState<BlockedStatusChange | null>(null);
 
+  const pageTask =
+    route.name === "task" ? (findTaskByRef(route.ref, recentProjects, tasks) ?? null) : null;
+  const pageTaskMissing =
+    route.name === "task" && pageTask === null && !isTasksLoading && tasksError === null;
+
   const viewTask =
     activeTab !== "tasks" && viewTaskRef !== undefined
       ? (findTaskByRef(viewTaskRef, recentProjects, tasks) ?? null)
@@ -254,11 +263,22 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
     }
   }
 
+  async function handleDeleteTask(id: string) {
+    await deleteTask(id);
+    if (route.name === "task" && pageTask?.id === id) {
+      navigate(hrefFor({ name: "tasks" }));
+    }
+  }
+
   return (
     <div className="min-h-dvh md:grid md:grid-cols-[var(--rail-width)_minmax(0,1fr)]">
       <Rail health={health} activeTab={activeTab} />
 
-      <div className="flex min-w-0 flex-col">
+      <div
+        className={`flex min-w-0 flex-col ${
+          activeTab === "task" ? "md:h-dvh md:overflow-hidden" : ""
+        }`}
+      >
         <Header
           mode={mode}
           health={health}
@@ -267,7 +287,13 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
         />
 
         <TaskMentionsProvider projects={projects} tasks={tasks}>
-          <main className="px-5 pt-8 pb-16 md:px-10 md:pt-10">
+          <main
+            className={
+              activeTab === "task"
+                ? "flex min-h-0 flex-1 flex-col px-4 pt-3 pb-4 md:overflow-hidden md:px-6 md:pt-4 md:pb-4"
+                : "px-5 pt-8 pb-16 md:px-10 md:pt-10"
+            }
+          >
             {viewTaskMissing && (
               <div
                 role="alert"
@@ -356,6 +382,70 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
               />
             )}
 
+            {route.name === "task" && (
+              isTasksLoading ? (
+                <p role="status" className="py-12 text-center text-sm text-ink-3">
+                  Loading task…
+                </p>
+              ) : pageTaskMissing ? (
+                <div
+                  role="alert"
+                  className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-rule bg-paper-2 p-4 text-sm text-ink-2"
+                >
+                  <span>
+                    No task <span className="font-mono font-semibold text-ink">{route.ref}</span> was found. It may have
+                    been deleted, or its project key changed.
+                  </span>
+                  <Link
+                    href={hrefFor({ name: "tasks" })}
+                    className="rounded-md border border-rule bg-paper px-3 py-1.5 text-xs font-semibold text-ink hover:bg-paper-3 focus-visible:outline-focus"
+                  >
+                    Back to Tasks
+                  </Link>
+                </div>
+              ) : pageTask ? (
+                <TaskDetailPage
+                  task={pageTask}
+                  projects={recentProjects}
+                  agentRun={agentRuns.find((r) => r.taskId === pageTask.id)}
+                  onEdit={(t) => {
+                    setEditModalState((prev) => ({
+                      isOpen: true,
+                      task: t,
+                      openKey: prev.openKey + 1,
+                    }));
+                  }}
+                  onDelete={(t) => {
+                    setDeleteTarget(t);
+                  }}
+                  onComplete={(t) => {
+                    void confirmIfBlocked(t, "done", (choice) => completeTask(t.id, choice));
+                  }}
+                  onStatusChange={(t, status) => {
+                    void confirmIfBlocked(t, status, (choice) =>
+                      updateTask(t.id, { status }, choice),
+                    );
+                  }}
+                  onArchive={(t) => {
+                    void updateTask(t.id, { status: "archived" });
+                  }}
+                  onChecklistChange={(t, checklist) => updateTask(t.id, { checklist })}
+                  onNeedsHumanResolve={(t) => {
+                    void updateTask(t.id, { needsHuman: null });
+                  }}
+                  onApprove={(t) => {
+                    void updateTask(t.id, { pendingApproval: null, status: "todo" });
+                  }}
+                  onMoveToBacklog={(t) => {
+                    void updateTask(t.id, { pendingApproval: true, status: "todo" });
+                  }}
+                  storage={storage}
+                  links={mentionIndex ? mentionIndex.linksFor(pageTask) : undefined}
+                  dependencies={dependencyLinks(pageTask, tasks, recentProjects)}
+                />
+              ) : null
+            )}
+
             {activeTab === "webhooks" && (
               <WebhooksView
                 webhooks={webhooks}
@@ -434,7 +524,7 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
                   isOpen={editModalState.isOpen}
                   task={editModalState.task}
                   projects={recentProjects}
-                  defaultProjectId={selectedProjectId}
+                  defaultProjectId={selectedProjectId ?? pageTask?.projectId}
                   tasks={tasks}
                   storage={storage}
                   onClose={() => {
@@ -460,7 +550,7 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
                   onClose={() => {
                     setDeleteTarget(null);
                   }}
-                  onConfirm={deleteTask}
+                  onConfirm={handleDeleteTask}
                 />
               </>
             )}

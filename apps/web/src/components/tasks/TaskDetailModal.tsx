@@ -28,7 +28,10 @@ import {
   type T3ModelCapability,
 } from "@bitig/core";
 import { formatFullTimestamp, formatTimeAgo } from "../../domain/time-ago";
+import { taskRef } from "../../domain/task-ref";
 import { useFocusTrap } from "../../hooks/useFocusTrap";
+import { Link } from "../../routing/Link";
+import { taskPageHref } from "../../routing/router";
 import { Markdown } from "../Markdown";
 import { ChecklistProgressBadge, ChecklistView } from "./Checklist";
 import { ApprovalNote } from "./Approval";
@@ -248,6 +251,12 @@ export function TaskDetailModal({
                 {formatDuration(spentMs)}
               </span>
             )}
+            <Link
+              href={taskPageHref(taskRef(task, projects))}
+              className="ml-auto inline-flex items-center gap-1 rounded-pill border border-rule bg-paper-2 px-2.5 py-0.5 text-2xs font-semibold text-accent-ink transition-colors hover:bg-paper-3 focus-visible:outline-focus"
+            >
+              Open full page
+            </Link>
           </div>
           <h2
             id="task-detail-title"

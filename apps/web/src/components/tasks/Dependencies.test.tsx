@@ -14,6 +14,14 @@ function Harness({ storage, projects }: { readonly storage: StorageProvider; rea
   const [blockedOnly, setBlockedOnly] = useState(false);
   return (
     <TaskMentionsProvider projects={projects} tasks={tasks}>
+      <button
+        type="button"
+        onClick={() => {
+          setViewTaskRef("BIT-1");
+        }}
+      >
+        Open modal BIT-1
+      </button>
       <TasksView
         tasks={tasks}
         projects={projects}
@@ -81,8 +89,10 @@ describe("dependencies in the web app", () => {
     expect(screen.queryByText("Schema")).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Blocked (1)" }));
 
-    // Both directions show in the detail view
+    // Clicking a board card navigates to the full task page; ?task= opens the detail modal
     await user.click(within(cardOf("Schema")).getByRole("button", { name: "Schema" }));
+    expect(window.location.pathname).toBe("/tasks/BIT-1");
+    await user.click(screen.getByRole("button", { name: "Open modal BIT-1" }));
     const detail = screen.getByRole("dialog");
     expect(within(within(detail).getByRole("list", { name: "Blocks" })).getByRole("link")).toHaveTextContent("BIT-2Signup");
     await user.click(within(detail).getByRole("button", { name: "Close dialog" }));

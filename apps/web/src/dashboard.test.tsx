@@ -917,8 +917,9 @@ describe("Dashboard routing", () => {
     expect(params.get("project")).toBeNull();
 
     await user.click(screen.getByText("Beta task"));
-    expect(await screen.findByRole("dialog")).toBeInTheDocument();
-    expect(new URLSearchParams(window.location.search).get("task")).toBe("BET-7");
+    expect(window.location.pathname).toBe("/tasks/BET-7");
+    expect(await screen.findByRole("heading", { level: 1, name: "Beta task" })).toBeInTheDocument();
+    expect(screen.getByText("Beta details")).toBeInTheDocument();
   });
 
   it("opens and edits a task from Pick up where you left off while staying on Overview", async () => {
@@ -946,6 +947,10 @@ describe("Dashboard routing", () => {
     expect(new URLSearchParams(window.location.search).get("task")).toBe("BET-7");
     const detailDialog = await screen.findByRole("dialog", { name: "Beta task" });
     expect(within(detailDialog).getByText("Beta details")).toBeInTheDocument();
+    expect(within(detailDialog).getByRole("link", { name: "Open full page" })).toHaveAttribute(
+      "href",
+      "/tasks/BET-7",
+    );
 
     // Clicking Edit opens the Edit Task modal on Overview
     await user.click(within(detailDialog).getByRole("button", { name: "Edit" }));
@@ -972,8 +977,8 @@ describe("Dashboard routing", () => {
     render(<App />);
 
     await user.click(await screen.findByText("Alpha task"));
-    expect(await screen.findByRole("dialog")).toBeInTheDocument();
-    expect(new URLSearchParams(window.location.search).get("task")).toBe(TASK_A.id);
+    expect(window.location.pathname).toBe(`/tasks/${TASK_A.id}`);
+    expect(await screen.findByRole("heading", { level: 1, name: "Alpha task" })).toBeInTheDocument();
   });
 
   it("shows linked tasks in both directions and opens them", async () => {
@@ -1091,10 +1096,11 @@ describe("Dashboard routing", () => {
     });
     expect(within(todoColumn).getByText("Agent created task")).toBeInTheDocument();
 
-    // 3. Open detail modal on Alpha task and receive a live comment + completion
+    // 3. Click Alpha task on the board to open its full page and receive a live comment + completion
     await user.click(screen.getByText("Alpha task"));
-    const dialog = await screen.findByRole("dialog");
-    expect(within(dialog).getByText("In Progress")).toBeInTheDocument();
+    expect(window.location.pathname).toBe(`/tasks/${TASK_A.id}`);
+    expect(await screen.findByRole("heading", { level: 1, name: "Alpha task" })).toBeInTheDocument();
+    expect(screen.getAllByText("In Progress").length).toBeGreaterThan(0);
 
     act(() => {
       ws?.receiveMessage({
@@ -1114,10 +1120,14 @@ describe("Dashboard routing", () => {
       });
     });
 
-    expect(await within(dialog).findByText("Finished implementation")).toBeInTheDocument();
-    expect(within(dialog).getByText("Done")).toBeInTheDocument();
-    expect(within(doneColumn).getByText("Alpha task")).toBeInTheDocument();
-    expect(within(doneColumn).getByTitle("1 comment")).toHaveTextContent("1");
+    expect(await screen.findByText("Finished implementation")).toBeInTheDocument();
+    expect(screen.getByLabelText("Change status")).toHaveValue("done");
+
+    // Return to Tasks board to verify board column and comment badge
+    await user.click(screen.getByRole("link", { name: /^Tasks$/i }));
+    const doneColumnAfter = await screen.findByTestId("column-done");
+    expect(within(doneColumnAfter).getByText("Alpha task")).toBeInTheDocument();
+    expect(within(doneColumnAfter).getByTitle("1 comment")).toHaveTextContent("1");
 
     // 4. MCP deletes the comment and the badge disappears from the card
     act(() => {
@@ -1127,7 +1137,7 @@ describe("Dashboard routing", () => {
         taskId: TASK_A.id,
       });
     });
-    expect(within(doneColumn).queryByTitle("1 comment")).not.toBeInTheDocument();
+    expect(within(doneColumnAfter).queryByTitle("1 comment")).not.toBeInTheDocument();
 
     // 5. MCP deletes the second task
     act(() => {

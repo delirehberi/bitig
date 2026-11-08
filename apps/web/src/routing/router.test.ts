@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hrefFor, parseRoute, taskHref } from "./router";
+import { hrefFor, parseRoute, taskHref, taskPageHref } from "./router";
 
 describe("task links", () => {
   it("reads the open task from ?task= on any workspace route alongside existing query parameters", () => {
@@ -25,6 +25,22 @@ describe("task links", () => {
       name: "settings",
       taskRef: "BIT-64",
     });
+  });
+
+  it("parses and round-trips the full-page task route /tasks/:ref alongside ?task= modal param", () => {
+    expect(parseRoute("/tasks/BIT-123", "")).toEqual({ name: "task", ref: "BIT-123" });
+    expect(parseRoute("/tasks/BIT-123/", "")).toEqual({ name: "task", ref: "BIT-123" });
+    expect(parseRoute("/tasks/BIT-123", "?task=BIT-64")).toEqual({
+      name: "task",
+      ref: "BIT-123",
+      taskRef: "BIT-64",
+    });
+    expect(taskPageHref("BIT-123")).toBe("/tasks/BIT-123");
+    expect(hrefFor({ name: "task", ref: "BIT-123", taskRef: "BIT-64" })).toBe(
+      "/tasks/BIT-123?task=BIT-64",
+    );
+    expect(taskHref("BIT-64", "/tasks/BIT-123")).toBe("/tasks/BIT-123?task=BIT-64");
+    expect(taskHref(undefined, "/tasks/BIT-123?task=BIT-64")).toBe("/tasks/BIT-123");
   });
 
   it("ignores an empty task parameter", () => {

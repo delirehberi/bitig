@@ -20,6 +20,7 @@ export type NavigationTab =
   | "overview"
   | "projects"
   | "tasks"
+  | "task"
   | "webhooks"
   | "reports"
   | "settings"
@@ -55,6 +56,7 @@ interface RailProps {
 
 export function Rail({ health, activeTab }: RailProps) {
   const { currentOrg, isAdmin, profile } = useAuth();
+  const primaryActiveTab = activeTab === "task" ? "tasks" : activeTab;
 
   return (
     <aside className="flex flex-col gap-6 border-rule bg-paper-2 px-4 py-5 md:sticky md:top-0 md:h-dvh md:border-r md:py-6">
@@ -68,9 +70,9 @@ export function Rail({ health, activeTab }: RailProps) {
             <li key={id}>
               <Link
                 href={hrefFor({ name: id })}
-                aria-current={activeTab === id ? "page" : undefined}
+                aria-current={primaryActiveTab === id ? "page" : undefined}
                 className={`flex w-full items-center gap-3 whitespace-nowrap rounded-md px-3 py-2 text-sm font-semibold transition-colors ${
-                  activeTab === id
+                  primaryActiveTab === id
                     ? "bg-paper text-ink shadow-xs"
                     : "text-ink-2 hover:bg-paper-3 hover:text-ink"
                 }`}
@@ -78,7 +80,7 @@ export function Rail({ health, activeTab }: RailProps) {
                 <Icon
                   size={ICON_SIZE}
                   aria-hidden="true"
-                  className={activeTab === id ? "text-accent-ink" : "text-ink-3"}
+                  className={primaryActiveTab === id ? "text-accent-ink" : "text-ink-3"}
                 />
                 {label}
               </Link>

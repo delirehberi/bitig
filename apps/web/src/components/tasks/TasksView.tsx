@@ -25,6 +25,7 @@ import { dispatchRealtimeEvent } from "../../hooks/useRealtime";
 import type { StatusChangeChoice } from "../../hooks/useTasks";
 import { findTaskByRef, taskRef } from "../../domain/task-ref";
 import { buildBlockersResolver } from "../../domain/task-mentions";
+import { navigate, taskPageHref } from "../../routing/router";
 
 interface TasksViewProps {
   readonly tasks: Task[];
@@ -123,7 +124,7 @@ export function TasksView({
   const viewTaskMissing = viewTaskRef !== undefined && viewTask === null && !isLoading && error === null;
 
   function openTask(task: Task) {
-    onViewTaskChange(taskRef(task, projects));
+    navigate(taskPageHref(taskRef(task, projects)));
   }
 
   function closeTask() {

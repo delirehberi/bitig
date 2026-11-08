@@ -20,6 +20,12 @@ export type Route =
       /** The task open in the detail view: its ticket code (`BIT-64`), or its ID while it has none. */
       readonly taskRef?: string;
     }
+  | {
+      /** Full-page task detail view at `/tasks/:ref`, with optional `?task=` modal quick-peek. */
+      readonly name: "task";
+      readonly ref: string;
+      readonly taskRef?: string;
+    }
   | { readonly name: "webhooks"; readonly projectId?: string; readonly taskRef?: string }
   | { readonly name: "settings"; readonly taskRef?: string }
   | { readonly name: "reports"; readonly taskRef?: string }
@@ -74,6 +80,19 @@ export function parseRoute(pathname: string, search: string): Route {
   const taskRef = params.get(TASK_PARAM)?.trim();
   const task = taskRef ? { taskRef } : {};
   const trimmed = trimTrailingSlash(pathname);
+
+  const taskPageMatch = /^\/tasks\/([^/]+)$/.exec(trimmed);
+  if (taskPageMatch) {
+    let ref = "";
+    try {
+      ref = decodeURIComponent(taskPageMatch[1] ?? "").trim();
+    } catch {
+      ref = "";
+    }
+    if (ref) {
+      return { name: "task", ref, ...task };
+    }
+  }
 
   const orgMatch = /^\/orgs\/([^/]+)\/(settings|members)$/.exec(trimmed);
   if (orgMatch) {
@@ -183,6 +202,11 @@ export function hrefFor(route: Route): string {
       if (route.taskRef) params.set(TASK_PARAM, route.taskRef);
       return withQuery("/tasks", params);
     }
+    case "task": {
+      const params = new URLSearchParams();
+      if (route.taskRef) params.set(TASK_PARAM, route.taskRef);
+      return withQuery(`/tasks/${encodeURIComponent(route.ref)}`, params);
+    }
     case "webhooks": {
       const params = new URLSearchParams();
       if (route.projectId) params.set(PROJECT_PARAM, route.projectId);
@@ -244,6 +268,11 @@ export function hrefFor(route: Route): string {
   }
 }
 
+/** Builds an href to a task's dedicated full-page detail route (`/tasks/BIT-123`). */
+export function taskPageHref(ref: string): string {
+  return hrefFor({ name: "task", ref });
+}
+
 /**
  * Builds an href that opens (or closes when `taskRef` is `undefined`) the task detail modal on
  * the current workspace page while keeping the current route and query filters intact.
@@ -258,6 +287,7 @@ export function taskHref(
     route.name === "overview" ||
     route.name === "projects" ||
     route.name === "tasks" ||
+    route.name === "task" ||
     route.name === "webhooks" ||
     route.name === "settings" ||
     route.name === "reports" ||
