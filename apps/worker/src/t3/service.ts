@@ -22,6 +22,7 @@ import {
   canSwitchT3Model,
   checkStatusChange,
   computeT3ConnectionStatus,
+  computeT3HostConnectionStatus,
   defaultIdGenerator,
   deriveLiveAgentRunState,
   formatT3ModelSelection,
@@ -42,6 +43,7 @@ import {
   type RealtimeEvent,
   type StorageProvider,
   type T3ConnectionStatus,
+  type T3HostConnectionStatus,
   type T3ModelCapability,
   type T3ModelSelection,
   type T3ModelSelectionOption,
@@ -55,7 +57,7 @@ import {
   type T3WorkspaceStrategy,
   type Task,
 } from "@bitig/core";
-import type { T3D1Store } from "@bitig/storage-d1";
+import type { T3ConnectionRecord, T3D1Store } from "@bitig/storage-d1";
 import { T3McpClient, T3McpError } from "./client";
 import { decryptT3Token } from "./crypto";
 
@@ -102,14 +104,28 @@ function makeValidationIssue(path: string, message: string): never {
   ]);
 }
 
+function sameHostId(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (!a || !b) return true;
+  return a === b;
+}
+
+function compositeThreadKey(hostId: string | null | undefined, threadId: string): string {
+  return `${hostId ?? ""}\n${threadId}`;
+}
+
 export async function getT3ConnectionStatus(
   store: T3D1Store,
   now = Date.now(),
+  hostId?: string,
 ): Promise<T3ConnectionStatus> {
-  const connection = await store.getConnection();
+  const connection = await store.getConnection(hostId);
   return computeT3ConnectionStatus(
     connection
       ? {
+          id: connection.id,
+          label: connection.label,
+          kind: connection.kind,
+          projectsRoot: connection.projectsRoot,
           mcpUrl: connection.mcpUrl,
           issuer: connection.issuer,
           scope: connection.scope,
@@ -121,41 +137,52 @@ export async function getT3ConnectionStatus(
   );
 }
 
+export async function listT3HostConnectionStatuses(
+  store: T3D1Store,
+  now = Date.now(),
+): Promise<T3HostConnectionStatus[]> {
+  const connections = await store.listConnections();
+  return connections.map((connection) => computeT3HostConnectionStatus(connection, now));
+}
+
 const EXPIRED_T3_TOKEN_MESSAGE =
   "The T3 Code OAuth token has expired. Reconnect in Settings before starting or controlling a thread.";
 
 export async function requireT3ConnectionForQueue(deps: {
   store: T3D1Store;
   encryptionKey: string;
-}): Promise<void> {
+  hostId?: string | undefined;
+}): Promise<T3ConnectionRecord> {
   if (!deps.encryptionKey) {
     makeValidationIssue(
       "t3Connection",
       "T3_ENCRYPTION_KEY is not configured on this Worker; cannot use T3 integration",
     );
   }
-  const connection = await deps.store.getConnection();
+  const connection = await deps.store.getConnection(deps.hostId);
   if (!connection) {
-    makeValidationIssue("t3Connection", "No T3 Code host is connected. Connect one in Settings first.");
+    makeValidationIssue(
+      "t3Connection",
+      deps.hostId
+        ? `T3 Code host "${deps.hostId}" is not connected. Reconnect it in Settings first.`
+        : "No T3 Code host is connected. Connect one in Settings first.",
+    );
   }
+  return connection;
 }
 
-export async function createActiveT3McpClient(deps: {
+export async function resolveActiveT3ConnectionAndClient(deps: {
   store: T3D1Store;
   encryptionKey: string;
+  hostId?: string | undefined;
   fetchFn?: typeof fetch | undefined;
   now?: number | undefined;
-}): Promise<T3McpClient> {
-  if (!deps.encryptionKey) {
-    makeValidationIssue(
-      "t3Connection",
-      "T3_ENCRYPTION_KEY is not configured on this Worker; cannot use T3 integration",
-    );
-  }
-  const connection = await deps.store.getConnection();
-  if (!connection) {
-    makeValidationIssue("t3Connection", "No T3 Code host is connected. Connect one in Settings first.");
-  }
+}): Promise<{ connection: T3ConnectionRecord; client: T3McpClient }> {
+  const connection = await requireT3ConnectionForQueue({
+    store: deps.store,
+    encryptionKey: deps.encryptionKey,
+    hostId: deps.hostId,
+  });
   const now = deps.now ?? Date.now();
   if (connection.expiresAt <= now) {
     makeValidationIssue("t3Connection", EXPIRED_T3_TOKEN_MESSAGE);
@@ -167,11 +194,25 @@ export async function createActiveT3McpClient(deps: {
     },
     deps.encryptionKey,
   );
-  return new T3McpClient({
-    mcpUrl: connection.mcpUrl,
-    accessToken,
-    fetchFn: deps.fetchFn,
-  });
+  return {
+    connection,
+    client: new T3McpClient({
+      mcpUrl: connection.mcpUrl,
+      accessToken,
+      fetchFn: deps.fetchFn,
+    }),
+  };
+}
+
+export async function createActiveT3McpClient(deps: {
+  store: T3D1Store;
+  encryptionKey: string;
+  hostId?: string | undefined;
+  fetchFn?: typeof fetch | undefined;
+  now?: number | undefined;
+}): Promise<T3McpClient> {
+  const { client } = await resolveActiveT3ConnectionAndClient(deps);
+  return client;
 }
 
 function isQueueableT3Error(err: unknown): boolean {
@@ -188,6 +229,7 @@ function isQueueableT3Error(err: unknown): boolean {
 }
 
 interface QueuedLaunchPayload {
+  hostId?: string | undefined;
   t3ProjectId: string;
   title: string;
   prompt: string;
@@ -205,6 +247,7 @@ interface QueuedLaunchPayload {
 }
 
 interface QueuedMessagePayload {
+  hostId?: string | undefined;
   prompt: string;
   clientRequestId: string;
   modelSelection?: T3ModelSelection | undefined;
@@ -237,14 +280,45 @@ export interface LaunchTaskInT3Result {
   code?: string | undefined;
 }
 
+async function resolveOriginatingTaskHostId(
+  deps: T3ServiceDeps,
+  taskId: string,
+  existingRun?: AgentRun,
+): Promise<string | undefined> {
+  const run = existingRun ?? (await deps.store.getAgentRunByTaskId(taskId));
+  if (run?.hostId) {
+    return run.hostId;
+  }
+  const task = await deps.storage.getTask(taskId);
+  if (!task) {
+    return undefined;
+  }
+  const mapping = await deps.store.getProjectMapping(task.projectId);
+  return mapping?.hostId;
+}
+
+async function resolveOriginatingProjectThreadHostId(
+  deps: T3ServiceDeps,
+  projectId: string,
+  existingThread: ProjectT3Thread,
+): Promise<string | undefined> {
+  if (existingThread.hostId) {
+    return existingThread.hostId;
+  }
+  const mapping = await deps.store.getProjectMapping(projectId);
+  return mapping?.hostId;
+}
+
 async function assertRootWorkspaceFreeOffline(
   deps: T3ServiceDeps,
+  hostId: string | undefined,
   t3ProjectId: string,
   ignoredTaskId?: string,
   currentTaskId?: string,
 ): Promise<void> {
   const candidates = (await deps.store.listAgentRuns()).filter(
     (run) =>
+      sameHostId(run.hostId, hostId) &&
       run.t3ProjectId === t3ProjectId &&
       run.workspaceStrategy === "root" &&
       run.taskId !== ignoredTaskId &&
@@ -273,15 +347,21 @@ export async function dispatchQueuedTaskT3Run(
   switchComment?: Comment | undefined;
 }> {
   const now = deps.now ? deps.now() : Date.now();
-  let mcpClient = existingMcpClient;
-  if (!mcpClient) {
+  const initialHostId = await resolveOriginatingTaskHostId(deps, taskId);
+  const clientByHostKey = new Map<string, T3McpClient>();
+  if (existingMcpClient) {
+    clientByHostKey.set(initialHostId ?? "", existingMcpClient);
+  } else {
     try {
-      mcpClient = await createActiveT3McpClient({
+      const resolved = await resolveActiveT3ConnectionAndClient({
         store: deps.store,
         encryptionKey: deps.encryptionKey,
+        hostId: initialHostId,
         fetchFn: deps.fetchFn,
         now,
       });
+      clientByHostKey.set(initialHostId ?? "", resolved.client);
+      clientByHostKey.set(resolved.connection.id, resolved.client);
     } catch (err) {
       if (isQueueableT3Error(err)) {
         return {
@@ -303,13 +383,32 @@ export async function dispatchQueuedTaskT3Run(
       break;
     }
 
+    const requestHostId = claimed.host_id ?? initialHostId;
+    const hostKey = requestHostId ?? "";
+
     try {
+      let mcpClient = clientByHostKey.get(hostKey);
+      if (!mcpClient) {
+        const resolved = await resolveActiveT3ConnectionAndClient({
+          store: deps.store,
+          encryptionKey: deps.encryptionKey,
+          hostId: requestHostId,
+          fetchFn: deps.fetchFn,
+          now: stepNow,
+        });
+        mcpClient = resolved.client;
+        clientByHostKey.set(hostKey, mcpClient);
+        clientByHostKey.set(resolved.connection.id, mcpClient);
+      }
+
       if (claimed.kind === "launch") {
         const payload = JSON.parse(claimed.payload) as QueuedLaunchPayload;
+        const launchHostId = payload.hostId ?? requestHostId;
         if (payload.workspaceStrategy === "root") {
           await assertRootWorkspaceFree(
             deps,
             mcpClient,
+            launchHostId,
             payload.t3ProjectId,
             stepNow,
             payload.parentTaskId,
@@ -341,6 +440,7 @@ export async function dispatchQueuedTaskT3Run(
         const savedRun = await deps.store.saveAgentRun({
           id: claimed.id,
           taskId,
+          ...(launchHostId ? { hostId: launchHostId } : {}),
           t3ProjectId: payload.t3ProjectId,
           threadId: launched.threadId,
           link: launched.link,
@@ -475,7 +575,7 @@ export async function dispatchQueuedTaskT3Run(
 }
 
 /**
- * Drains all queued task runs/replies for the organisation when the T3 host is reachable (#BIT-161).
+ * Drains all queued task runs/replies for the organisation when their T3 host is reachable (#BIT-161).
  */
 export async function drainAllQueuedT3Runs(
   deps: T3ServiceDeps,
@@ -485,23 +585,9 @@ export async function drainAllQueuedT3Runs(
   if (pendingTaskIds.length === 0) {
     return;
   }
-  const now = deps.now ? deps.now() : Date.now();
-  let mcpClient = existingMcpClient;
-  if (!mcpClient) {
-    try {
-      mcpClient = await createActiveT3McpClient({
-        store: deps.store,
-        encryptionKey: deps.encryptionKey,
-        fetchFn: deps.fetchFn,
-        now,
-      });
-    } catch {
-      return;
-    }
-  }
   for (const taskId of pendingTaskIds) {
     try {
-      await dispatchQueuedTaskT3Run(deps, taskId, mcpClient);
+      await dispatchQueuedTaskT3Run(deps, taskId, existingMcpClient);
     } catch {
       // Non-fatal during background/batch drain; individual task errors surface on direct actions.
     }
@@ -513,7 +599,7 @@ export async function drainAllQueuedT3Runs(
  * 1. The task exists and is not waiting for human approval (`pendingApproval`).
  * 2. All tasks in `dependsOn` are finished (`done` or `archived`).
  * 3. The task's Bitig project is mapped to an existing T3 project.
- * 4. A T3 OAuth connection is configured. When the host is offline or its token is expired,
+ * 4. A T3 OAuth connection is configured for the mapped host. When the host is offline or its token is expired,
  *    the approved launch is durably queued in D1 (`state: "queued"`) and dispatched once on reconnect (#BIT-161).
  *
  * With `parentTaskRef` (#BIT-141), the task starts as a child session of an umbrella task: a
@@ -553,16 +639,19 @@ export async function launchTaskInT3(
     );
   }
 
-  await requireT3ConnectionForQueue({
+  const connection = await requireT3ConnectionForQueue({
     store: deps.store,
     encryptionKey: deps.encryptionKey,
+    hostId: mapping.hostId,
   });
+  const targetHostId = mapping.hostId ?? connection.id;
 
   let mcpClient: T3McpClient | undefined;
   try {
     mcpClient = await createActiveT3McpClient({
       store: deps.store,
       encryptionKey: deps.encryptionKey,
+      hostId: targetHostId,
       fetchFn: deps.fetchFn,
       now,
     });
@@ -577,16 +666,24 @@ export async function launchTaskInT3(
   if (workspaceStrategy === "root") {
     if (mcpClient) {
       try {
-        await assertRootWorkspaceFree(deps, mcpClient, mapping.t3ProjectId, now, parent?.task.id, task.id);
+        await assertRootWorkspaceFree(
+          deps,
+          mcpClient,
+          targetHostId,
+          mapping.t3ProjectId,
+          now,
+          parent?.task.id,
+          task.id,
+        );
       } catch (err) {
         if (options.requireActiveConnection || !isQueueableT3Error(err)) {
           throw err;
         }
         mcpClient = undefined;
-        await assertRootWorkspaceFreeOffline(deps, mapping.t3ProjectId, parent?.task.id, task.id);
+        await assertRootWorkspaceFreeOffline(deps, targetHostId, mapping.t3ProjectId, parent?.task.id, task.id);
       }
     } else {
-      await assertRootWorkspaceFreeOffline(deps, mapping.t3ProjectId, parent?.task.id, task.id);
+      await assertRootWorkspaceFreeOffline(deps, targetHostId, mapping.t3ProjectId, parent?.task.id, task.id);
     }
   }
 
@@ -607,7 +704,20 @@ export async function launchTaskInT3(
   if (options.requireActiveConnection && mcpClient) {
     const existingRun = await deps.store.getAgentRunByTaskId(task.id);
     if (existingRun && !existingRun.threadId.startsWith("queued:")) {
-      await mcpClient.settleThread(existingRun.threadId);
+      if (sameHostId(existingRun.hostId, targetHostId)) {
+        await mcpClient.settleThread(existingRun.threadId);
+      } else if (existingRun.hostId) {
+        const priorHostClient = await createActiveT3McpClient({
+          store: deps.store,
+          encryptionKey: deps.encryptionKey,
+          hostId: existingRun.hostId,
+          fetchFn: deps.fetchFn,
+          now,
+        }).catch(() => undefined);
+        if (priorHostClient) {
+          await priorHostClient.settleThread(existingRun.threadId).catch(() => undefined);
+        }
+      }
     }
 
     const launched = await mcpClient.launchThread({
@@ -635,6 +745,7 @@ export async function launchTaskInT3(
     const savedRun = await deps.store.saveAgentRun({
       id: gitMetadataRunId,
       taskId: task.id,
+      hostId: targetHostId,
       t3ProjectId: mapping.t3ProjectId,
       threadId: launched.threadId,
       link: launched.link,
@@ -670,6 +781,7 @@ export async function launchTaskInT3(
         );
 
   const launchPayload: QueuedLaunchPayload = {
+    hostId: targetHostId,
     t3ProjectId: mapping.t3ProjectId,
     title: builtPrompt.title,
     prompt: builtPrompt.prompt,
@@ -690,6 +802,7 @@ export async function launchTaskInT3(
 
   await deps.store.requests.enqueue({
     id: gitMetadataRunId,
+    hostId: targetHostId,
     taskId: task.id,
     kind: "launch",
     payload: JSON.stringify(launchPayload),
@@ -697,6 +810,7 @@ export async function launchTaskInT3(
     launch: {
       id: gitMetadataRunId,
       taskId: task.id,
+      hostId: targetHostId,
       t3ProjectId: mapping.t3ProjectId,
       threadId: `queued:${gitMetadataRunId}`,
       state: "queued",
@@ -817,9 +931,10 @@ const ROOT_WORKSPACE_THREAD_LIST_LIMIT = 100;
 
 /**
  * Refuses a root-workspace launch while another task's T3 session is active in the same T3
- * project's root checkout (#BIT-134). Only runs Bitig recorded with `workspaceStrategy: "root"`
- * count: isolated worktrees never collide, project-level threads do not edit the codebase, and
- * threads started outside Bitig (or before the strategy was stored) have no known workspace.
+ * project's root checkout on the same host (#BIT-134, #BIT-147). Only runs Bitig recorded with
+ * `workspaceStrategy: "root"` count: isolated worktrees never collide, project-level threads do not
+ * edit the codebase, and threads started outside Bitig (or before the strategy was stored) have no
+ * known workspace.
  *
  * Stored run states can be stale, so each candidate is re-checked against T3 and the result is
  * saved like `listT3RunsLive` does. A run whose thread T3 cannot read is saved as `offline`
@@ -828,6 +943,7 @@ const ROOT_WORKSPACE_THREAD_LIST_LIMIT = 100;
 async function assertRootWorkspaceFree(
   deps: T3ServiceDeps,
   mcpClient: T3McpClient,
+  hostId: string | undefined,
   t3ProjectId: string,
   now: number,
   ignoredTaskId?: string,
@@ -835,6 +951,7 @@ async function assertRootWorkspaceFree(
 ): Promise<void> {
   const candidates = (await deps.store.listAgentRuns()).filter(
     (run) =>
+      sameHostId(run.hostId, hostId) &&
       run.t3ProjectId === t3ProjectId &&
       run.workspaceStrategy === "root" &&
       run.taskId !== ignoredTaskId &&
@@ -969,12 +1086,14 @@ export async function getTaskT3RunLiveStatus(
   }
 
   const now = deps.now ? deps.now() : Date.now();
+  const targetHostId = await resolveOriginatingTaskHostId(deps, taskId, existingRun);
   const hasPendingBefore = await deps.store.requests.hasPending(taskId);
   let mcpClient: T3McpClient;
   try {
     mcpClient = await createActiveT3McpClient({
       store: deps.store,
       encryptionKey: deps.encryptionKey,
+      hostId: targetHostId,
       fetchFn: deps.fetchFn,
       now,
     });
@@ -1079,59 +1198,88 @@ export async function getTaskT3RunLiveStatus(
 }
 
 /**
- * Syncs and lists T3 agent runs and active project sessions (#BIT-126).
- * Uses `t3_thread_list` when a T3 host is connected so runs that finished or entered waiting state
- * on the T3 host are reconciled in D1 without opening each task modal individually.
+ * Syncs and lists T3 agent runs and active project sessions across all connected hosts in the
+ * organisation (#BIT-126, #BIT-147).
  */
 export async function listT3RunsLive(deps: T3ServiceDeps): Promise<T3RunsLiveResponse> {
   const now = deps.now ? deps.now() : Date.now();
-  let mcpClient: T3McpClient | undefined;
-  try {
-    mcpClient = await createActiveT3McpClient({
-      store: deps.store,
-      encryptionKey: deps.encryptionKey,
-      fetchFn: deps.fetchFn,
-      now,
-    });
-  } catch {
-    mcpClient = undefined;
-  }
+  await drainAllQueuedT3Runs(deps);
 
-  if (mcpClient) {
-    await drainAllQueuedT3Runs(deps, mcpClient);
-  }
-
-  const [existingRuns, mappings, projectThreads] = await Promise.all([
+  const [connections, existingRuns, mappings, projectThreads] = await Promise.all([
+    deps.store.listConnections(),
     deps.store.listAgentRuns(),
     deps.store.listProjectMappings(),
     deps.store.listProjectThreads(),
   ]);
-  const projectThreadsById = new Map(projectThreads.map((t) => [t.threadId, t]));
   if (existingRuns.length === 0 && mappings.length === 0) {
     return { runs: [], activeSessions: [] };
   }
 
-  const projectIdByT3ProjectId = new Map(mappings.map((m) => [m.t3ProjectId, m.projectId]));
+  const primaryHostId = connections[0]?.id;
+  const projectThreadsByCompositeKey = new Map(
+    projectThreads.map((t) => [compositeThreadKey(t.hostId ?? primaryHostId, t.threadId), t]),
+  );
+  const projectThreadsByThreadId = new Map(projectThreads.map((t) => [t.threadId, t]));
+  const mappingByProjectId = new Map(mappings.map((m) => [m.projectId, m]));
 
-  let threads: T3ThreadListItem[] = [];
-  let hostReachable = false;
-  if (mcpClient) {
+  // Map `(hostId, t3ProjectId)` to `projectId` so identical t3ProjectIds on two hosts never collide.
+  const projectIdByHostAndT3ProjectId = new Map<string, string>();
+  for (const mapping of mappings) {
+    const resolvedHostId = mapping.hostId ?? primaryHostId ?? "";
+    projectIdByHostAndT3ProjectId.set(`${resolvedHostId}\n${mapping.t3ProjectId}`, mapping.projectId);
+    if (!projectIdByHostAndT3ProjectId.has(`\n${mapping.t3ProjectId}`)) {
+      projectIdByHostAndT3ProjectId.set(`\n${mapping.t3ProjectId}`, mapping.projectId);
+    }
+  }
+
+  const clientsByHostId = new Map<string, T3McpClient>();
+  const threadsByHostId = new Map<string, Map<string, T3ThreadListItem>>();
+  const listedThreadsWithHost: { hostId: string; thread: T3ThreadListItem }[] = [];
+
+  for (const connection of connections) {
+    let client: T3McpClient;
     try {
-      threads = await mcpClient.listThreads({
+      client = await createActiveT3McpClient({
+        store: deps.store,
+        encryptionKey: deps.encryptionKey,
+        hostId: connection.id,
+        fetchFn: deps.fetchFn,
+        now,
+      });
+    } catch {
+      continue;
+    }
+    clientsByHostId.set(connection.id, client);
+    try {
+      const hostThreads = await client.listThreads({
         allProjects: true,
         includeSubagents: false,
         limit: 100,
       });
-      hostReachable = true;
+      threadsByHostId.set(connection.id, new Map(hostThreads.map((t) => [t.threadId, t])));
+      for (const thread of hostThreads) {
+        listedThreadsWithHost.push({ hostId: connection.id, thread });
+      }
     } catch (err) {
       if (!(err instanceof T3McpError)) {
         throw err;
       }
-      hostReachable = false;
+      clientsByHostId.delete(connection.id);
     }
   }
 
-  const threadsById = new Map(threads.map((t) => [t.threadId, t]));
+  const tasks = await deps.storage.getTasks();
+  const tasksById = new Map(tasks.map((t) => [t.id, t]));
+  const resolveRunHostId = (run: AgentRun): string | undefined => {
+    if (run.hostId) return run.hostId;
+    const task = tasksById.get(run.taskId);
+    if (task) {
+      const mapping = mappingByProjectId.get(task.projectId);
+      if (mapping?.hostId) return mapping.hostId;
+    }
+    return primaryHostId;
+  };
+
   const reconciledById = new Map<string, AgentRun>();
   const runs: AgentRun[] = [];
   const pushRun = (run: AgentRun, existingRun: AgentRun): void => {
@@ -1144,12 +1292,15 @@ export async function listT3RunsLive(deps: T3ServiceDeps): Promise<T3RunsLiveRes
     ...existingRuns.filter((run) => run.waitingForTaskId),
   ];
   for (const existingRun of reconcileOrder) {
-    if (!hostReachable || !mcpClient || existingRun.state === "queued" || existingRun.threadId.startsWith("queued:")) {
+    const runHostId = resolveRunHostId(existingRun);
+    const mcpClient = runHostId ? clientsByHostId.get(runHostId) : undefined;
+    const hostThreadsById = runHostId ? threadsByHostId.get(runHostId) : undefined;
+    if (!mcpClient || !hostThreadsById || existingRun.state === "queued" || existingRun.threadId.startsWith("queued:")) {
       pushRun(existingRun, existingRun);
       continue;
     }
 
-    const listedThread = threadsById.get(existingRun.threadId);
+    const listedThread = hostThreadsById.get(existingRun.threadId);
     if (listedThread) {
       const nextState = await resolveUmbrellaRunState(
         deps,
@@ -1223,25 +1374,28 @@ export async function listT3RunsLive(deps: T3ServiceDeps): Promise<T3RunsLiveRes
     runs.push(reconciledById.get(existingRun.id) ?? existingRun);
   }
 
-  const tasks = await deps.storage.getTasks();
-  const tasksById = new Map(tasks.map((t) => [t.id, t]));
   const activeSessions: T3ProjectActiveSession[] = [];
-  const seenThreadIds = new Set<string>();
+  const seenHostThreadKeys = new Set<string>();
 
   for (const run of runs) {
     if (!isActiveAgentRunState(run.state)) {
       continue;
     }
+    const runHostId = resolveRunHostId(run);
     const task = tasksById.get(run.taskId);
-    const projectId = task?.projectId ?? projectIdByT3ProjectId.get(run.t3ProjectId);
+    const projectId =
+      task?.projectId ??
+      projectIdByHostAndT3ProjectId.get(`${runHostId ?? ""}\n${run.t3ProjectId}`) ??
+      projectIdByHostAndT3ProjectId.get(`\n${run.t3ProjectId}`);
     if (!projectId) {
       continue;
     }
-    const listedThread = threadsById.get(run.threadId);
-    seenThreadIds.add(run.threadId);
+    const listedThread = runHostId ? threadsByHostId.get(runHostId)?.get(run.threadId) : undefined;
+    seenHostThreadKeys.add(compositeThreadKey(runHostId, run.threadId));
     activeSessions.push({
       threadId: run.threadId,
       projectId,
+      ...(runHostId ? { hostId: runHostId } : {}),
       t3ProjectId: run.t3ProjectId,
       state: run.state,
       taskId: run.taskId,
@@ -1253,11 +1407,24 @@ export async function listT3RunsLive(deps: T3ServiceDeps): Promise<T3RunsLiveRes
     });
   }
 
-  for (const thread of threads) {
-    if (seenThreadIds.has(thread.threadId) || !thread.projectId) {
+  for (const { hostId, thread } of listedThreadsWithHost) {
+    const compositeKey = compositeThreadKey(hostId, thread.threadId);
+    if (seenHostThreadKeys.has(compositeKey)) {
       continue;
     }
-    const projectId = projectIdByT3ProjectId.get(thread.projectId);
+    // Project-level threads Bitig started (#BIT-127) keep their stored projectId, title, and model
+    // even if T3 omits `projectId` or if the project mapping was later reattached (#BIT-147).
+    const projectThread =
+      projectThreadsByCompositeKey.get(compositeKey) ??
+      (connections.length === 1 ? projectThreadsByThreadId.get(thread.threadId) : undefined);
+    const t3ProjectId = thread.projectId ?? projectThread?.t3ProjectId;
+    if (!t3ProjectId) {
+      continue;
+    }
+    const projectId =
+      projectThread?.projectId ??
+      projectIdByHostAndT3ProjectId.get(`${hostId}\n${t3ProjectId}`) ??
+      (connections.length === 1 ? projectIdByHostAndT3ProjectId.get(`\n${t3ProjectId}`) : undefined);
     if (!projectId) {
       continue;
     }
@@ -1270,19 +1437,18 @@ export async function listT3RunsLive(deps: T3ServiceDeps): Promise<T3RunsLiveRes
     if (!isActiveAgentRunState(state)) {
       continue;
     }
-    seenThreadIds.add(thread.threadId);
-    // Project-level threads Bitig started (#BIT-127) keep their stored title and model when T3 omits them.
-    const projectThread = projectThreadsById.get(thread.threadId);
+    seenHostThreadKeys.add(compositeKey);
     const title = thread.title ?? projectThread?.title;
     const model = thread.model ?? projectThread?.model;
     activeSessions.push({
       threadId: thread.threadId,
       projectId,
-      t3ProjectId: thread.projectId,
+      hostId,
+      t3ProjectId,
       state,
       ...(title ? { title } : {}),
       ...(thread.link ? { link: thread.link } : {}),
-      ...(model ? { model } : {}),
+      ...(model ? { model: model } : {}),
       ...(thread.updatedAt ? { updatedAt: thread.updatedAt } : {}),
     });
   }
@@ -1363,10 +1529,12 @@ async function resumeUmbrellaSession(
     return undefined;
   }
 
+  const parentHostId = await resolveOriginatingTaskHostId(deps, parentRun.taskId, parentRun);
   try {
     const mcpClient = await createActiveT3McpClient({
       store: deps.store,
       encryptionKey: deps.encryptionKey,
+      hostId: parentHostId,
       fetchFn: deps.fetchFn,
       now,
     });
@@ -1562,7 +1730,8 @@ export async function forwardCommentToT3Run(
   }
 
   if (!existingRun) return false;
-  if (!(await deps.store.getConnection())) return false;
+  const targetHostId = await resolveOriginatingTaskHostId(deps, comment.taskId, existingRun);
+  if (!(await deps.store.getConnection(targetHostId))) return false;
 
   const task = await deps.storage.getTask(comment.taskId);
   if (!task) {
@@ -1579,6 +1748,7 @@ export async function forwardCommentToT3Run(
   const now = deps.now ? deps.now() : Date.now();
   const requestId = defaultIdGenerator();
   const payload: QueuedMessagePayload = {
+    ...(targetHostId ? { hostId: targetHostId } : {}),
     prompt,
     clientRequestId: `${comment.id}:${requestId}`,
     taskLabel,
@@ -1586,6 +1756,7 @@ export async function forwardCommentToT3Run(
 
   await deps.store.requests.enqueue({
     id: requestId,
+    hostId: targetHostId,
     taskId: comment.taskId,
     kind: "message",
     payload: JSON.stringify(payload),
@@ -1612,9 +1783,11 @@ export async function settleTaskT3Run(deps: T3ServiceDeps, taskId: string): Prom
   if (SETTLE_SKIPPED_STATES.has(existingRun.state) || existingRun.threadId.startsWith("queued:")) return false;
 
   const now = deps.now ? deps.now() : Date.now();
+  const targetHostId = await resolveOriginatingTaskHostId(deps, taskId, existingRun);
   const mcpClient = await createActiveT3McpClient({
     store: deps.store,
     encryptionKey: deps.encryptionKey,
+    hostId: targetHostId,
     fetchFn: deps.fetchFn,
     now,
   });
@@ -1641,6 +1814,7 @@ export async function stopTaskT3Run(
     throw new NotFoundError("task", taskId);
   }
   const now = deps.now ? deps.now() : Date.now();
+  const targetHostId = await resolveOriginatingTaskHostId(deps, taskId, existingRun);
   const hasQueuedLaunchOnly = existingRun.threadId.startsWith("queued:");
   await deps.store.requests.cancel(taskId, now);
 
@@ -1650,6 +1824,7 @@ export async function stopTaskT3Run(
       mcpClient = await createActiveT3McpClient({
         store: deps.store,
         encryptionKey: deps.encryptionKey,
+        hostId: targetHostId,
         fetchFn: deps.fetchFn,
         now,
       });
@@ -1701,9 +1876,11 @@ export async function respondToTaskT3Request(
     throw new NotFoundError("task", taskId);
   }
   const now = deps.now ? deps.now() : Date.now();
+  const targetHostId = await resolveOriginatingTaskHostId(deps, taskId, existingRun);
   const mcpClient = await createActiveT3McpClient({
     store: deps.store,
     encryptionKey: deps.encryptionKey,
+    hostId: targetHostId,
     fetchFn: deps.fetchFn,
     now,
   });
@@ -1725,32 +1902,41 @@ export async function respondToTaskT3Request(
   };
 }
 
-async function capabilitiesCacheKey(connection: { mcpUrl: string; connectedAt: number }): Promise<Request> {
-  // Hash so the cache key carries no T3 host details; a reconnect (new connectedAt) starts a new entry.
+async function capabilitiesCacheKey(connection: {
+  orgId: string;
+  id: string;
+  mcpUrl: string;
+  connectedAt: number;
+  updatedAt: number;
+}): Promise<Request> {
+  // Hash so the cache key carries no T3 host details; scoped to orgId + hostId + token update time.
   const digest = await crypto.subtle.digest(
     "SHA-256",
-    new TextEncoder().encode(`${connection.mcpUrl}\n${String(connection.connectedAt)}`),
+    new TextEncoder().encode(
+      `${connection.orgId}\n${connection.id}\n${connection.mcpUrl}\n${String(connection.connectedAt)}\n${String(connection.updatedAt)}`,
+    ),
   );
   const hex = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
   return new Request(`${T3_CAPABILITIES_CACHE_ORIGIN}/${hex}`);
 }
 
 /**
- * Lists the models the connected T3 host offers (`orchestrator_capabilities`), reusing the list for
- * `T3_CAPABILITIES_CACHE_TTL_SECONDS` through the Workers Cache API when a cache is given. A cache
- * failure only costs a fresh call to T3; it never fails the request.
+ * Lists the models a connected T3 host offers (`orchestrator_capabilities`), reusing the list for
+ * `T3_CAPABILITIES_CACHE_TTL_SECONDS` through the Workers Cache API when a cache is given. Scoped by
+ * `orgId`, `hostId`, and connection timestamp so two hosts or two organisations never share a cache
+ * entry. A cache failure only costs a fresh call to T3; it never fails the request.
  */
 export async function listT3ModelCapabilities(
-  deps: Pick<T3ServiceDeps, "store" | "encryptionKey" | "fetchFn">,
+  deps: Pick<T3ServiceDeps, "store" | "encryptionKey" | "fetchFn"> & { hostId?: string | undefined },
   cache: Cache | undefined,
 ): Promise<T3ModelCapability[]> {
-  const mcpClient = await createActiveT3McpClient({
+  const { connection, client: mcpClient } = await resolveActiveT3ConnectionAndClient({
     store: deps.store,
     encryptionKey: deps.encryptionKey,
+    hostId: deps.hostId,
     fetchFn: deps.fetchFn,
   });
-  const connection = await deps.store.getConnection();
-  const cacheKey = cache && connection ? await capabilitiesCacheKey(connection) : undefined;
+  const cacheKey = cache ? await capabilitiesCacheKey(connection) : undefined;
 
   if (cache && cacheKey) {
     const cached = await cache.match(cacheKey).catch((err: unknown) => {
@@ -1869,21 +2055,8 @@ function extractPriorGitMetadata(run: AgentRun): T3GitMetadata | undefined {
 /**
  * A person's reply to a task's T3 thread (#BIT-119, #BIT-165, #BIT-161).
  *
- * When `freshSession: true` is chosen (#BIT-165), the existing thread must be waiting or past its
- * turn (see `canSwitchT3Model`); it is settled (`t3_thread_organize` `action: "settle"`), a compact
- * fresh-session prompt combining the task goal, latest checkpoint, prior Git metadata, and the
- * follow-up instruction is built, and a new T3 thread is launched (`t3_thread_launch`) and stored
- * in `agent_runs`.
- *
- * Otherwise, when `modelSelection` differs from the thread's current model, the thread is switched
- * with `t3_thread_configure` and the reply is sent to the existing thread with `t3_thread_send`,
- * prefixed after a switch with a line asking the new model to restore context from the checkpoint.
- *
- * When the T3 host is offline or its OAuth token is expired, the reply (and any requested model
- * switch or fresh-session launch) is durably queued in D1 (`state: "queued"`) and dispatched once
- * on reconnect (#BIT-161).
- *
- * Throws `T3ModelSwitchConflictError` before anything is saved when the thread is mid-turn.
+ * Always routes to `existingRun.hostId` (the originating host where the task run lives) so
+ * reattaching a project to another host never reroutes historical thread replies (#BIT-147).
  */
 export async function replyToTaskT3Run(
   deps: T3ServiceDeps,
@@ -1900,10 +2073,13 @@ export async function replyToTaskT3Run(
     makeValidationIssue("taskId", "This task has no T3 thread. Start it in T3 first.");
   }
 
-  await requireT3ConnectionForQueue({
+  const targetHostId = await resolveOriginatingTaskHostId(deps, task.id, existingRun);
+  const connection = await requireT3ConnectionForQueue({
     store: deps.store,
     encryptionKey: deps.encryptionKey,
+    hostId: targetHostId,
   });
+  const resolvedHostId = targetHostId ?? connection.id;
 
   const now = deps.now ? deps.now() : Date.now();
   let mcpClient: T3McpClient | undefined;
@@ -1911,6 +2087,7 @@ export async function replyToTaskT3Run(
     mcpClient = await createActiveT3McpClient({
       store: deps.store,
       encryptionKey: deps.encryptionKey,
+      hostId: resolvedHostId,
       fetchFn: deps.fetchFn,
       now,
     });
@@ -2021,6 +2198,7 @@ export async function replyToTaskT3Run(
 
     await deps.store.requests.cancel(task.id, now);
     const launchPayload: QueuedLaunchPayload = {
+      hostId: resolvedHostId,
       t3ProjectId: existingRun.t3ProjectId,
       title: builtPrompt.title,
       prompt: builtPrompt.prompt,
@@ -2036,6 +2214,7 @@ export async function replyToTaskT3Run(
 
     await deps.store.requests.enqueue({
       id: gitMetadataRunId,
+      hostId: resolvedHostId,
       taskId: task.id,
       kind: "launch",
       payload: JSON.stringify(launchPayload),
@@ -2043,6 +2222,7 @@ export async function replyToTaskT3Run(
       launch: {
         id: gitMetadataRunId,
         taskId: task.id,
+        hostId: resolvedHostId,
         t3ProjectId: existingRun.t3ProjectId,
         threadId: `queued:${gitMetadataRunId}`,
         state: "queued",
@@ -2136,6 +2316,7 @@ export async function replyToTaskT3Run(
   const prompt = switchedTo ? `${buildT3ModelSwitchNotice(taskLabel, switchedTo)}\n\n${replyPrompt}` : replyPrompt;
   const requestId = defaultIdGenerator();
   const messagePayload: QueuedMessagePayload = {
+    hostId: resolvedHostId,
     prompt,
     clientRequestId: `${comment.id}:${requestId}`,
     ...(modelSelectionToQueue ? { modelSelection: modelSelectionToQueue } : {}),
@@ -2145,6 +2326,7 @@ export async function replyToTaskT3Run(
 
   await deps.store.requests.enqueue({
     id: requestId,
+    hostId: resolvedHostId,
     taskId: task.id,
     kind: "reply",
     payload: JSON.stringify(messagePayload),
@@ -2185,7 +2367,7 @@ async function requireProject(storage: StorageProvider, projectId: string): Prom
   return project;
 }
 
-/** Settle on the host before removing the project record, so failures remain retryable. */
+/** Settle on the originating host before removing the project record, so failures remain retryable. */
 export async function settleProjectT3Thread(
   deps: T3ServiceDeps,
   projectId: string,
@@ -2195,9 +2377,11 @@ export async function settleProjectT3Thread(
   const existing = await deps.store.getProjectThread(projectId, threadId);
   if (!existing) throw new NotFoundError("t3_thread", threadId);
 
+  const targetHostId = await resolveOriginatingProjectThreadHostId(deps, projectId, existing);
   const mcpClient = await createActiveT3McpClient({
     store: deps.store,
     encryptionKey: deps.encryptionKey,
+    hostId: targetHostId,
     fetchFn: deps.fetchFn,
     now: deps.now ? deps.now() : Date.now(),
   });
@@ -2232,7 +2416,8 @@ export interface LaunchProjectThreadInT3Options {
 /**
  * Starts a T3 thread for a Bitig project without a task (#BIT-127), e.g. to check the environment.
  * Refused when the project is archived, is not mapped to a T3 project, or no valid T3 connection exists.
- * The thread runs in the project root unless `workspaceStrategy` says otherwise.
+ * The thread runs in the project root unless `workspaceStrategy` says otherwise, and records the
+ * originating `hostId` from the project mapping (#BIT-147).
  */
 export async function launchProjectThreadInT3(
   deps: T3ServiceDeps,
@@ -2252,9 +2437,10 @@ export async function launchProjectThreadInT3(
     );
   }
 
-  const mcpClient = await createActiveT3McpClient({
+  const { connection, client: mcpClient } = await resolveActiveT3ConnectionAndClient({
     store: deps.store,
     encryptionKey: deps.encryptionKey,
+    hostId: mapping.hostId,
     fetchFn: deps.fetchFn,
     now,
   });
@@ -2279,6 +2465,7 @@ export async function launchProjectThreadInT3(
   return deps.store.saveProjectThread({
     id,
     projectId: project.id,
+    hostId: mapping.hostId ?? connection.id,
     t3ProjectId: mapping.t3ProjectId,
     threadId: launched.threadId,
     title,
@@ -2299,8 +2486,8 @@ export interface SendProjectT3MessageOptions {
 
 /**
  * Sends a follow-up to a project-level thread (#BIT-127). Only threads Bitig recorded for this
- * project can be messaged, so the endpoint cannot reach arbitrary T3 threads. With `modelSelection`,
- * the thread switches models first under the same rules as task replies (409 while mid-turn).
+ * project can be messaged, and the message always goes to the thread's originating `hostId` (#BIT-147)
+ * so reattaching the project to another host cannot reroute historical threads.
  */
 export async function sendProjectT3Message(
   deps: T3ServiceDeps,
@@ -2315,9 +2502,11 @@ export async function sendProjectT3Message(
   }
 
   const now = deps.now ? deps.now() : Date.now();
+  const targetHostId = await resolveOriginatingProjectThreadHostId(deps, projectId, existing);
   const mcpClient = await createActiveT3McpClient({
     store: deps.store,
     encryptionKey: deps.encryptionKey,
+    hostId: targetHostId,
     fetchFn: deps.fetchFn,
     now,
   });
@@ -2341,8 +2530,9 @@ export async function sendProjectT3Message(
 }
 
 /**
- * Lists a project's Bitig-started threads (#BIT-127), newest first, reconciling their state with
- * `t3_thread_list`. When T3 cannot be reached, active threads are shown (and stored) as `offline`.
+ * Lists a project's Bitig-started threads (#BIT-127), newest first, reconciling each thread's state
+ * with its originating host's `t3_thread_list` (#BIT-147). When a thread's host cannot be reached,
+ * active threads on that host are shown (and stored) as `offline`.
  */
 export async function listProjectT3ThreadsLive(
   deps: T3ServiceDeps,
@@ -2355,30 +2545,50 @@ export async function listProjectT3ThreadsLive(
   }
 
   const now = deps.now ? deps.now() : Date.now();
-  let mcpClient: T3McpClient | undefined;
-  let listed: T3ThreadListItem[] | undefined;
-  try {
-    mcpClient = await createActiveT3McpClient({
-      store: deps.store,
-      encryptionKey: deps.encryptionKey,
-      fetchFn: deps.fetchFn,
-      now,
-    });
-    listed = await mcpClient.listThreads({ allProjects: true, includeSubagents: false, limit: 100 });
-  } catch (err) {
-    if (!(err instanceof T3McpError) && !(err instanceof ValidationError)) {
-      throw err;
-    }
-    listed = undefined;
-  }
+  const mapping = await deps.store.getProjectMapping(projectId);
+  const hostStateByKey = new Map<
+    string,
+    { mcpClient: T3McpClient | undefined; listedById: Map<string, T3ThreadListItem> | undefined }
+  >();
 
-  const listedById = new Map((listed ?? []).map((t) => [t.threadId, t]));
+  const getHostState = async (hostId: string | undefined) => {
+    const key = hostId ?? "";
+    const cached = hostStateByKey.get(key);
+    if (cached) return cached;
+
+    let mcpClient: T3McpClient | undefined;
+    let listedById: Map<string, T3ThreadListItem> | undefined;
+    try {
+      mcpClient = await createActiveT3McpClient({
+        store: deps.store,
+        encryptionKey: deps.encryptionKey,
+        hostId,
+        fetchFn: deps.fetchFn,
+        now,
+      });
+      const listed = await mcpClient.listThreads({ allProjects: true, includeSubagents: false, limit: 100 });
+      listedById = new Map(listed.map((t) => [t.threadId, t]));
+    } catch (err) {
+      if (!(err instanceof T3McpError) && !(err instanceof ValidationError)) {
+        throw err;
+      }
+      mcpClient = undefined;
+      listedById = undefined;
+    }
+
+    const entry = { mcpClient, listedById };
+    hostStateByKey.set(key, entry);
+    return entry;
+  };
+
   const threads: ProjectT3Thread[] = [];
   for (const thread of stored) {
-    const listedThread = listedById.get(thread.threadId);
+    const targetHostId = thread.hostId ?? mapping?.hostId;
+    const { mcpClient, listedById } = await getHostState(targetHostId);
+    const listedThread = listedById?.get(thread.threadId);
     let nextState: AgentRunState;
     let nextLink = thread.link;
-    if (!listed) {
+    if (!listedById) {
       nextState = toOfflineIfActive(thread);
     } else if (listedThread) {
       nextState = deriveLiveAgentRunState({
@@ -2403,7 +2613,7 @@ export async function listProjectT3ThreadsLive(
           })) ?? thread);
 
     const stopReason =
-      mcpClient && listed && (reconciled.state === "failed" || reconciled.state === "stopped")
+      mcpClient && listedById && (reconciled.state === "failed" || reconciled.state === "stopped")
         ? await mcpClient.readThreadStopReason(reconciled.threadId).catch(() => undefined)
         : undefined;
 
@@ -2418,8 +2628,8 @@ export interface ReadProjectT3ThreadMessagesOptions {
 
 /**
  * Reads user and assistant messages from a project-level T3 thread (#BIT-131), paged forward with
- * `afterPosition` (exclusive). Only threads Bitig recorded for this project can be read, so the
- * endpoint cannot read arbitrary T3 threads. Also reconciles the thread's live state in D1.
+ * `afterPosition` (exclusive). Only threads Bitig recorded for this project can be read, and the
+ * readout always targets the thread's originating `hostId` (#BIT-147).
  */
 export async function readProjectT3ThreadMessages(
   deps: T3ServiceDeps,
@@ -2434,9 +2644,11 @@ export async function readProjectT3ThreadMessages(
   }
 
   const now = deps.now ? deps.now() : Date.now();
+  const targetHostId = await resolveOriginatingProjectThreadHostId(deps, projectId, existing);
   const mcpClient = await createActiveT3McpClient({
     store: deps.store,
     encryptionKey: deps.encryptionKey,
+    hostId: targetHostId,
     fetchFn: deps.fetchFn,
     now,
   });

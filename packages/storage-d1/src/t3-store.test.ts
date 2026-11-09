@@ -4,7 +4,8 @@ import migration from "../migrations/0019_project_t3_threads.sql?raw";
 import subagentMigration from "../migrations/0021_agent_run_subagents.sql?raw";
 import gitMigration from "../migrations/0023_agent_run_git_metadata.sql?raw";
 import requestMigration from "../migrations/0024_t3_run_requests.sql?raw";
-import { defaultIdGenerator } from "@bitig/core";
+import multiHostMigration from "../migrations/0025_multi_host_t3.sql?raw";
+import { DEFAULT_ORGANISATION_ID, defaultIdGenerator } from "@bitig/core";
 import { T3_REQUEST_LEASE_MS } from "./t3-request-store";
 import { T3D1Store, type SaveProjectT3ThreadInput } from "./t3-store";
 
@@ -16,13 +17,14 @@ const LATER = Date.parse("2026-11-03T11:00:00.000Z");
 const SETUP = [
   "DROP TABLE IF EXISTS `project_t3_threads`",
   "DROP TABLE IF EXISTS `projects`",
-  "CREATE TABLE `projects` (`id` text PRIMARY KEY NOT NULL, `name` text NOT NULL)",
+  "CREATE TABLE `projects` (`id` text PRIMARY KEY NOT NULL, `org_id` text DEFAULT '01a10000-0000-7000-8000-000000000001' NOT NULL, `name` text NOT NULL)",
 ];
 
 function threadInput(overrides: Partial<SaveProjectT3ThreadInput> = {}): SaveProjectT3ThreadInput {
   return {
     id: defaultIdGenerator(),
     projectId: PROJECT_ID,
+    hostId: "host-1",
     t3ProjectId: "t3-project",
     threadId: "thread-1",
     title: "Check environment",
@@ -43,6 +45,14 @@ describe("T3D1Store project threads (BIT-127)", () => {
     for (const statement of migration.split("--> statement-breakpoint")) {
       await env.DB.prepare(statement.trim()).run();
     }
+    await env.DB.prepare("DROP INDEX IF EXISTS `project_t3_threads_thread_id_idx`").run();
+    await env.DB.prepare("ALTER TABLE `project_t3_threads` ADD `host_id` text").run();
+    await env.DB
+      .prepare("CREATE UNIQUE INDEX `project_t3_threads_host_thread_idx` ON `project_t3_threads` (`host_id`, `thread_id`)")
+      .run();
+    await env.DB
+      .prepare("CREATE INDEX `project_t3_threads_thread_id_idx` ON `project_t3_threads` (`thread_id`)")
+      .run();
     await env.DB.prepare("INSERT INTO projects (id, name) VALUES (?, ?), (?, ?)")
       .bind(PROJECT_ID, "Bitig", OTHER_PROJECT_ID, "Other")
       .run();
@@ -62,6 +72,7 @@ describe("T3D1Store project threads (BIT-127)", () => {
     );
     expect(saved).toMatchObject({
       projectId: PROJECT_ID,
+      hostId: "host-1",
       threadId: "thread-1",
       title: "Check environment",
       link: "https://t3.example/thread-1",
@@ -86,10 +97,19 @@ describe("T3D1Store project threads (BIT-127)", () => {
     expect(await store.getProjectThread(PROJECT_ID, "elsewhere")).toBeUndefined();
   });
 
-  it("rejects a second record for the same T3 thread", async () => {
+  it("rejects a second record for the same T3 thread on the same host, but allows the same threadId on a different host", async () => {
     const store = new T3D1Store(env.DB);
-    await store.saveProjectThread(threadInput());
-    await expect(store.saveProjectThread(threadInput())).rejects.toThrow();
+    await store.saveProjectThread(threadInput({ hostId: "host-a", threadId: "shared-thread" }));
+    await expect(
+      store.saveProjectThread(threadInput({ hostId: "host-a", threadId: "shared-thread" })),
+    ).rejects.toThrow();
+
+    const onOtherHost = await store.saveProjectThread(
+      threadInput({ projectId: OTHER_PROJECT_ID, hostId: "host-b", threadId: "shared-thread" }),
+    );
+    expect(onOtherHost.hostId).toBe("host-b");
+    expect((await store.getProjectThread(PROJECT_ID, "shared-thread"))?.hostId).toBe("host-a");
+    expect((await store.getProjectThread(OTHER_PROJECT_ID, "shared-thread"))?.hostId).toBe("host-b");
   });
 
   it("deletes only the requested project's thread and reports missing records", async () => {
@@ -140,12 +160,51 @@ describe("T3D1Store project threads (BIT-127)", () => {
 const PARENT_TASK_ID = "01a14ecf-281e-7436-8c52-a524c5fabd01";
 const CHILD_TASK_ID = "01a14ecf-281e-7436-8c52-a524c5fabd02";
 
-/** `agent_runs` as it stood before #BIT-141, so the test also applies migration 0021. */
+/** `agent_runs` as it stood before #BIT-141, so the test also applies migrations 0021, 0023, 0024, and 0025. */
 const AGENT_RUN_SETUP = [
   "DROP TABLE IF EXISTS `t3_run_requests`",
   "DROP TABLE IF EXISTS `agent_runs`",
+  "DROP TABLE IF EXISTS `project_t3_threads`",
+  "DROP TABLE IF EXISTS `t3_project_mappings`",
+  "DROP TABLE IF EXISTS `t3_oauth_states`",
+  "DROP TABLE IF EXISTS `t3_connections`",
   "DROP TABLE IF EXISTS `tasks`",
-  "CREATE TABLE `tasks` (`id` text PRIMARY KEY NOT NULL, `title` text NOT NULL)",
+  "DROP TABLE IF EXISTS `projects`",
+  "CREATE TABLE `projects` (`id` text PRIMARY KEY NOT NULL, `org_id` text DEFAULT '01a10000-0000-7000-8000-000000000001' NOT NULL, `name` text NOT NULL)",
+  "CREATE TABLE `tasks` (`id` text PRIMARY KEY NOT NULL, `project_id` text DEFAULT '01a14ecf-281e-7436-8c52-a524c5fabc2f' NOT NULL, `title` text NOT NULL)",
+  `CREATE TABLE \`t3_connections\` (
+    \`id\` text PRIMARY KEY NOT NULL,
+    \`org_id\` text DEFAULT '01a10000-0000-7000-8000-000000000001' NOT NULL,
+    \`mcp_url\` text NOT NULL,
+    \`issuer\` text NOT NULL,
+    \`client_id\` text NOT NULL,
+    \`encrypted_access_token\` text NOT NULL,
+    \`token_iv\` text NOT NULL,
+    \`scope\` text NOT NULL,
+    \`expires_at\` integer NOT NULL,
+    \`connected_at\` integer NOT NULL,
+    \`updated_at\` integer NOT NULL
+  )`,
+  "CREATE UNIQUE INDEX `t3_connections_org_id_unique` ON `t3_connections` (`org_id`)",
+  `CREATE TABLE \`t3_oauth_states\` (
+    \`state\` text PRIMARY KEY NOT NULL,
+    \`org_id\` text DEFAULT '01a10000-0000-7000-8000-000000000001' NOT NULL,
+    \`mcp_url\` text NOT NULL,
+    \`issuer\` text NOT NULL,
+    \`token_endpoint\` text NOT NULL,
+    \`client_id\` text NOT NULL,
+    \`code_verifier\` text NOT NULL,
+    \`redirect_uri\` text NOT NULL,
+    \`created_at\` integer NOT NULL,
+    \`expires_at\` integer NOT NULL
+  )`,
+  `CREATE TABLE \`t3_project_mappings\` (
+    \`project_id\` text PRIMARY KEY NOT NULL,
+    \`t3_project_id\` text NOT NULL,
+    \`t3_project_title\` text NOT NULL,
+    \`updated_at\` integer NOT NULL,
+    FOREIGN KEY (\`project_id\`) REFERENCES \`projects\`(\`id\`) ON UPDATE no action ON DELETE cascade
+  )`,
   `CREATE TABLE \`agent_runs\` (
     \`id\` text PRIMARY KEY NOT NULL,
     \`task_id\` text NOT NULL,
@@ -170,6 +229,9 @@ describe("T3D1Store umbrella and child runs (BIT-141)", () => {
     for (const statement of AGENT_RUN_SETUP) {
       await env.DB.prepare(statement).run();
     }
+    for (const statement of migration.split("--> statement-breakpoint")) {
+      await env.DB.prepare(statement.trim()).run();
+    }
     for (const statement of subagentMigration.split("--> statement-breakpoint")) {
       await env.DB.prepare(statement.trim()).run();
     }
@@ -179,8 +241,14 @@ describe("T3D1Store umbrella and child runs (BIT-141)", () => {
     for (const statement of requestMigration.split("--> statement-breakpoint")) {
       await env.DB.prepare(statement.trim()).run();
     }
-    await env.DB.prepare("INSERT INTO tasks (id, title) VALUES (?, ?), (?, ?)")
-      .bind(PARENT_TASK_ID, "Umbrella", CHILD_TASK_ID, "Child")
+    for (const statement of multiHostMigration.split("--> statement-breakpoint")) {
+      await env.DB.prepare(statement.trim()).run();
+    }
+    await env.DB.prepare("INSERT INTO projects (id, name) VALUES (?, ?), (?, ?)")
+      .bind(PROJECT_ID, "Bitig", OTHER_PROJECT_ID, "Other")
+      .run();
+    await env.DB.prepare("INSERT INTO tasks (id, project_id, title) VALUES (?, ?, ?), (?, ?, ?)")
+      .bind(PARENT_TASK_ID, PROJECT_ID, "Umbrella", CHILD_TASK_ID, PROJECT_ID, "Child")
       .run();
   });
 
@@ -188,6 +256,7 @@ describe("T3D1Store umbrella and child runs (BIT-141)", () => {
     return {
       id: defaultIdGenerator(),
       taskId,
+      hostId: "host-1",
       t3ProjectId: "t3-project",
       threadId,
       state: "working" as const,
@@ -261,6 +330,7 @@ describe("T3D1Store umbrella and child runs (BIT-141)", () => {
     const runId = defaultIdGenerator();
     await store.requests.enqueue({
       id: runId,
+      hostId: "host-1",
       taskId: PARENT_TASK_ID,
       kind: "launch",
       payload: JSON.stringify({ title: "BIT-1", prompt: "go" }),
@@ -268,6 +338,7 @@ describe("T3D1Store umbrella and child runs (BIT-141)", () => {
       launch: {
         id: runId,
         taskId: PARENT_TASK_ID,
+        hostId: "host-1",
         t3ProjectId: "t3-project",
         threadId: `queued:${runId}`,
         state: "queued",
@@ -286,6 +357,7 @@ describe("T3D1Store umbrella and child runs (BIT-141)", () => {
     const queuedRun = await store.getAgentRunByTaskId(PARENT_TASK_ID);
     expect(queuedRun).toMatchObject({
       id: runId,
+      hostId: "host-1",
       state: "queued",
       threadId: `queued:${runId}`,
       model: "claude-opus-4-7",
@@ -297,6 +369,7 @@ describe("T3D1Store umbrella and child runs (BIT-141)", () => {
     const secondRunId = defaultIdGenerator();
     await store.requests.enqueue({
       id: secondRunId,
+      hostId: "host-2",
       taskId: PARENT_TASK_ID,
       kind: "launch",
       payload: JSON.stringify({ title: "duplicate" }),
@@ -304,6 +377,7 @@ describe("T3D1Store umbrella and child runs (BIT-141)", () => {
       launch: {
         id: secondRunId,
         taskId: PARENT_TASK_ID,
+        hostId: "host-2",
         t3ProjectId: "t3-project",
         threadId: `queued:${secondRunId}`,
         state: "queued",
@@ -317,6 +391,7 @@ describe("T3D1Store umbrella and child runs (BIT-141)", () => {
     const replyId = defaultIdGenerator();
     await store.requests.enqueue({
       id: replyId,
+      hostId: "host-1",
       taskId: PARENT_TASK_ID,
       kind: "reply",
       payload: JSON.stringify({ prompt: "follow-up" }),
@@ -325,14 +400,20 @@ describe("T3D1Store umbrella and child runs (BIT-141)", () => {
 
     // Only one caller can claim while the lease is active
     const claimed1 = await store.requests.claim(PARENT_TASK_ID, "token-1", STARTED_AT);
-    expect(claimed1).toMatchObject({ id: runId, kind: "launch", claim_token: "token-1", attempted: 0 });
+    expect(claimed1).toMatchObject({
+      id: runId,
+      host_id: "host-1",
+      kind: "launch",
+      claim_token: "token-1",
+      attempted: 0,
+    });
     expect((await store.getAgentRunByTaskId(PARENT_TASK_ID))?.state).toBe("working");
     expect(await store.requests.claim(PARENT_TASK_ID, "token-2", STARTED_AT + 1000)).toBeNull();
 
     // After lease expiry, a new caller can re-claim and fence out the stale token
     const expiredAt = STARTED_AT + T3_REQUEST_LEASE_MS + 1;
     const reclaimed = await store.requests.claim(PARENT_TASK_ID, "token-2", expiredAt);
-    expect(reclaimed).toMatchObject({ id: runId, claim_token: "token-2" });
+    expect(reclaimed).toMatchObject({ id: runId, host_id: "host-1", claim_token: "token-2" });
     expect(await store.requests.markAttempted(runId, "token-1")).toBe(false);
     expect(await store.requests.markAttempted(runId, "token-2")).toBe(true);
 
@@ -347,5 +428,250 @@ describe("T3D1Store umbrella and child runs (BIT-141)", () => {
     expect(await store.requests.cancel(PARENT_TASK_ID, expiredAt + 100)).toBe(true);
     expect(await store.requests.hasPending(PARENT_TASK_ID)).toBe(false);
     expect((await store.getAgentRunByTaskId(PARENT_TASK_ID))?.state).toBe("stopped");
+  });
+});
+
+describe("T3D1Store multi-host persistence and migration (BIT-147)", () => {
+  it("migrates legacy single-host connections, mappings, runs, threads, and requests without data loss", async () => {
+    for (const statement of AGENT_RUN_SETUP) {
+      await env.DB.prepare(statement).run();
+    }
+    for (const statement of migration.split("--> statement-breakpoint")) {
+      await env.DB.prepare(statement.trim()).run();
+    }
+    for (const statement of subagentMigration.split("--> statement-breakpoint")) {
+      await env.DB.prepare(statement.trim()).run();
+    }
+    for (const statement of gitMigration.split("--> statement-breakpoint")) {
+      await env.DB.prepare(statement.trim()).run();
+    }
+    for (const statement of requestMigration.split("--> statement-breakpoint")) {
+      await env.DB.prepare(statement.trim()).run();
+    }
+
+    // Seed pre-migration records (no host_id / label / kind / projects_root columns yet)
+    await env.DB.prepare("INSERT INTO projects (id, org_id, name) VALUES (?, ?, ?)")
+      .bind(PROJECT_ID, DEFAULT_ORGANISATION_ID, "Bitig")
+      .run();
+    await env.DB.prepare("INSERT INTO tasks (id, project_id, title) VALUES (?, ?, ?)")
+      .bind(PARENT_TASK_ID, PROJECT_ID, "Migrate hosts")
+      .run();
+    await env.DB
+      .prepare(
+        `INSERT INTO t3_connections
+          (id, org_id, mcp_url, issuer, client_id, encrypted_access_token, token_iv, scope, expires_at, connected_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        "default",
+        DEFAULT_ORGANISATION_ID,
+        "https://legacy-host.example.com/mcp",
+        "https://legacy-host.example.com",
+        "client-legacy",
+        "cipher-legacy",
+        "iv-legacy",
+        "orchestration:read orchestration:operate",
+        STARTED_AT + 86_400_000,
+        STARTED_AT,
+        STARTED_AT,
+      )
+      .run();
+    await env.DB
+      .prepare(
+        `INSERT INTO t3_project_mappings (project_id, t3_project_id, t3_project_title, updated_at)
+         VALUES (?, ?, ?, ?)`,
+      )
+      .bind(PROJECT_ID, "t3-legacy-proj", "Legacy Project", STARTED_AT)
+      .run();
+    await env.DB
+      .prepare(
+        `INSERT INTO agent_runs (id, task_id, t3_project_id, thread_id, state, started_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind("01a14ecf-281e-7436-8c52-a524c5fabe01", PARENT_TASK_ID, "t3-legacy-proj", "legacy-thread-1", "working", STARTED_AT, STARTED_AT)
+      .run();
+    await env.DB
+      .prepare(
+        `INSERT INTO project_t3_threads (id, project_id, t3_project_id, thread_id, title, state, workspace_strategy, started_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        "01a14ecf-281e-7436-8c52-a524c5fabe02",
+        PROJECT_ID,
+        "t3-legacy-proj",
+        "legacy-proj-thread-1",
+        "Check env",
+        "finished",
+        "root",
+        STARTED_AT,
+        STARTED_AT,
+      )
+      .run();
+    await env.DB
+      .prepare(
+        `INSERT INTO t3_run_requests (id, org_id, task_id, kind, payload, state, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind("req-legacy-1", DEFAULT_ORGANISATION_ID, PARENT_TASK_ID, "reply", "{}", "queued", STARTED_AT)
+      .run();
+
+    // Apply migration 0025
+    for (const statement of multiHostMigration.split("--> statement-breakpoint")) {
+      await env.DB.prepare(statement.trim()).run();
+    }
+
+    const store = new T3D1Store(env.DB, DEFAULT_ORGANISATION_ID);
+    const conn = await store.getConnection();
+    expect(conn).toMatchObject({
+      id: "default",
+      orgId: DEFAULT_ORGANISATION_ID,
+      kind: "user",
+      projectsRoot: "~/www",
+      mcpUrl: "https://legacy-host.example.com/mcp",
+    });
+
+    const mapping = await store.getProjectMapping(PROJECT_ID);
+    expect(mapping).toMatchObject({
+      projectId: PROJECT_ID,
+      hostId: "default",
+      t3ProjectId: "t3-legacy-proj",
+      t3ProjectTitle: "Legacy Project",
+    });
+
+    const run = await store.getAgentRunByTaskId(PARENT_TASK_ID);
+    expect(run).toMatchObject({
+      taskId: PARENT_TASK_ID,
+      hostId: "default",
+      threadId: "legacy-thread-1",
+    });
+
+    const projThread = await store.getProjectThread(PROJECT_ID, "legacy-proj-thread-1");
+    expect(projThread).toMatchObject({
+      projectId: PROJECT_ID,
+      hostId: "default",
+      threadId: "legacy-proj-thread-1",
+    });
+
+    const claimedReq = await store.requests.claim(PARENT_TASK_ID, "claim-1", STARTED_AT);
+    expect(claimedReq).toMatchObject({
+      id: "req-legacy-1",
+      host_id: "default",
+    });
+  });
+
+  it("persists multiple hosts per organisation, updates host metadata/projectsRoot, and isolates tenants", async () => {
+    for (const statement of AGENT_RUN_SETUP) {
+      await env.DB.prepare(statement).run();
+    }
+    for (const statement of migration.split("--> statement-breakpoint")) {
+      await env.DB.prepare(statement.trim()).run();
+    }
+    for (const statement of subagentMigration.split("--> statement-breakpoint")) {
+      await env.DB.prepare(statement.trim()).run();
+    }
+    for (const statement of gitMigration.split("--> statement-breakpoint")) {
+      await env.DB.prepare(statement.trim()).run();
+    }
+    for (const statement of requestMigration.split("--> statement-breakpoint")) {
+      await env.DB.prepare(statement.trim()).run();
+    }
+    for (const statement of multiHostMigration.split("--> statement-breakpoint")) {
+      await env.DB.prepare(statement.trim()).run();
+    }
+
+    const orgA = new T3D1Store(env.DB, "01a10000-0000-7000-8000-000000000011");
+    const orgB = new T3D1Store(env.DB, "01a10000-0000-7000-8000-000000000022");
+
+    const host1 = await orgA.saveConnection({
+      label: "Laptop",
+      kind: "user",
+      mcpUrl: "https://laptop.example.com/mcp",
+      issuer: "https://laptop.example.com",
+      clientId: "c1",
+      encryptedAccessToken: "enc-1",
+      tokenIv: "iv-1",
+      scope: "orchestration:read orchestration:operate",
+      expiresAt: STARTED_AT + 100_000,
+      now: STARTED_AT,
+    });
+    expect(host1).toMatchObject({
+      label: "Laptop",
+      kind: "user",
+      projectsRoot: "~/www",
+      mcpUrl: "https://laptop.example.com/mcp",
+    });
+
+    const host2 = await orgA.saveConnection({
+      label: "Managed Container",
+      kind: "container",
+      mcpUrl: "https://container.example.com/mcp",
+      issuer: "https://container.example.com",
+      clientId: "c2",
+      encryptedAccessToken: "enc-2",
+      tokenIv: "iv-2",
+      scope: "orchestration:read orchestration:operate",
+      expiresAt: STARTED_AT + 200_000,
+      now: LATER,
+    });
+    expect(host2).toMatchObject({
+      label: "Managed Container",
+      kind: "container",
+      projectsRoot: "/var/www",
+      mcpUrl: "https://container.example.com/mcp",
+    });
+    expect(host2.id).not.toBe(host1.id);
+
+    // Org A has both hosts; Org B sees neither
+    expect((await orgA.listConnections()).map((h) => h.id)).toEqual([host1.id, host2.id]);
+    expect(await orgB.listConnections()).toEqual([]);
+    expect(await orgB.getConnection(host1.id)).toBeUndefined();
+
+    // Reauthorising host1 updates only host1 and preserves host2
+    const reauthedHost1 = await orgA.saveConnection({
+      id: host1.id,
+      mcpUrl: "https://laptop.example.com/mcp",
+      issuer: "https://laptop.example.com",
+      clientId: "c1-new",
+      encryptedAccessToken: "enc-1-refreshed",
+      tokenIv: "iv-1-refreshed",
+      scope: "orchestration:read orchestration:operate",
+      expiresAt: STARTED_AT + 500_000,
+      now: LATER + 1000,
+    });
+    expect(reauthedHost1.id).toBe(host1.id);
+    expect(reauthedHost1.label).toBe("Laptop");
+    expect((await orgA.getConnection(host2.id))?.encryptedAccessToken).toBe("enc-2");
+
+    // Org B cannot overwrite Org A's hostId
+    await expect(
+      orgB.saveConnection({
+        id: host1.id,
+        mcpUrl: "https://evil.example.com/mcp",
+        issuer: "https://evil.example.com",
+        clientId: "evil",
+        encryptedAccessToken: "evil",
+        tokenIv: "evil",
+        scope: "orchestration:read",
+        expiresAt: LATER,
+      }),
+    ).rejects.toThrow(/another organisation/);
+
+    // Updating host metadata and switching kind updates default projectsRoot when not customised
+    const updatedHost1 = await orgA.updateConnection(host1.id, {
+      label: "Containerized Laptop",
+      kind: "container",
+      now: LATER + 2000,
+    });
+    expect(updatedHost1).toMatchObject({
+      id: host1.id,
+      label: "Containerized Laptop",
+      kind: "container",
+      projectsRoot: "/var/www",
+    });
+
+    // Deleting host1 leaves host2 intact
+    expect(await orgB.deleteConnection(host1.id)).toBe(false);
+    expect(await orgA.deleteConnection(host1.id)).toBe(true);
+    expect((await orgA.listConnections()).map((h) => h.id)).toEqual([host2.id]);
   });
 });

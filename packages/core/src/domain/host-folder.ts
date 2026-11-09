@@ -108,6 +108,7 @@ export const HostFolderPathSchema = z
 
 export const RegisterHostFolderInputSchema = z.strictObject({
   workspaceRoot: HostFolderPathSchema,
+  hostId: z.string().trim().min(1).max(200).exactOptional(),
 });
 export type RegisterHostFolderInput = z.input<typeof RegisterHostFolderInputSchema>;
 
@@ -129,6 +130,7 @@ export type CheckHostFolderInput = RegisterHostFolderInput;
  * `t3_project_create` succeeds (it fails for a missing folder).
  */
 export interface HostFolderCheckResult {
+  readonly hostId?: string | undefined;
   readonly workspaceRoot: string;
   /** The T3 project already registered at this path, if any. */
   readonly t3Project?: { readonly id: string; readonly title: string } | undefined;

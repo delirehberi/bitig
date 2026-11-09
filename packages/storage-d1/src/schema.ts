@@ -10,6 +10,7 @@ import {
   DEFAULT_USER_STATUS,
   DEFAULT_WEBHOOK_ENABLED,
   DEFAULT_WEBHOOK_PROVIDER,
+  HOST_PROJECTS_ROOT_USER,
   type AgentRunState,
   type AttachmentMimeType,
   type ChecklistItem,
@@ -20,6 +21,7 @@ import {
   type PlatformRole,
   type ProjectKind,
   type ProjectResource,
+  type T3HostKind,
   type T3WorkspaceStrategy,
   type TaskActor,
   type TaskActivityEntry,
@@ -323,6 +325,9 @@ export const t3Connections = sqliteTable(
   {
     id: text("id").primaryKey(),
     orgId: text("org_id").notNull().default("01a10000-0000-7000-8000-000000000001"),
+    label: text("label"),
+    kind: text("kind").$type<T3HostKind>().notNull().default("user"),
+    projectsRoot: text("projects_root").notNull().default(HOST_PROJECTS_ROOT_USER),
     mcpUrl: text("mcp_url").notNull(),
     issuer: text("issuer").notNull(),
     clientId: text("client_id").notNull(),
@@ -333,12 +338,19 @@ export const t3Connections = sqliteTable(
     connectedAt: integer("connected_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
   },
-  (table) => [uniqueIndex("t3_connections_org_id_unique").on(table.orgId)],
+  (table) => [
+    uniqueIndex("t3_connections_org_mcp_url_unique").on(table.orgId, table.mcpUrl),
+    index("t3_connections_org_id_idx").on(table.orgId),
+  ],
 );
 
 export const t3OauthStates = sqliteTable("t3_oauth_states", {
   state: text("state").primaryKey(),
   orgId: text("org_id").notNull().default("01a10000-0000-7000-8000-000000000001"),
+  hostId: text("host_id"),
+  label: text("label"),
+  kind: text("kind").$type<T3HostKind>().notNull().default("user"),
+  projectsRoot: text("projects_root").notNull().default(HOST_PROJECTS_ROOT_USER),
   mcpUrl: text("mcp_url").notNull(),
   issuer: text("issuer").notNull(),
   tokenEndpoint: text("token_endpoint").notNull(),
@@ -349,14 +361,19 @@ export const t3OauthStates = sqliteTable("t3_oauth_states", {
   expiresAt: integer("expires_at").notNull(),
 });
 
-export const t3ProjectMappings = sqliteTable("t3_project_mappings", {
-  projectId: text("project_id")
-    .primaryKey()
-    .references(() => projects.id, { onDelete: "cascade" }),
-  t3ProjectId: text("t3_project_id").notNull(),
-  t3ProjectTitle: text("t3_project_title").notNull(),
-  updatedAt: integer("updated_at").notNull(),
-});
+export const t3ProjectMappings = sqliteTable(
+  "t3_project_mappings",
+  {
+    projectId: text("project_id")
+      .primaryKey()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    hostId: text("host_id"),
+    t3ProjectId: text("t3_project_id").notNull(),
+    t3ProjectTitle: text("t3_project_title").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [index("t3_project_mappings_host_id_idx").on(table.hostId)],
+);
 
 export const agentRuns = sqliteTable(
   "agent_runs",
@@ -365,6 +382,7 @@ export const agentRuns = sqliteTable(
     taskId: text("task_id")
       .notNull()
       .references(() => tasks.id, { onDelete: "cascade" }),
+    hostId: text("host_id"),
     t3ProjectId: text("t3_project_id").notNull(),
     threadId: text("thread_id").notNull(),
     link: text("link"),
@@ -389,6 +407,7 @@ export const agentRuns = sqliteTable(
   (table) => [
     uniqueIndex("agent_runs_task_id_idx").on(table.taskId),
     index("agent_runs_thread_id_idx").on(table.threadId),
+    index("agent_runs_host_thread_idx").on(table.hostId, table.threadId),
     index("agent_runs_waiting_for_task_id_idx").on(table.waitingForTaskId),
   ],
 );
@@ -401,6 +420,7 @@ export const projectT3Threads = sqliteTable(
     projectId: text("project_id")
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
+    hostId: text("host_id"),
     t3ProjectId: text("t3_project_id").notNull(),
     threadId: text("thread_id").notNull(),
     title: text("title").notNull(),
@@ -416,7 +436,8 @@ export const projectT3Threads = sqliteTable(
     updatedAt: integer("updated_at").notNull(),
   },
   (table) => [
-    uniqueIndex("project_t3_threads_thread_id_idx").on(table.threadId),
+    uniqueIndex("project_t3_threads_host_thread_idx").on(table.hostId, table.threadId),
+    index("project_t3_threads_thread_id_idx").on(table.threadId),
     index("project_t3_threads_project_id_idx").on(table.projectId),
   ],
 );
@@ -448,6 +469,7 @@ export const t3RunRequests = sqliteTable(
     sequence: integer("sequence").primaryKey({ autoIncrement: true }),
     id: text("id").notNull().unique(),
     orgId: text("org_id").notNull(),
+    hostId: text("host_id"),
     taskId: text("task_id")
       .notNull()
       .references(() => tasks.id, { onDelete: "cascade" }),

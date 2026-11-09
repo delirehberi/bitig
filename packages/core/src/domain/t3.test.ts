@@ -620,3 +620,95 @@ describe("StartT3ThreadInputSchema & parseT3RunCommentCommand (BIT-166)", () => 
   });
 });
 
+describe("multi-host domain contracts (BIT-147)", () => {
+  it("resolves default projectsRoot per host kind", async () => {
+    const {
+      defaultT3HostProjectsRoot,
+      computeT3HostConnectionStatus,
+      UpdateT3HostInputSchema,
+      T3StartOAuthInputSchema,
+      T3ProjectMappingSchema,
+      UpsertT3ProjectMappingInputSchema,
+    } = await import("./t3");
+
+    expect(defaultT3HostProjectsRoot()).toBe("~/www");
+    expect(defaultT3HostProjectsRoot("user")).toBe("~/www");
+    expect(defaultT3HostProjectsRoot("container")).toBe("/var/www");
+
+    const now = Date.parse("2026-11-01T12:00:00.000Z");
+    const hostStatus = computeT3HostConnectionStatus(
+      {
+        id: "host-container-1",
+        label: "Staging Container",
+        kind: "container",
+        mcpUrl: "https://container.example.com/mcp",
+        issuer: "https://container.example.com",
+        connectedAt: now - 1000,
+        expiresAt: now + 10 * 24 * 60 * 60 * 1000,
+      },
+      now,
+    );
+    expect(hostStatus).toMatchObject({
+      id: "host-container-1",
+      label: "Staging Container",
+      kind: "container",
+      projectsRoot: "/var/www",
+      connected: true,
+      mcpUrl: "https://container.example.com/mcp",
+    });
+
+    expect(
+      UpdateT3HostInputSchema.parse({
+        label: "  My Laptop  ",
+        kind: "user",
+        projectsRoot: "~/www/",
+      }),
+    ).toEqual({
+      label: "My Laptop",
+      kind: "user",
+      projectsRoot: "~/www",
+    });
+    expect(UpdateT3HostInputSchema.parse({ label: null })).toEqual({ label: null });
+    expect(UpdateT3HostInputSchema.safeParse({ projectsRoot: "relative/path" }).success).toBe(false);
+
+    expect(
+      T3StartOAuthInputSchema.parse({
+        mcpUrl: "https://t3.example.com/mcp",
+        hostId: "host-1",
+        label: "Host 1",
+        kind: "container",
+        projectsRoot: "/var/www/",
+      }),
+    ).toEqual({
+      mcpUrl: "https://t3.example.com/mcp",
+      hostId: "host-1",
+      label: "Host 1",
+      kind: "container",
+      projectsRoot: "/var/www",
+    });
+
+    expect(
+      UpsertT3ProjectMappingInputSchema.parse({
+        hostId: "host-1",
+        t3ProjectId: "t3-proj-1",
+        t3ProjectTitle: "Project 1",
+      }),
+    ).toEqual({
+      hostId: "host-1",
+      t3ProjectId: "t3-proj-1",
+      t3ProjectTitle: "Project 1",
+    });
+
+    expect(
+      T3ProjectMappingSchema.parse({
+        projectId: "0196ed60-0000-7000-8000-000000000002",
+        hostId: "host-1",
+        t3ProjectId: "t3-proj-1",
+        t3ProjectTitle: "Project 1",
+        updatedAt: "2026-11-01T10:00:00.000Z",
+      }).hostId,
+    ).toBe("host-1");
+  });
+});
+
+

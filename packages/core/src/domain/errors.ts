@@ -26,6 +26,7 @@ export type EntityKind =
   | "comment"
   | "attachment"
   | "webhook"
+  | "t3_host"
   | "t3_thread"
   | "user"
   | "organisation"

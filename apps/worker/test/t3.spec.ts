@@ -8,6 +8,7 @@ import type {
   ProjectT3ThreadMessagesResponse,
   ProjectT3ThreadsResponse,
   T3ConnectionStatus,
+  T3HostConnectionStatus,
   T3ModelCapability,
   T3ProjectMapping,
   T3RemoteProject,
@@ -132,6 +133,9 @@ const STATEMENTS = [
   `CREATE TABLE \`t3_connections\` (
     \`id\` text PRIMARY KEY NOT NULL,
     \`org_id\` text DEFAULT '01a10000-0000-7000-8000-000000000001' NOT NULL,
+    \`label\` text,
+    \`kind\` text DEFAULT 'user' NOT NULL,
+    \`projects_root\` text DEFAULT '~/www' NOT NULL,
     \`mcp_url\` text NOT NULL,
     \`issuer\` text NOT NULL,
     \`client_id\` text NOT NULL,
@@ -142,10 +146,15 @@ const STATEMENTS = [
     \`connected_at\` integer NOT NULL,
     \`updated_at\` integer NOT NULL
   )`,
-  "CREATE UNIQUE INDEX `t3_connections_org_id_unique` ON `t3_connections` (`org_id`)",
+  "CREATE INDEX `t3_connections_org_id_idx` ON `t3_connections` (`org_id`)",
+  "CREATE UNIQUE INDEX `t3_connections_org_mcp_url_unique` ON `t3_connections` (`org_id`, `mcp_url`)",
   `CREATE TABLE \`t3_oauth_states\` (
     \`state\` text PRIMARY KEY NOT NULL,
     \`org_id\` text DEFAULT '01a10000-0000-7000-8000-000000000001' NOT NULL,
+    \`host_id\` text,
+    \`label\` text,
+    \`kind\` text DEFAULT 'user' NOT NULL,
+    \`projects_root\` text DEFAULT '~/www' NOT NULL,
     \`mcp_url\` text NOT NULL,
     \`issuer\` text NOT NULL,
     \`token_endpoint\` text NOT NULL,
@@ -157,14 +166,17 @@ const STATEMENTS = [
   )`,
   `CREATE TABLE \`t3_project_mappings\` (
     \`project_id\` text PRIMARY KEY NOT NULL,
+    \`host_id\` text,
     \`t3_project_id\` text NOT NULL,
     \`t3_project_title\` text NOT NULL,
     \`updated_at\` integer NOT NULL,
     FOREIGN KEY (\`project_id\`) REFERENCES \`projects\`(\`id\`) ON UPDATE no action ON DELETE cascade
   )`,
+  "CREATE INDEX `t3_project_mappings_host_id_idx` ON `t3_project_mappings` (`host_id`)",
   `CREATE TABLE \`agent_runs\` (
     \`id\` text PRIMARY KEY NOT NULL,
     \`task_id\` text NOT NULL,
+    \`host_id\` text,
     \`t3_project_id\` text NOT NULL,
     \`thread_id\` text NOT NULL,
     \`link\` text,
@@ -185,6 +197,7 @@ const STATEMENTS = [
     FOREIGN KEY (\`task_id\`) REFERENCES \`tasks\`(\`id\`) ON UPDATE no action ON DELETE cascade
   )`,
   "CREATE UNIQUE INDEX `agent_runs_task_id_idx` ON `agent_runs` (`task_id`)",
+  "CREATE INDEX `agent_runs_host_id_idx` ON `agent_runs` (`host_id`)",
   "CREATE INDEX `agent_runs_thread_id_idx` ON `agent_runs` (`thread_id`)",
   "CREATE INDEX `agent_runs_waiting_for_task_id_idx` ON `agent_runs` (`waiting_for_task_id`)",
   `CREATE TABLE \`t3_run_requests\` (
@@ -192,6 +205,7 @@ const STATEMENTS = [
     \`id\` text NOT NULL UNIQUE,
     \`org_id\` text NOT NULL,
     \`task_id\` text NOT NULL REFERENCES \`tasks\` (\`id\`) ON DELETE CASCADE,
+    \`host_id\` text,
     \`kind\` text NOT NULL,
     \`payload\` text NOT NULL,
     \`state\` text NOT NULL DEFAULT 'queued',
@@ -204,6 +218,7 @@ const STATEMENTS = [
   `CREATE TABLE \`project_t3_threads\` (
     \`id\` text PRIMARY KEY NOT NULL,
     \`project_id\` text NOT NULL,
+    \`host_id\` text,
     \`t3_project_id\` text NOT NULL,
     \`thread_id\` text NOT NULL,
     \`title\` text NOT NULL,
@@ -218,8 +233,9 @@ const STATEMENTS = [
     \`updated_at\` integer NOT NULL,
     FOREIGN KEY (\`project_id\`) REFERENCES \`projects\`(\`id\`) ON UPDATE no action ON DELETE cascade
   )`,
-  "CREATE UNIQUE INDEX `project_t3_threads_thread_id_idx` ON `project_t3_threads` (`thread_id`)",
+  "CREATE UNIQUE INDEX `project_t3_threads_host_thread_idx` ON `project_t3_threads` (`host_id`, `thread_id`)",
   "CREATE INDEX `project_t3_threads_project_id_idx` ON `project_t3_threads` (`project_id`)",
+  "CREATE INDEX `project_t3_threads_host_id_idx` ON `project_t3_threads` (`host_id`)",
 ];
 
 interface RecordedToolCall {
@@ -259,6 +275,12 @@ interface MockT3ServerState {
   remoteProjects?: { id: string; title: string; workspaceRoot: string }[];
   /** `scopes_supported` in the protected-resource metadata; defaults to `["mcp:tools"]`. */
   resourceScopes?: unknown;
+  /** Optional origin override for multi-host tests (#BIT-147); defaults to `T3_ORIGIN`. */
+  origin?: string;
+  /** Optional bearer token override for multi-host tests (#BIT-147). */
+  accessToken?: string;
+  /** Optional dynamic client_id override for multi-host tests (#BIT-147). */
+  clientId?: string;
   toolCalls: RecordedToolCall[];
 }
 
@@ -266,12 +288,16 @@ function createMockT3Fetch(state: MockT3ServerState): typeof fetch {
   return (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const req = input instanceof Request ? input : new Request(input, init);
     const url = new URL(req.url);
+    const origin = state.origin ?? T3_ORIGIN;
+    const mcpUrl = `${origin}/mcp`;
+    const expectedToken = state.accessToken ?? "t3-secret-bearer-token-value";
+    const clientId = state.clientId ?? "t3-client-test-1";
 
     if (url.pathname === "/.well-known/oauth-protected-resource") {
       return Promise.resolve(
         Response.json({
-          resource: T3_MCP_URL,
-          authorization_servers: [T3_ORIGIN],
+          resource: mcpUrl,
+          authorization_servers: [origin],
           scopes_supported: state.resourceScopes ?? ["mcp:tools"],
         }),
       );
@@ -280,10 +306,10 @@ function createMockT3Fetch(state: MockT3ServerState): typeof fetch {
     if (url.pathname === "/.well-known/oauth-authorization-server") {
       return Promise.resolve(
         Response.json({
-          issuer: T3_ORIGIN,
-          authorization_endpoint: `${T3_ORIGIN}/oauth/mcp/authorize`,
-          token_endpoint: `${T3_ORIGIN}/oauth/mcp/token`,
-          registration_endpoint: `${T3_ORIGIN}/oauth/mcp/register`,
+          issuer: origin,
+          authorization_endpoint: `${origin}/oauth/mcp/authorize`,
+          token_endpoint: `${origin}/oauth/mcp/token`,
+          registration_endpoint: `${origin}/oauth/mcp/register`,
           code_challenge_methods_supported: ["S256"],
         }),
       );
@@ -293,7 +319,7 @@ function createMockT3Fetch(state: MockT3ServerState): typeof fetch {
       return Promise.resolve(
         Response.json(
           {
-            client_id: "t3-client-test-1",
+            client_id: clientId,
             client_name: "Bitig",
           },
           { status: 201 },
@@ -304,7 +330,7 @@ function createMockT3Fetch(state: MockT3ServerState): typeof fetch {
     if (url.pathname === "/oauth/mcp/token" && req.method === "POST") {
       return Promise.resolve(
         Response.json({
-          access_token: "t3-secret-bearer-token-value",
+          access_token: expectedToken,
           token_type: "Bearer",
           expires_in: state.expiresInSeconds,
           scope: "mcp:tools",
@@ -317,7 +343,7 @@ function createMockT3Fetch(state: MockT3ServerState): typeof fetch {
         return Promise.reject(new Error("Simulated T3 host unreachable"));
       }
       const authHeader = req.headers.get("authorization");
-      if (authHeader !== "Bearer t3-secret-bearer-token-value") {
+      if (authHeader !== `Bearer ${expectedToken}`) {
         return Promise.resolve(Response.json({ error: "unauthorized" }, { status: 401 }));
       }
       if (req.method === "GET") {
@@ -440,7 +466,7 @@ function createMockT3Fetch(state: MockT3ServerState): typeof fetch {
               const launchedId = state.launchThreadId ?? "thread-abc-123";
               payload = {
                 threadId: launchedId,
-                link: `${T3_ORIGIN}/threads/${launchedId}`,
+                link: `${origin}/threads/${launchedId}`,
               };
             } else if (toolName === "t3_thread_list") {
               payload = {
@@ -3251,5 +3277,428 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
       expect(mockState.toolCalls.filter((c) => c.name === "t3_thread_send")).toHaveLength(0);
     });
   });
+
+  describe("multi-host T3 persistence, host-bound mappings, and originating-host routing (#BIT-147)", () => {
+    const HOST_A_ORIGIN = "https://t3-host-a.example.test";
+    const HOST_A_MCP_URL = `${HOST_A_ORIGIN}/mcp`;
+    const HOST_B_ORIGIN = "https://t3-host-b.example.test";
+    const HOST_B_MCP_URL = `${HOST_B_ORIGIN}/mcp`;
+
+    let hostAState: MockT3ServerState;
+    let hostBState: MockT3ServerState;
+    let multiApp: ReturnType<typeof createApp>;
+
+    function createBaseState(overrides: Partial<MockT3ServerState>): MockT3ServerState {
+      return {
+        expiresInSeconds: 30 * 24 * 60 * 60,
+        failMcpConnection: false,
+        threadStatus: "running",
+        pendingRequestCount: 0,
+        pendingRequestIds: [],
+        pendingQuestions: [],
+        recentRunStatus: "running",
+        activeRunId: null,
+        threadModelSelection: { instanceId: "prov-claude", model: "claude-opus-4-7" },
+        threadList: [],
+        toolCalls: [],
+        ...overrides,
+      };
+    }
+
+    beforeEach(() => {
+      hostAState = createBaseState({
+        origin: HOST_A_ORIGIN,
+        accessToken: "token-host-a-v1",
+        clientId: "client-host-a",
+        remoteProjects: [{ id: "t3-proj-a", title: "Alpha", workspaceRoot: "~/www/Alpha" }],
+      });
+      hostBState = createBaseState({
+        origin: HOST_B_ORIGIN,
+        accessToken: "token-host-b-v1",
+        clientId: "client-host-b",
+        remoteProjects: [{ id: "t3-proj-b", title: "Beta", workspaceRoot: "/var/www/Beta" }],
+      });
+      const fetchA = createMockT3Fetch(hostAState);
+      const fetchB = createMockT3Fetch(hostBState);
+      const multiFetch: typeof fetch = (input, init) => {
+        const req = input instanceof Request ? input : new Request(input, init);
+        const url = new URL(req.url);
+        if (url.origin === HOST_A_ORIGIN) return fetchA(input, init);
+        if (url.origin === HOST_B_ORIGIN) return fetchB(input, init);
+        return Promise.resolve(new Response("Unknown T3 host origin", { status: 404 }));
+      };
+      multiApp = createApp({ t3Fetch: multiFetch });
+    });
+
+    function multiRequest(path: string, init?: RequestInit): Promise<Response> {
+      const headers = new Headers(init?.headers);
+      if (!headers.has("Authorization")) {
+        headers.set("Authorization", TEST_AUTH_HEADER);
+      }
+      return Promise.resolve(multiApp.request(`${BASE_URL}${path}`, { ...init, headers }, env));
+    }
+
+    async function authorizeHost(input: {
+      mcpUrl: string;
+      hostId?: string;
+      label?: string;
+      kind?: "user" | "container";
+      projectsRoot?: string;
+    }): Promise<void> {
+      const startRes = await multiRequest("/api/t3/oauth/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+      });
+      expect(startRes.status).toBe(200);
+      const { state } = await startRes.json<{ authorizationUrl: string; state: string }>();
+      const callbackRes = await multiApp.request(
+        `${BASE_URL}/api/t3/oauth/callback?code=auth-code-xyz&state=${encodeURIComponent(state)}`,
+        { method: "GET" },
+        env,
+      );
+      expect(callbackRes.status).toBe(302);
+    }
+
+    it("maintains two independently authenticated hosts, scopes OAuth reauthorisation and capability caches per host, and supports host CRUD", async () => {
+      await authorizeHost({ mcpUrl: HOST_A_MCP_URL, label: "Workstation", kind: "user" });
+      await authorizeHost({ mcpUrl: HOST_B_MCP_URL, label: "Sandbox", kind: "container" });
+
+      const hostsRes = await multiRequest("/api/t3/hosts");
+      expect(hostsRes.status).toBe(200);
+      const { hosts } = await hostsRes.json<{ hosts: T3HostConnectionStatus[] }>();
+      expect(hosts).toHaveLength(2);
+      const hostA = hosts.find((h) => h.mcpUrl === HOST_A_MCP_URL);
+      const hostB = hosts.find((h) => h.mcpUrl === HOST_B_MCP_URL);
+      if (!hostA || !hostB) {
+        throw new Error("Expected both Host A and Host B to be connected");
+      }
+      expect(hostA).toMatchObject({
+        id: "default",
+        connected: true,
+        label: "Workstation",
+        kind: "user",
+        projectsRoot: "~/www",
+        mcpUrl: HOST_A_MCP_URL,
+      });
+      expect(hostB).toMatchObject({
+        connected: true,
+        label: "Sandbox",
+        kind: "container",
+        projectsRoot: "/var/www",
+        mcpUrl: HOST_B_MCP_URL,
+      });
+      expect(hostB.id).not.toBe("default");
+
+      // Per-host connection status and GET /api/t3/hosts/:hostId
+      const statusARes = await multiRequest(`/api/t3/connection?hostId=${hostA.id}`);
+      expect(await statusARes.json<T3ConnectionStatus>()).toMatchObject({
+        connected: true,
+        id: hostA.id,
+        label: "Workstation",
+        kind: "user",
+        projectsRoot: "~/www",
+        mcpUrl: HOST_A_MCP_URL,
+      });
+      const hostBDetailRes = await multiRequest(`/api/t3/hosts/${hostB.id}`);
+      expect(await hostBDetailRes.json<T3HostConnectionStatus>()).toMatchObject({
+        id: hostB.id,
+        label: "Sandbox",
+        kind: "container",
+        projectsRoot: "/var/www",
+      });
+
+      // PATCH /api/t3/hosts/:hostId updates label/projectsRoot on Host B only
+      const patchRes = await multiRequest(`/api/t3/hosts/${hostB.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ label: "Cloud Sandbox", projectsRoot: "/srv/workspaces/" }),
+      });
+      expect(patchRes.status).toBe(200);
+      expect(await patchRes.json<T3HostConnectionStatus>()).toMatchObject({
+        id: hostB.id,
+        label: "Cloud Sandbox",
+        kind: "container",
+        projectsRoot: "/srv/workspaces",
+      });
+
+      // Per-host project listing
+      const projARes = await multiRequest(`/api/t3/projects?hostId=${hostA.id}`);
+      expect((await projARes.json<{ projects: T3RemoteProject[] }>()).projects).toEqual([
+        { id: "t3-proj-a", title: "Alpha", workspaceRoot: "~/www/Alpha" },
+      ]);
+      const projBRes = await multiRequest(`/api/t3/projects?hostId=${hostB.id}`);
+      expect((await projBRes.json<{ projects: T3RemoteProject[] }>()).projects).toEqual([
+        { id: "t3-proj-b", title: "Beta", workspaceRoot: "/var/www/Beta" },
+      ]);
+
+      // Per-host capability caching: Host A and Host B do not share cache entries
+      expect((await multiRequest(`/api/t3/capabilities?hostId=${hostA.id}`)).status).toBe(200);
+      expect((await multiRequest(`/api/t3/capabilities?hostId=${hostA.id}`)).status).toBe(200);
+      expect(hostAState.toolCalls.filter((c) => c.name === "orchestrator_capabilities")).toHaveLength(1);
+      expect(hostBState.toolCalls.filter((c) => c.name === "orchestrator_capabilities")).toHaveLength(0);
+
+      expect((await multiRequest(`/api/t3/capabilities?hostId=${hostB.id}`)).status).toBe(200);
+      expect((await multiRequest(`/api/t3/capabilities?hostId=${hostB.id}`)).status).toBe(200);
+      expect(hostBState.toolCalls.filter((c) => c.name === "orchestrator_capabilities")).toHaveLength(1);
+
+      // Reauthorising Host A rotates Host A's token & invalidates Host A's capability cache without touching Host B
+      hostAState.accessToken = "token-host-a-v2";
+      await authorizeHost({ mcpUrl: HOST_A_MCP_URL, hostId: hostA.id });
+
+      // Host B still works with token-host-b-v1 and its capability cache remains warm
+      expect((await multiRequest(`/api/t3/capabilities?hostId=${hostB.id}`)).status).toBe(200);
+      expect(hostBState.toolCalls.filter((c) => c.name === "orchestrator_capabilities")).toHaveLength(1);
+
+      // Host A's updatedAt changed on reauthorisation, so its capability cache refreshes with token-host-a-v2
+      expect((await multiRequest(`/api/t3/capabilities?hostId=${hostA.id}`)).status).toBe(200);
+      expect(hostAState.toolCalls.filter((c) => c.name === "orchestrator_capabilities")).toHaveLength(2);
+    });
+
+    it("keeps at most one active host mapping per project and preserves the originating host on historical runs and project threads after reattaching", async () => {
+      await authorizeHost({ mcpUrl: HOST_A_MCP_URL, label: "Host A", kind: "user" });
+      await authorizeHost({ mcpUrl: HOST_B_MCP_URL, label: "Host B", kind: "container" });
+      const { hosts } = await (await multiRequest("/api/t3/hosts")).json<{ hosts: T3HostConnectionStatus[] }>();
+      const hostA = hosts.find((h) => h.mcpUrl === HOST_A_MCP_URL);
+      const hostB = hosts.find((h) => h.mcpUrl === HOST_B_MCP_URL);
+      if (!hostA || !hostB) {
+        throw new Error("Expected both Host A and Host B to be connected");
+      }
+
+      const project = await (
+        await multiRequest("/api/projects", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: "Bitig", key: "BIT" }),
+        })
+      ).json<Project>();
+
+      // Map project to Host A
+      const mapARes = await multiRequest(`/api/t3/mappings/${project.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          hostId: hostA.id,
+          t3ProjectId: "t3-proj-a",
+          t3ProjectTitle: "Alpha",
+        }),
+      });
+      expect(mapARes.status).toBe(200);
+      expect(await mapARes.json<T3ProjectMapping>()).toMatchObject({
+        projectId: project.id,
+        hostId: hostA.id,
+        t3ProjectId: "t3-proj-a",
+      });
+
+      // Launch Task 1 run and Project Thread 1 while mapped to Host A
+      const task1 = await (
+        await multiRequest("/api/tasks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ projectId: project.id, title: "Task on Host A" }),
+        })
+      ).json<Task>();
+      hostAState.launchThreadId = "thread-on-host-a";
+      const run1Res = await multiRequest(`/api/tasks/${task1.id}/t3-run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workspaceStrategy: "worktree" }),
+      });
+      expect(run1Res.status).toBe(201);
+      expect((await run1Res.json<{ run: AgentRun }>()).run).toMatchObject({
+        taskId: task1.id,
+        hostId: hostA.id,
+        threadId: "thread-on-host-a",
+      });
+
+      hostAState.launchThreadId = "proj-thread-on-host-a";
+      const pt1Res = await multiRequest(`/api/t3/projects/${project.id}/threads`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: "Inspect Host A", workspaceStrategy: "worktree" }),
+      });
+      expect(pt1Res.status).toBe(201);
+      const pt1 = await pt1Res.json<ProjectT3Thread>();
+      expect(pt1).toMatchObject({
+        projectId: project.id,
+        hostId: hostA.id,
+        threadId: "proj-thread-on-host-a",
+      });
+
+      // Reattach project to Host B: replaces the single mapping in-place
+      const mapBRes = await multiRequest(`/api/t3/mappings/${project.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          hostId: hostB.id,
+          t3ProjectId: "t3-proj-b",
+          t3ProjectTitle: "Beta",
+        }),
+      });
+      expect(mapBRes.status).toBe(200);
+      const { mappings } = await (await multiRequest("/api/t3/mappings")).json<{ mappings: T3ProjectMapping[] }>();
+      expect(mappings).toHaveLength(1);
+      expect(mappings[0]).toMatchObject({
+        projectId: project.id,
+        hostId: hostB.id,
+        t3ProjectId: "t3-proj-b",
+      });
+
+      // Deleting Host A while Task 1 and Project Thread 1 are still active on Host A is refused (409 host_busy)
+      const busyDelRes = await multiRequest(`/api/t3/hosts/${hostA.id}`, { method: "DELETE" });
+      expect(busyDelRes.status).toBe(409);
+
+      // Clear tool call logs to verify subsequent operations on historical runs/threads still target Host A
+      hostAState.toolCalls.length = 0;
+      hostBState.toolCalls.length = 0;
+
+      // 1. Live status & reply on Task 1 route to Host A (never Host B)
+      hostAState.threadStatus = "idle";
+      hostAState.recentRunStatus = "completed";
+      const live1Res = await multiRequest(`/api/tasks/${task1.id}/t3-run`);
+      expect(live1Res.status).toBe(200);
+      expect((await live1Res.json<T3TaskRunLiveResponse>()).run?.hostId).toBe(hostA.id);
+      expect(hostAState.toolCalls.some((c) => c.name === "t3_thread_read")).toBe(true);
+      expect(hostBState.toolCalls).toHaveLength(0);
+
+      const reply1Res = await multiRequest(`/api/tasks/${task1.id}/t3-run/reply`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ body: "Follow up on Host A", author: "emre" }),
+      });
+      expect(reply1Res.status).toBe(201);
+      expect(hostAState.toolCalls.some((c) => c.name === "t3_thread_send")).toBe(true);
+      expect(hostBState.toolCalls).toHaveLength(0);
+
+      // 2. Reading & messaging Project Thread 1 route to Host A (never Host B)
+      hostAState.toolCalls.length = 0;
+      const msg1Res = await multiRequest(
+        `/api/t3/projects/${project.id}/threads/${pt1.threadId}/messages`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ body: "Message on Host A thread" }),
+        },
+      );
+      expect(msg1Res.status).toBe(201);
+      expect(hostAState.toolCalls.some((c) => c.name === "t3_thread_send")).toBe(true);
+      expect(hostBState.toolCalls).toHaveLength(0);
+
+      // 3. New task run on the reattached project launches on Host B!
+      const task2 = await (
+        await multiRequest("/api/tasks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ projectId: project.id, title: "Task on Host B" }),
+        })
+      ).json<Task>();
+      hostBState.launchThreadId = "thread-on-host-b";
+      const run2Res = await multiRequest(`/api/tasks/${task2.id}/t3-run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workspaceStrategy: "worktree" }),
+      });
+      expect(run2Res.status).toBe(201);
+      expect((await run2Res.json<{ run: AgentRun }>()).run).toMatchObject({
+        taskId: task2.id,
+        hostId: hostB.id,
+        t3ProjectId: "t3-proj-b",
+        threadId: "thread-on-host-b",
+      });
+      expect(hostBState.toolCalls.some((c) => c.name === "t3_thread_launch")).toBe(true);
+
+      // Stop Task 1 and settle Project Thread 1 on Host A, then verify Host A can be deleted
+      expect((await multiRequest(`/api/tasks/${task1.id}/t3-run/stop`, { method: "POST" })).status).toBe(200);
+      expect(
+        (
+          await multiRequest(`/api/t3/projects/${project.id}/threads/${pt1.threadId}/settle`, {
+            method: "POST",
+          })
+        ).status,
+      ).toBe(204);
+      expect((await multiRequest(`/api/t3/hosts/${hostA.id}`, { method: "DELETE" })).status).toBe(204);
+    });
+
+    it("isolates identical threadId and t3ProjectId across different hosts and enforces tenant separation across organisations", async () => {
+      // Both hosts advertise the exact same t3ProjectId and launch the exact same threadId
+      hostAState.remoteProjects = [{ id: "t3-proj-shared", title: "SharedA", workspaceRoot: "~/www/SharedA" }];
+      hostBState.remoteProjects = [{ id: "t3-proj-shared", title: "SharedB", workspaceRoot: "/var/www/SharedB" }];
+      hostAState.launchThreadId = "thread-collision-1";
+      hostBState.launchThreadId = "thread-collision-1";
+
+      await authorizeHost({ mcpUrl: HOST_A_MCP_URL, label: "Host A", kind: "user" });
+      await authorizeHost({ mcpUrl: HOST_B_MCP_URL, label: "Host B", kind: "container" });
+      const { hosts } = await (await multiRequest("/api/t3/hosts")).json<{ hosts: T3HostConnectionStatus[] }>();
+      const hostA = hosts.find((h) => h.mcpUrl === HOST_A_MCP_URL);
+      const hostB = hosts.find((h) => h.mcpUrl === HOST_B_MCP_URL);
+      if (!hostA || !hostB) {
+        throw new Error("Expected both Host A and Host B to be connected");
+      }
+
+      const proj1 = await (
+        await multiRequest("/api/projects", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: "Proj 1", key: "PR1" }),
+        })
+      ).json<Project>();
+      const proj2 = await (
+        await multiRequest("/api/projects", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: "Proj 2", key: "PR2" }),
+        })
+      ).json<Project>();
+
+      await multiRequest(`/api/t3/mappings/${proj1.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hostId: hostA.id, t3ProjectId: "t3-proj-shared", t3ProjectTitle: "SharedA" }),
+      });
+      await multiRequest(`/api/t3/mappings/${proj2.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hostId: hostB.id, t3ProjectId: "t3-proj-shared", t3ProjectTitle: "SharedB" }),
+      });
+
+      // Launch root-checkout project threads on both projects; neither collides on root busy check or DB index
+      const pt1Res = await multiRequest(`/api/t3/projects/${proj1.id}/threads`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: "Root on Host A", workspaceStrategy: "root" }),
+      });
+      expect(pt1Res.status).toBe(201);
+
+      const pt2Res = await multiRequest(`/api/t3/projects/${proj2.id}/threads`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: "Root on Host B", workspaceStrategy: "root" }),
+      });
+      expect(pt2Res.status).toBe(201);
+
+      // Reconcile via GET /api/t3/runs when Host A's thread is running and Host B's thread is finished
+      hostAState.threadList = [{ id: "thread-collision-1", status: "running", pendingRequestCount: 0 }];
+      hostBState.threadList = [{ id: "thread-collision-1", status: "idle", pendingRequestCount: 0 }];
+      const runsRes = await multiRequest("/api/t3/runs");
+      expect(runsRes.status).toBe(200);
+      const runsBody = await runsRes.json<T3RunsLiveResponse>();
+      expect(runsBody.activeSessions?.find((s) => s.projectId === proj1.id)).toMatchObject({
+        projectId: proj1.id,
+        hostId: hostA.id,
+        threadId: "thread-collision-1",
+        state: "working",
+      });
+      expect(runsBody.activeSessions?.find((s) => s.projectId === proj2.id)).toBeUndefined();
+
+      // Tenant separation: another organisation cannot see or mutate Host A or Host B
+      const otherOrgStore = new T3D1Store(env.DB, "01a10000-0000-7000-8000-000000000099");
+      expect(await otherOrgStore.listConnections()).toEqual([]);
+      expect(await otherOrgStore.getConnection(hostA.id)).toBeUndefined();
+      expect(await otherOrgStore.updateConnection(hostA.id, { label: "Hijacked" })).toBeUndefined();
+      expect(await otherOrgStore.deleteConnection(hostA.id)).toBe(false);
+      expect((await otherOrgStore.getConnection(hostA.id)) ?? (await new T3D1Store(env.DB).getConnection(hostA.id))).toBeDefined();
+    });
+  });
 });
+
 

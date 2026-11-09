@@ -11,9 +11,12 @@ import {
   StartT3ThreadInputSchema,
   T3StartOAuthInputSchema,
   T3WorkspaceBusyError,
+  UpdateT3HostInputSchema,
   UpsertT3ProjectMappingInputSchema,
   ValidationError,
+  computeT3HostConnectionStatus,
   hasMinimumOrgRole,
+  isActiveAgentRunState,
 } from "@bitig/core";
 import { D1Storage, T3D1Store } from "@bitig/storage-d1";
 import type { Context } from "hono";
@@ -37,6 +40,7 @@ import {
   launchProjectThreadInT3,
   launchTaskInT3,
   listProjectT3ThreadsLive,
+  listT3HostConnectionStatuses,
   listT3ModelCapabilities,
   listT3RunsLive,
   readProjectT3ThreadMessages,
@@ -172,8 +176,13 @@ export const t3OauthCallbackRouter = new Hono<AppEnv>().get("/", async (c) => {
     const encrypted = await encryptT3Token(tokenResult.accessToken, encryptionKey);
     const expiresAt = now + tokenResult.expiresInSeconds * 1000;
 
-    await store.saveConnection({
+    const orgStore = new T3D1Store(c.env.DB, stateRecord.orgId);
+    await orgStore.saveConnection({
+      ...(stateRecord.hostId ? { id: stateRecord.hostId } : {}),
       orgId: stateRecord.orgId,
+      ...(stateRecord.label ? { label: stateRecord.label } : {}),
+      kind: stateRecord.kind,
+      projectsRoot: stateRecord.projectsRoot,
       mcpUrl: stateRecord.mcpUrl,
       issuer: stateRecord.issuer,
       clientId: stateRecord.clientId,
@@ -191,29 +200,96 @@ export const t3OauthCallbackRouter = new Hono<AppEnv>().get("/", async (c) => {
           (event) => publishRealtimeEvent(c.env, event, stateRecord.orgId),
         );
     await drainAllQueuedT3Runs({
-      store: new T3D1Store(c.env.DB, stateRecord.orgId),
+      store: orgStore,
       storage: orgStorage,
       encryptionKey,
       fetchFn: c.get("t3Fetch"),
       publishRealtime: (event) => publishRealtimeEvent(c.env, event, stateRecord.orgId),
     }).catch(() => undefined);
 
-    const redirectUrl = new URL("/settings?t3=connected", c.req.url);
+    const redirectUrl = new URL("/settings", c.req.url);
+    redirectUrl.searchParams.set("t3", "connected");
     return c.redirect(redirectUrl.toString(), HTTP_FOUND);
   } catch (err) {
     return handleT3RouteError(err, c);
   }
 });
 
+function readHostIdQuery(raw: string | undefined): string | undefined {
+  const trimmed = raw?.trim();
+  return trimmed !== undefined && trimmed.length > 0 ? trimmed : undefined;
+}
+
 export const t3ApiRouter = new Hono<AppEnv>()
+  .get("/hosts", async (c) => {
+    const store = new T3D1Store(c.env.DB, c.get("orgId"));
+    const hosts = await listT3HostConnectionStatuses(store);
+    return c.json({ hosts });
+  })
+  .get("/hosts/:hostId", async (c) => {
+    const hostId = c.req.param("hostId");
+    const store = new T3D1Store(c.env.DB, c.get("orgId"));
+    const connection = await store.getConnection(hostId);
+    if (!connection) {
+      throw new NotFoundError("t3_host", hostId);
+    }
+    return c.json(computeT3HostConnectionStatus(connection));
+  })
+  .patch(
+    "/hosts/:hostId",
+    zValidator("json", UpdateT3HostInputSchema, (result, c) => {
+      if (!result.success) {
+        return c.json({ error: "validation_error", details: result.error.issues }, HTTP_BAD_REQUEST);
+      }
+      return undefined;
+    }),
+    async (c) => {
+      const hostId = c.req.param("hostId");
+      const patch = c.req.valid("json");
+      const store = new T3D1Store(c.env.DB, c.get("orgId"));
+      const updated = await store.updateConnection(hostId, patch);
+      if (!updated) {
+        throw new NotFoundError("t3_host", hostId);
+      }
+      return c.json(computeT3HostConnectionStatus(updated));
+    },
+  )
+  .delete("/hosts/:hostId", async (c) => {
+    const hostId = c.req.param("hostId");
+    const store = new T3D1Store(c.env.DB, c.get("orgId"));
+    const existing = await store.getConnection(hostId);
+    if (!existing) {
+      throw new NotFoundError("t3_host", hostId);
+    }
+    const [runs, threads] = await Promise.all([
+      store.listAgentRuns(),
+      store.listProjectThreads(),
+    ]);
+    const activeCount =
+      runs.filter((run) => run.hostId === hostId && isActiveAgentRunState(run.state)).length +
+      threads.filter((thread) => thread.hostId === hostId && isActiveAgentRunState(thread.state)).length;
+    if (activeCount > 0) {
+      return c.json(
+        {
+          error: "host_busy",
+          message: `This T3 host has ${String(activeCount)} active session(s). Stop them before removing the host.`,
+        },
+        HTTP_CONFLICT,
+      );
+    }
+    await store.deleteConnection(hostId);
+    return c.body(null, HTTP_NO_CONTENT);
+  })
   .get("/connection", async (c) => {
     const store = new T3D1Store(c.env.DB, c.get("orgId"));
-    const status = await getT3ConnectionStatus(store);
+    const hostId = readHostIdQuery(c.req.query("hostId"));
+    const status = await getT3ConnectionStatus(store, Date.now(), hostId);
     return c.json(status);
   })
   .delete("/connection", async (c) => {
     const store = new T3D1Store(c.env.DB, c.get("orgId"));
-    await store.deleteConnection();
+    const hostId = readHostIdQuery(c.req.query("hostId"));
+    await store.deleteConnection(hostId);
     return c.body(null, HTTP_NO_CONTENT);
   })
   .post(
@@ -237,9 +313,16 @@ export const t3ApiRouter = new Hono<AppEnv>()
         ]);
       }
 
-      const { mcpUrl } = c.req.valid("json");
+      const { mcpUrl, hostId, label, kind, projectsRoot } = c.req.valid("json");
       const redirectUri = new URL("/api/t3/oauth/callback", c.req.url).toString();
       const store = new T3D1Store(c.env.DB, c.get("orgId"));
+
+      if (hostId) {
+        const existingHost = await store.getConnection(hostId);
+        if (!existingHost) {
+          throw new NotFoundError("t3_host", hostId);
+        }
+      }
 
       try {
         const started = await startT3OAuthFlow({
@@ -251,6 +334,10 @@ export const t3ApiRouter = new Hono<AppEnv>()
         await store.saveOauthState({
           state: started.state,
           orgId: c.get("orgId"),
+          ...(hostId ? { hostId } : {}),
+          ...(label ? { label } : {}),
+          ...(kind ? { kind } : {}),
+          ...(projectsRoot ? { projectsRoot } : {}),
           mcpUrl: started.mcpUrl,
           issuer: started.issuer,
           tokenEndpoint: started.tokenEndpoint,
@@ -272,10 +359,12 @@ export const t3ApiRouter = new Hono<AppEnv>()
   )
   .get("/projects", async (c) => {
     const store = new T3D1Store(c.env.DB, c.get("orgId"));
+    const hostId = readHostIdQuery(c.req.query("hostId"));
     try {
       const client = await createActiveT3McpClient({
         store,
         encryptionKey: c.get("config").T3_ENCRYPTION_KEY,
+        hostId,
         fetchFn: c.get("t3Fetch"),
       });
       const projects = await client.listProjects();
@@ -286,11 +375,13 @@ export const t3ApiRouter = new Hono<AppEnv>()
   })
   .get("/capabilities", async (c) => {
     const store = new T3D1Store(c.env.DB, c.get("orgId"));
+    const hostId = readHostIdQuery(c.req.query("hostId"));
     try {
       const capabilities = await listT3ModelCapabilities(
         {
           store,
           encryptionKey: c.get("config").T3_ENCRYPTION_KEY,
+          hostId,
           fetchFn: c.get("t3Fetch"),
         },
         caches.default,
@@ -310,8 +401,9 @@ export const t3ApiRouter = new Hono<AppEnv>()
     }),
     async (c) => {
       requireOrgOwner(c);
+      const { workspaceRoot, hostId } = c.req.valid("json");
       try {
-        const result = await checkHostFolder(buildHostFolderDeps(c), c.req.valid("json").workspaceRoot);
+        const result = await checkHostFolder(buildHostFolderDeps(c), workspaceRoot, hostId);
         return c.json(result);
       } catch (err) {
         return hostFolderErrorResponse(err, c);
@@ -328,11 +420,13 @@ export const t3ApiRouter = new Hono<AppEnv>()
     }),
     async (c) => {
       requireOrgOwner(c);
+      const { workspaceRoot, hostId } = c.req.valid("json");
       try {
         const result = await registerHostFolder(
           buildHostFolderDeps(c),
           c.req.param("projectId"),
-          c.req.valid("json").workspaceRoot,
+          workspaceRoot,
+          hostId,
         );
         return c.json(result, result.created ? HTTP_CREATED : HTTP_OK);
       } catch (err) {
@@ -382,10 +476,17 @@ export const t3ApiRouter = new Hono<AppEnv>()
       if (!project) {
         throw new NotFoundError("project", projectId);
       }
-      const { t3ProjectId, t3ProjectTitle } = c.req.valid("json");
+      const { hostId, t3ProjectId, t3ProjectTitle } = c.req.valid("json");
       const store = new T3D1Store(c.env.DB, c.get("orgId"));
+      if (hostId) {
+        const host = await store.getConnection(hostId);
+        if (!host) {
+          throw new NotFoundError("t3_host", hostId);
+        }
+      }
       const mapping = await store.upsertProjectMapping({
         projectId,
+        ...(hostId ? { hostId } : {}),
         t3ProjectId,
         t3ProjectTitle,
       });

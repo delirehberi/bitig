@@ -705,12 +705,22 @@ describe("multi-user organisations, permissions, tokens, invitations, profile an
       env.DB.prepare(
         "ALTER TABLE `t3_connections` ADD `org_id` text DEFAULT '01a10000-0000-7000-8000-000000000001' NOT NULL",
       ),
+      env.DB.prepare("ALTER TABLE `t3_connections` ADD `label` text"),
+      env.DB.prepare("ALTER TABLE `t3_connections` ADD `kind` text DEFAULT 'user' NOT NULL"),
+      env.DB.prepare("ALTER TABLE `t3_connections` ADD `projects_root` text DEFAULT '~/www' NOT NULL"),
       env.DB.prepare(
-        "CREATE UNIQUE INDEX IF NOT EXISTS `t3_connections_org_id_unique` ON `t3_connections` (`org_id`)",
+        "CREATE INDEX IF NOT EXISTS `t3_connections_org_id_idx` ON `t3_connections` (`org_id`)",
+      ),
+      env.DB.prepare(
+        "CREATE UNIQUE INDEX IF NOT EXISTS `t3_connections_org_mcp_url_unique` ON `t3_connections` (`org_id`, `mcp_url`)",
       ),
       env.DB.prepare(
         "ALTER TABLE `t3_oauth_states` ADD `org_id` text DEFAULT '01a10000-0000-7000-8000-000000000001' NOT NULL",
       ),
+      env.DB.prepare("ALTER TABLE `t3_oauth_states` ADD `host_id` text"),
+      env.DB.prepare("ALTER TABLE `t3_oauth_states` ADD `label` text"),
+      env.DB.prepare("ALTER TABLE `t3_oauth_states` ADD `kind` text DEFAULT 'user' NOT NULL"),
+      env.DB.prepare("ALTER TABLE `t3_oauth_states` ADD `projects_root` text DEFAULT '~/www' NOT NULL"),
       env.DB.prepare(
         "ALTER TABLE `mcp_tokens` ADD `org_id` text DEFAULT '01a10000-0000-7000-8000-000000000001' NOT NULL",
       ),

@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, lt } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, lt } from "drizzle-orm";
 import { drizzle, type DrizzleD1Database } from "drizzle-orm/d1";
 import {
   AgentRunSchema,
@@ -8,10 +8,14 @@ import {
   ProjectT3ThreadSchema,
   T3ModelSelectionOptionsSchema,
   T3ProjectMappingSchema,
+  defaultIdGenerator,
+  defaultT3HostProjectsRoot,
+  normalizeHostFolderPath,
   toTimestamp,
   type AgentRun,
   type AgentRunState,
   type ProjectT3Thread,
+  type T3HostKind,
   type T3ModelSelection,
   type T3ModelSelectionOption,
   type T3ProjectMapping,
@@ -38,7 +42,11 @@ import {
 const DEFAULT_CONNECTION_ID = "default";
 
 export interface SaveT3ConnectionInput {
+  id?: string | undefined;
   orgId?: string | undefined;
+  label?: string | null | undefined;
+  kind?: T3HostKind | undefined;
+  projectsRoot?: string | undefined;
   mcpUrl: string;
   issuer: string;
   clientId: string;
@@ -49,9 +57,20 @@ export interface SaveT3ConnectionInput {
   now?: number;
 }
 
+export interface UpdateT3ConnectionInput {
+  label?: string | null | undefined;
+  kind?: T3HostKind | undefined;
+  projectsRoot?: string | undefined;
+  now?: number | undefined;
+}
+
 export interface SaveT3OauthStateInput {
   state: string;
   orgId?: string | undefined;
+  hostId?: string | null | undefined;
+  label?: string | null | undefined;
+  kind?: T3HostKind | undefined;
+  projectsRoot?: string | undefined;
   mcpUrl: string;
   issuer: string;
   tokenEndpoint: string;
@@ -65,6 +84,7 @@ export interface SaveT3OauthStateInput {
 export interface SaveAgentRunInput {
   id: string;
   taskId: string;
+  hostId?: string | undefined;
   t3ProjectId: string;
   threadId: string;
   link?: string | undefined;
@@ -116,6 +136,7 @@ function toAgentRun(row: AgentRunRecord): AgentRun {
     ...metadata,
     id: row.id,
     taskId: row.taskId,
+    ...(row.hostId !== null ? { hostId: row.hostId } : {}),
     t3ProjectId: row.t3ProjectId,
     threadId: row.threadId,
     ...(row.link !== null ? { link: row.link } : {}),
@@ -135,6 +156,7 @@ function toAgentRun(row: AgentRunRecord): AgentRun {
 export interface SaveProjectT3ThreadInput {
   id: string;
   projectId: string;
+  hostId?: string | undefined;
   t3ProjectId: string;
   threadId: string;
   title: string;
@@ -156,6 +178,7 @@ function toProjectT3Thread(row: ProjectT3ThreadRecord): ProjectT3Thread {
   return ProjectT3ThreadSchema.parse({
     id: row.id,
     projectId: row.projectId,
+    ...(row.hostId !== null ? { hostId: row.hostId } : {}),
     t3ProjectId: row.t3ProjectId,
     threadId: row.threadId,
     title: row.title,
@@ -174,6 +197,7 @@ function toProjectT3Thread(row: ProjectT3ThreadRecord): ProjectT3Thread {
 function toProjectMapping(row: T3ProjectMappingRecord): T3ProjectMapping {
   return T3ProjectMappingSchema.parse({
     projectId: row.projectId,
+    ...(row.hostId !== null ? { hostId: row.hostId } : {}),
     t3ProjectId: row.t3ProjectId,
     t3ProjectTitle: row.t3ProjectTitle,
     updatedAt: toTimestamp(new Date(row.updatedAt)),
@@ -181,7 +205,7 @@ function toProjectMapping(row: T3ProjectMappingRecord): T3ProjectMapping {
 }
 
 /**
- * Worker-only D1 store for T3 OAuth connection, PKCE states, project mappings,
+ * Worker-only D1 store for T3 OAuth connections, PKCE states, project mappings,
  * and `agent_runs`. Kept separate from `StorageProvider` so local, API, and
  * Markdown storage adapters remain untouched.
  */
@@ -198,15 +222,28 @@ export class T3D1Store {
     this.explicitOrgScope = orgId !== undefined;
   }
 
-  private connectionRowId(targetOrgId: string): string {
-    return targetOrgId === DEFAULT_ORGANISATION_ID ? DEFAULT_CONNECTION_ID : targetOrgId;
+  async listConnections(): Promise<T3ConnectionRecord[]> {
+    return await this.db
+      .select()
+      .from(t3Connections)
+      .where(eq(t3Connections.orgId, this.orgId))
+      .orderBy(asc(t3Connections.connectedAt), asc(t3Connections.id));
   }
 
-  async getConnection(): Promise<T3ConnectionRecord | undefined> {
+  async getConnection(hostId?: string): Promise<T3ConnectionRecord | undefined> {
+    if (hostId !== undefined) {
+      const rows = await this.db
+        .select()
+        .from(t3Connections)
+        .where(and(eq(t3Connections.orgId, this.orgId), eq(t3Connections.id, hostId)))
+        .limit(1);
+      return rows[0];
+    }
     const rows = await this.db
       .select()
       .from(t3Connections)
       .where(eq(t3Connections.orgId, this.orgId))
+      .orderBy(asc(t3Connections.connectedAt), asc(t3Connections.id))
       .limit(1);
     return rows[0];
   }
@@ -214,9 +251,63 @@ export class T3D1Store {
   async saveConnection(input: SaveT3ConnectionInput): Promise<T3ConnectionRecord> {
     const now = input.now ?? Date.now();
     const targetOrgId = input.orgId ?? this.orgId;
+
+    let existing: T3ConnectionRecord | undefined;
+    if (input.id) {
+      const byId = await this.db
+        .select()
+        .from(t3Connections)
+        .where(eq(t3Connections.id, input.id))
+        .limit(1);
+      const found = byId[0];
+      if (found && found.orgId !== targetOrgId) {
+        throw new Error(`T3 host ${input.id} belongs to another organisation`);
+      }
+      existing = found;
+    }
+    if (!existing) {
+      const byUrl = await this.db
+        .select()
+        .from(t3Connections)
+        .where(and(eq(t3Connections.orgId, targetOrgId), eq(t3Connections.mcpUrl, input.mcpUrl)))
+        .limit(1);
+      existing = byUrl[0];
+    }
+
+    let id = existing?.id ?? input.id;
+    if (!id) {
+      if (targetOrgId === DEFAULT_ORGANISATION_ID) {
+        const defaultRow = await this.db
+          .select({ id: t3Connections.id })
+          .from(t3Connections)
+          .where(eq(t3Connections.id, DEFAULT_CONNECTION_ID))
+          .limit(1);
+        id = defaultRow.length === 0 ? DEFAULT_CONNECTION_ID : defaultIdGenerator();
+      } else {
+        id = defaultIdGenerator();
+      }
+    }
+
+    const kind: T3HostKind = input.kind ?? existing?.kind ?? "user";
+    const projectsRoot = normalizeHostFolderPath(
+      input.projectsRoot ??
+        (input.kind && input.kind !== existing?.kind ? undefined : existing?.projectsRoot) ??
+        defaultT3HostProjectsRoot(kind),
+    );
+    const trimmedInputLabel = input.label?.trim();
+    const label =
+      input.label === undefined
+        ? (existing?.label ?? null)
+        : trimmedInputLabel !== undefined && trimmedInputLabel.length > 0
+          ? trimmedInputLabel
+          : null;
+
     const record: T3ConnectionRecord = {
-      id: this.connectionRowId(targetOrgId),
+      id,
       orgId: targetOrgId,
+      label,
+      kind,
+      projectsRoot,
       mcpUrl: input.mcpUrl,
       issuer: input.issuer,
       clientId: input.clientId,
@@ -224,7 +315,7 @@ export class T3D1Store {
       tokenIv: input.tokenIv,
       scope: input.scope,
       expiresAt: input.expiresAt,
-      connectedAt: now,
+      connectedAt: existing?.connectedAt ?? now,
       updatedAt: now,
     };
 
@@ -235,6 +326,9 @@ export class T3D1Store {
         target: t3Connections.id,
         set: {
           orgId: record.orgId,
+          label: record.label,
+          kind: record.kind,
+          projectsRoot: record.projectsRoot,
           mcpUrl: record.mcpUrl,
           issuer: record.issuer,
           clientId: record.clientId,
@@ -250,15 +344,80 @@ export class T3D1Store {
     return record;
   }
 
-  async deleteConnection(): Promise<void> {
-    await this.db.delete(t3Connections).where(eq(t3Connections.orgId, this.orgId));
+  async updateConnection(
+    hostId: string,
+    patch: UpdateT3ConnectionInput,
+  ): Promise<T3ConnectionRecord | undefined> {
+    const existing = await this.getConnection(hostId);
+    if (!existing) {
+      return undefined;
+    }
+    const updatedAt = patch.now ?? Date.now();
+    const nextKind: T3HostKind = patch.kind ?? existing.kind;
+    let nextProjectsRoot = existing.projectsRoot;
+    if (patch.projectsRoot !== undefined) {
+      nextProjectsRoot = normalizeHostFolderPath(patch.projectsRoot);
+    } else if (patch.kind !== undefined && patch.kind !== existing.kind) {
+      const previousDefault = defaultT3HostProjectsRoot(existing.kind);
+      if (existing.projectsRoot === previousDefault) {
+        nextProjectsRoot = defaultT3HostProjectsRoot(nextKind);
+      }
+    }
+    const trimmedPatchLabel = patch.label?.trim();
+    const nextLabel =
+      patch.label === undefined
+        ? existing.label
+        : trimmedPatchLabel !== undefined && trimmedPatchLabel.length > 0
+          ? trimmedPatchLabel
+          : null;
+
+    const rows = await this.db
+      .update(t3Connections)
+      .set({
+        label: nextLabel,
+        kind: nextKind,
+        projectsRoot: nextProjectsRoot,
+        updatedAt,
+      })
+      .where(and(eq(t3Connections.orgId, this.orgId), eq(t3Connections.id, hostId)))
+      .returning();
+    return rows[0];
+  }
+
+  async deleteConnection(hostId?: string): Promise<boolean> {
+    const whereClause =
+      hostId !== undefined
+        ? and(eq(t3Connections.orgId, this.orgId), eq(t3Connections.id, hostId))
+        : eq(t3Connections.orgId, this.orgId);
+    const deleted = await this.db
+      .delete(t3Connections)
+      .where(whereClause)
+      .returning({ id: t3Connections.id });
+    return deleted.length > 0;
   }
 
   async saveOauthState(input: SaveT3OauthStateInput): Promise<void> {
+    const kind: T3HostKind = input.kind ?? "user";
+    const projectsRoot = normalizeHostFolderPath(
+      input.projectsRoot ?? defaultT3HostProjectsRoot(kind),
+    );
+    const trimmedStateLabel = input.label?.trim();
     await this.db.delete(t3OauthStates).where(lt(t3OauthStates.expiresAt, input.createdAt));
     await this.db.insert(t3OauthStates).values({
-      ...input,
+      state: input.state,
       orgId: input.orgId ?? this.orgId,
+      hostId: input.hostId ?? null,
+      label: trimmedStateLabel !== undefined && trimmedStateLabel.length > 0 ? trimmedStateLabel : null,
+      kind,
+      projectsRoot,
+      mcpUrl: input.mcpUrl,
+      issuer: input.issuer,
+      tokenEndpoint: input.tokenEndpoint,
+      clientId: input.clientId,
+      codeVerifier: input.codeVerifier,
+      redirectUri: input.redirectUri,
+      createdAt: input.createdAt,
+      expiresAt: input.expiresAt,
     });
   }
 
@@ -307,13 +466,25 @@ export class T3D1Store {
 
   async upsertProjectMapping(input: {
     projectId: string;
+    hostId?: string | null | undefined;
     t3ProjectId: string;
     t3ProjectTitle: string;
     now?: number;
   }): Promise<T3ProjectMapping> {
     const updatedAt = input.now ?? Date.now();
+    let hostId = input.hostId;
+    if (hostId === undefined) {
+      const existing = await this.getProjectMapping(input.projectId);
+      if (existing?.hostId) {
+        hostId = existing.hostId;
+      } else {
+        const primaryHost = await this.getConnection();
+        hostId = primaryHost?.id ?? null;
+      }
+    }
     const record: T3ProjectMappingRecord = {
       projectId: input.projectId,
+      hostId: hostId ?? null,
       t3ProjectId: input.t3ProjectId,
       t3ProjectTitle: input.t3ProjectTitle,
       updatedAt,
@@ -324,6 +495,7 @@ export class T3D1Store {
       .onConflictDoUpdate({
         target: t3ProjectMappings.projectId,
         set: {
+          hostId: record.hostId,
           t3ProjectId: record.t3ProjectId,
           t3ProjectTitle: record.t3ProjectTitle,
           updatedAt: record.updatedAt,
@@ -374,6 +546,7 @@ export class T3D1Store {
       pullRequestUrls: null,
       id: input.id,
       taskId: input.taskId,
+      hostId: input.hostId ?? null,
       t3ProjectId: input.t3ProjectId,
       threadId: input.threadId,
       link: input.link ?? null,
@@ -401,6 +574,7 @@ export class T3D1Store {
           diffStat: null,
           pullRequestUrls: null,
           id: record.id,
+          hostId: record.hostId,
           t3ProjectId: record.t3ProjectId,
           threadId: record.threadId,
           link: record.link,
@@ -569,11 +743,30 @@ export class T3D1Store {
 
   /** Project-level threads (#BIT-127), newest first. Pass a project ID to list one project's threads. */
   async listProjectThreads(projectId?: string): Promise<ProjectT3Thread[]> {
-    const query = this.db.select().from(projectT3Threads);
-    const rows = await (projectId ? query.where(eq(projectT3Threads.projectId, projectId)) : query).orderBy(
-      desc(projectT3Threads.startedAt),
-      desc(projectT3Threads.id),
-    );
+    if (projectId !== undefined) {
+      const rows = await this.db
+        .select()
+        .from(projectT3Threads)
+        .where(eq(projectT3Threads.projectId, projectId))
+        .orderBy(desc(projectT3Threads.startedAt), desc(projectT3Threads.id));
+      return rows.map(toProjectT3Thread);
+    }
+    if (!this.explicitOrgScope) {
+      const rows = await this.db
+        .select()
+        .from(projectT3Threads)
+        .orderBy(desc(projectT3Threads.startedAt), desc(projectT3Threads.id));
+      return rows.map(toProjectT3Thread);
+    }
+    const orgProjectIds = this.db
+      .select({ id: projects.id })
+      .from(projects)
+      .where(eq(projects.orgId, this.orgId));
+    const rows = await this.db
+      .select()
+      .from(projectT3Threads)
+      .where(inArray(projectT3Threads.projectId, orgProjectIds))
+      .orderBy(desc(projectT3Threads.startedAt), desc(projectT3Threads.id));
     return rows.map(toProjectT3Thread);
   }
 
@@ -583,6 +776,7 @@ export class T3D1Store {
       .select()
       .from(projectT3Threads)
       .where(and(eq(projectT3Threads.projectId, projectId), eq(projectT3Threads.threadId, threadId)))
+      .orderBy(desc(projectT3Threads.startedAt), desc(projectT3Threads.id))
       .limit(1);
     const row = rows[0];
     return row ? toProjectT3Thread(row) : undefined;
@@ -600,6 +794,7 @@ export class T3D1Store {
     const record: ProjectT3ThreadRecord = {
       id: input.id,
       projectId: input.projectId,
+      hostId: input.hostId ?? null,
       t3ProjectId: input.t3ProjectId,
       threadId: input.threadId,
       title: input.title,

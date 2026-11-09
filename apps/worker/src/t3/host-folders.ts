@@ -7,14 +7,14 @@ import {
   type T3ProjectMapping,
   type T3RemoteProject,
 } from "@bitig/core";
-import type { T3D1Store } from "@bitig/storage-d1";
+import type { T3ConnectionRecord, T3D1Store } from "@bitig/storage-d1";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { T3McpError, T3_PROJECT_OPERATION_TIMEOUT_MS, type T3CallOptions, type T3McpClient } from "./client";
-import { createActiveT3McpClient } from "./service";
+import { resolveActiveT3ConnectionAndClient } from "./service";
 
 /**
- * Host project operations (#BIT-148): check a folder on the connected T3 host, register it as a
- * T3 project and link it to a Bitig project, or unregister it. Bitig never creates, moves or
+ * Host project operations (#BIT-148, #BIT-147): check a folder on the selected T3 host, register it
+ * as a T3 project and link it to a Bitig project, or unregister it. Bitig never creates, moves or
  * deletes files on the host: registering fails for a missing folder, and T3 keeps the folder on
  * disk when a project is unregistered.
  */
@@ -79,6 +79,11 @@ function callOptions(deps: HostFolderDeps): T3CallOptions {
   };
 }
 
+function sameHostId(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (!a || !b) return true;
+  return a === b;
+}
+
 /**
  * Turns a T3 failure into an error the owner can act on. Anything that is not a T3 error (no
  * connection, expired token, …) is rethrown unchanged; those already carry actionable messages.
@@ -137,24 +142,32 @@ async function describeProject(storage: StorageProvider, projectId: string): Pro
   return project ? `"${project.name}"` : "another Bitig project";
 }
 
-async function connect(deps: HostFolderDeps): Promise<T3McpClient> {
-  return createActiveT3McpClient({
+async function connect(
+  deps: HostFolderDeps,
+  hostId?: string,
+): Promise<{ connection: T3ConnectionRecord; client: T3McpClient }> {
+  return resolveActiveT3ConnectionAndClient({
     store: deps.store,
     encryptionKey: deps.encryptionKey,
+    hostId,
     fetchFn: deps.fetchFn,
   });
 }
 
 /**
- * Reports whether a folder is already registered in T3 and which Bitig project uses it. T3 has
- * no tool that only checks whether a folder exists, so for an unregistered folder this cannot
- * say whether it exists; registering it does (T3 fails for a missing folder).
+ * Reports whether a folder is already registered in T3 on the selected host and which Bitig project
+ * uses it. T3 has no tool that only checks whether a folder exists, so for an unregistered folder
+ * this cannot say whether it exists; registering it does (T3 fails for a missing folder).
  *
  * Paths are compared as written: `~/www/app` and `/home/dev/www/app` are not matched, because
  * Bitig cannot know the host user's home directory.
  */
-export async function checkHostFolder(deps: HostFolderDeps, workspaceRoot: string): Promise<HostFolderCheckResult> {
-  const client = await connect(deps);
+export async function checkHostFolder(
+  deps: HostFolderDeps,
+  workspaceRoot: string,
+  hostId?: string,
+): Promise<HostFolderCheckResult> {
+  const { connection, client } = await connect(deps, hostId);
   let projects: T3RemoteProject[];
   try {
     projects = await client.listAllProjects(callOptions(deps));
@@ -163,11 +176,17 @@ export async function checkHostFolder(deps: HostFolderDeps, workspaceRoot: strin
   }
   const t3Project = findProjectAtPath(projects, workspaceRoot);
   if (!t3Project) {
-    return { workspaceRoot };
+    return {
+      ...(hostId ? { hostId: connection.id } : {}),
+      workspaceRoot,
+    };
   }
   const mappings = await deps.store.listProjectMappings();
-  const mapped = mappings.find((mapping) => mapping.t3ProjectId === t3Project.id);
+  const mapped = mappings.find(
+    (mapping) => sameHostId(mapping.hostId, connection.id) && mapping.t3ProjectId === t3Project.id,
+  );
   return {
+    ...(hostId ? { hostId: connection.id } : {}),
     workspaceRoot,
     t3Project: { id: t3Project.id, title: t3Project.title },
     ...(mapped ? { mappedProjectId: mapped.projectId } : {}),
@@ -175,18 +194,19 @@ export async function checkHostFolder(deps: HostFolderDeps, workspaceRoot: strin
 }
 
 /**
- * Registers `workspaceRoot` as a T3 project and links it to the Bitig project. Retries are
- * idempotent: when the folder is already registered in T3 and not linked elsewhere (e.g. an
- * earlier attempt registered it but failed before saving the link), the existing T3 project
- * is linked instead of registering it again, so no duplicate T3 project or mapping is made.
+ * Registers `workspaceRoot` as a T3 project on the selected host and links it to the Bitig project.
+ * Retries are idempotent: when the folder is already registered in T3 on that host and not linked
+ * elsewhere (e.g. an earlier attempt registered it but failed before saving the link), the existing
+ * T3 project is linked instead of registering it again, so no duplicate T3 project or mapping is made.
  */
 export async function registerHostFolder(
   deps: HostFolderDeps,
   projectId: string,
   workspaceRoot: string,
+  hostId?: string,
 ): Promise<RegisterHostFolderResult> {
   const project = await requireProject(deps.storage, projectId);
-  const client = await connect(deps);
+  const { connection, client } = await connect(deps, hostId);
   const options = callOptions(deps);
 
   let projects: T3RemoteProject[];
@@ -202,8 +222,17 @@ export async function registerHostFolder(
   ]);
 
   if (existing) {
-    if (atPath?.id === existing.t3ProjectId) {
-      return { mapping: existing, created: false };
+    if (sameHostId(existing.hostId, connection.id) && atPath?.id === existing.t3ProjectId) {
+      if (existing.hostId === connection.id) {
+        return { mapping: existing, created: false };
+      }
+      const updated = await deps.store.upsertProjectMapping({
+        projectId,
+        hostId: connection.id,
+        t3ProjectId: existing.t3ProjectId,
+        t3ProjectTitle: existing.t3ProjectTitle,
+      });
+      return { mapping: updated, created: false };
     }
     throw new HostFolderError(
       "project_already_mapped",
@@ -213,7 +242,9 @@ export async function registerHostFolder(
   }
 
   if (atPath) {
-    const other = mappings.find((mapping) => mapping.t3ProjectId === atPath.id);
+    const other = mappings.find(
+      (mapping) => sameHostId(mapping.hostId, connection.id) && mapping.t3ProjectId === atPath.id,
+    );
     if (other) {
       throw new HostFolderError(
         "folder_mapped_to_other_project",
@@ -223,6 +254,7 @@ export async function registerHostFolder(
     }
     const mapping = await deps.store.upsertProjectMapping({
       projectId,
+      hostId: connection.id,
       t3ProjectId: atPath.id,
       t3ProjectTitle: atPath.title,
     });
@@ -249,6 +281,7 @@ export async function registerHostFolder(
 
   const mapping = await deps.store.upsertProjectMapping({
     projectId,
+    hostId: connection.id,
     t3ProjectId: registered.id,
     t3ProjectTitle: registered.title,
   });
@@ -256,9 +289,9 @@ export async function registerHostFolder(
 }
 
 /**
- * Unregisters the Bitig project's T3 project and removes the link. T3 keeps the folder on disk,
- * and Bitig never touches host files. Refused while the project has active T3 sessions, or when
- * another Bitig project is linked to the same T3 project.
+ * Unregisters the Bitig project's T3 project on its mapped host and removes the link. T3 keeps the
+ * folder on disk, and Bitig never touches host files. Refused while the project has active T3
+ * sessions, or when another Bitig project is linked to the same T3 project on that host.
  */
 export async function unregisterHostFolder(
   deps: HostFolderDeps,
@@ -277,7 +310,10 @@ export async function unregisterHostFolder(
     deps.store.listProjectThreads(projectId),
   ]);
   const shared = mappings.find(
-    (other) => other.projectId !== projectId && other.t3ProjectId === mapping.t3ProjectId,
+    (other) =>
+      other.projectId !== projectId &&
+      sameHostId(other.hostId, mapping.hostId) &&
+      other.t3ProjectId === mapping.t3ProjectId,
   );
   if (shared) {
     throw new HostFolderError(
@@ -287,8 +323,12 @@ export async function unregisterHostFolder(
     );
   }
   const activeSessions =
-    runs.filter((run) => run.t3ProjectId === mapping.t3ProjectId && isActiveAgentRunState(run.state)).length +
-    threads.filter((thread) => isActiveAgentRunState(thread.state)).length;
+    runs.filter(
+      (run) =>
+        sameHostId(run.hostId, mapping.hostId) &&
+        run.t3ProjectId === mapping.t3ProjectId &&
+        isActiveAgentRunState(run.state),
+    ).length + threads.filter((thread) => isActiveAgentRunState(thread.state)).length;
   if (activeSessions > 0) {
     throw new HostFolderError(
       "project_busy",
@@ -297,7 +337,7 @@ export async function unregisterHostFolder(
     );
   }
 
-  const client = await connect(deps);
+  const { client } = await connect(deps, mapping.hostId);
   const options = callOptions(deps);
   try {
     // A project already removed in T3 (by hand, or by an earlier attempt that failed before

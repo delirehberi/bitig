@@ -3,6 +3,21 @@ import { CommentAuthorSchema, CommentBodySchema, IdSchema, TaskActorSchema, Time
 import type { Checkpoint, Comment, Task } from "./types";
 import { COMMENT_BODY_MAX } from "./constants";
 import { BitigError, ERROR_CODES, ValidationError } from "./errors";
+import { HOST_PROJECTS_ROOT_CONTAINER, HOST_PROJECTS_ROOT_USER, HostFolderPathSchema } from "./host-folder";
+
+export const T3_HOST_KINDS = ["user", "container"] as const;
+export type T3HostKind = (typeof T3_HOST_KINDS)[number];
+export const T3HostKindSchema = z.enum(T3_HOST_KINDS);
+
+export const T3_HOST_ID_MAX = 200;
+export const T3_HOST_LABEL_MAX = 200;
+export const T3HostIdSchema = z.string().trim().min(1).max(T3_HOST_ID_MAX);
+export const T3HostLabelSchema = z.string().trim().min(1).max(T3_HOST_LABEL_MAX);
+
+/** Default projects root on a T3 host (`~/www` on user-owned hosts, `/var/www` on managed containers, #BIT-146). */
+export function defaultT3HostProjectsRoot(kind: T3HostKind = "user"): string {
+  return kind === "container" ? HOST_PROJECTS_ROOT_CONTAINER : HOST_PROJECTS_ROOT_USER;
+}
 
 export const AGENT_RUN_STATES = [
   "queued",
@@ -142,6 +157,7 @@ export const AgentRunSchema = z.strictObject({
   ...T3GitMetadataSchema.shape,
   id: IdSchema,
   taskId: IdSchema,
+  hostId: T3HostIdSchema.exactOptional(),
   t3ProjectId: z.string().trim().min(1).max(200),
   threadId: z.string().trim().min(1).max(256),
   link: z.string().trim().min(1).max(2048).exactOptional(),
@@ -174,6 +190,7 @@ export type T3RemoteProject = z.output<typeof T3RemoteProjectSchema>;
 
 export const T3ProjectMappingSchema = z.strictObject({
   projectId: IdSchema,
+  hostId: T3HostIdSchema.exactOptional(),
   t3ProjectId: z.string().trim().min(1).max(200),
   t3ProjectTitle: z.string().trim().min(1).max(500),
   updatedAt: TimestampSchema,
@@ -182,6 +199,7 @@ export const T3ProjectMappingSchema = z.strictObject({
 export type T3ProjectMapping = z.output<typeof T3ProjectMappingSchema>;
 
 export const UpsertT3ProjectMappingInputSchema = z.strictObject({
+  hostId: T3HostIdSchema.exactOptional(),
   t3ProjectId: z.string().trim().min(1).max(200),
   t3ProjectTitle: z.string().trim().min(1).max(500),
 });
@@ -190,6 +208,10 @@ export type UpsertT3ProjectMappingInput = z.input<typeof UpsertT3ProjectMappingI
 
 export const T3ConnectionStatusSchema = z.strictObject({
   connected: z.boolean(),
+  id: T3HostIdSchema.exactOptional(),
+  label: T3HostLabelSchema.exactOptional(),
+  kind: T3HostKindSchema.exactOptional(),
+  projectsRoot: HostFolderPathSchema.exactOptional(),
   mcpUrl: z.string().exactOptional(),
   issuer: z.string().exactOptional(),
   scope: z.string().exactOptional(),
@@ -202,8 +224,38 @@ export const T3ConnectionStatusSchema = z.strictObject({
 
 export type T3ConnectionStatus = z.output<typeof T3ConnectionStatusSchema>;
 
+export const T3HostConnectionStatusSchema = z.strictObject({
+  id: T3HostIdSchema,
+  label: T3HostLabelSchema.exactOptional(),
+  kind: T3HostKindSchema,
+  projectsRoot: HostFolderPathSchema,
+  connected: z.literal(true),
+  mcpUrl: z.string(),
+  issuer: z.string(),
+  scope: z.string().exactOptional(),
+  connectedAt: TimestampSchema,
+  expiresAt: TimestampSchema,
+  expiresInDays: z.number(),
+  expiringSoon: z.boolean(),
+  expired: z.boolean(),
+});
+
+export type T3HostConnectionStatus = z.output<typeof T3HostConnectionStatusSchema>;
+
+export const UpdateT3HostInputSchema = z.strictObject({
+  label: z.string().trim().min(1).max(T3_HOST_LABEL_MAX).nullable().exactOptional(),
+  kind: T3HostKindSchema.exactOptional(),
+  projectsRoot: HostFolderPathSchema.exactOptional(),
+});
+
+export type UpdateT3HostInput = z.input<typeof UpdateT3HostInputSchema>;
+
 export const T3StartOAuthInputSchema = z.strictObject({
   mcpUrl: z.string().trim().min(1).max(512),
+  hostId: T3HostIdSchema.exactOptional(),
+  label: T3HostLabelSchema.exactOptional(),
+  kind: T3HostKindSchema.exactOptional(),
+  projectsRoot: HostFolderPathSchema.exactOptional(),
 });
 
 export type T3StartOAuthInput = z.input<typeof T3StartOAuthInputSchema>;
@@ -280,6 +332,7 @@ export interface T3ThreadListItem {
 export interface T3ProjectActiveSession {
   readonly threadId: string;
   readonly projectId: string;
+  readonly hostId?: string | undefined;
   readonly t3ProjectId: string;
   readonly state: ActiveAgentRunState;
   readonly taskId?: string | undefined;
@@ -517,6 +570,7 @@ export const DEFAULT_PROJECT_T3_WORKSPACE_STRATEGY: T3WorkspaceStrategy = "root"
 export const ProjectT3ThreadSchema = z.strictObject({
   id: IdSchema,
   projectId: IdSchema,
+  hostId: T3HostIdSchema.exactOptional(),
   t3ProjectId: z.string().trim().min(1).max(200),
   threadId: z.string().trim().min(1).max(256),
   title: z.string().trim().min(1).max(PROJECT_T3_THREAD_TITLE_MAX),
@@ -556,7 +610,7 @@ export const SendProjectT3MessageInputSchema = z.strictObject({
 
 export type SendProjectT3MessageInput = z.input<typeof SendProjectT3MessageInputSchema>;
 
-const ELLIPSIS = "…";
+const ELLIPSIS = "\u2026";
 
 /** The thread title: the prompt's first non-empty line, cut to `PROJECT_T3_THREAD_TITLE_MAX`. */
 export function buildProjectT3ThreadTitle(prompt: string): string {
@@ -751,12 +805,12 @@ export function normalizeT3McpUrl(rawUrl: string): { mcpUrl: string; origin: str
   }
 
   const scheme = (match[1] ?? "").toLowerCase();
-  const userInfo = match[2] ?? "";
+  const userInfo = (match[2] ?? "");
   const hostname = (match[3] ?? "").toLowerCase();
-  const port = match[4] ?? "";
-  const pathname = match[5] ?? "";
-  const query = match[6] ?? "";
-  const hash = match[7] ?? "";
+  const port = (match[4] ?? "");
+  const pathname = (match[5] ?? "");
+  const query = (match[6] ?? "");
+  const hash = (match[7] ?? "");
 
   if (userInfo !== "") {
     throwUrlValidationError(rawUrl, "T3 MCP URL must not contain credentials");
@@ -789,6 +843,10 @@ export function normalizeT3McpUrl(rawUrl: string): { mcpUrl: string; origin: str
 
 export function computeT3ConnectionStatus(
   record: {
+    readonly id?: string | null | undefined;
+    readonly label?: string | null | undefined;
+    readonly kind?: T3HostKind | null | undefined;
+    readonly projectsRoot?: string | null | undefined;
     readonly mcpUrl: string;
     readonly issuer: string;
     readonly scope?: string | null | undefined;
@@ -805,6 +863,47 @@ export function computeT3ConnectionStatus(
   const expiringSoon = !expired && remainingMs <= T3_EXPIRY_WARNING_MS;
   const expiresInDays = Math.max(0, Math.ceil(remainingMs / MS_PER_DAY));
   return {
+    connected: true,
+    ...(record.id ? { id: record.id } : {}),
+    ...(record.label ? { label: record.label } : {}),
+    ...(record.kind ? { kind: record.kind } : {}),
+    ...(record.projectsRoot ? { projectsRoot: record.projectsRoot } : {}),
+    mcpUrl: record.mcpUrl,
+    issuer: record.issuer,
+    ...(record.scope ? { scope: record.scope } : {}),
+    connectedAt: new Date(record.connectedAt).toISOString(),
+    expiresAt: new Date(record.expiresAt).toISOString(),
+    expiresInDays,
+    expiringSoon,
+    expired,
+  };
+}
+
+export function computeT3HostConnectionStatus(
+  record: {
+    readonly id: string;
+    readonly label?: string | null | undefined;
+    readonly kind?: T3HostKind | null | undefined;
+    readonly projectsRoot?: string | null | undefined;
+    readonly mcpUrl: string;
+    readonly issuer: string;
+    readonly scope?: string | null | undefined;
+    readonly connectedAt: number;
+    readonly expiresAt: number;
+  },
+  nowMs: number = Date.now(),
+): T3HostConnectionStatus {
+  const kind: T3HostKind = record.kind === "container" ? "container" : "user";
+  const projectsRoot = record.projectsRoot ?? defaultT3HostProjectsRoot(kind);
+  const remainingMs = record.expiresAt - nowMs;
+  const expired = remainingMs <= 0;
+  const expiringSoon = !expired && remainingMs <= T3_EXPIRY_WARNING_MS;
+  const expiresInDays = Math.max(0, Math.ceil(remainingMs / MS_PER_DAY));
+  return {
+    id: record.id,
+    ...(record.label ? { label: record.label } : {}),
+    kind,
+    projectsRoot,
     connected: true,
     mcpUrl: record.mcpUrl,
     issuer: record.issuer,
