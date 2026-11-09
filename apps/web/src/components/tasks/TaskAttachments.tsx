@@ -17,11 +17,9 @@ import {
   assertTaskAttachmentQuota,
   decodeUtf8,
   encodeBase64,
-  inferAttachmentMimeType,
   isImageAttachmentMimeType,
   isMarkdownAttachment,
   isTextAttachmentMimeType,
-  normalizeAttachmentMimeType,
   type Attachment,
   type AttachmentContent,
   type AttachmentMimeType,
@@ -31,16 +29,14 @@ import {
 import { formatFullTimestamp, formatTimeAgo } from "../../domain/time-ago";
 import { useAttachments, type AddAttachmentFileInput } from "../../hooks/useAttachments";
 import { Markdown } from "../Markdown";
+import {
+  extractFilesFromClipboard,
+  fileToAttachmentInput,
+  formatByteSize,
+  shouldIgnoreGlobalPaste,
+} from "./attachment-utils";
 
 const ICON_SIZE = 12;
-const BYTES_PER_KB = 1024;
-const BYTES_PER_MB = 1024 * 1024;
-
-function formatByteSize(bytes: number): string {
-  if (bytes < BYTES_PER_KB) return `${String(bytes)} B`;
-  if (bytes < BYTES_PER_MB) return `${(bytes / BYTES_PER_KB).toFixed(1)} KB`;
-  return `${(bytes / BYTES_PER_MB).toFixed(1)} MB`;
-}
 
 function isPreviewable(attachment: Attachment): boolean {
   return (
@@ -48,36 +44,6 @@ function isPreviewable(attachment: Attachment): boolean {
     isTextAttachmentMimeType(attachment.mimeType) ||
     isImageAttachmentMimeType(attachment.mimeType)
   );
-}
-
-/**
- * Reads a browser `File` into an attachment payload, normalizing its MIME type or falling back
- * to extension inference when the OS/browser reports a non-standard type (e.g. `video/mp2t` for `.ts`).
- */
-async function fileToAttachmentInput(file: File): Promise<{
-  readonly name: string;
-  readonly mimeType: AttachmentMimeType;
-  readonly data: Uint8Array;
-}> {
-  const bytes = new Uint8Array(await file.arrayBuffer());
-  const fallbackExt = file.type.startsWith("image/")
-    ? `.${file.type.slice("image/".length).split(";")[0] ?? "png"}`
-    : "";
-  const name =
-    file.name && file.name.trim().length > 0
-      ? file.name.trim()
-      : `pasted-${String(Date.now())}${fallbackExt}`;
-  let mimeType: AttachmentMimeType;
-  if (file.type) {
-    try {
-      mimeType = normalizeAttachmentMimeType(file.type, name);
-    } catch {
-      mimeType = inferAttachmentMimeType(name);
-    }
-  } else {
-    mimeType = inferAttachmentMimeType(name);
-  }
-  return { name, mimeType, data: bytes };
 }
 
 interface AttachmentItemProps {
@@ -269,8 +235,9 @@ export function TaskAttachments({ storage, taskId }: TaskAttachmentsProps) {
   useEffect(() => {
     if (unsupported) return;
     function handlePaste(e: ClipboardEvent) {
-      const files = e.clipboardData?.files;
-      if (!files || files.length === 0) return;
+      if (shouldIgnoreGlobalPaste(e)) return;
+      const files = extractFilesFromClipboard(e.clipboardData);
+      if (files.length === 0) return;
       e.preventDefault();
       void uploadFiles(files);
     }
@@ -457,8 +424,9 @@ export function StagedTaskAttachments({ items, onChange, disabled = false }: Sta
   useEffect(() => {
     if (disabled) return;
     function handlePaste(e: ClipboardEvent) {
-      const files = e.clipboardData?.files;
-      if (!files || files.length === 0) return;
+      if (shouldIgnoreGlobalPaste(e)) return;
+      const files = extractFilesFromClipboard(e.clipboardData);
+      if (files.length === 0) return;
       e.preventDefault();
       void stageFiles(files);
     }

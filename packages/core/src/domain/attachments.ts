@@ -343,3 +343,123 @@ export function compareAttachments(a: Attachment, b: Attachment): number {
   if (a.id === b.id) return 0;
   return a.id < b.id ? -1 : 1;
 }
+
+export interface CommentAttachmentReference {
+  readonly id: string;
+  readonly name?: string | undefined;
+}
+
+export interface T3CommentAttachmentInfo {
+  readonly id: string;
+  readonly name?: string | undefined;
+  readonly mimeType?: string | undefined;
+  readonly size?: number | undefined;
+}
+
+function escapeMarkdownLinkLabel(label: string): string {
+  return label.replace(/([\\[\]])/g, "\\$1");
+}
+
+/**
+ * Formats an uploaded task attachment as an inline Markdown image (`![name](/api/attachments/<id>)`)
+ * for raster images or a Markdown link (`[name](/api/attachments/<id>)`) for other files (#BIT-170).
+ */
+export function formatCommentAttachmentMarkdown(
+  attachment: Pick<Attachment, "id" | "name" | "mimeType">,
+): string {
+  const label = escapeMarkdownLinkLabel(attachment.name);
+  const url = `/api/attachments/${attachment.id}`;
+  return isImageAttachmentMimeType(attachment.mimeType) ? `![${label}](${url})` : `[${label}](${url})`;
+}
+
+/**
+ * Appends formatted attachment Markdown lines to a comment draft, allowing empty text drafts
+ * when one or more attachments are present (#BIT-170).
+ */
+export function appendAttachmentsToCommentBody(
+  body: string,
+  attachments: readonly Pick<Attachment, "id" | "name" | "mimeType">[],
+): string {
+  const trimmed = body.trim();
+  if (attachments.length === 0) return trimmed;
+  const attachmentMarkdown = attachments.map(formatCommentAttachmentMarkdown).join("\n");
+  return trimmed.length > 0 ? `${body.trimEnd()}\n\n${attachmentMarkdown}` : attachmentMarkdown;
+}
+
+const MARKDOWN_ATTACHMENT_LINK_PATTERN =
+  /!?(?:\[((?:\\.|[^\]])*)\])\((?:https?:\/\/[^/\s)]+)?\/api\/attachments\/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[^)\s]+)\)/g;
+const BARE_ATTACHMENT_PATH_PATTERN =
+  /\/api\/attachments\/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\b/g;
+
+/**
+ * Extracts deduplicated task attachment references (`/api/attachments/<id>`) from a comment body (#BIT-170).
+ */
+export function extractCommentAttachmentReferences(body: string): CommentAttachmentReference[] {
+  const byId = new Map<string, CommentAttachmentReference>();
+  for (const match of body.matchAll(MARKDOWN_ATTACHMENT_LINK_PATTERN)) {
+    const rawName = match[1]?.replace(/\\([\\[\]])/g, "$1").trim();
+    const id = match[2]?.trim();
+    if (!id) continue;
+    if (!byId.has(id)) {
+      byId.set(id, { id, ...(rawName ? { name: rawName } : {}) });
+    }
+  }
+  for (const match of body.matchAll(BARE_ATTACHMENT_PATH_PATTERN)) {
+    const id = match[1]?.trim();
+    if (!id || byId.has(id)) continue;
+    byId.set(id, { id });
+  }
+  return [...byId.values()];
+}
+
+/**
+ * Formats attachment references for a T3 comment/reply prompt so the agent knows which attachments
+ * were included with the comment and how to inspect them via `get_attachment` (#BIT-170).
+ */
+export function formatT3CommentAttachmentContext(
+  body: string,
+  knownAttachments: readonly T3CommentAttachmentInfo[] = [],
+): string {
+  const byId = new Map<string, T3CommentAttachmentInfo>();
+  for (const att of knownAttachments) {
+    byId.set(att.id, att);
+  }
+  const refs = extractCommentAttachmentReferences(body);
+  const resolved: T3CommentAttachmentInfo[] = [];
+  const seen = new Set<string>();
+
+  for (const ref of refs) {
+    if (seen.has(ref.id)) continue;
+    seen.add(ref.id);
+    const known = byId.get(ref.id);
+    if (known) {
+      resolved.push(known);
+    } else {
+      resolved.push({ id: ref.id, ...(ref.name ? { name: ref.name } : {}) });
+    }
+  }
+
+  for (const att of knownAttachments) {
+    if (seen.has(att.id)) continue;
+    seen.add(att.id);
+    resolved.push(att);
+  }
+
+  if (resolved.length === 0) return "";
+
+  const lines = resolved.map((att) => {
+    const label = att.name ? `\`${att.name}\`` : `attachment \`${att.id}\``;
+    const details = [
+      `id: \`${att.id}\``,
+      ...(att.mimeType ? [att.mimeType] : []),
+      ...(att.size !== undefined ? [`${String(att.size)} bytes`] : []),
+    ].join(", ");
+    return `- ${label} (${details}) — inspect with \`get_attachment({ id: "${att.id}" })\``;
+  });
+
+  return [
+    "Attachments included with this comment (call `get_attachment` to inspect):",
+    ...lines,
+  ].join("\n");
+}
+

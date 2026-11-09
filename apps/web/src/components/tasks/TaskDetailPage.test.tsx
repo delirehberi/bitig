@@ -6,7 +6,7 @@ import {
   type T3ModelCapability,
   type Task,
 } from "@bitig/core";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { FeatureFlagsProvider } from "../../domain/feature-context";
@@ -313,6 +313,35 @@ describe("TaskDetailPage", () => {
       expect(t3Service.replyToTaskT3Run).not.toHaveBeenCalled();
       const stored = await storage.getComments(task.id);
       expect(stored).toMatchObject([{ body: "Note while working", authorType: "human" }]);
+    });
+
+    it("attaches files and pasted images in the dock composer, renders them inline in the thread, and avoids duplicate uploads (BIT-170)", async () => {
+      const user = userEvent.setup();
+      renderPage();
+
+      const input = screen.getByLabelText("Message");
+      const pastedImage = new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], "thread-shot.png", {
+        type: "image/png",
+      });
+      fireEvent.paste(input, {
+        clipboardData: { files: [pastedImage] },
+      });
+
+      const stagedList = await screen.findByTestId("staged-comment-attachments");
+      expect(within(stagedList).getByRole("img", { name: "thread-shot.png" })).toBeInTheDocument();
+
+      // Ensure TaskAttachments global paste listener did not immediately upload the pasted image
+      expect(await storage.getAttachments(task.id)).toHaveLength(0);
+
+      await user.click(screen.getByRole("button", { name: "Send" }));
+
+      const savedAttachments = await storage.getAttachments(task.id);
+      expect(savedAttachments).toHaveLength(1);
+      expect(savedAttachments[0]?.name).toBe("thread-shot.png");
+
+      const thread = screen.getByTestId("task-thread");
+      const inlineImg = await within(thread).findByRole("img", { name: "thread-shot.png" });
+      expect(inlineImg).toHaveAttribute("src", expect.stringMatching(/^data:image\/png;base64,/));
     });
   });
 

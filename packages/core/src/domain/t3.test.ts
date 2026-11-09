@@ -711,4 +711,77 @@ describe("multi-host domain contracts (BIT-147)", () => {
   });
 });
 
+describe("comment attachments and T3 prompt context (BIT-170)", () => {
+  it("formats markdown links/images, appends to empty or non-empty comment bodies, and extracts attachment references", async () => {
+    const {
+      appendAttachmentsToCommentBody,
+      extractCommentAttachmentReferences,
+      formatCommentAttachmentMarkdown,
+      formatT3CommentAttachmentContext,
+    } = await import("./attachments");
+
+    expect(
+      formatCommentAttachmentMarkdown({
+        id: "att-img-1",
+        name: "screen.png",
+        mimeType: "image/png",
+      }),
+    ).toBe("![screen.png](/api/attachments/att-img-1)");
+
+    expect(
+      formatCommentAttachmentMarkdown({
+        id: "att-file-1",
+        name: "spec.md",
+        mimeType: "text/markdown",
+      }),
+    ).toBe("[spec.md](/api/attachments/att-file-1)");
+
+    const bodyOnlyAtt = appendAttachmentsToCommentBody("   ", [
+      { id: "att-img-1", name: "screen.png", mimeType: "image/png" },
+    ]);
+    expect(bodyOnlyAtt).toBe("![screen.png](/api/attachments/att-img-1)");
+
+    const bodyWithTextAndAtt = appendAttachmentsToCommentBody("Look at these:", [
+      { id: "att-img-1", name: "screen.png", mimeType: "image/png" },
+      { id: "att-file-1", name: "spec.md", mimeType: "text/markdown" },
+    ]);
+    expect(bodyWithTextAndAtt).toBe(
+      "Look at these:\n\n![screen.png](/api/attachments/att-img-1)\n[spec.md](/api/attachments/att-file-1)",
+    );
+
+    expect(extractCommentAttachmentReferences(bodyWithTextAndAtt)).toEqual([
+      { id: "att-img-1", name: "screen.png" },
+      { id: "att-file-1", name: "spec.md" },
+    ]);
+
+    const context = formatT3CommentAttachmentContext(bodyWithTextAndAtt, [
+      { id: "att-img-1", name: "screen.png", mimeType: "image/png", size: 1024 },
+    ]);
+    expect(context).toContain('`screen.png` (id: `att-img-1`, image/png, 1024 bytes) — inspect with `get_attachment({ id: "att-img-1" })`');
+    expect(context).toContain('`spec.md` (id: `att-file-1`) — inspect with `get_attachment({ id: "att-file-1" })`');
+
+    const built = buildT3LaunchPrompt({
+      task: {
+        id: "0196ed60-0000-7000-8000-000000000001",
+        projectId: "0196ed60-0000-7000-8000-000000000002",
+        title: "Support comment attachments",
+        description: "",
+        status: "in_progress",
+        isPublic: false,
+        createdAt: "2026-11-01T10:00:00.000Z",
+        updatedAt: "2026-11-01T10:00:00.000Z",
+      },
+      taskCode: "BIT-170",
+      followUpComment: {
+        author: "emre",
+        body: bodyWithTextAndAtt,
+        attachments: [{ id: "att-img-1", name: "screen.png", mimeType: "image/png", size: 1024 }],
+      },
+    });
+    expect(built.prompt).toContain('get_attachment({ id: "att-img-1" })');
+    expect(built.prompt).toContain('get_attachment({ id: "att-file-1" })');
+  });
+});
+
+
 

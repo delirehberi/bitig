@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { formatT3CommentAttachmentContext, type T3CommentAttachmentInfo } from "./attachments";
 import { CommentAuthorSchema, CommentBodySchema, IdSchema, TaskActorSchema, TimestampSchema } from "./schemas";
 import type { Checkpoint, Comment, Task } from "./types";
 import { COMMENT_BODY_MAX } from "./constants";
@@ -930,7 +931,13 @@ export interface BuildT3LaunchPromptInput {
   /** Prior run's Git branch/commit/diff/PR summary when relaunching in a fresh session (#BIT-165). */
   readonly priorGitMetadata?: T3GitMetadata | undefined;
   /** The person's follow-up instruction that triggered a fresh session (#BIT-165). */
-  readonly followUpComment?: { readonly author: string; readonly body: string } | undefined;
+  readonly followUpComment?:
+    | {
+        readonly author: string;
+        readonly body: string;
+        readonly attachments?: readonly T3CommentAttachmentInfo[] | undefined;
+      }
+    | undefined;
   /** Override `clientRequestId` so a relaunched thread gets a distinct idempotency key (#BIT-165). */
   readonly clientRequestId?: string | undefined;
 }
@@ -1042,6 +1049,10 @@ export function buildT3LaunchPrompt({
   }
 
   if (followUpComment) {
+    const attachmentContext = formatT3CommentAttachmentContext(
+      followUpComment.body,
+      followUpComment.attachments,
+    );
     sections.push(
       [
         "## Follow-Up Instruction (Fresh T3 Session)",
@@ -1049,6 +1060,7 @@ export function buildT3LaunchPrompt({
         `This is a fresh T3 session continuing ${code} after the previous thread was settled. Follow this instruction from **${followUpComment.author}**:`,
         "",
         followUpComment.body.trim(),
+        ...(attachmentContext ? ["", attachmentContext] : []),
       ].join("\n"),
     );
   }

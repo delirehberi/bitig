@@ -1,23 +1,209 @@
-import { useContext, type ReactNode } from "react";
-import { extractTaskMentions, type TaskStatus } from "@bitig/core";
+import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import { Download, File as FileIcon, FileText, Paperclip } from "lucide-react";
+import {
+  decodeUtf8,
+  encodeBase64,
+  extractTaskMentions,
+  isImageAttachmentMimeType,
+  isMarkdownAttachment,
+  isTextAttachmentMimeType,
+  type AttachmentContent,
+  type StorageProvider,
+  type TaskStatus,
+} from "@bitig/core";
 import { TaskMentionsContext, type MentionResolver } from "../domain/task-mentions";
 import { Link } from "../routing/Link";
 import { taskHref, useLocationHref } from "../routing/router";
 
+const AttachmentStorageContext = createContext<StorageProvider | undefined>(undefined);
+
 interface MarkdownProps {
   readonly content: string;
   readonly className?: string;
+  readonly storage?: StorageProvider | undefined;
 }
 
 const SAFE_LINK_PROTOCOLS = new Set(["http:", "https:", "mailto:"]);
+const SAFE_IMAGE_PROTOCOLS = new Set(["http:", "https:"]);
+const SAFE_DATA_IMAGE_PATTERN = /^data:image\/(?:png|jpeg|jpg|gif|webp|avif);base64,[a-zA-Z0-9+/=]+$/i;
+const ATTACHMENT_URL_PATTERN = /^(?:https?:\/\/[^/\s]+)?\/api\/attachments\/([^/?#\s]+)$/;
+
+const BYTES_PER_KB = 1024;
+const BYTES_PER_MB = 1024 * 1024;
+
+function formatByteSize(bytes: number): string {
+  if (bytes < BYTES_PER_KB) return `${String(bytes)} B`;
+  if (bytes < BYTES_PER_MB) return `${(bytes / BYTES_PER_KB).toFixed(1)} KB`;
+  return `${(bytes / BYTES_PER_MB).toFixed(1)} MB`;
+}
+
+function extractAttachmentIdFromUrl(rawUrl: string): string | null {
+  const match = ATTACHMENT_URL_PATTERN.exec(rawUrl.trim());
+  return match?.[1] ?? null;
+}
 
 function isSafeHref(rawUrl: string): boolean {
+  const trimmed = rawUrl.trim();
+  if (extractAttachmentIdFromUrl(trimmed) !== null) return true;
   try {
-    const parsed = new URL(rawUrl.trim());
+    const parsed = new URL(trimmed);
     return SAFE_LINK_PROTOCOLS.has(parsed.protocol);
   } catch {
     return false;
   }
+}
+
+function isSafeImageSrc(rawUrl: string): boolean {
+  const trimmed = rawUrl.trim();
+  if (SAFE_DATA_IMAGE_PATTERN.test(trimmed)) return true;
+  if (extractAttachmentIdFromUrl(trimmed) !== null) return true;
+  try {
+    const parsed = new URL(trimmed);
+    return SAFE_IMAGE_PROTOCOLS.has(parsed.protocol);
+  } catch {
+    return false;
+  }
+}
+
+function unescapeMarkdownLabel(raw: string): string {
+  return raw.replace(/\\([\\[\]])/g, "$1");
+}
+
+function downloadAttachmentContent(loaded: AttachmentContent): void {
+  const copy = new Uint8Array(loaded.data.byteLength);
+  copy.set(loaded.data);
+  const blob = new Blob([copy.buffer], { type: loaded.mimeType });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = loaded.name;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function InlineAttachmentPreview({
+  attachmentId,
+  label,
+  isImageSyntax,
+}: {
+  readonly attachmentId: string;
+  readonly label: string;
+  readonly isImageSyntax: boolean;
+}) {
+  const storage = useContext(AttachmentStorageContext);
+  const [loadedState, setLoadedState] = useState<{
+    readonly attachmentId: string;
+    readonly content: AttachmentContent | null;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!storage) return;
+    const controller = new AbortController();
+    storage
+      .getAttachment(attachmentId, { signal: controller.signal })
+      .then((loaded) => {
+        if (!controller.signal.aborted) {
+          setLoadedState({ attachmentId, content: loaded });
+        }
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) {
+          setLoadedState({ attachmentId, content: null });
+        }
+      });
+    return () => {
+      controller.abort();
+    };
+  }, [attachmentId, storage]);
+
+  const content = loadedState?.attachmentId === attachmentId ? loadedState.content : null;
+  const isLoading = storage !== undefined && loadedState?.attachmentId !== attachmentId;
+
+  if (content) {
+    if (isImageAttachmentMimeType(content.mimeType)) {
+      return (
+        <span className="my-1 inline-flex flex-col gap-1">
+          <img
+            src={`data:${content.mimeType};base64,${encodeBase64(content.data)}`}
+            alt={label || content.name}
+            className="max-h-72 max-w-full rounded border border-rule object-contain"
+          />
+        </span>
+      );
+    }
+
+    const isText = isTextAttachmentMimeType(content.mimeType) || isMarkdownAttachment(content);
+    const TypeIcon = isText ? FileText : FileIcon;
+
+    return (
+      <span
+        data-testid={`comment-attachment-${content.id}`}
+        className="my-1 inline-flex flex-col gap-1.5 rounded-md border border-rule bg-paper p-2 text-xs text-ink"
+      >
+        <span className="inline-flex flex-wrap items-center gap-1.5">
+          <TypeIcon size={12} aria-hidden="true" className="shrink-0 text-ink-3" />
+          <a
+            href={`/api/attachments/${content.id}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="font-semibold text-accent-ink underline hover:opacity-80 focus-visible:outline-focus"
+          >
+            {content.name}
+          </a>
+          <span className="font-mono text-2xs text-ink-3">({formatByteSize(content.size)})</span>
+          <button
+            type="button"
+            onClick={() => {
+              downloadAttachmentContent(content);
+            }}
+            aria-label={`Download ${content.name}`}
+            title={`Download ${content.name}`}
+            className="ml-auto inline-flex items-center gap-1 text-ink-3 transition-colors hover:text-ink"
+          >
+            <Download size={12} aria-hidden="true" />
+          </button>
+        </span>
+        {isText && (
+          <code className="block max-h-40 overflow-auto rounded border border-rule bg-paper-2 p-1.5 font-mono text-2xs text-ink whitespace-pre-wrap">
+            {decodeUtf8(content.data)}
+          </code>
+        )}
+      </span>
+    );
+  }
+
+  if (isLoading) {
+    return (
+      <span className="inline-flex items-center gap-1 rounded border border-rule bg-paper px-2 py-0.5 text-xs text-ink-3">
+        <Paperclip size={12} aria-hidden="true" />
+        <span>{label || attachmentId}</span>
+      </span>
+    );
+  }
+
+  if (isImageSyntax) {
+    return (
+      <img
+        src={`/api/attachments/${attachmentId}`}
+        alt={label || "Attachment"}
+        className="my-1 max-h-72 max-w-full rounded border border-rule object-contain"
+      />
+    );
+  }
+
+  return (
+    <a
+      href={`/api/attachments/${attachmentId}`}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="inline-flex items-center gap-1 rounded border border-rule bg-paper px-2 py-0.5 text-xs font-medium text-accent-ink underline hover:opacity-80 focus-visible:outline-focus"
+    >
+      <Paperclip size={12} aria-hidden="true" />
+      <span>{label || attachmentId}</span>
+    </a>
+  );
 }
 
 const MENTION_STATUS_LABELS: Record<TaskStatus, string> = {
@@ -67,7 +253,7 @@ function renderText(
 }
 
 const INLINE_TOKEN_PATTERN =
-  /(`[^`\n]+`)|(\[([^\]]+)\]\(([^)\s]+)\))|(\*\*([^*]+)\*\*)|(\*([^*\n]+)\*)/g;
+  /(`[^`\n]+`)|(!\[((?:\\.|[^\]])*)\]\(([^)\s]+)\))|(\[((?:\\.|[^\]])+)\]\(([^)\s]+)\))|(\*\*([^*]+)\*\*)|(\*([^*\n]+)\*)/g;
 
 /** `resolve` turns task mentions into links; it is left out inside links, which can't nest. */
 function renderInline(
@@ -93,7 +279,20 @@ function renderInline(
       );
     }
 
-    const [full, codeSpan, , linkLabel, linkUrl, , boldText, , italicText] = match;
+    const [
+      full,
+      codeSpan,
+      ,
+      imageAlt,
+      imageUrl,
+      ,
+      linkLabel,
+      linkUrl,
+      ,
+      boldText,
+      ,
+      italicText,
+    ] = match;
     const key = `${keyPrefix}-${String(tokenIndex++)}`;
 
     if (codeSpan !== undefined) {
@@ -105,8 +304,43 @@ function renderInline(
           {codeSpan.slice(1, -1)}
         </code>,
       );
+    } else if (imageAlt !== undefined && imageUrl !== undefined) {
+      const cleanAlt = unescapeMarkdownLabel(imageAlt);
+      const attachmentId = extractAttachmentIdFromUrl(imageUrl);
+      if (attachmentId !== null) {
+        nodes.push(
+          <InlineAttachmentPreview
+            key={key}
+            attachmentId={attachmentId}
+            label={cleanAlt}
+            isImageSyntax
+          />,
+        );
+      } else if (isSafeImageSrc(imageUrl)) {
+        nodes.push(
+          <img
+            key={key}
+            src={imageUrl.trim()}
+            alt={cleanAlt}
+            className="my-1 max-h-72 max-w-full rounded border border-rule object-contain"
+          />,
+        );
+      } else {
+        nodes.push(full);
+      }
     } else if (linkLabel !== undefined && linkUrl !== undefined) {
-      if (isSafeHref(linkUrl)) {
+      const cleanLabel = unescapeMarkdownLabel(linkLabel);
+      const attachmentId = extractAttachmentIdFromUrl(linkUrl);
+      if (attachmentId !== null) {
+        nodes.push(
+          <InlineAttachmentPreview
+            key={key}
+            attachmentId={attachmentId}
+            label={cleanLabel}
+            isImageSyntax={false}
+          />,
+        );
+      } else if (isSafeHref(linkUrl)) {
         nodes.push(
           <a
             key={key}
@@ -115,7 +349,7 @@ function renderInline(
             rel="noopener noreferrer"
             className="font-medium text-accent-ink underline hover:opacity-80 focus-visible:outline-focus"
           >
-            {renderInline(linkLabel, `${key}-l`, locationHref)}
+            {renderInline(cleanLabel, `${key}-l`, locationHref)}
           </a>,
         );
       } else {
@@ -165,8 +399,10 @@ const HEADING_CLASSES: Record<number, string> = {
  * Safe, zero-dependency Markdown renderer. Emits React elements directly and
  * never touches innerHTML, while restricting links to http(s) and mailto.
  */
-export function Markdown({ content, className = "text-sm text-ink-2" }: MarkdownProps) {
+export function Markdown({ content, className = "text-sm text-ink-2", storage }: MarkdownProps) {
   const resolve = useContext(TaskMentionsContext);
+  const contextStorage = useContext(AttachmentStorageContext);
+  const effectiveStorage = storage ?? contextStorage;
   const locationHref = useLocationHref();
   const lines = content.split(/\r?\n/);
   const blocks: ReactNode[] = [];
@@ -304,7 +540,14 @@ export function Markdown({ content, className = "text-sm text-ink-2" }: Markdown
     );
   }
 
-  return <div className={`flex flex-col gap-2 ${className}`}>{blocks}</div>;
+  const rendered = <div className={`flex flex-col gap-2 ${className}`}>{blocks}</div>;
+  return effectiveStorage ? (
+    <AttachmentStorageContext.Provider value={effectiveStorage}>
+      {rendered}
+    </AttachmentStorageContext.Provider>
+  ) : (
+    rendered
+  );
 }
 
 
@@ -314,3 +557,4 @@ export function InlineMarkdown({ text }: { readonly text: string }) {
   const locationHref = useLocationHref();
   return <>{renderInline(text, "inline", locationHref, resolve)}</>;
 }
+

@@ -6,12 +6,13 @@ import {
   type Task,
   type User,
 } from "@bitig/core";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthContext, type AuthContextValue } from "../../auth/auth-types";
 import { replyToTaskT3Run } from "../../services/t3";
-import { TaskComments } from "./TaskComments";
+import { TaskAttachments } from "./TaskAttachments";
+import { TaskComments, TaskComposer } from "./TaskComments";
 
 vi.mock("../../services/t3", () => ({
   replyToTaskT3Run: vi.fn(),
@@ -311,6 +312,135 @@ describe("TaskComments", () => {
       expect(await screen.findByText("Start fresh from the latest checkpoint")).toBeInTheDocument();
       expect(freshToggle).not.toBeChecked();
       expect(screen.getByLabelText("Add a comment")).toHaveValue("");
+    });
+  });
+
+  describe("comment attachments and pasted images (BIT-170)", () => {
+    it("stages files via picker, drag-and-drop, and clipboard paste, allows removing staged files, and submits an attachment-only comment", async () => {
+      const user = userEvent.setup();
+      render(<TaskComments storage={storage} taskId={task.id} />);
+      expect(await screen.findByText("No comments yet")).toBeInTheDocument();
+
+      const submit = screen.getByRole("button", { name: "Comment" });
+      expect(submit).toBeDisabled();
+
+      // 1. File picker
+      const fileInput = screen.getByLabelText("Attach files to comment");
+      const logFile = new File(["error at line 42"], "build.log", { type: "text/plain" });
+      const extraFile = new File(["remove me"], "discard.txt", { type: "text/plain" });
+      await user.upload(fileInput, [logFile, extraFile]);
+
+      const stagedList = await screen.findByTestId("staged-comment-attachments");
+      expect(within(stagedList).getByText("build.log")).toBeInTheDocument();
+      expect(within(stagedList).getByText("discard.txt")).toBeInTheDocument();
+      expect(submit).toBeEnabled();
+
+      // Remove one staged file before sending
+      await user.click(within(stagedList).getByRole("button", { name: "Remove attachment discard.txt" }));
+      expect(within(stagedList).queryByText("discard.txt")).not.toBeInTheDocument();
+
+      // 2. Drag-and-drop onto composer
+      const textarea = screen.getByLabelText("Add a comment");
+      const droppedSpec = new File(["# Spec\nDetails"], "spec.md", { type: "text/markdown" });
+      fireEvent.drop(textarea, {
+        dataTransfer: { files: [droppedSpec] },
+      });
+      expect(await within(stagedList).findByText("spec.md")).toBeInTheDocument();
+
+      // 3. Clipboard paste (copy-pasted screenshot image)
+      const pastedPng = new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], "paste-shot.png", {
+        type: "image/png",
+      });
+      fireEvent.paste(textarea, {
+        clipboardData: { files: [pastedPng] },
+      });
+      const stagedImg = await within(stagedList).findByRole("img", { name: "paste-shot.png" });
+      expect(stagedImg).toHaveAttribute("src", expect.stringMatching(/^data:image\/png;base64,/));
+
+      // Submit with empty text draft
+      await user.click(submit);
+
+      // Staged list is cleared after submit
+      expect(screen.queryByTestId("staged-comment-attachments")).not.toBeInTheDocument();
+
+      // Uploaded attachments are stored on the task
+      const savedAttachments = await storage.getAttachments(task.id);
+      expect(savedAttachments.map((a) => a.name)).toEqual(["build.log", "spec.md", "paste-shot.png"]);
+
+      // Comment is posted and renders inline image and file previews
+      const postedImg = await screen.findByRole("img", { name: "paste-shot.png" });
+      expect(postedImg).toHaveAttribute("src", expect.stringMatching(/^data:image\/png;base64,/));
+      expect(await screen.findByRole("link", { name: "build.log" })).toBeInTheDocument();
+      expect(await screen.findByText("error at line 42")).toBeInTheDocument();
+    });
+
+    it("does not trigger duplicate global paste uploads in TaskAttachments when pasting into the comment box", async () => {
+      const user = userEvent.setup();
+      render(
+        <div>
+          <TaskAttachments storage={storage} taskId={task.id} />
+          <TaskComments storage={storage} taskId={task.id} />
+        </div>,
+      );
+      expect(await screen.findByText("No comments yet")).toBeInTheDocument();
+      expect(await screen.findByText(/no attachments yet/i)).toBeInTheDocument();
+
+      const textarea = screen.getByLabelText("Add a comment");
+      const pastedImage = new File([new Uint8Array([1, 2, 3, 4])], "clipboard.png", {
+        type: "image/png",
+      });
+      fireEvent.paste(textarea, {
+        clipboardData: { files: [pastedImage] },
+      });
+
+      const stagedList = await screen.findByTestId("staged-comment-attachments");
+      expect(within(stagedList).getByRole("img", { name: "clipboard.png" })).toBeInTheDocument();
+
+      // Not uploaded yet because it was only staged in the comment composer, not caught by TaskAttachments
+      expect(await storage.getAttachments(task.id)).toHaveLength(0);
+
+      await user.click(screen.getByRole("button", { name: "Comment" }));
+      expect(await storage.getAttachments(task.id)).toHaveLength(1);
+    });
+
+    it("supports picker, drag-and-drop, and clipboard image paste in TaskComposer", async () => {
+      const user = userEvent.setup();
+      const addComment = vi.fn().mockImplementation(async (body: string) =>
+        storage.addComment({ taskId: task.id, body }),
+      );
+      render(<TaskComposer taskId={task.id} storage={storage} addComment={addComment} />);
+
+      const sendBtn = screen.getByRole("button", { name: "Send" });
+      expect(sendBtn).toBeDisabled();
+
+      const textarea = screen.getByLabelText("Message");
+      const pastedBlob = new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], "image.png", {
+        type: "image/png",
+      });
+      fireEvent.paste(textarea, {
+        clipboardData: {
+          files: [],
+          items: [
+            {
+              kind: "file",
+              type: "image/png",
+              getAsFile: () => pastedBlob,
+            },
+          ],
+        },
+      });
+
+      const stagedList = await screen.findByTestId("staged-comment-attachments");
+      expect(within(stagedList).getByRole("img", { name: "image.png" })).toBeInTheDocument();
+      expect(sendBtn).toBeEnabled();
+
+      await user.click(sendBtn);
+      expect(addComment).toHaveBeenCalledTimes(1);
+      const savedAttachments = await storage.getAttachments(task.id);
+      expect(savedAttachments).toHaveLength(1);
+      expect(addComment).toHaveBeenCalledWith(
+        `![image.png](/api/attachments/${savedAttachments[0]?.id ?? ""})`,
+      );
     });
   });
 });

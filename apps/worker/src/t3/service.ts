@@ -25,6 +25,8 @@ import {
   computeT3HostConnectionStatus,
   defaultIdGenerator,
   deriveLiveAgentRunState,
+  extractCommentAttachmentReferences,
+  formatT3CommentAttachmentContext,
   formatT3ModelSelection,
   isActiveAgentRunState,
   isSameT3ModelSelection,
@@ -42,6 +44,7 @@ import {
   type ProjectT3ThreadsResponse,
   type RealtimeEvent,
   type StorageProvider,
+  type T3CommentAttachmentInfo,
   type T3ConnectionStatus,
   type T3HostConnectionStatus,
   type T3ModelCapability,
@@ -1680,9 +1683,32 @@ const SETTLE_SKIPPED_STATES: ReadonlySet<AgentRunState> = new Set<AgentRunState>
 /** Shown as the comment author in the T3 prompt when the comment has no explicit author. */
 const DEFAULT_COMMENT_AUTHOR_LABEL = "a person";
 
+async function resolveCommentAttachments(
+  storage: StorageProvider,
+  taskId: string,
+  body: string,
+): Promise<T3CommentAttachmentInfo[]> {
+  const refs = extractCommentAttachmentReferences(body);
+  if (refs.length === 0) return [];
+  try {
+    const taskAttachments = await storage.getAttachments(taskId);
+    const byId = new Map(taskAttachments.map((att) => [att.id, att]));
+    return refs.map((ref) => byId.get(ref.id) ?? ref);
+  } catch {
+    return refs;
+  }
+}
+
 /** Builds the follow-up prompt a T3 agent receives for a new comment on its task. */
-export function buildT3CommentPrompt(input: { taskLabel: string; author: string; body: string }): string {
-  return `New comment on ${input.taskLabel} from ${input.author}:\n\n${input.body}`;
+export function buildT3CommentPrompt(input: {
+  taskLabel: string;
+  author: string;
+  body: string;
+  attachments?: readonly T3CommentAttachmentInfo[] | undefined;
+}): string {
+  const attachmentContext = formatT3CommentAttachmentContext(input.body, input.attachments);
+  const base = `New comment on ${input.taskLabel} from ${input.author}:\n\n${input.body}`;
+  return attachmentContext ? `${base}\n\n${attachmentContext}` : base;
 }
 
 export interface ForwardCommentToT3Options {
@@ -1737,12 +1763,16 @@ export async function forwardCommentToT3Run(
   if (!task) {
     throw new NotFoundError("task", comment.taskId);
   }
-  const project = await deps.storage.getProject(task.projectId);
+  const [project, attachments] = await Promise.all([
+    deps.storage.getProject(task.projectId),
+    resolveCommentAttachments(deps.storage, task.id, comment.body),
+  ]);
   const taskLabel = taskCode(task, project ?? undefined) ?? `"${task.title}"`;
   const prompt = buildT3CommentPrompt({
     taskLabel,
     author: comment.author ?? DEFAULT_COMMENT_AUTHOR_LABEL,
     body: comment.body,
+    attachments,
   });
 
   const now = deps.now ? deps.now() : Date.now();
@@ -2176,6 +2206,7 @@ export async function replyToTaskT3Run(
       { actor: input.actor },
     );
 
+    const followUpAttachments = await resolveCommentAttachments(deps.storage, task.id, comment.body);
     const code = taskCode(task, project ?? undefined);
     const gitMetadataRunId = defaultIdGenerator();
     const priorGitMetadata = extractPriorGitMetadata(existingRun);
@@ -2192,6 +2223,7 @@ export async function replyToTaskT3Run(
       followUpComment: {
         author: comment.author ?? DEFAULT_COMMENT_AUTHOR_LABEL,
         body: comment.body,
+        ...(followUpAttachments.length > 0 ? { attachments: followUpAttachments } : {}),
       },
       clientRequestId: `${code ?? task.id}:${gitMetadataRunId}`,
     });
@@ -2306,12 +2338,16 @@ export async function replyToTaskT3Run(
     { actor: input.actor },
   );
 
-  const project = await deps.storage.getProject(task.projectId);
+  const [project, attachments] = await Promise.all([
+    deps.storage.getProject(task.projectId),
+    resolveCommentAttachments(deps.storage, task.id, comment.body),
+  ]);
   const taskLabel = taskCode(task, project ?? undefined) ?? `"${task.title}"`;
   const replyPrompt = buildT3CommentPrompt({
     taskLabel,
     author: comment.author ?? DEFAULT_COMMENT_AUTHOR_LABEL,
     body: comment.body,
+    attachments,
   });
   const prompt = switchedTo ? `${buildT3ModelSwitchNotice(taskLabel, switchedTo)}\n\n${replyPrompt}` : replyPrompt;
   const requestId = defaultIdGenerator();

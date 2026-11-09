@@ -942,12 +942,14 @@ function buildTimelineItems({
 function TimelineList({
   items,
   task,
+  storage,
   agentName,
   isWaitingForHuman,
   onDeleteComment,
 }: {
   readonly items: readonly TimelineItem[];
   readonly task: Task;
+  readonly storage?: StorageProvider | undefined;
   readonly agentName: string;
   readonly isWaitingForHuman: boolean;
   readonly onDeleteComment?: ((id: string) => void) | undefined;
@@ -1052,7 +1054,7 @@ function TimelineList({
                     : ""
                 }
               >
-                <Markdown content={comment.body} className="text-sm text-ink" />
+                <Markdown content={comment.body} storage={storage} className="text-sm text-ink" />
                 {isWaitingQuestion &&
                   task.needsHuman !== undefined &&
                   !comment.body.includes(task.needsHuman) && (
@@ -1160,6 +1162,7 @@ function ThreadWithStorage({
         <TimelineList
           items={timelineItems}
           task={task}
+          storage={storage}
           agentName={agentName}
           isWaitingForHuman={isWaitingForHuman}
           onDeleteComment={(id) => {
@@ -1176,6 +1179,7 @@ function ThreadWithStorage({
           key={task.id}
           taskId={task.id}
           addComment={addComment}
+          storage={storage}
           t3={t3}
           needsHuman={task.needsHuman !== undefined}
           onResolve={onNeedsHumanResolve}

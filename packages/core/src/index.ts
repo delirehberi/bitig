@@ -29,6 +29,7 @@ export { buildCheckpoint, compareCheckpoints, buildExecutionContext } from "./do
 export { PROJECT_WORK_LIMITS, selectProjectWork, buildProjectWorkContext } from "./domain/project-work";
 export type { ProjectWorkSummary, ProjectWorkContext } from "./domain/project-work";
 export {
+  appendAttachmentsToCommentBody,
   assertTaskAttachmentQuota,
   buildAttachment,
   cloneAttachment,
@@ -38,6 +39,9 @@ export {
   decodeUtf8,
   encodeBase64,
   encodeUtf8,
+  extractCommentAttachmentReferences,
+  formatCommentAttachmentMarkdown,
+  formatT3CommentAttachmentContext,
   inferAttachmentMimeType,
   isImageAttachmentMimeType,
   isMarkdownAttachment,
@@ -45,6 +49,7 @@ export {
   normalizeAttachmentMimeType,
   stripAttachmentData,
 } from "./domain/attachments";
+export type { CommentAttachmentReference, T3CommentAttachmentInfo } from "./domain/attachments";
 export {
   BitigError,
   ERROR_CODES,

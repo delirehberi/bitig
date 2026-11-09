@@ -1144,6 +1144,45 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
     const sendBeforeReconnect = sendCount();
     expect((await postComment(task.id, { body: "Ping after reconnect" })).status).toBe(201);
     expect(sendCount()).toBe(sendBeforeReconnect + 2);
+
+    // Comment with attached files/images includes get_attachment instructions in forwarded T3 message and reply (BIT-170)
+    const attRes = await request(`/api/tasks/${task.id}/attachments`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "screenshot.png",
+        mimeType: "image/png",
+        data: "iVBORw0KGgo=",
+      }),
+    });
+    expect(attRes.status).toBe(201);
+    const uploadedAtt = await attRes.json<{ id: string; name: string }>();
+
+    const commentWithImage = `See screenshot:\n\n![screenshot.png](/api/attachments/${uploadedAtt.id})`;
+    expect((await postComment(task.id, { body: commentWithImage, author: "emre" })).status).toBe(201);
+    const forwardedWithAtt = mockState.toolCalls.filter((c) => c.name === "t3_thread_send").at(-1);
+    expect(forwardedWithAtt?.arguments.threadId).toBe("thread-abc-123");
+    expect(String(forwardedWithAtt?.arguments.message)).toContain(
+      `get_attachment({ id: "${uploadedAtt.id}" })`,
+    );
+
+    mockState.threadStatus = "waiting";
+    mockState.pendingRequestCount = 1;
+    mockState.pendingRequestIds = ["req-att"];
+    const replyRes = await request(`/api/tasks/${task.id}/t3-run/reply`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        body: `![screenshot.png](/api/attachments/${uploadedAtt.id})`,
+        author: "emre",
+      }),
+    });
+    expect(replyRes.status).toBe(201);
+    const repliedWithAtt = mockState.toolCalls.filter((c) => c.name === "t3_thread_send").at(-1);
+    expect(repliedWithAtt?.arguments.threadId).toBe("thread-abc-123");
+    expect(String(repliedWithAtt?.arguments.message)).toContain(
+      `get_attachment({ id: "${uploadedAtt.id}" })`,
+    );
   });
 
   it("marks the T3 thread as settled when archiving a task, and still archives when T3 is unreachable", async () => {
