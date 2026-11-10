@@ -54,6 +54,7 @@ export {
   BitigError,
   ERROR_CODES,
   NotFoundError,
+  ProjectBusyError,
   STORAGE_ERROR_REASONS,
   StorageError,
   ValidationError,

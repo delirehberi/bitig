@@ -76,5 +76,6 @@ export const MCP_WRITE_TOOLS = new Set<string>([
 ]);
 
 export function requiredOrgRoleForMcpTool(toolName: string): OrganisationRole {
+  if (toolName === "create_project" || toolName === "delete_project") return "owner";
   return MCP_WRITE_TOOLS.has(toolName) ? "editor" : "viewer";
 }

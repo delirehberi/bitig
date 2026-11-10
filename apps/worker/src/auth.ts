@@ -16,6 +16,7 @@ import {
   D1Storage,
   D1UserStore,
   McpTokenStore,
+  T3D1Store,
 } from "@bitig/storage-d1";
 import type { AppEnv } from "./index";
 import { ACCESS_TOKEN_PREFIX, sha256Hex } from "./auth-crypto";
@@ -57,6 +58,7 @@ export interface StorageGuardOptions {
   readonly orgRole?: OrganisationRole | undefined;
   readonly strictHumanAttribution?: boolean | undefined;
   readonly isMcp?: boolean | undefined;
+  readonly beforeDeleteProject?: ((projectId: string) => Promise<void>) | undefined;
 }
 
 function applyUserOpts(
@@ -99,15 +101,16 @@ export function withUserAndRoleGuard(
       return storage.getProject(id, opts);
     },
     createProject: (input, opts) => {
-      assertMinRole(orgRole, "editor");
+      assertMinRole(orgRole, "owner");
       return storage.createProject(input, applyUserOpts(opts, guard));
     },
     updateProject: (id, patch, opts) => {
       assertMinRole(orgRole, "editor");
       return storage.updateProject(id, patch, applyUserOpts(opts, guard));
     },
-    deleteProject: (id, opts) => {
-      assertMinRole(orgRole, "editor");
+    deleteProject: async (id, opts) => {
+      assertMinRole(orgRole, "owner");
+      await guard.beforeDeleteProject?.(id);
       return storage.deleteProject(id, applyUserOpts(opts, guard));
     },
 
@@ -228,7 +231,7 @@ export function withUserAndRoleGuard(
       return storage.exportProject(id, opts);
     },
     importProject: (bundle, opts) => {
-      assertMinRole(orgRole, "editor");
+      assertMinRole(orgRole, "owner");
       return storage.importProject(bundle, applyUserOpts(opts, guard));
     },
     exportAll: (opts) => {
@@ -261,7 +264,10 @@ function configureScopedStorage(c: Context<AppEnv>, guard: StorageGuardOptions, 
         new D1Storage({ db: c.env.DB, bucket: c.env.ATTACHMENTS, orgId }),
         (event) => publishRealtimeEvent(c.env, event, orgId),
       );
-  c.set("storage", withUserAndRoleGuard(baseStorage, guard));
+  c.set("storage", withUserAndRoleGuard(baseStorage, {
+    ...guard,
+    beforeDeleteProject: (projectId) => new T3D1Store(c.env.DB, orgId).assertProjectIdle(projectId),
+  }));
 }
 
 export function requireAdmin(): MiddlewareHandler<AppEnv> {
@@ -543,4 +549,3 @@ export function bearerAuth(): MiddlewareHandler<AppEnv> {
     return next();
   };
 }
-

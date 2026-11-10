@@ -108,8 +108,14 @@ function makeValidationIssue(path: string, message: string): never {
 }
 
 function sameHostId(a: string | null | undefined, b: string | null | undefined): boolean {
-  if (!a || !b) return true;
-  return a === b;
+  return Boolean(a && b && a === b);
+}
+
+function requireRecordedHostId(hostId: string | undefined): string {
+  if (!hostId) {
+    makeValidationIssue("hostId", "This record has no originating T3 host. Ask the organisation owner to repair its host binding; Bitig will not select another host.");
+  }
+  return hostId;
 }
 
 function compositeThreadKey(hostId: string | null | undefined, threadId: string): string {
@@ -188,7 +194,7 @@ export async function resolveActiveT3ConnectionAndClient(deps: {
   });
   const now = deps.now ?? Date.now();
   if (connection.expiresAt <= now) {
-    makeValidationIssue("t3Connection", EXPIRED_T3_TOKEN_MESSAGE);
+    makeValidationIssue("t3Connection", `T3 host "${connection.id}": ${EXPIRED_T3_TOKEN_MESSAGE}`);
   }
   const accessToken = await decryptT3Token(
     {
@@ -200,6 +206,7 @@ export async function resolveActiveT3ConnectionAndClient(deps: {
   return {
     connection,
     client: new T3McpClient({
+      hostId: connection.id,
       mcpUrl: connection.mcpUrl,
       accessToken,
       fetchFn: deps.fetchFn,
@@ -226,7 +233,7 @@ function isQueueableT3Error(err: unknown): boolean {
     return true;
   }
   if (err instanceof ValidationError) {
-    return err.issues.some((issue) => issue.message === EXPIRED_T3_TOKEN_MESSAGE);
+    return err.issues.some((issue) => issue.message.endsWith(EXPIRED_T3_TOKEN_MESSAGE));
   }
   return false;
 }
@@ -289,8 +296,8 @@ async function resolveOriginatingTaskHostId(
   existingRun?: AgentRun,
 ): Promise<string | undefined> {
   const run = existingRun ?? (await deps.store.getAgentRunByTaskId(taskId));
-  if (run?.hostId) {
-    return run.hostId;
+  if (run) {
+    return requireRecordedHostId(run.hostId);
   }
   const task = await deps.storage.getTask(taskId);
   if (!task) {
@@ -305,11 +312,8 @@ async function resolveOriginatingProjectThreadHostId(
   projectId: string,
   existingThread: ProjectT3Thread,
 ): Promise<string | undefined> {
-  if (existingThread.hostId) {
-    return existingThread.hostId;
-  }
-  const mapping = await deps.store.getProjectMapping(projectId);
-  return mapping?.hostId;
+  await requireProject(deps.storage, projectId);
+  return requireRecordedHostId(existingThread.hostId);
 }
 
 async function assertRootWorkspaceFreeOffline(
@@ -645,7 +649,7 @@ export async function launchTaskInT3(
   const connection = await requireT3ConnectionForQueue({
     store: deps.store,
     encryptionKey: deps.encryptionKey,
-    hostId: mapping.hostId,
+    hostId: requireRecordedHostId(mapping.hostId),
   });
   const targetHostId = mapping.hostId ?? connection.id;
 
@@ -1218,21 +1222,15 @@ export async function listT3RunsLive(deps: T3ServiceDeps): Promise<T3RunsLiveRes
     return { runs: [], activeSessions: [] };
   }
 
-  const primaryHostId = connections[0]?.id;
   const projectThreadsByCompositeKey = new Map(
-    projectThreads.map((t) => [compositeThreadKey(t.hostId ?? primaryHostId, t.threadId), t]),
+    projectThreads.map((t) => [compositeThreadKey(t.hostId, t.threadId), t]),
   );
-  const projectThreadsByThreadId = new Map(projectThreads.map((t) => [t.threadId, t]));
-  const mappingByProjectId = new Map(mappings.map((m) => [m.projectId, m]));
 
   // Map `(hostId, t3ProjectId)` to `projectId` so identical t3ProjectIds on two hosts never collide.
   const projectIdByHostAndT3ProjectId = new Map<string, string>();
   for (const mapping of mappings) {
-    const resolvedHostId = mapping.hostId ?? primaryHostId ?? "";
+    const resolvedHostId = mapping.hostId ?? "";
     projectIdByHostAndT3ProjectId.set(`${resolvedHostId}\n${mapping.t3ProjectId}`, mapping.projectId);
-    if (!projectIdByHostAndT3ProjectId.has(`\n${mapping.t3ProjectId}`)) {
-      projectIdByHostAndT3ProjectId.set(`\n${mapping.t3ProjectId}`, mapping.projectId);
-    }
   }
 
   const clientsByHostId = new Map<string, T3McpClient>();
@@ -1274,13 +1272,7 @@ export async function listT3RunsLive(deps: T3ServiceDeps): Promise<T3RunsLiveRes
   const tasks = await deps.storage.getTasks();
   const tasksById = new Map(tasks.map((t) => [t.id, t]));
   const resolveRunHostId = (run: AgentRun): string | undefined => {
-    if (run.hostId) return run.hostId;
-    const task = tasksById.get(run.taskId);
-    if (task) {
-      const mapping = mappingByProjectId.get(task.projectId);
-      if (mapping?.hostId) return mapping.hostId;
-    }
-    return primaryHostId;
+    return run.hostId;
   };
 
   const reconciledById = new Map<string, AgentRun>();
@@ -1417,17 +1409,14 @@ export async function listT3RunsLive(deps: T3ServiceDeps): Promise<T3RunsLiveRes
     }
     // Project-level threads Bitig started (#BIT-127) keep their stored projectId, title, and model
     // even if T3 omits `projectId` or if the project mapping was later reattached (#BIT-147).
-    const projectThread =
-      projectThreadsByCompositeKey.get(compositeKey) ??
-      (connections.length === 1 ? projectThreadsByThreadId.get(thread.threadId) : undefined);
+    const projectThread = projectThreadsByCompositeKey.get(compositeKey);
     const t3ProjectId = thread.projectId ?? projectThread?.t3ProjectId;
     if (!t3ProjectId) {
       continue;
     }
     const projectId =
       projectThread?.projectId ??
-      projectIdByHostAndT3ProjectId.get(`${hostId}\n${t3ProjectId}`) ??
-      (connections.length === 1 ? projectIdByHostAndT3ProjectId.get(`\n${t3ProjectId}`) : undefined);
+      projectIdByHostAndT3ProjectId.get(`${hostId}\n${t3ProjectId}`);
     if (!projectId) {
       continue;
     }
@@ -2408,9 +2397,10 @@ export async function settleProjectT3Thread(
   deps: T3ServiceDeps,
   projectId: string,
   threadId: string,
+  hostId?: string,
 ): Promise<void> {
   await requireProject(deps.storage, projectId);
-  const existing = await deps.store.getProjectThread(projectId, threadId);
+  const existing = await deps.store.getProjectThread(projectId, threadId, hostId);
   if (!existing) throw new NotFoundError("t3_thread", threadId);
 
   const targetHostId = await resolveOriginatingProjectThreadHostId(deps, projectId, existing);
@@ -2438,7 +2428,7 @@ export async function settleProjectT3Thread(
     }
   }
   await mcpClient.settleThread(existing.threadId);
-  await deps.store.deleteProjectThread(projectId, existing.threadId);
+  await deps.store.deleteProjectThread(projectId, existing.threadId, targetHostId);
 }
 
 export interface LaunchProjectThreadInT3Options {
@@ -2476,7 +2466,7 @@ export async function launchProjectThreadInT3(
   const { connection, client: mcpClient } = await resolveActiveT3ConnectionAndClient({
     store: deps.store,
     encryptionKey: deps.encryptionKey,
-    hostId: mapping.hostId,
+    hostId: requireRecordedHostId(mapping.hostId),
     fetchFn: deps.fetchFn,
     now,
   });
@@ -2516,6 +2506,7 @@ export async function launchProjectThreadInT3(
 }
 
 export interface SendProjectT3MessageOptions {
+  hostId?: string | undefined;
   body: string;
   modelSelection?: T3ModelSelection | undefined;
 }
@@ -2532,7 +2523,7 @@ export async function sendProjectT3Message(
   options: SendProjectT3MessageOptions,
 ): Promise<ProjectT3Thread> {
   await requireProject(deps.storage, projectId);
-  const existing = await deps.store.getProjectThread(projectId, threadId);
+  const existing = await deps.store.getProjectThread(projectId, threadId, options.hostId);
   if (!existing) {
     throw new NotFoundError("t3_thread", threadId);
   }
@@ -2553,7 +2544,7 @@ export async function sendProjectT3Message(
     const selection = options.modelSelection;
     const switched = await switchT3ThreadModel(mcpClient, existing.threadId, existing, selection);
     if (switched) {
-      thread = (await deps.store.updateProjectThreadModel(projectId, threadId, { selection, now })) ?? existing;
+      thread = (await deps.store.updateProjectThreadModel(projectId, threadId, { selection, now, hostId: targetHostId })) ?? existing;
       switchedTo = switched.to;
     }
   }
@@ -2562,7 +2553,7 @@ export async function sendProjectT3Message(
   const prompt = switchedTo ? `${buildProjectT3ModelSwitchNotice(switchedTo)}\n\n${body}` : body;
   await mcpClient.sendThreadMessage({ threadId: existing.threadId, prompt });
 
-  return (await deps.store.updateProjectThreadState(projectId, threadId, { state: "working", now })) ?? thread;
+  return (await deps.store.updateProjectThreadState(projectId, threadId, { state: "working", now, hostId: targetHostId })) ?? thread;
 }
 
 /**
@@ -2581,7 +2572,6 @@ export async function listProjectT3ThreadsLive(
   }
 
   const now = deps.now ? deps.now() : Date.now();
-  const mapping = await deps.store.getProjectMapping(projectId);
   const hostStateByKey = new Map<
     string,
     { mcpClient: T3McpClient | undefined; listedById: Map<string, T3ThreadListItem> | undefined }
@@ -2598,7 +2588,7 @@ export async function listProjectT3ThreadsLive(
       mcpClient = await createActiveT3McpClient({
         store: deps.store,
         encryptionKey: deps.encryptionKey,
-        hostId,
+        hostId: requireRecordedHostId(hostId),
         fetchFn: deps.fetchFn,
         now,
       });
@@ -2619,7 +2609,7 @@ export async function listProjectT3ThreadsLive(
 
   const threads: ProjectT3Thread[] = [];
   for (const thread of stored) {
-    const targetHostId = thread.hostId ?? mapping?.hostId;
+    const targetHostId = thread.hostId;
     const { mcpClient, listedById } = await getHostState(targetHostId);
     const listedThread = listedById?.get(thread.threadId);
     let nextState: AgentRunState;
@@ -2643,6 +2633,7 @@ export async function listProjectT3ThreadsLive(
       nextState === thread.state && nextLink === thread.link
         ? thread
         : ((await deps.store.updateProjectThreadState(projectId, thread.threadId, {
+            hostId: targetHostId,
             state: nextState,
             ...(nextLink ? { link: nextLink } : {}),
             now,
@@ -2659,6 +2650,7 @@ export async function listProjectT3ThreadsLive(
 }
 
 export interface ReadProjectT3ThreadMessagesOptions {
+  readonly hostId?: string | undefined;
   readonly afterPosition?: number | undefined;
 }
 
@@ -2674,7 +2666,7 @@ export async function readProjectT3ThreadMessages(
   options: ReadProjectT3ThreadMessagesOptions = {},
 ): Promise<ProjectT3ThreadMessagesResponse> {
   await requireProject(deps.storage, projectId);
-  const existing = await deps.store.getProjectThread(projectId, threadId);
+  const existing = await deps.store.getProjectThread(projectId, threadId, options.hostId);
   if (!existing) {
     throw new NotFoundError("t3_thread", threadId);
   }
@@ -2704,6 +2696,7 @@ export async function readProjectT3ThreadMessages(
     if (nextState !== existing.state) {
       thread =
         (await deps.store.updateProjectThreadState(projectId, existing.threadId, {
+          hostId: targetHostId,
           state: nextState,
           now,
         })) ?? existing;

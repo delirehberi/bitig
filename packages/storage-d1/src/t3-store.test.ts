@@ -86,6 +86,31 @@ describe("T3D1Store project threads (BIT-127)", () => {
     expect(await store.getProjectThread(PROJECT_ID, "thread-1")).toEqual(saved);
   });
 
+  it("requires a host for colliding IDs and only mutates that host's record", async () => {
+    const store = new T3D1Store(env.DB);
+    const first = await store.saveProjectThread(threadInput({ hostId: "host-a" }));
+    const second = await store.saveProjectThread(threadInput({ hostId: "host-b" }));
+    await expect(store.getProjectThread(PROJECT_ID, "thread-1")).rejects.toThrow("multiple hosts");
+    await expect(store.deleteProjectThread(PROJECT_ID, "thread-1")).rejects.toThrow("multiple hosts");
+    await store.updateProjectThreadState(PROJECT_ID, "thread-1", { hostId: "host-a", state: "finished" });
+    expect((await store.getProjectThread(PROJECT_ID, "thread-1", "host-a"))?.state).toBe("finished");
+    expect(await store.getProjectThread(PROJECT_ID, "thread-1", "host-b")).toEqual(second);
+    expect(await store.deleteProjectThread(PROJECT_ID, "thread-1", "host-a")).toBe(true);
+    expect((await store.listProjectThreads(PROJECT_ID)).map((thread) => thread.id)).toEqual([second.id]);
+    expect(first.id).not.toBe(second.id);
+  });
+
+  it("does not expose or mutate another organisation's project threads", async () => {
+    const store = new T3D1Store(env.DB);
+    await store.saveProjectThread(threadInput());
+    const foreign = new T3D1Store(env.DB, defaultIdGenerator());
+    expect(await foreign.getProjectThread(PROJECT_ID, "thread-1", "host-1")).toBeUndefined();
+    expect(await foreign.listProjectThreads(PROJECT_ID)).toEqual([]);
+    expect(await foreign.deleteProjectThread(PROJECT_ID, "thread-1", "host-1")).toBe(false);
+    expect(await foreign.updateProjectThreadModel(PROJECT_ID, "thread-1", { hostId: "host-1", selection: { providerInstanceId: "other", model: "other" } })).toBeUndefined();
+    expect(await store.getProjectThread(PROJECT_ID, "thread-1", "host-1")).toBeDefined();
+  });
+
   it("scopes threads to their project and lists newest first", async () => {
     const store = new T3D1Store(env.DB);
     await store.saveProjectThread(threadInput({ threadId: "old" }));

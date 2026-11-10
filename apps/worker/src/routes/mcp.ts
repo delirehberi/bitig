@@ -36,15 +36,20 @@ export const mcpRouter = new Hono<AppEnv>().all("*", async (c) => {
       return reportTaskT3GitMetadata(t3Deps, input, signal);
     },
     fallbackActor: () => lastInitializedClientName,
-    startT3Thread: (input) =>
-      launchTaskInT3(t3Deps, {
+    startT3Thread: (input) => {
+      const role = c.get("orgRole");
+      if (!role || !hasMinimumOrgRole(role, "editor")) {
+        throw new ForbiddenRoleError("Forbidden: editor role required to start a run");
+      }
+      return launchTaskInT3(t3Deps, {
         taskRef: input.taskId,
         workspaceStrategy: input.workspaceStrategy,
         providerInstanceId: input.providerInstanceId,
         model: input.model,
         actor: input.actor,
         parentTaskRef: input.parentTaskId,
-      }),
+      });
+    },
     // Resumes an umbrella task's T3 session waiting on the finished task (#BIT-141).
     onTaskFinished: (task) => handBackFinishedTaskInBackground(c, task.id),
     getUmbrellaParentTaskId: async (taskId) =>

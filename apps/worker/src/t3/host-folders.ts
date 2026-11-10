@@ -80,8 +80,7 @@ function callOptions(deps: HostFolderDeps): T3CallOptions {
 }
 
 function sameHostId(a: string | null | undefined, b: string | null | undefined): boolean {
-  if (!a || !b) return true;
-  return a === b;
+  return Boolean(a && b && a === b);
 }
 
 /**
@@ -303,6 +302,7 @@ export async function unregisterHostFolder(
   if (!mapping) {
     return { unregistered: false };
   }
+  await deps.store.assertProjectIdle(projectId);
 
   const [mappings, runs, threads] = await Promise.all([
     deps.store.listProjectMappings(),

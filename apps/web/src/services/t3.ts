@@ -133,8 +133,9 @@ async function parseErrorMessage(response: Response, fallback: string): Promise<
   return `${fallback} (HTTP ${String(response.status)})`;
 }
 
-export async function fetchT3Connection(signal?: AbortSignal): Promise<T3ConnectionStatus> {
-  const response = await fetch("/api/t3/connection", {
+export async function fetchT3Connection(signal?: AbortSignal, context?: { projectId?: string; taskId?: string; hostId?: string }): Promise<T3ConnectionStatus> {
+  const query = new URLSearchParams(context);
+  const response = await fetch(`/api/t3/connection${query.size ? `?${query.toString()}` : ""}`, {
     headers: baseHeaders(),
     credentials: "same-origin",
     ...(signal ? { signal } : {}),
@@ -185,8 +186,9 @@ export async function fetchT3RemoteProjects(signal?: AbortSignal): Promise<T3Rem
   return body.projects;
 }
 
-export async function fetchT3Capabilities(signal?: AbortSignal): Promise<T3ModelCapability[]> {
-  const response = await fetch("/api/t3/capabilities", {
+export async function fetchT3Capabilities(signal?: AbortSignal, context?: { projectId?: string; taskId?: string; hostId?: string }): Promise<T3ModelCapability[]> {
+  const query = new URLSearchParams(context);
+  const response = await fetch(`/api/t3/capabilities${query.size ? `?${query.toString()}` : ""}`, {
     headers: baseHeaders(),
     credentials: "same-origin",
     ...(signal ? { signal } : {}),
@@ -479,8 +481,10 @@ export async function settleProjectT3Thread(
   projectId: string,
   threadId: string,
   signal?: AbortSignal,
+  hostId?: string,
 ): Promise<void> {
-  const response = await fetch(`${projectThreadsPath(projectId)}/${encodeURIComponent(threadId)}/settle`, {
+  const hostQuery = hostId ? `?hostId=${encodeURIComponent(hostId)}` : "";
+  const response = await fetch(`${projectThreadsPath(projectId)}/${encodeURIComponent(threadId)}/settle${hostQuery}`, {
     method: "POST",
     headers: baseHeaders(),
     credentials: "same-origin",
@@ -500,8 +504,10 @@ export async function sendProjectT3Message(
   threadId: string,
   input: SendProjectT3MessageInput,
   signal?: AbortSignal,
+  hostId?: string,
 ): Promise<ProjectT3Thread> {
-  const response = await fetch(`${projectThreadsPath(projectId)}/${encodeURIComponent(threadId)}/messages`, {
+  const hostQuery = hostId ? `?hostId=${encodeURIComponent(hostId)}` : "";
+  const response = await fetch(`${projectThreadsPath(projectId)}/${encodeURIComponent(threadId)}/messages${hostQuery}`, {
     method: "POST",
     headers: { ...baseHeaders(), "Content-Type": "application/json" },
     credentials: "same-origin",
@@ -521,13 +527,13 @@ export async function sendProjectT3Message(
 export async function fetchProjectT3ThreadMessages(
   projectId: string,
   threadId: string,
-  options: { readonly afterPosition?: number | undefined; readonly signal?: AbortSignal | undefined } = {},
+  options: { readonly afterPosition?: number | undefined; readonly signal?: AbortSignal | undefined; readonly hostId?: string | undefined } = {},
 ): Promise<ProjectT3ThreadMessagesResponse> {
   const basePath = `${projectThreadsPath(projectId)}/${encodeURIComponent(threadId)}/messages`;
-  const url =
-    options.afterPosition !== undefined
-      ? `${basePath}?after=${encodeURIComponent(String(options.afterPosition))}`
-      : basePath;
+  const query = new URLSearchParams();
+  if (options.afterPosition !== undefined) query.set("after", String(options.afterPosition));
+  if (options.hostId) query.set("hostId", options.hostId);
+  const url = query.size > 0 ? `${basePath}?${query.toString()}` : basePath;
   const response = await fetch(url, {
     headers: baseHeaders(),
     credentials: "same-origin",

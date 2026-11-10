@@ -5,6 +5,7 @@ export const ERROR_CODES = {
   validation: "VALIDATION",
   storage: "STORAGE",
   workspaceBusy: "WORKSPACE_BUSY",
+  projectBusy: "PROJECT_BUSY",
 } as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[keyof typeof ERROR_CODES];
@@ -44,6 +45,13 @@ export class NotFoundError extends BitigError {
     this.name = "NotFoundError";
     this.entity = entity;
     this.id = id;
+  }
+}
+
+export class ProjectBusyError extends BitigError {
+  constructor(projectId: string) {
+    super(ERROR_CODES.projectBusy, `Project "${projectId}" has active or offline sessions. Stop or reconcile them before detaching or deleting it.`);
+    this.name = "ProjectBusyError";
   }
 }
 
@@ -110,4 +118,3 @@ export function parseOrThrow<S extends z.ZodType>(
 export function isBitigError(error: unknown): error is BitigError {
   return error instanceof BitigError;
 }
-

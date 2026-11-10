@@ -1761,6 +1761,7 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
     );
   });
   async function setupProjectSettlement(): Promise<{ project: Project; store: T3D1Store }> {
+    await connectT3Host();
     const response = await request("/api/projects", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name: "Settlement", key: "SET" }),
@@ -1773,7 +1774,6 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
       threadId: "settle-thread", title: "Settle me", state: "finished",
       workspaceStrategy: "root", startedAt: now, updatedAt: now,
     });
-    await connectT3Host();
     return { project, store };
   }
 
@@ -1868,6 +1868,7 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
     await mapProject(project.id);
     expect((await startThread(project.id, { prompt: "Check node" })).status).toBe(400);
     await connectT3Host();
+    expect((await mapProject(project.id)).status).toBe(200);
 
     // Unknown project, invalid input, and an unmapped project are refused
     expect((await startThread("01a14ecf-281e-7436-8c52-a524c5fabc99", { prompt: "x" })).status).toBe(404);
@@ -2578,12 +2579,13 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
     }
 
     /** A personal access token for a member of the default organisation with the given role. */
-    async function memberAuthHeader(role: OrganisationRole): Promise<string> {
+    async function memberAuthHeader(role: OrganisationRole, platformAdmin = false): Promise<string> {
       const user = await new D1UserStore(env.DB).create({
         email: `${role}-${defaultIdGenerator()}@bitig.test`,
         username: `${role}${String(Date.now())}`,
         displayName: `Org ${role}`,
       });
+      if (platformAdmin) await new D1UserStore(env.DB).update(user.id, { platformRole: "admin" });
       await new D1OrganisationStore(env.DB).addMember(DEFAULT_ORGANISATION_ID, user.id, role);
       const rawToken = `btg_${defaultIdGenerator().replaceAll("-", "")}`;
       await new D1AccessTokenStore(env.DB).create({
@@ -2789,6 +2791,122 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
       expect((await checkFolder({ workspaceRoot: FOLDER }, { Authorization })).status).toBe(403);
       expect(projectToolCalls()).toHaveLength(callsBefore);
       expect(await new T3D1Store(env.DB).getProjectMapping(project.id)).toBeDefined();
+    });
+
+    it.each([
+      { role: "viewer", platformAdmin: false },
+      { role: "editor", platformAdmin: false },
+      { role: "editor", platformAdmin: true },
+    ] as const)("denies host and project administration for $role (platform admin: $platformAdmin) across REST and MCP", async ({ role, platformAdmin }) => {
+      await connectT3Host();
+      const project = await createProject("Permission boundary", "PER");
+      const bundle = await (await request(`/api/projects/${project.id}/export`)).json<unknown>();
+      const Authorization = await memberAuthHeader(role, platformAdmin);
+      const callsBefore = mockState.toolCalls.length;
+      const writes = [
+        { path: "/api/t3/oauth/start", method: "POST", body: { mcpUrl: T3_MCP_URL } },
+        { path: "/api/t3/oauth/start", method: "POST", body: { mcpUrl: T3_MCP_URL, hostId: "default" } },
+        { path: "/api/t3/hosts/default", method: "PATCH", body: { label: "Hijack" } },
+        { path: "/api/t3/hosts/default", method: "DELETE" },
+        { path: "/api/t3/connection", method: "DELETE" },
+        { path: `/api/t3/mappings/${project.id}`, method: "PUT", body: { t3ProjectId: "t3-proj-1", t3ProjectTitle: "Hijack" } },
+        { path: `/api/t3/mappings/${project.id}`, method: "DELETE" },
+        { path: "/api/projects", method: "POST", body: { name: "Forbidden" } },
+        { path: `/api/projects/${project.id}`, method: "DELETE" },
+        { path: "/api/projects/import", method: "POST", body: bundle },
+      ];
+      for (const write of writes) {
+        const response = await request(write.path, {
+          method: write.method, headers: { Authorization, "Content-Type": "application/json" },
+          ...(write.body !== undefined ? { body: JSON.stringify(write.body) } : {}),
+        });
+        expect(response.status, `${role} ${write.method} ${write.path}`).toBe(403);
+      }
+      for (const [name, args] of [
+        ["create_project", { name: "Forbidden" }],
+        ["delete_project", { id: project.id }],
+      ] as const) {
+        const response = await request("/mcp", {
+          method: "POST", headers: { Authorization, "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }),
+        });
+        expect(await response.text()).toContain("owner role required");
+      }
+      expect(mockState.toolCalls).toHaveLength(callsBefore);
+      const status = await request("/api/t3/hosts/default", { headers: { Authorization } });
+      expect(status.status).toBe(200);
+      const statusText = await status.text();
+      expect(statusText).not.toContain("encryptedAccessToken");
+      expect(statusText).not.toContain("tokenIv");
+      expect(statusText).not.toContain("t3-secret-bearer-token-value");
+      expect((await request(`/api/projects/${project.id}`, { headers: { Authorization } })).status).toBe(200);
+    });
+
+    it("allows members to execute mapped projects and blocks viewers from MCP launch", async () => {
+      await connectT3Host();
+      const project = await createProject("Member execution", "MEM");
+      expect((await registerFolder(project.id, { workspaceRoot: FOLDER })).status).toBe(201);
+      const Authorization = await memberAuthHeader("editor");
+      const taskResponse = await request("/api/tasks", {
+        method: "POST", headers: { Authorization, "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: project.id, title: "Member task" }),
+      });
+      expect(taskResponse.status).toBe(201);
+      const task = await taskResponse.json<Task>();
+      expect((await request(`/api/tasks/${task.id}/t3-run`, {
+        method: "POST", headers: { Authorization, "Content-Type": "application/json" },
+        body: JSON.stringify({ workspaceStrategy: "worktree" }),
+      })).status).toBe(201);
+      expect((await request(`/api/t3/capabilities?taskId=${task.id}`, { headers: { Authorization } })).status).toBe(200);
+      const viewer = await memberAuthHeader("viewer");
+      const callsBefore = mockState.toolCalls.length;
+      const response = await request("/mcp", {
+        method: "POST", headers: { Authorization: viewer, "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "start_t3_thread", arguments: { taskId: task.id } } }),
+      });
+      expect(await response.text()).toContain("editor role required");
+      expect(mockState.toolCalls).toHaveLength(callsBefore);
+      expect((await request(`/api/t3/connection?hostId=default`, { method: "DELETE" })).status).toBe(409);
+      expect((await request(`/api/t3/mappings/${project.id}`, { method: "DELETE" })).status).toBe(409);
+      expect((await request(`/api/projects/${project.id}`, { method: "DELETE" })).status).toBe(409);
+
+      // Nonmember / owner of another organisation cannot inspect or mutate this organisation's hosts, projects, or runs.
+      const outsider = await new D1UserStore(env.DB).create({
+        email: `outsider-${defaultIdGenerator()}@bitig.test`,
+        username: `outsider${String(Date.now())}`,
+        displayName: "Outsider Owner",
+      });
+      const otherOrg = await new D1OrganisationStore(env.DB).create(
+        {
+          name: "Other Org",
+          slug: `other-${String(Date.now())}`,
+        },
+        outsider.id,
+      );
+      const rawOutsiderToken = `btg_${defaultIdGenerator().replaceAll("-", "")}`;
+      await new D1AccessTokenStore(env.DB).create({
+        userId: outsider.id,
+        orgId: otherOrg.id,
+        name: "outsider owner token",
+        tokenHash: await sha256Hex(rawOutsiderToken),
+        prefix: rawOutsiderToken.slice(0, 8),
+      });
+      const outsiderAuth = `Bearer ${rawOutsiderToken}`;
+      expect((await request("/api/t3/hosts/default", { headers: { Authorization: outsiderAuth } })).status).toBe(404);
+      expect((await request("/api/t3/hosts/default", {
+        method: "PATCH",
+        headers: { Authorization: outsiderAuth, "Content-Type": "application/json" },
+        body: JSON.stringify({ label: "Cross-org hijack" }),
+      })).status).toBe(404);
+      expect((await request(`/api/t3/mappings/${project.id}`, {
+        method: "PUT",
+        headers: { Authorization: outsiderAuth, "Content-Type": "application/json" },
+        body: JSON.stringify({ hostId: "default", t3ProjectId: "t3-proj-1", t3ProjectTitle: "Hijack" }),
+      })).status).toBe(404);
+      expect((await request(`/api/tasks/${task.id}/t3-run`, { headers: { Authorization: outsiderAuth } })).status).toBe(404);
+      expect((await request("/api/t3/hosts", {
+        headers: { Authorization: outsiderAuth, "X-Bitig-Org": DEFAULT_ORGANISATION_ID },
+      })).status).toBe(404);
     });
 
     it("refuses unauthenticated callers", async () => {
@@ -3494,6 +3612,62 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
       expect(hostAState.toolCalls.filter((c) => c.name === "orchestrator_capabilities")).toHaveLength(2);
     });
 
+    it("isolates identical project thread IDs, explicit disconnection, and unavailable hosts", async () => {
+      await authorizeHost({ mcpUrl: HOST_A_MCP_URL });
+      await authorizeHost({ mcpUrl: HOST_B_MCP_URL });
+      const store = new T3D1Store(env.DB, DEFAULT_ORGANISATION_ID);
+      const hosts = await store.listConnections();
+      const hostA = hosts.find((host) => host.mcpUrl === HOST_A_MCP_URL);
+      const hostB = hosts.find((host) => host.mcpUrl === HOST_B_MCP_URL);
+      if (!hostA || !hostB) throw new Error("Expected both hosts");
+      const project = await (await multiRequest("/api/projects", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Host collisions", key: "COL" }),
+      })).json<Project>();
+      const now = Date.now();
+      const threadId = "same-remote-id";
+      for (const host of [hostA, hostB]) {
+        await store.saveProjectThread({
+          id: defaultIdGenerator(), projectId: project.id, hostId: host.id,
+          t3ProjectId: "same-project-id", threadId, title: host.id, state: "finished",
+          workspaceStrategy: "worktree", startedAt: now, updatedAt: now,
+        });
+      }
+      const path = `/api/t3/projects/${project.id}/threads/${threadId}`;
+      expect((await multiRequest(`${path}/messages`)).status).toBe(400);
+      expect((await multiRequest(`${path}/settle`, { method: "POST" })).status).toBe(400);
+      expect(hostAState.toolCalls).toHaveLength(0);
+      expect(hostBState.toolCalls).toHaveLength(0);
+      hostAState.threadStatus = "idle";
+      hostAState.recentRunStatus = "completed";
+      const read = await multiRequest(`${path}/messages?hostId=${hostA.id}`);
+      expect(read.status).toBe(200);
+      expect((await read.json<ProjectT3ThreadMessagesResponse>()).thread.hostId).toBe(hostA.id);
+      expect(hostBState.toolCalls).toHaveLength(0);
+      expect((await multiRequest(`${path}/settle?hostId=${hostA.id}`, { method: "POST" })).status).toBe(204);
+      expect(await store.getProjectThread(project.id, threadId, hostA.id)).toBeUndefined();
+      expect(await store.getProjectThread(project.id, threadId, hostB.id)).toBeDefined();
+
+      expect((await multiRequest("/api/t3/connection", { method: "DELETE" })).status).toBe(400);
+      expect(await store.listConnections()).toHaveLength(2);
+      expect((await multiRequest(`/api/t3/connection?hostId=${hostA.id}`, { method: "DELETE" })).status).toBe(204);
+      expect(await store.getConnection(hostB.id)).toBeDefined();
+      hostBState.failMcpConnection = true;
+      const offline = await multiRequest(`${path}/messages?hostId=${hostB.id}`);
+      expect(offline.status).toBe(502);
+      expect(await offline.text()).toContain(hostB.id);
+      hostBState.failMcpConnection = false;
+      await env.DB.prepare("UPDATE t3_connections SET expires_at = ? WHERE id = ?").bind(now - 1, hostB.id).run();
+      const expired = await multiRequest(`${path}/messages?hostId=${hostB.id}`);
+      expect(expired.status).toBe(400);
+      expect(await expired.text()).toContain(hostB.id);
+      expect((await multiRequest(`/api/t3/connection?hostId=${hostB.id}`, { method: "DELETE" })).status).toBe(204);
+      const disconnected = await multiRequest(`${path}/messages?hostId=${hostB.id}`);
+      expect(disconnected.status).toBe(400);
+      expect(await disconnected.text()).toContain(hostB.id);
+      expect(await store.getProjectThread(project.id, threadId, hostB.id)).toBeDefined();
+    });
+
     it("keeps at most one active host mapping per project and preserves the originating host on historical runs and project threads after reattaching", async () => {
       await authorizeHost({ mcpUrl: HOST_A_MCP_URL, label: "Host A", kind: "user" });
       await authorizeHost({ mcpUrl: HOST_B_MCP_URL, label: "Host B", kind: "container" });
@@ -3564,7 +3738,17 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
         threadId: "proj-thread-on-host-a",
       });
 
-      // Reattach project to Host B: replaces the single mapping in-place
+      // Active sessions must prevent host removal and project reattachment (#BIT-149).
+      expect((await multiRequest(`/api/t3/hosts/${hostA.id}`, { method: "DELETE" })).status).toBe(409);
+      expect((await multiRequest(`/api/t3/mappings/${project.id}`, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hostId: hostB.id, t3ProjectId: "t3-proj-b", t3ProjectTitle: "Beta" }),
+      })).status).toBe(409);
+      const runStore = new T3D1Store(env.DB);
+      await runStore.updateAgentRunState(task1.id, { state: "finished" });
+      await runStore.updateProjectThreadState(project.id, pt1.threadId, { state: "finished", hostId: hostA.id });
+
+      // Reattach after sessions finish: historical operations retain Host A.
       const mapBRes = await multiRequest(`/api/t3/mappings/${project.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -3582,10 +3766,6 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
         hostId: hostB.id,
         t3ProjectId: "t3-proj-b",
       });
-
-      // Deleting Host A while Task 1 and Project Thread 1 are still active on Host A is refused (409 host_busy)
-      const busyDelRes = await multiRequest(`/api/t3/hosts/${hostA.id}`, { method: "DELETE" });
-      expect(busyDelRes.status).toBe(409);
 
       // Clear tool call logs to verify subsequent operations on historical runs/threads still target Host A
       hostAState.toolCalls.length = 0;
@@ -3739,5 +3919,3 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
     });
   });
 });
-
-

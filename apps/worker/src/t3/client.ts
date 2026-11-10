@@ -496,6 +496,7 @@ export function parseWorktreeCurrentBranch(raw: unknown): string | undefined {
 }
 
 export interface T3McpClientOptions {
+  hostId?: string | undefined;
   mcpUrl: string;
   accessToken: string;
   fetchFn?: typeof fetch | undefined;
@@ -868,11 +869,13 @@ function parseRemoteProjects(rawProjects: unknown): T3RemoteProject[] {
 }
 
 export class T3McpClient {
+  private readonly hostId: string | undefined;
   private readonly mcpUrl: string;
   private readonly accessToken: string;
   private readonly fetchFn: typeof fetch | undefined;
 
   constructor(options: T3McpClientOptions) {
+    this.hostId = options.hostId;
     this.mcpUrl = normalizeT3McpUrl(options.mcpUrl).mcpUrl;
     this.accessToken = options.accessToken;
     this.fetchFn = options.fetchFn;
@@ -925,9 +928,9 @@ export class T3McpClient {
         throw new T3McpError("aborted", "The T3 request was cancelled before it finished");
       }
       if (err instanceof McpError && err.code === MCP_REQUEST_TIMEOUT_CODE) {
-        throw new T3McpError("timeout", "The T3 host did not answer in time");
+        throw new T3McpError("timeout", `T3 host "${this.hostId ?? this.mcpUrl}" did not answer in time. Check that host's connection and retry.`);
       }
-      throw new T3McpError("connection_error", err instanceof Error ? err.message : String(err));
+      throw new T3McpError("connection_error", `T3 host "${this.hostId ?? this.mcpUrl}" is unreachable. Check that host's connection and retry. ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       await transport.inner.terminateSession().catch(() => undefined);
       await client.close().catch(() => undefined);

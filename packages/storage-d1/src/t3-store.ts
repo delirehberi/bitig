@@ -1,7 +1,11 @@
-import { and, asc, desc, eq, inArray, lt } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, lt, or } from "drizzle-orm";
 import { drizzle, type DrizzleD1Database } from "drizzle-orm/d1";
 import {
   AgentRunSchema,
+  ValidationError,
+  NotFoundError,
+  ProjectBusyError,
+  isActiveAgentRunState,
   T3GitMetadataSchema,
   type T3GitMetadata,
   DEFAULT_ORGANISATION_ID,
@@ -230,6 +234,52 @@ export class T3D1Store {
       .orderBy(asc(t3Connections.connectedAt), asc(t3Connections.id));
   }
 
+  private async canAccessProject(projectId: string): Promise<boolean> {
+    if (!this.explicitOrgScope) return true;
+    const row = await this.db.select({ id: projects.id }).from(projects)
+      .where(and(eq(projects.id, projectId), eq(projects.orgId, this.orgId))).get();
+    return row !== undefined;
+  }
+
+  private async canAccessTask(taskId: string): Promise<boolean> {
+    if (!this.explicitOrgScope) return true;
+    const row = await this.db.select({ projectId: tasks.projectId }).from(tasks)
+      .where(eq(tasks.id, taskId)).get();
+    return row !== undefined && this.canAccessProject(row.projectId);
+  }
+
+  private static async ignoreMissingTable<T>(promise: Promise<T>, fallback: T): Promise<T> {
+    try {
+      return await promise;
+    } catch (err) {
+      const message =
+        err instanceof Error
+          ? `${err.message} ${err.cause instanceof Error ? err.cause.message : ""}`
+          : String(err);
+      if (message.includes("no such table")) {
+        return fallback;
+      }
+      throw err;
+    }
+  }
+
+  async assertProjectIdle(projectId: string): Promise<void> {
+    if (!(await this.canAccessProject(projectId))) throw new NotFoundError("project", projectId);
+    const projectTasks = await T3D1Store.ignoreMissingTable(
+      this.db.select({ id: tasks.id }).from(tasks).where(eq(tasks.projectId, projectId)),
+      [],
+    );
+    const taskIds = new Set(projectTasks.map((task) => task.id));
+    const [runs, threads] = await Promise.all([
+      T3D1Store.ignoreMissingTable(this.listAgentRuns(), []),
+      T3D1Store.ignoreMissingTable(this.listProjectThreads(projectId), []),
+    ]);
+    if (runs.some((run) => taskIds.has(run.taskId) && (isActiveAgentRunState(run.state) || run.state === "offline")) ||
+        threads.some((thread) => isActiveAgentRunState(thread.state) || thread.state === "offline")) {
+      throw new ProjectBusyError(projectId);
+    }
+  }
+
   async getConnection(hostId?: string): Promise<T3ConnectionRecord | undefined> {
     if (hostId !== undefined) {
       const rows = await this.db
@@ -244,7 +294,10 @@ export class T3D1Store {
       .from(t3Connections)
       .where(eq(t3Connections.orgId, this.orgId))
       .orderBy(asc(t3Connections.connectedAt), asc(t3Connections.id))
-      .limit(1);
+      .limit(2);
+    if (rows.length > 1) {
+      throw new ValidationError("t3Host", [{ code: "custom", path: ["hostId"], message: "Select a host explicitly; this organisation has multiple T3 hosts." }]);
+    }
     return rows[0];
   }
 
@@ -385,10 +438,11 @@ export class T3D1Store {
   }
 
   async deleteConnection(hostId?: string): Promise<boolean> {
-    const whereClause =
-      hostId !== undefined
-        ? and(eq(t3Connections.orgId, this.orgId), eq(t3Connections.id, hostId))
-        : eq(t3Connections.orgId, this.orgId);
+    const connection = await this.getConnection(hostId);
+    if (!connection) return false;
+    const whereClause = and(eq(t3Connections.orgId, this.orgId), eq(t3Connections.id, connection.id));
+    await this.db.delete(t3OauthStates).where(and(eq(t3OauthStates.orgId, this.orgId),
+      or(eq(t3OauthStates.hostId, connection.id), eq(t3OauthStates.mcpUrl, connection.mcpUrl))));
     const deleted = await this.db
       .delete(t3Connections)
       .where(whereClause)
@@ -455,6 +509,7 @@ export class T3D1Store {
   }
 
   async getProjectMapping(projectId: string): Promise<T3ProjectMapping | undefined> {
+    if (!(await this.canAccessProject(projectId))) return undefined;
     const rows = await this.db
       .select()
       .from(t3ProjectMappings)
@@ -471,6 +526,7 @@ export class T3D1Store {
     t3ProjectTitle: string;
     now?: number;
   }): Promise<T3ProjectMapping> {
+    if (!(await this.canAccessProject(input.projectId))) throw new NotFoundError("project", input.projectId);
     const updatedAt = input.now ?? Date.now();
     let hostId = input.hostId;
     if (hostId === undefined) {
@@ -481,6 +537,11 @@ export class T3D1Store {
         const primaryHost = await this.getConnection();
         hostId = primaryHost?.id ?? null;
       }
+    }
+    if (hostId && !(await this.getConnection(hostId))) throw new NotFoundError("t3_host", hostId);
+    const previous = await this.getProjectMapping(input.projectId);
+    if (previous && (previous.hostId !== hostId || previous.t3ProjectId !== input.t3ProjectId)) {
+      await this.assertProjectIdle(input.projectId);
     }
     const record: T3ProjectMappingRecord = {
       projectId: input.projectId,
@@ -505,6 +566,8 @@ export class T3D1Store {
   }
 
   async deleteProjectMapping(projectId: string): Promise<void> {
+    if (!(await this.canAccessProject(projectId))) throw new NotFoundError("project", projectId);
+    await this.assertProjectIdle(projectId);
     await this.db.delete(t3ProjectMappings).where(eq(t3ProjectMappings.projectId, projectId));
   }
 
@@ -529,6 +592,7 @@ export class T3D1Store {
   }
 
   async getAgentRunByTaskId(taskId: string): Promise<AgentRun | undefined> {
+    if (!(await this.canAccessTask(taskId))) return undefined;
     const rows = await this.db
       .select()
       .from(agentRuns)
@@ -539,6 +603,8 @@ export class T3D1Store {
   }
 
   async saveAgentRun(input: SaveAgentRunInput): Promise<AgentRun> {
+    if (!(await this.canAccessTask(input.taskId))) throw new NotFoundError("task", input.taskId);
+    const hostId = input.hostId ?? (await this.getConnection())?.id;
     const record: AgentRunRecord = {
       branch: null,
       headSha: null,
@@ -546,7 +612,7 @@ export class T3D1Store {
       pullRequestUrls: null,
       id: input.id,
       taskId: input.taskId,
-      hostId: input.hostId ?? null,
+      hostId: hostId ?? null,
       t3ProjectId: input.t3ProjectId,
       threadId: input.threadId,
       link: input.link ?? null,
@@ -743,6 +809,7 @@ export class T3D1Store {
 
   /** Project-level threads (#BIT-127), newest first. Pass a project ID to list one project's threads. */
   async listProjectThreads(projectId?: string): Promise<ProjectT3Thread[]> {
+    if (projectId && !(await this.canAccessProject(projectId))) return [];
     if (projectId !== undefined) {
       const rows = await this.db
         .select()
@@ -771,30 +838,39 @@ export class T3D1Store {
   }
 
   /** The project's thread with this T3 thread ID; `undefined` when it belongs to another project. */
-  async getProjectThread(projectId: string, threadId: string): Promise<ProjectT3Thread | undefined> {
+  async getProjectThread(projectId: string, threadId: string, hostId?: string): Promise<ProjectT3Thread | undefined> {
+    if (!(await this.canAccessProject(projectId))) return undefined;
     const rows = await this.db
       .select()
       .from(projectT3Threads)
-      .where(and(eq(projectT3Threads.projectId, projectId), eq(projectT3Threads.threadId, threadId)))
+      .where(and(eq(projectT3Threads.projectId, projectId), eq(projectT3Threads.threadId, threadId),
+        hostId === undefined ? undefined : eq(projectT3Threads.hostId, hostId)))
       .orderBy(desc(projectT3Threads.startedAt), desc(projectT3Threads.id))
-      .limit(1);
+      .limit(2);
+    if (rows.length > 1) {
+      throw new ValidationError("t3Thread", [{ code: "custom", path: ["hostId"], message: "This thread ID exists on multiple hosts. Select its recorded host." }]);
+    }
     const row = rows[0];
     return row ? toProjectT3Thread(row) : undefined;
   }
 
-  async deleteProjectThread(projectId: string, threadId: string): Promise<boolean> {
+  async deleteProjectThread(projectId: string, threadId: string, hostId?: string): Promise<boolean> {
+    const existing = await this.getProjectThread(projectId, threadId, hostId);
+    if (!existing) return false;
     const deleted = await this.db
       .delete(projectT3Threads)
-      .where(and(eq(projectT3Threads.projectId, projectId), eq(projectT3Threads.threadId, threadId)))
+      .where(eq(projectT3Threads.id, existing.id))
       .returning({ id: projectT3Threads.id });
     return deleted.length > 0;
   }
 
   async saveProjectThread(input: SaveProjectT3ThreadInput): Promise<ProjectT3Thread> {
+    if (!(await this.canAccessProject(input.projectId))) throw new NotFoundError("project", input.projectId);
+    const hostId = input.hostId ?? (await this.getConnection())?.id;
     const record: ProjectT3ThreadRecord = {
       id: input.id,
       projectId: input.projectId,
-      hostId: input.hostId ?? null,
+      hostId: hostId ?? null,
       t3ProjectId: input.t3ProjectId,
       threadId: input.threadId,
       title: input.title,
@@ -815,9 +891,9 @@ export class T3D1Store {
   async updateProjectThreadState(
     projectId: string,
     threadId: string,
-    patch: { state: AgentRunState; link?: string | undefined; now?: number },
+    patch: { state: AgentRunState; link?: string | undefined; now?: number; hostId?: string | undefined },
   ): Promise<ProjectT3Thread | undefined> {
-    const existing = await this.getProjectThread(projectId, threadId);
+    const existing = await this.getProjectThread(projectId, threadId, patch.hostId);
     if (!existing) {
       return undefined;
     }
@@ -838,9 +914,9 @@ export class T3D1Store {
   async updateProjectThreadModel(
     projectId: string,
     threadId: string,
-    patch: { selection: T3ModelSelection; now?: number },
+    patch: { selection: T3ModelSelection; now?: number; hostId?: string | undefined },
   ): Promise<ProjectT3Thread | undefined> {
-    const existing = await this.getProjectThread(projectId, threadId);
+    const existing = await this.getProjectThread(projectId, threadId, patch.hostId);
     if (!existing) {
       return undefined;
     }

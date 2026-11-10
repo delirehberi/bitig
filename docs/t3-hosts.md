@@ -1,15 +1,16 @@
 # T3 hosts: prerequisites and folder registration
 
-Bitig runs coding sessions on one or more T3 Code hosts that the organisation owner connects in **Settings**. This page covers what each host needs, how Bitig persists multiple hosts and host-bound project mappings (#BIT-147), and how Bitig registers project folders on a host (#BIT-148). For the security model, see [`security.md`](security.md#6b-t3-code-access-from-bitig-oauth-mcp-client).
+Bitig runs coding sessions on one or more T3 Code hosts that the organisation owner connects in **Settings**. This page covers what each host needs, how Bitig persists multiple hosts and host-bound project mappings (#BIT-147), how Bitig registers project folders on a host (#BIT-148), and how owner-only administration and host-scoped execution are enforced (#BIT-149). For the security model, see [`security.md`](security.md#6b-t3-code-access-from-bitig-oauth-mcp-client).
 
-## Multiple hosts and host-bound mappings (#BIT-147)
+## Multiple hosts and host-bound mappings (#BIT-147, #BIT-149)
 
 An organisation can connect and authenticate multiple T3 Code hosts independently:
 
+- **Owner-only administration (#BIT-149):** Only the organisation `owner` may connect, reauthorise, configure, or disconnect hosts, manage project mappings and host folders, or create, import, or delete Bitig projects across REST and MCP (`create_project`, `delete_project`). Platform `admin` status does not grant organisation `owner` permissions. Organisation `editor`s can run tasks and project threads on mapped projects without host-management privileges or token access; `viewer`s are read-only.
 - **Stable host identity:** Each host connection in `t3_connections` has a stable `id`, organisation ownership (`org_id`), optional `label`, host `kind` (`"user"` or `"container"`), and `projectsRoot` (`~/www` by default for user-owned hosts, `/var/www` for managed containers).
-- **Per-host OAuth and capability caches:** Starting OAuth (`POST /api/t3/oauth/start`) accepts an optional `hostId`, `label`, `kind`, and `projectsRoot`. Reauthorising one host updates only that host's encrypted token and metadata without overwriting any other host in the organisation. Model capabilities (`GET /api/t3/capabilities?hostId=...`) and remote project lists (`GET /api/t3/projects?hostId=...`) are scoped per host.
-- **One active host mapping per project:** Each Bitig project (`t3_project_mappings`) maps to at most one `(hostId, t3ProjectId)` pair at a time.
-- **Originating-host retention on runs and threads:** Task runs (`agent_runs`), queued offline requests (`t3_run_requests`), and project-level threads (`project_t3_threads`) record the `hostId` on which they were launched. If a project is later reattached to another host, historical runs and threads remain bound to their originating host and never reroute follow-up replies, status checks, or settlement calls to the newly mapped host.
+- **Per-host OAuth and capability caches:** Starting OAuth (`POST /api/t3/oauth/start`) accepts an optional `hostId`, `label`, `kind`, and `projectsRoot`. Reauthorising an existing `hostId` must match its recorded `mcpUrl` and updates only that host's encrypted token and metadata without affecting any other host. Model capabilities (`GET /api/t3/capabilities`) and connection status (`GET /api/t3/connection`) accept `?hostId=<id>`, `?projectId=<id>`, or `?taskId=<id>` and resolve the recorded host; when multiple hosts exist and no host context is provided, Bitig rejects ambiguous requests (`400`) instead of guessing.
+- **One active host mapping per project:** Each Bitig project (`t3_project_mappings`) maps to at most one `(hostId, t3ProjectId)` pair at a time. Replacing or deleting a mapping, unregistering a host folder, or deleting a project is refused (`409 { error: "project_busy" }`) while the project has active or offline T3 sessions.
+- **Originating-host retention and collision safety:** Task runs (`agent_runs`), queued offline requests (`t3_run_requests`), and project-level threads (`project_t3_threads`) record the `hostId` on which they were launched. Every status check, reply, approval response, model switch, stop, and settlement routes strictly to that recorded host without silent cross-host fallback, and reports host-specific errors when a host is disconnected, offline, or expired. Project-thread endpoints accept `?hostId=<id>` so identical remote `threadId`s on different hosts never collide.
 
 ## Host prerequisites
 
@@ -53,19 +54,24 @@ T3 also refuses to delete a project that still has threads, unless *Also remove 
 
 ## API
 
-### Host management
+### Host and mapping management (writes require organisation `owner`; `editor` and `viewer` get `403`)
 
 | Route | Body / query | Result |
 | --- | --- | --- |
 | `GET /api/t3/hosts` | — | `{ hosts: T3HostConnectionStatus[] }` |
 | `GET /api/t3/hosts/:hostId` | — | `T3HostConnectionStatus` |
 | `PATCH /api/t3/hosts/:hostId` | `{ label?, kind?, projectsRoot? }` | `T3HostConnectionStatus` |
-| `DELETE /api/t3/hosts/:hostId` | — | `204`, or `409 { error: "host_busy" }` if the host has active sessions |
-| `GET /api/t3/connection` | `?hostId=<id>` (optional) | `T3ConnectionStatus` (defaults to the primary host) |
+| `DELETE /api/t3/hosts/:hostId` | — | `204`, or `409 { error: "host_busy" }` if the host has active/offline sessions |
+| `GET /api/t3/connection` | `?hostId=<id>`, `?projectId=<id>`, or `?taskId=<id>` | `T3ConnectionStatus` for the resolved host |
+| `DELETE /api/t3/connection` | `?hostId=<id>` (required when multiple hosts exist) | `204`, or `409 { error: "host_busy" }` if the host has active/offline sessions |
 | `POST /api/t3/oauth/start` | `{ mcpUrl, hostId?, label?, kind?, projectsRoot? }` | `{ authorizationUrl, state }` |
-| `GET /api/t3/projects` | `?hostId=<id>` (optional) | `{ projects: T3RemoteProject[] }` |
-| `GET /api/t3/capabilities` | `?hostId=<id>` (optional) | `{ capabilities: T3ModelCapability[] }` |
-| `PUT /api/t3/mappings/:projectId` | `{ hostId?, t3ProjectId, t3ProjectTitle }` | `T3ProjectMapping` |
+| `GET /api/t3/projects` | `?hostId=<id>` (required when multiple hosts exist) | `{ projects: T3RemoteProject[] }` |
+| `GET /api/t3/capabilities` | `?hostId=<id>`, `?projectId=<id>`, or `?taskId=<id>` | `{ capabilities: T3ModelCapability[] }` |
+| `PUT /api/t3/mappings/:projectId` | `{ hostId?, t3ProjectId, t3ProjectTitle }` | `T3ProjectMapping` (`409 project_busy` when reattaching with active/offline sessions) |
+| `DELETE /api/t3/mappings/:projectId` | — | `204` (`409 project_busy` when active/offline sessions exist) |
+| `GET /api/t3/projects/:projectId/threads/:threadId/messages` | `?hostId=<id>&after=<pos>` | `ProjectT3ThreadMessagesResponse` (`400` if `threadId` exists on multiple hosts and `hostId` is omitted) |
+| `POST /api/t3/projects/:projectId/threads/:threadId/messages` | `?hostId=<id>`, `{ body, modelSelection? }` | `201 ProjectT3Thread` |
+| `POST /api/t3/projects/:projectId/threads/:threadId/settle` | `?hostId=<id>` | `204` |
 
 ### Host folder registration (owner-only; editors and viewers get `403`)
 

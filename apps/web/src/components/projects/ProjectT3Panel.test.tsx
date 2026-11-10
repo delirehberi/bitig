@@ -289,7 +289,7 @@ describe("ProjectT3Panel (BIT-127)", () => {
   it("keeps the model while a thread is working and hides follow-ups when offline", async () => {
     mockReady([
       makeThread({ threadId: "busy", title: "Busy", state: "working" }),
-      makeThread({ threadId: "gone", title: "Gone", state: "offline", link: "javascript:alert(1)" }),
+      makeThread({ id: "second", threadId: "gone", title: "Gone", state: "offline", link: "javascript:alert(1)" }),
     ]);
     const user = userEvent.setup();
     render(<ProjectT3Panel project={PROJECT} />);
@@ -448,5 +448,40 @@ describe("ProjectT3Panel (BIT-127)", () => {
     expect(await screen.findByTestId("project-t3-thread-stop-reason")).toHaveTextContent(
       "Usage limit reached: Claude API rate limit reached. Try again later.",
     );
+  });
+
+  it("scopes follow-up and settlement to the thread's recorded host when two hosts share a threadId (BIT-149)", async () => {
+    const hostAThread = makeThread({
+      id: "01940000-0000-7000-8000-0000000000a1",
+      hostId: "host-a",
+      threadId: "same-thread",
+      title: "Host A thread",
+    });
+    const hostBThread = makeThread({
+      id: "01940000-0000-7000-8000-0000000000b2",
+      hostId: "host-b",
+      threadId: "same-thread",
+      title: "Host B thread",
+    });
+    mockReady([hostAThread, hostBThread]);
+    vi.mocked(settleProjectT3Thread).mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    render(<ProjectT3Panel project={PROJECT} />);
+
+    await screen.findByText("Host A thread");
+    expect(screen.getByText("Host B thread")).toBeInTheDocument();
+
+    const firstSettle = screen.getAllByRole("button", { name: "Settle" })[0];
+    if (!firstSettle) throw new Error("Missing Settle button");
+    await user.click(firstSettle);
+
+    expect(settleProjectT3Thread).toHaveBeenCalledWith(
+      PROJECT.id,
+      "same-thread",
+      expect.any(AbortSignal),
+      "host-a",
+    );
+    expect(screen.queryByText("Host A thread")).not.toBeInTheDocument();
+    expect(screen.getByText("Host B thread")).toBeInTheDocument();
   });
 });

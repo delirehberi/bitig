@@ -107,8 +107,12 @@ function ProjectT3ThreadItem({ projectId, thread, capabilities, onUpdated, onSet
     setIsSettling(true);
     setSettleError(null);
     try {
-      await settleProjectT3Thread(projectId, thread.threadId, controller.signal);
-      if (!controller.signal.aborted) onSettled(thread.threadId);
+      if (thread.hostId) {
+        await settleProjectT3Thread(projectId, thread.threadId, controller.signal, thread.hostId);
+      } else {
+        await settleProjectT3Thread(projectId, thread.threadId, controller.signal);
+      }
+      if (!controller.signal.aborted) onSettled(thread.id);
     } catch (err) {
       if (!controller.signal.aborted) setSettleError(errorMessage(err, "Could not settle T3 thread."));
     } finally {
@@ -148,6 +152,7 @@ function ProjectT3ThreadItem({ projectId, thread, capabilities, onUpdated, onSet
 
         for (let page = 0; page < MAX_CONVERSATION_PAGES; page++) {
           const res = await fetchProjectT3ThreadMessages(projectId, thread.threadId, {
+            ...(thread.hostId ? { hostId: thread.hostId } : {}),
             afterPosition: cursor,
             signal: options.signal,
           });
@@ -186,7 +191,7 @@ function ProjectT3ThreadItem({ projectId, thread, capabilities, onUpdated, onSet
         }
       }
     },
-    [onUpdated, projectId, thread.threadId],
+    [onUpdated, projectId, thread.threadId, thread.hostId],
   );
 
   useEffect(() => {
@@ -217,10 +222,13 @@ function ProjectT3ThreadItem({ projectId, thread, capabilities, onUpdated, onSet
     setIsSending(true);
     setError(null);
     try {
-      const updated = await sendProjectT3Message(projectId, thread.threadId, {
+      const payload = {
         body,
         ...(switchSelection ? { modelSelection: switchSelection } : {}),
-      });
+      };
+      const updated = thread.hostId
+        ? await sendProjectT3Message(projectId, thread.threadId, payload, undefined, thread.hostId)
+        : await sendProjectT3Message(projectId, thread.threadId, payload);
       onUpdated(updated);
       setDraft("");
       setSelection(null);
@@ -235,7 +243,7 @@ function ProjectT3ThreadItem({ projectId, thread, capabilities, onUpdated, onSet
     }
   }
 
-  const replyId = `project-t3-reply-${thread.threadId}`;
+  const replyId = `project-t3-reply-${thread.id}`;
 
   return (
     <li className="flex flex-col gap-2 rounded-md border border-rule bg-paper p-2.5">
@@ -407,7 +415,7 @@ function ProjectT3ThreadItem({ projectId, thread, capabilities, onUpdated, onSet
           {showPicker && (
             <div className="flex flex-col gap-1">
               <T3ModelPicker
-                idSuffix={`project-reply-${thread.threadId}`}
+                idSuffix={`project-reply-${thread.id}`}
                 keepLabel={`Keep current model (${thread.model ?? "default model"})`}
                 capabilities={capabilities}
                 value={switchSelection}
@@ -486,7 +494,7 @@ export function ProjectT3Panel({ project, focusComposer = false, canManageHostFo
     const controller = new AbortController();
     settledThreadIds.current.clear();
     void Promise.all([
-      fetchT3Connection(controller.signal).catch((): T3ConnectionStatus => ({ connected: false })),
+      fetchT3Connection(controller.signal, { projectId: project.id }).catch((): T3ConnectionStatus => ({ connected: false })),
       fetchT3ProjectMappings(controller.signal).catch((): T3ProjectMapping[] => []),
     ])
       .then(async ([conn, mappings]) => {
@@ -494,7 +502,7 @@ export function ProjectT3Panel({ project, focusComposer = false, canManageHostFo
         const ready = conn.connected && !conn.expired && projectMapping !== undefined;
         const [caps, projectThreads] = ready
           ? await Promise.all([
-              fetchT3Capabilities(controller.signal).catch((): T3ModelCapability[] => []),
+              fetchT3Capabilities(controller.signal, { projectId: project.id }).catch((): T3ModelCapability[] => []),
               fetchProjectT3Threads(project.id, controller.signal).catch((err: unknown) => {
                 if (!controller.signal.aborted) {
                   setLoadError(errorMessage(err, "Could not load project T3 threads."));
@@ -531,7 +539,7 @@ export function ProjectT3Panel({ project, focusComposer = false, canManageHostFo
     try {
       const refreshed = await fetchProjectT3Threads(project.id);
       // A refresh started before settlement can still contain the removed thread.
-      setThreads(refreshed.filter((thread) => !settledThreadIds.current.has(thread.threadId)));
+      setThreads(refreshed.filter((thread) => !settledThreadIds.current.has(thread.id)));
     } catch (err: unknown) {
       setLoadError(errorMessage(err, "Could not load project T3 threads."));
     } finally {
@@ -540,7 +548,7 @@ export function ProjectT3Panel({ project, focusComposer = false, canManageHostFo
   }, [project.id]);
 
   const handleThreadUpdated = useCallback((updated: ProjectT3Thread) => {
-    setThreads((prev) => prev.map((t) => (t.threadId === updated.threadId ? updated : t)));
+    setThreads((prev) => prev.map((t) => (t.id === updated.id ? updated : t)));
   }, []);
 
   async function startThread() {
@@ -554,7 +562,7 @@ export function ProjectT3Panel({ project, focusComposer = false, canManageHostFo
         workspaceStrategy: workspace,
         ...(selection ? { modelSelection: selection } : {}),
       });
-      setThreads((prev) => [thread, ...prev.filter((t) => t.threadId !== thread.threadId)]);
+      setThreads((prev) => [thread, ...prev.filter((t) => t.id !== thread.id)]);
       setDraft("");
     } catch (err: unknown) {
       setSendError(errorMessage(err, "Could not start T3 thread."));
@@ -707,14 +715,14 @@ export function ProjectT3Panel({ project, focusComposer = false, canManageHostFo
             <ul aria-label="Project T3 threads" className="m-0 flex list-none flex-col gap-2 p-0">
               {threads.map((thread) => (
                 <ProjectT3ThreadItem
-                  key={thread.threadId}
+                  key={thread.id}
                   projectId={project.id}
                   thread={thread}
                   capabilities={capabilities}
                   onUpdated={handleThreadUpdated}
                   onSettled={(threadId) => {
                     settledThreadIds.current.add(threadId);
-                    setThreads((prev) => prev.filter((item) => item.threadId !== threadId));
+                    setThreads((prev) => prev.filter((item) => item.id !== threadId));
                   }}
                 />
               ))}

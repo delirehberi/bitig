@@ -124,7 +124,7 @@ export function TaskT3Section({
       .catch(() => undefined);
 
     const connPromise = Promise.all([
-      fetchT3Connection(controller.signal).catch(
+      fetchT3Connection(controller.signal, { taskId: task.id }).catch(
         (): T3ConnectionStatus => ({ connected: false }),
       ),
       fetchT3ProjectMappings(controller.signal).catch(
@@ -133,7 +133,7 @@ export function TaskT3Section({
     ]).then(async ([conn, mappings]) => {
       const caps =
         conn.connected && !conn.expired
-          ? await fetchT3Capabilities(controller.signal).catch(
+          ? await fetchT3Capabilities(controller.signal, { taskId: task.id }).catch(
               (): T3ModelCapability[] => [],
             )
           : [];

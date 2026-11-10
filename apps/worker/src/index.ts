@@ -4,6 +4,7 @@ import { secureHeaders } from "hono/secure-headers";
 import { HTTPException } from "hono/http-exception";
 import {
   NotFoundError,
+  ProjectBusyError,
   ValidationError,
   type OrganisationRole,
   type StorageMode,
@@ -198,6 +199,10 @@ export function createApp(options?: CreateAppOptions): Hono<AppEnv> {
   app.notFound((c) => c.json({ error: "not_found" }, HTTP_NOT_FOUND));
 
   app.onError((err, c) => {
+    if (err instanceof ProjectBusyError) {
+      const HTTP_CONFLICT = 409;
+      return c.json({ error: "project_busy", message: err.message }, HTTP_CONFLICT);
+    }
     if (err instanceof ForbiddenRoleError) {
       return c.json({ error: "forbidden", message: err.message }, HTTP_FORBIDDEN);
     }

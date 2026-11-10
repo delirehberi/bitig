@@ -67,7 +67,7 @@ const FORCE_QUERY_VALUES = new Set(["true", "false"]);
 function requireOrgOwner(c: Context<AppEnv>): void {
   const role = c.get("orgRole");
   if (!role || !hasMinimumOrgRole(role, "owner")) {
-    throw new ForbiddenRoleError("owner role required to manage folders on the T3 host");
+    throw new ForbiddenRoleError("owner role required to manage organisation hosts and project mappings");
   }
 }
 
@@ -163,6 +163,10 @@ export const t3OauthCallbackRouter = new Hono<AppEnv>().get("/", async (c) => {
   }
 
   try {
+    const orgStore = new T3D1Store(c.env.DB, stateRecord.orgId);
+    if (stateRecord.hostId && !(await orgStore.getConnection(stateRecord.hostId))) {
+      throw new NotFoundError("t3_host", stateRecord.hostId);
+    }
     const tokenResult = await exchangeT3OAuthCode({
       tokenEndpoint: stateRecord.tokenEndpoint,
       code,
@@ -176,7 +180,6 @@ export const t3OauthCallbackRouter = new Hono<AppEnv>().get("/", async (c) => {
     const encrypted = await encryptT3Token(tokenResult.accessToken, encryptionKey);
     const expiresAt = now + tokenResult.expiresInSeconds * 1000;
 
-    const orgStore = new T3D1Store(c.env.DB, stateRecord.orgId);
     await orgStore.saveConnection({
       ...(stateRecord.hostId ? { id: stateRecord.hostId } : {}),
       orgId: stateRecord.orgId,
@@ -220,6 +223,49 @@ function readHostIdQuery(raw: string | undefined): string | undefined {
   return trimmed !== undefined && trimmed.length > 0 ? trimmed : undefined;
 }
 
+async function executionHostId(c: Context<AppEnv>): Promise<string | undefined> {
+  const selected = readHostIdQuery(c.req.query("hostId"));
+  const taskId = c.req.query("taskId");
+  let projectId = c.req.query("projectId");
+  const store = new T3D1Store(c.env.DB, c.get("orgId"));
+  let recorded: string | undefined;
+  if (taskId) {
+    const task = await c.get("storage").getTask(taskId);
+    if (!task) throw new NotFoundError("task", taskId);
+    if (projectId && projectId !== task.projectId) throw new NotFoundError("project", projectId);
+    projectId = task.projectId;
+    const run = await store.getAgentRunByTaskId(taskId);
+    recorded = run?.hostId;
+    if (run && !recorded) throw new ValidationError("t3Host", [{ code: "custom", path: ["hostId"], message: "The run has no recorded host. Ask the organisation owner to repair its binding." }]);
+  }
+  if (projectId) {
+    if (!(await c.get("storage").getProject(projectId))) throw new NotFoundError("project", projectId);
+    recorded ??= (await store.getProjectMapping(projectId))?.hostId;
+    if (!recorded) throw new ValidationError("t3Host", [{ code: "custom", path: ["projectId"], message: "This project has no recorded host. Ask the organisation owner to connect it." }]);
+    if (selected && selected !== recorded) throw new NotFoundError("t3_host", selected);
+  }
+  return recorded ?? selected;
+}
+
+async function disconnectHost(c: Context<AppEnv>, hostId?: string): Promise<Response> {
+  requireOrgOwner(c);
+  const store = new T3D1Store(c.env.DB, c.get("orgId"));
+  const existing = await store.getConnection(hostId);
+  if (!existing) {
+    if (hostId) throw new NotFoundError("t3_host", hostId);
+    return c.body(null, HTTP_NO_CONTENT);
+  }
+  const [runs, threads] = await Promise.all([store.listAgentRuns(), store.listProjectThreads()]);
+  const activeCount = [...runs, ...threads].filter(
+    (session) => (!session.hostId || session.hostId === existing.id) && (isActiveAgentRunState(session.state) || session.state === "offline"),
+  ).length;
+  if (activeCount > 0) {
+    return c.json({ error: "host_busy", message: `T3 host "${existing.id}" has ${String(activeCount)} active session(s). Stop them before disconnecting it.` }, HTTP_CONFLICT);
+  }
+  await store.deleteConnection(existing.id);
+  return c.body(null, HTTP_NO_CONTENT);
+}
+
 export const t3ApiRouter = new Hono<AppEnv>()
   .get("/hosts", async (c) => {
     const store = new T3D1Store(c.env.DB, c.get("orgId"));
@@ -245,6 +291,7 @@ export const t3ApiRouter = new Hono<AppEnv>()
     }),
     async (c) => {
       const hostId = c.req.param("hostId");
+      requireOrgOwner(c);
       const patch = c.req.valid("json");
       const store = new T3D1Store(c.env.DB, c.get("orgId"));
       const updated = await store.updateConnection(hostId, patch);
@@ -255,42 +302,16 @@ export const t3ApiRouter = new Hono<AppEnv>()
     },
   )
   .delete("/hosts/:hostId", async (c) => {
-    const hostId = c.req.param("hostId");
-    const store = new T3D1Store(c.env.DB, c.get("orgId"));
-    const existing = await store.getConnection(hostId);
-    if (!existing) {
-      throw new NotFoundError("t3_host", hostId);
-    }
-    const [runs, threads] = await Promise.all([
-      store.listAgentRuns(),
-      store.listProjectThreads(),
-    ]);
-    const activeCount =
-      runs.filter((run) => run.hostId === hostId && isActiveAgentRunState(run.state)).length +
-      threads.filter((thread) => thread.hostId === hostId && isActiveAgentRunState(thread.state)).length;
-    if (activeCount > 0) {
-      return c.json(
-        {
-          error: "host_busy",
-          message: `This T3 host has ${String(activeCount)} active session(s). Stop them before removing the host.`,
-        },
-        HTTP_CONFLICT,
-      );
-    }
-    await store.deleteConnection(hostId);
-    return c.body(null, HTTP_NO_CONTENT);
+    return disconnectHost(c, c.req.param("hostId"));
   })
   .get("/connection", async (c) => {
     const store = new T3D1Store(c.env.DB, c.get("orgId"));
-    const hostId = readHostIdQuery(c.req.query("hostId"));
+    const hostId = await executionHostId(c);
     const status = await getT3ConnectionStatus(store, Date.now(), hostId);
     return c.json(status);
   })
   .delete("/connection", async (c) => {
-    const store = new T3D1Store(c.env.DB, c.get("orgId"));
-    const hostId = readHostIdQuery(c.req.query("hostId"));
-    await store.deleteConnection(hostId);
-    return c.body(null, HTTP_NO_CONTENT);
+    return disconnectHost(c, readHostIdQuery(c.req.query("hostId")));
   })
   .post(
     "/oauth/start",
@@ -302,6 +323,7 @@ export const t3ApiRouter = new Hono<AppEnv>()
     }),
     async (c) => {
       const encryptionKey = c.get("config").T3_ENCRYPTION_KEY;
+      requireOrgOwner(c);
       if (!encryptionKey) {
         throw new ValidationError("startT3OAuth", [
           {
@@ -321,6 +343,9 @@ export const t3ApiRouter = new Hono<AppEnv>()
         const existingHost = await store.getConnection(hostId);
         if (!existingHost) {
           throw new NotFoundError("t3_host", hostId);
+        }
+        if (existingHost.mcpUrl !== mcpUrl) {
+          throw new ValidationError("t3Host", [{ code: "custom", path: ["mcpUrl"], message: "Reauthorisation must use the recorded host URL. Connect a different host separately." }]);
         }
       }
 
@@ -375,7 +400,7 @@ export const t3ApiRouter = new Hono<AppEnv>()
   })
   .get("/capabilities", async (c) => {
     const store = new T3D1Store(c.env.DB, c.get("orgId"));
-    const hostId = readHostIdQuery(c.req.query("hostId"));
+    const hostId = await executionHostId(c);
     try {
       const capabilities = await listT3ModelCapabilities(
         {
@@ -471,6 +496,7 @@ export const t3ApiRouter = new Hono<AppEnv>()
     }),
     async (c) => {
       const projectId = c.req.param("projectId");
+      requireOrgOwner(c);
       const storage = c.get("storage");
       const project = await storage.getProject(projectId);
       if (!project) {
@@ -478,15 +504,17 @@ export const t3ApiRouter = new Hono<AppEnv>()
       }
       const { hostId, t3ProjectId, t3ProjectTitle } = c.req.valid("json");
       const store = new T3D1Store(c.env.DB, c.get("orgId"));
-      if (hostId) {
-        const host = await store.getConnection(hostId);
-        if (!host) {
-          throw new NotFoundError("t3_host", hostId);
-        }
+      const existing = await store.getProjectMapping(projectId);
+      const host = await store.getConnection(hostId ?? existing?.hostId);
+      if (!host) {
+        throw new NotFoundError("t3_host", hostId ?? "unconnected");
+      }
+      if (existing && (existing.hostId !== host.id || existing.t3ProjectId !== t3ProjectId)) {
+        await store.assertProjectIdle(projectId);
       }
       const mapping = await store.upsertProjectMapping({
         projectId,
-        ...(hostId ? { hostId } : {}),
+        hostId: host.id,
         t3ProjectId,
         t3ProjectTitle,
       });
@@ -494,6 +522,7 @@ export const t3ApiRouter = new Hono<AppEnv>()
     },
   )
   .delete("/mappings/:projectId", async (c) => {
+    requireOrgOwner(c);
     const projectId = c.req.param("projectId");
     const store = new T3D1Store(c.env.DB, c.get("orgId"));
     await store.deleteProjectMapping(projectId);
@@ -536,7 +565,7 @@ export const t3ApiRouter = new Hono<AppEnv>()
   )
   .post("/projects/:projectId/threads/:threadId/settle", async (c) => {
     try {
-      await settleProjectT3Thread(buildServiceDeps(c), c.req.param("projectId"), c.req.param("threadId"));
+      await settleProjectT3Thread(buildServiceDeps(c), c.req.param("projectId"), c.req.param("threadId"), readHostIdQuery(c.req.query("hostId")));
       return c.body(null, HTTP_NO_CONTENT);
     } catch (err) {
       return handleT3RouteError(err, c);
@@ -565,7 +594,7 @@ export const t3ApiRouter = new Hono<AppEnv>()
         buildServiceDeps(c),
         c.req.param("projectId"),
         c.req.param("threadId"),
-        { ...(afterPosition !== undefined ? { afterPosition } : {}) },
+        { hostId: readHostIdQuery(c.req.query("hostId")), ...(afterPosition !== undefined ? { afterPosition } : {}) },
       );
       return c.json(result);
     } catch (err) {
@@ -587,7 +616,7 @@ export const t3ApiRouter = new Hono<AppEnv>()
           buildServiceDeps(c),
           c.req.param("projectId"),
           c.req.param("threadId"),
-          { body: input.body, modelSelection: input.modelSelection },
+          { body: input.body, modelSelection: input.modelSelection, hostId: readHostIdQuery(c.req.query("hostId")) },
         );
         return c.json(thread, HTTP_CREATED);
       } catch (err) {
