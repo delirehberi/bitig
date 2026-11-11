@@ -1,4 +1,12 @@
 import { z } from "zod";
+import {
+  CreateProjectInputSchema,
+  DescriptionSchema,
+  ProjectKeySchema,
+  ProjectKindSchema,
+  ProjectNameSchema,
+  ProjectResourcesSchema,
+} from "./schemas";
 
 /**
  * Folder paths on a T3 host that the organisation owner registers as a T3 project (#BIT-148).
@@ -123,6 +131,71 @@ export type UnregisterHostFolderInput = z.input<typeof UnregisterHostFolderInput
 
 export const CheckHostFolderInputSchema = RegisterHostFolderInputSchema;
 export type CheckHostFolderInput = RegisterHostFolderInput;
+
+const HOST_ID_MAX = 200;
+
+/**
+ * Input for creating a Bitig project on REST (`POST /api/projects`) or MCP (`create_project`),
+ * optionally bound to a selected T3 host from an existing folder path (#BIT-151).
+ */
+export const CreateHostBoundProjectInputSchema = z
+  .strictObject({
+    ...CreateProjectInputSchema.shape,
+    hostId: z.string().trim().min(1).max(HOST_ID_MAX).exactOptional(),
+    workspaceRoot: HostFolderPathSchema.exactOptional(),
+  })
+  .refine((val) => val.hostId === undefined || val.workspaceRoot !== undefined, {
+    path: ["workspaceRoot"],
+    message: "workspaceRoot is required when hostId is set",
+  });
+export type CreateHostBoundProjectInput = z.input<typeof CreateHostBoundProjectInputSchema>;
+
+/**
+ * Input for updating a Bitig project on REST (`PATCH /api/projects/:id`) or MCP (`update_project`),
+ * including attaching/reattaching a host folder (`workspaceRoot: "/path"`, `hostId?`) or detaching
+ * (`workspaceRoot: null`) (#BIT-151).
+ */
+export const UpdateHostBoundProjectInputSchema = z
+  .strictObject({
+    name: ProjectNameSchema.optional(),
+    description: DescriptionSchema.optional(),
+    kind: ProjectKindSchema.optional(),
+    resources: ProjectResourcesSchema.nullable().optional(),
+    key: ProjectKeySchema.optional(),
+    archived: z.boolean().nullable().optional(),
+    hostId: z.string().trim().min(1).max(HOST_ID_MAX).nullable().optional(),
+    workspaceRoot: HostFolderPathSchema.nullable().optional(),
+    force: z.boolean().optional(),
+  })
+  .superRefine((val, ctx) => {
+    const hasDefined = Object.entries(val).some(([key, value]) => key !== "force" && value !== undefined);
+    if (!hasDefined) {
+      ctx.addIssue({ code: "custom", message: "Patch must contain at least one field" });
+      return;
+    }
+    if (typeof val.hostId === "string" && typeof val.workspaceRoot !== "string") {
+      ctx.addIssue({
+        code: "custom",
+        path: ["workspaceRoot"],
+        message: "workspaceRoot is required when hostId is set",
+      });
+    }
+    if (val.hostId === null && typeof val.workspaceRoot === "string") {
+      ctx.addIssue({
+        code: "custom",
+        path: ["hostId"],
+        message: "hostId cannot be null when registering workspaceRoot",
+      });
+    }
+    if (val.force !== undefined && val.workspaceRoot !== null && val.hostId !== null) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["force"],
+        message: "force is only valid when detaching a host folder",
+      });
+    }
+  });
+export type UpdateHostBoundProjectInput = z.input<typeof UpdateHostBoundProjectInputSchema>;
 
 /**
  * What Bitig can tell about a folder before registering it. T3 has no tool that only checks

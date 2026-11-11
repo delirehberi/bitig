@@ -169,6 +169,7 @@ const STATEMENTS = [
     \`host_id\` text,
     \`t3_project_id\` text NOT NULL,
     \`t3_project_title\` text NOT NULL,
+    \`workspace_root\` text,
     \`updated_at\` integer NOT NULL,
     FOREIGN KEY (\`project_id\`) REFERENCES \`projects\`(\`id\`) ON UPDATE no action ON DELETE cascade
   )`,
@@ -3916,6 +3917,607 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
       expect(await otherOrgStore.updateConnection(hostA.id, { label: "Hijacked" })).toBeUndefined();
       expect(await otherOrgStore.deleteConnection(hostA.id)).toBe(false);
       expect((await otherOrgStore.getConnection(hostA.id)) ?? (await new T3D1Store(env.DB).getConnection(hostA.id))).toBeDefined();
+    });
+
+    describe("host-bound project creation, detach, reattach, and deletion (#BIT-151)", () => {
+      async function multiMcpCall(
+        name: string,
+        args: Record<string, unknown>,
+        headers?: Record<string, string>,
+      ): Promise<{ isError?: boolean; text: string }> {
+        const res = await multiRequest("/mcp", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json, text/event-stream",
+            ...headers,
+          },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "tools/call",
+            params: { name, arguments: args },
+          }),
+        });
+        expect(res.status).toBe(200);
+        const raw = await res.text();
+        const jsonLine =
+          raw
+            .split("\n")
+            .find((l) => l.startsWith("data: "))
+            ?.slice("data: ".length) ?? raw;
+        const parsed = JSON.parse(jsonLine) as {
+          result?: { isError?: boolean; content?: { type: string; text: string }[] };
+          error?: { message?: string };
+        };
+        if (parsed.error) {
+          return { isError: true, text: parsed.error.message ?? JSON.stringify(parsed.error) };
+        }
+        return {
+          ...(parsed.result?.isError !== undefined ? { isError: parsed.result.isError } : {}),
+          text: parsed.result?.content?.[0]?.text ?? "",
+        };
+      }
+
+      async function createOrgMemberToken(role: OrganisationRole, platformAdmin = false): Promise<string> {
+        const suffix = defaultIdGenerator().replaceAll("-", "").slice(-12);
+        const user = await new D1UserStore(env.DB).create({
+          email: `${role}-${defaultIdGenerator()}@bitig.test`,
+          username: `${role}${suffix}`,
+          displayName: `Org ${role}`,
+        });
+        if (platformAdmin) {
+          await new D1UserStore(env.DB).update(user.id, { platformRole: "admin" });
+        }
+        await new D1OrganisationStore(env.DB).addMember(DEFAULT_ORGANISATION_ID, user.id, role);
+        const rawToken = `btg_${defaultIdGenerator().replaceAll("-", "")}`;
+        await new D1AccessTokenStore(env.DB).create({
+          userId: user.id,
+          orgId: DEFAULT_ORGANISATION_ID,
+          name: `${role} token`,
+          tokenHash: await sha256Hex(rawToken),
+          prefix: rawToken.slice(0, 8),
+        });
+        return `Bearer ${rawToken}`;
+      }
+
+      async function createOutsiderOwnerToken(): Promise<string> {
+        const suffix = defaultIdGenerator().replaceAll("-", "").slice(-12);
+        const outsider = await new D1UserStore(env.DB).create({
+          email: `outsider-${defaultIdGenerator()}@bitig.test`,
+          username: `outsider${suffix}`,
+          displayName: "Outsider Owner",
+        });
+        const otherOrg = await new D1OrganisationStore(env.DB).create(
+          {
+            name: "Outsider Org",
+            slug: `outsider-${suffix}`,
+          },
+          outsider.id,
+        );
+        const rawToken = `btg_${defaultIdGenerator().replaceAll("-", "")}`;
+        await new D1AccessTokenStore(env.DB).create({
+          userId: outsider.id,
+          orgId: otherOrg.id,
+          name: "outsider owner token",
+          tokenHash: await sha256Hex(rawToken),
+          prefix: rawToken.slice(0, 8),
+        });
+        return `Bearer ${rawToken}`;
+      }
+
+      it("creates a project from a folder on a selected host, keeps existing T3 mappings intact, detaches (refused while sessions run), reattaches to another host, and deletes without touching host files", async () => {
+        hostAState.remoteProjects = [{ id: "t3-legacy-existing", title: "Legacy", workspaceRoot: "~/www/legacy" }];
+        hostBState.remoteProjects = [];
+        await authorizeHost({ mcpUrl: HOST_A_MCP_URL, label: "Workstation", kind: "user" });
+        await authorizeHost({ mcpUrl: HOST_B_MCP_URL, label: "Container Host", kind: "container" });
+        const { hosts } = await (await multiRequest("/api/t3/hosts")).json<{ hosts: T3HostConnectionStatus[] }>();
+        const hostA = hosts.find((h) => h.mcpUrl === HOST_A_MCP_URL);
+        const hostB = hosts.find((h) => h.mcpUrl === HOST_B_MCP_URL);
+        if (!hostA || !hostB) {
+          throw new Error("Expected both Host A and Host B to be connected");
+        }
+
+        // Seed an existing legacy mapping without workspaceRoot to verify backward compatibility
+        const legacyProject = await (
+          await multiRequest("/api/projects", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: "Legacy Mapped", key: "LEG" }),
+          })
+        ).json<Project>();
+        await new T3D1Store(env.DB).upsertProjectMapping({
+          projectId: legacyProject.id,
+          hostId: hostA.id,
+          t3ProjectId: "t3-legacy-existing",
+          t3ProjectTitle: "Legacy",
+        });
+
+        // 1. Create a host-bound project on Host A from ~/www/website-redesign/ via POST /api/projects
+        const createRes = await multiRequest("/api/projects", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: "Website Redesign",
+            key: "WEB",
+            hostId: hostA.id,
+            workspaceRoot: "~/www/website-redesign/",
+          }),
+        });
+        expect(createRes.status).toBe(201);
+        const created = await createRes.json<Project & { mapping: T3ProjectMapping; created: boolean }>();
+        expect(created.created).toBe(true);
+        expect(created.mapping).toMatchObject({
+          projectId: created.id,
+          hostId: hostA.id,
+          t3ProjectId: "t3-proj-2",
+          t3ProjectTitle: "Website Redesign",
+          workspaceRoot: "~/www/website-redesign",
+        });
+        expect(hostAState.toolCalls.find((c) => c.name === "t3_project_create")?.arguments).toEqual({
+          title: "Website Redesign",
+          workspaceRoot: "~/www/website-redesign",
+        });
+        expect(hostBState.toolCalls.filter((c) => c.name === "t3_project_create")).toHaveLength(0);
+
+        // Existing legacy mapping remains untouched alongside the new host-bound mapping
+        const { mappings: afterCreateMappings } = await (
+          await multiRequest("/api/t3/mappings")
+        ).json<{ mappings: T3ProjectMapping[] }>();
+        expect(afterCreateMappings.find((m) => m.projectId === legacyProject.id)).toMatchObject({
+          projectId: legacyProject.id,
+          hostId: hostA.id,
+          t3ProjectId: "t3-legacy-existing",
+          t3ProjectTitle: "Legacy",
+        });
+        expect(afterCreateMappings.find((m) => m.projectId === legacyProject.id)?.workspaceRoot).toBeUndefined();
+        expect(afterCreateMappings.find((m) => m.projectId === created.id)?.workspaceRoot).toBe(
+          "~/www/website-redesign",
+        );
+
+        // 2. Start a running session on the project; detaching must be refused on both REST routes and MCP
+        const task = await (
+          await multiRequest("/api/tasks", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ projectId: created.id, title: "Active session" }),
+          })
+        ).json<Task>();
+        hostAState.launchThreadId = "thread-active-web";
+        expect(
+          (
+            await multiRequest(`/api/tasks/${task.id}/t3-run`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ workspaceStrategy: "worktree" }),
+            })
+          ).status,
+        ).toBe(201);
+
+        const detachBusyRest1 = await multiRequest(`/api/t3/projects/${created.id}/host-folder`, {
+          method: "DELETE",
+        });
+        expect(detachBusyRest1.status).toBe(409);
+        expect((await detachBusyRest1.json<{ error: string }>()).error).toBe("project_busy");
+
+        const detachBusyRest2 = await multiRequest(`/api/projects/${created.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ workspaceRoot: null }),
+        });
+        expect(detachBusyRest2.status).toBe(409);
+        expect((await detachBusyRest2.json<{ error: string }>()).error).toBe("project_busy");
+
+        const detachBusyMcp = await multiMcpCall("update_project", {
+          id: created.id,
+          workspaceRoot: null,
+        });
+        expect(detachBusyMcp.isError).toBe(true);
+        expect(detachBusyMcp.text).toContain("[project_busy]");
+        expect(hostAState.toolCalls.some((c) => c.name === "t3_project_delete")).toBe(false);
+
+        // Deleting the project while a session is active is also refused
+        expect((await multiRequest(`/api/projects/${created.id}`, { method: "DELETE" })).status).toBe(409);
+
+        // 3. Finish the session, then detach from Host A: removes T3 registration and mapping, leaves files untouched
+        await new T3D1Store(env.DB).updateAgentRunState(task.id, { state: "finished" });
+        hostAState.toolCalls.length = 0;
+
+        const detachRes = await multiRequest(`/api/projects/${created.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ workspaceRoot: null }),
+        });
+        expect(detachRes.status).toBe(200);
+        expect(await detachRes.json()).toMatchObject({
+          id: created.id,
+          mapping: null,
+          unregistered: true,
+        });
+        expect(hostAState.toolCalls.map((c) => c.name)).toEqual(["t3_project_list", "t3_project_delete"]);
+        expect(hostAState.toolCalls[1]?.arguments).toEqual({ projectId: "t3-proj-2" });
+        expect(await new T3D1Store(env.DB).getProjectMapping(created.id)).toBeUndefined();
+
+        // 4. Reattach the project to Host B by choosing an existing folder on Host B
+        const reattachRes = await multiRequest(`/api/projects/${created.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            hostId: hostB.id,
+            workspaceRoot: "/var/www/website-redesign/",
+          }),
+        });
+        expect(reattachRes.status).toBe(200);
+        const reattached = await reattachRes.json<Project & { mapping: T3ProjectMapping; created: boolean }>();
+        expect(reattached.created).toBe(true);
+        expect(reattached.mapping).toMatchObject({
+          projectId: created.id,
+          hostId: hostB.id,
+          t3ProjectId: "t3-proj-1",
+          t3ProjectTitle: "Website Redesign",
+          workspaceRoot: "/var/www/website-redesign",
+        });
+        expect(hostBState.toolCalls.find((c) => c.name === "t3_project_create")?.arguments).toEqual({
+          title: "Website Redesign",
+          workspaceRoot: "/var/www/website-redesign",
+        });
+
+        // Also test MCP create_project, detach, and reattach across hosts
+        const mcpCreate = await multiMcpCall("create_project", {
+          name: "MCP Service",
+          key: "MCP",
+          hostId: hostA.id,
+          workspaceRoot: "~/www/mcp-service/",
+        });
+        expect(mcpCreate.isError).toBeFalsy();
+        const mcpProj = JSON.parse(mcpCreate.text) as Project & {
+          mapping: T3ProjectMapping;
+          created: boolean;
+        };
+        expect(mcpProj.created).toBe(true);
+        expect(mcpProj.mapping).toMatchObject({
+          projectId: mcpProj.id,
+          hostId: hostA.id,
+          workspaceRoot: "~/www/mcp-service",
+        });
+
+        const mcpDetach = await multiMcpCall("update_project", {
+          id: mcpProj.id,
+          workspaceRoot: null,
+        });
+        expect(mcpDetach.isError).toBeFalsy();
+        expect(JSON.parse(mcpDetach.text)).toMatchObject({
+          id: mcpProj.id,
+          mapping: null,
+          unregistered: true,
+        });
+
+        const mcpReattach = await multiMcpCall("update_project", {
+          id: mcpProj.id,
+          hostId: hostB.id,
+          workspaceRoot: "/var/www/mcp-service",
+        });
+        expect(mcpReattach.isError).toBeFalsy();
+        expect(JSON.parse(mcpReattach.text)).toMatchObject({
+          id: mcpProj.id,
+          created: true,
+          mapping: {
+            projectId: mcpProj.id,
+            hostId: hostB.id,
+            workspaceRoot: "/var/www/mcp-service",
+          },
+        });
+
+        // 5. Delete project via REST and MCP: never touches host files or calls destructive host tools
+        hostAState.toolCalls.length = 0;
+        hostBState.toolCalls.length = 0;
+        const delRest = await multiRequest(`/api/projects/${created.id}`, { method: "DELETE" });
+        expect(delRest.status).toBe(204);
+        expect(hostAState.toolCalls).toHaveLength(0);
+        expect(hostBState.toolCalls).toHaveLength(0);
+        expect(await new T3D1Store(env.DB).getProjectMapping(created.id)).toBeUndefined();
+
+        const delMcp = await multiMcpCall("delete_project", { id: mcpProj.id });
+        expect(delMcp.isError).toBeFalsy();
+        expect(hostAState.toolCalls).toHaveLength(0);
+        expect(hostBState.toolCalls).toHaveLength(0);
+        expect(await new T3D1Store(env.DB).getProjectMapping(mcpProj.id)).toBeUndefined();
+
+        // Legacy mapping is still untouched after all operations
+        expect(await new T3D1Store(env.DB).getProjectMapping(legacyProject.id)).toMatchObject({
+          projectId: legacyProject.id,
+          hostId: hostA.id,
+          t3ProjectId: "t3-legacy-existing",
+        });
+      });
+
+      it("covers invalid paths, missing folder with rollback, already-registered folder, retries, and offline host on REST and MCP", async () => {
+        hostAState.remoteProjects = [];
+        hostBState.remoteProjects = [];
+        await authorizeHost({ mcpUrl: HOST_A_MCP_URL, label: "Host A", kind: "user" });
+        const { hosts } = await (await multiRequest("/api/t3/hosts")).json<{ hosts: T3HostConnectionStatus[] }>();
+        const hostA = hosts[0];
+        if (!hostA) {
+          throw new Error("Expected Host A to be connected");
+        }
+
+        // 1. Invalid paths are rejected before calling T3 and create no project
+        for (const badPath of ["../escape", "relative/path", "--upload-pack=x", "/", "~", "~/.."]) {
+          const res = await multiRequest("/api/projects", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              name: "Invalid Path",
+              key: "INV",
+              hostId: hostA.id,
+              workspaceRoot: badPath,
+            }),
+          });
+          expect(res.status).toBe(400);
+          const mcpRes = await multiMcpCall("create_project", {
+            name: "Invalid Path",
+            key: "INV",
+            hostId: hostA.id,
+            workspaceRoot: badPath,
+          });
+          expect(mcpRes.isError).toBe(true);
+        }
+        expect(hostAState.toolCalls).toHaveLength(0);
+        expect(await (await multiRequest("/api/projects")).json<Project[]>()).toEqual([]);
+
+        // 2. Missing folder returns actionable error and rolls back the Bitig project so key can be reused
+        hostAState.toolErrors = {
+          t3_project_create: JSON.stringify({
+            _tag: "OrchestratorMcpFailure",
+            code: "invalid_request",
+            message: "Workspace root ~/www/missing does not exist.",
+          }),
+        };
+        const missingRest = await multiRequest("/api/projects", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: "Retryable",
+            key: "RTY",
+            hostId: hostA.id,
+            workspaceRoot: "~/www/missing",
+          }),
+        });
+        expect(missingRest.status).toBe(422);
+        const missingBody = await missingRest.json<{ error: string; message: string }>();
+        expect(missingBody.error).toBe("t3_rejected");
+        expect(missingBody.message).toContain("does not exist");
+        expect(missingBody.message).toContain("Check that the folder exists on the host");
+        expect(await (await multiRequest("/api/projects")).json<Project[]>()).toEqual([]);
+
+        const missingMcp = await multiMcpCall("create_project", {
+          name: "Retryable",
+          key: "RTY",
+          hostId: hostA.id,
+          workspaceRoot: "~/www/missing",
+        });
+        expect(missingMcp.isError).toBe(true);
+        expect(missingMcp.text).toContain("[t3_rejected]");
+        expect(missingMcp.text).toContain("does not exist");
+        expect(await (await multiRequest("/api/projects")).json<Project[]>()).toEqual([]);
+
+        // 3. Offline host returns actionable 503 host_offline error and rolls back the Bitig project
+        hostAState.toolErrors = {};
+        hostAState.failMcpConnection = true;
+        const offlineRest = await multiRequest("/api/projects", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: "Retryable",
+            key: "RTY",
+            hostId: hostA.id,
+            workspaceRoot: "~/www/retryable",
+          }),
+        });
+        expect(offlineRest.status).toBe(503);
+        const offlineBody = await offlineRest.json<{ error: string; message: string }>();
+        expect(offlineBody.error).toBe("host_offline");
+        expect(offlineBody.message).toContain("Check that T3 is running");
+        expect(await (await multiRequest("/api/projects")).json<Project[]>()).toEqual([]);
+
+        const offlineMcp = await multiMcpCall("create_project", {
+          name: "Retryable",
+          key: "RTY",
+          hostId: hostA.id,
+          workspaceRoot: "~/www/retryable",
+        });
+        expect(offlineMcp.isError).toBe(true);
+        expect(offlineMcp.text).toContain("[host_offline]");
+        expect(await (await multiRequest("/api/projects")).json<Project[]>()).toEqual([]);
+
+        // 4. Retry when host comes back online and folder was already registered in T3 links it without duplicate registration
+        hostAState.failMcpConnection = false;
+        hostAState.remoteProjects = [{ id: "t3-preexisting", title: "retryable", workspaceRoot: "~/www/retryable" }];
+        hostAState.toolCalls.length = 0;
+
+        const retryRest = await multiRequest("/api/projects", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: "Retryable",
+            key: "RTY",
+            hostId: hostA.id,
+            workspaceRoot: "~/www/retryable",
+          }),
+        });
+        expect(retryRest.status).toBe(201);
+        const recovered = await retryRest.json<Project & { mapping: T3ProjectMapping; created: boolean }>();
+        expect(recovered.created).toBe(false);
+        expect(recovered.mapping).toMatchObject({
+          projectId: recovered.id,
+          hostId: hostA.id,
+          t3ProjectId: "t3-preexisting",
+          workspaceRoot: "~/www/retryable",
+        });
+        expect(hostAState.toolCalls.some((c) => c.name === "t3_project_create")).toBe(false);
+
+        // 5. Creating another project pointing to a folder already linked to Retryable fails with 409 folder_mapped_to_other_project and rolls back
+        const conflictRest = await multiRequest("/api/projects", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: "Duplicate Folder",
+            key: "DUP",
+            hostId: hostA.id,
+            workspaceRoot: "~/www/retryable",
+          }),
+        });
+        expect(conflictRest.status).toBe(409);
+        expect((await conflictRest.json<{ error: string }>()).error).toBe("folder_mapped_to_other_project");
+        const allProjects = await (await multiRequest("/api/projects")).json<Project[]>();
+        expect(allProjects.map((p) => p.key)).toEqual(["RTY"]);
+      });
+
+      it("refuses members (viewer, editor, platform admin) and non-members on REST and MCP", async () => {
+        hostAState.remoteProjects = [];
+        hostBState.remoteProjects = [];
+        await authorizeHost({ mcpUrl: HOST_A_MCP_URL, label: "Host A", kind: "user" });
+        await authorizeHost({ mcpUrl: HOST_B_MCP_URL, label: "Host B", kind: "container" });
+        const { hosts } = await (await multiRequest("/api/t3/hosts")).json<{ hosts: T3HostConnectionStatus[] }>();
+        const hostA = hosts.find((h) => h.mcpUrl === HOST_A_MCP_URL);
+        const hostB = hosts.find((h) => h.mcpUrl === HOST_B_MCP_URL);
+        if (!hostA || !hostB) {
+          throw new Error("Expected both Host A and Host B to be connected");
+        }
+
+        const project = await (
+          await multiRequest("/api/projects", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              name: "Owner Bound",
+              key: "OWN",
+              hostId: hostA.id,
+              workspaceRoot: "~/www/owner-bound",
+            }),
+          })
+        ).json<Project & { mapping: T3ProjectMapping }>();
+
+        const viewerAuth = await createOrgMemberToken("viewer", false);
+        const editorAuth = await createOrgMemberToken("editor", false);
+        const adminEditorAuth = await createOrgMemberToken("editor", true);
+        const outsiderAuth = await createOutsiderOwnerToken();
+
+        hostAState.toolCalls.length = 0;
+        hostBState.toolCalls.length = 0;
+
+        for (const Authorization of [viewerAuth, editorAuth, adminEditorAuth]) {
+          // Create project from folder (REST + MCP)
+          expect(
+            (
+              await multiRequest("/api/projects", {
+                method: "POST",
+                headers: { Authorization, "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  name: "Forbidden",
+                  key: "FRB",
+                  hostId: hostA.id,
+                  workspaceRoot: "~/www/forbidden",
+                }),
+              })
+            ).status,
+          ).toBe(403);
+          const mcpCreate = await multiMcpCall(
+            "create_project",
+            { name: "Forbidden", key: "FRB", hostId: hostA.id, workspaceRoot: "~/www/forbidden" },
+            { Authorization },
+          );
+          expect(mcpCreate.isError).toBe(true);
+          expect(mcpCreate.text).toContain("owner role required");
+
+          // Detach (REST + MCP)
+          expect(
+            (
+              await multiRequest(`/api/projects/${project.id}`, {
+                method: "PATCH",
+                headers: { Authorization, "Content-Type": "application/json" },
+                body: JSON.stringify({ workspaceRoot: null }),
+              })
+            ).status,
+          ).toBe(403);
+          const mcpDetach = await multiMcpCall(
+            "update_project",
+            { id: project.id, workspaceRoot: null },
+            { Authorization },
+          );
+          expect(mcpDetach.isError).toBe(true);
+          expect(mcpDetach.text).toContain("owner role required");
+
+          // Reattach (REST + MCP)
+          expect(
+            (
+              await multiRequest(`/api/projects/${project.id}`, {
+                method: "PATCH",
+                headers: { Authorization, "Content-Type": "application/json" },
+                body: JSON.stringify({ hostId: hostB.id, workspaceRoot: "/var/www/owner-bound" }),
+              })
+            ).status,
+          ).toBe(403);
+          const mcpReattach = await multiMcpCall(
+            "update_project",
+            { id: project.id, hostId: hostB.id, workspaceRoot: "/var/www/owner-bound" },
+            { Authorization },
+          );
+          expect(mcpReattach.isError).toBe(true);
+          expect(mcpReattach.text).toContain("owner role required");
+
+          // Delete project (REST + MCP)
+          expect(
+            (await multiRequest(`/api/projects/${project.id}`, { method: "DELETE", headers: { Authorization } }))
+              .status,
+          ).toBe(403);
+          const mcpDelete = await multiMcpCall("delete_project", { id: project.id }, { Authorization });
+          expect(mcpDelete.isError).toBe(true);
+          expect(mcpDelete.text).toContain("owner role required");
+        }
+
+        // Non-member (owner of another org) is refused with 404 when targeting this org or project
+        for (const reqInit of [
+          {
+            path: "/api/projects",
+            method: "POST",
+            body: { name: "CrossOrg", key: "CRO", hostId: hostA.id, workspaceRoot: "~/www/cross" },
+          },
+          {
+            path: `/api/projects/${project.id}`,
+            method: "PATCH",
+            body: { workspaceRoot: null },
+          },
+          {
+            path: `/api/projects/${project.id}`,
+            method: "PATCH",
+            body: { hostId: hostB.id, workspaceRoot: "/var/www/cross" },
+          },
+          {
+            path: `/api/projects/${project.id}`,
+            method: "DELETE",
+          },
+        ]) {
+          const res = await multiRequest(reqInit.path, {
+            method: reqInit.method,
+            headers: {
+              Authorization: outsiderAuth,
+              "X-Bitig-Org": DEFAULT_ORGANISATION_ID,
+              "Content-Type": "application/json",
+            },
+            ...(reqInit.body ? { body: JSON.stringify(reqInit.body) } : {}),
+          });
+          expect(res.status).toBe(404);
+        }
+
+        expect(hostAState.toolCalls).toHaveLength(0);
+        expect(hostBState.toolCalls).toHaveLength(0);
+        expect(await new T3D1Store(env.DB).getProjectMapping(project.id)).toMatchObject({
+          projectId: project.id,
+          hostId: hostA.id,
+          workspaceRoot: "~/www/owner-bound",
+        });
+      });
     });
   });
 });

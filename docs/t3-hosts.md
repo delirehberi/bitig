@@ -73,13 +73,19 @@ T3 also refuses to delete a project that still has threads, unless *Also remove 
 | `POST /api/t3/projects/:projectId/threads/:threadId/messages` | `?hostId=<id>`, `{ body, modelSelection? }` | `201 ProjectT3Thread` |
 | `POST /api/t3/projects/:projectId/threads/:threadId/settle` | `?hostId=<id>` | `204` |
 
-### Host folder registration (owner-only; editors and viewers get `403`)
+### Host folder registration and host-bound project lifecycle (owner-only; editors and viewers get `403`)
 
-| Route | Body / query | Result |
+| Route / MCP tool | Body / arguments | Result |
 | --- | --- | --- |
-| `POST /api/t3/host-folders/check` | `{ "workspaceRoot": "~/www/app", "hostId"?: "..." }` | `{ hostId, workspaceRoot, t3Project?, mappedProjectId? }` |
+| `POST /api/projects` | `{ name, key?, description?, kind?, resources?, workspaceRoot?, hostId? }` | `201 Project` (or `201 { ...project, mapping, created }` when `workspaceRoot` is given; rolls back project if registration fails) |
+| `PATCH /api/projects/:id` | `{ ..., workspaceRoot, hostId? }` to attach/reattach, or `{ ..., workspaceRoot: null, force? }` to detach | `200 { ...project, mapping, created }` or `200 { ...project, mapping: null, unregistered }` |
+| `DELETE /api/projects/:id` | — | `204` (`409 project_busy` when sessions run; deletes Bitig project and mapping without touching host files) |
+| `POST /api/t3/host-folders/check` | `{ "workspaceRoot": "~/www/app", "hostId"?: "..." }` | `{ hostId?, workspaceRoot, t3Project?, mappedProjectId? }` |
 | `PUT /api/t3/projects/:projectId/host-folder` | `{ "workspaceRoot": "/var/www/app", "hostId"?: "..." }` | `201 { mapping, created: true }`, or `200 { mapping, created: false }` when an existing registration was linked |
 | `DELETE /api/t3/projects/:projectId/host-folder` | `?force=true` (optional) | `{ unregistered: true }`, or `{ unregistered: false }` when the project had no link |
+| MCP `create_project` | `{ name, key?, description?, kind?, resources?, workspaceRoot?, hostId? }` | Project details + `.bitig` link content (+ `{ mapping, created }` when `workspaceRoot` is provided) |
+| MCP `update_project` | `{ id, ..., workspaceRoot?, hostId?, force? }` (`workspaceRoot: null` detaches) | Updated project (+ `{ mapping, created }` or `{ mapping: null, unregistered }` when host folder fields are provided) |
+| MCP `delete_project` | `{ id }` | `{ success: true, deletedProjectId }` (refused while sessions run; never touches host files) |
 
 Errors use `{ error, message }`. The `message` says what to do next.
 

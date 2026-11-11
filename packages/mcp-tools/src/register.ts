@@ -7,10 +7,11 @@ import {
   CommentAuthorSchema,
   CommentAuthorTypeSchema,
   CommentBodySchema,
-  CreateProjectInputSchema,
+  CreateHostBoundProjectInputSchema,
   CreateTaskInputSchema,
   CreateWebhookInputSchema,
   DueDateSchema,
+  HostFolderPathSchema,
   IdSchema,
   NeedsHumanSchema,
   NotFoundError,
@@ -22,11 +23,13 @@ import {
   ReportT3GitMetadataInputSchema,
   type ReportT3GitMetadataInput,
   StorageError,
+  T3HostIdSchema,
   TaskOrderSchema,
   TaskPrioritySchema,
   TaskStatusSchema,
   TaskTitleSchema,
   TASK_ACTOR_MAX,
+  UpdateHostBoundProjectInputSchema,
   ValidationError,
   WebhookMappingSchema,
   WebhookNameSchema,
@@ -54,6 +57,7 @@ import {
   type AgentRun,
   type OperationOptions,
   type StorageProvider,
+  type T3ProjectMapping,
   type T3WorkspaceStrategy,
   type Task,
   type TaskWithCode,
@@ -100,6 +104,26 @@ export interface StartT3ThreadToolResult {
   readonly code?: string | undefined;
 }
 
+export interface RegisterProjectHostFolderToolInput {
+  readonly projectId: string;
+  readonly workspaceRoot: string;
+  readonly hostId?: string | undefined;
+}
+
+export interface RegisterProjectHostFolderToolResult {
+  readonly mapping: T3ProjectMapping;
+  readonly created: boolean;
+}
+
+export interface UnregisterProjectHostFolderToolInput {
+  readonly projectId: string;
+  readonly force?: boolean | undefined;
+}
+
+export interface UnregisterProjectHostFolderToolResult {
+  readonly unregistered: boolean;
+}
+
 export interface RegisterBitigToolsOptions {
   readonly reportT3GitMetadata?: ((input: ReportT3GitMetadataInput, signal: AbortSignal) => Promise<AgentRun>) | undefined;
   /**
@@ -111,6 +135,19 @@ export interface RegisterBitigToolsOptions {
    * Optional callback to launch a task in a connected T3 Code host.
    */
   readonly startT3Thread?: ((input: StartT3ThreadToolInput) => Promise<StartT3ThreadToolResult>) | undefined;
+  /**
+   * Optional callback to register an existing folder on a connected T3 Code host and save the
+   * host-bound project mapping (#BIT-151).
+   */
+  readonly registerProjectHostFolder?:
+    | ((input: RegisterProjectHostFolderToolInput) => Promise<RegisterProjectHostFolderToolResult>)
+    | undefined;
+  /**
+   * Optional callback to detach a project from its connected T3 Code host without touching host files (#BIT-151).
+   */
+  readonly unregisterProjectHostFolder?:
+    | ((input: UnregisterProjectHostFolderToolInput) => Promise<UnregisterProjectHostFolderToolResult>)
+    | undefined;
   /**
    * Optional callback run after `complete_task`, or `update_task` with status `done` or `archived`,
    * e.g. to resume an umbrella task's T3 session waiting on this task (#BIT-141). It must report its
@@ -273,22 +310,48 @@ export function registerBitigTools(
     "create_project",
     {
       description:
-        "Create a new project. Returns project details and the .bitig link content to save in the workspace root.",
+        "Create a new project, optionally bound to an existing folder on a selected T3 Code host. Returns project details and the .bitig link content to save in the workspace root.",
       inputSchema: {
         name: ProjectNameSchema,
         description: z.string().optional(),
         kind: ProjectKindSchema.optional(),
         resources: ProjectResourcesSchema.optional().describe(RESOURCES_DESCRIPTION),
         key: ProjectKeySchema.optional().describe(`${KEY_DESCRIPTION} Derived from the name when omitted.`),
+        hostId: T3HostIdSchema.optional().describe(
+          "Optional ID of the connected T3 Code host to bind the project to when workspaceRoot is provided.",
+        ),
+        workspaceRoot: HostFolderPathSchema.optional().describe(
+          "Existing folder path on the selected T3 host (e.g. /var/www/my-project or ~/www/my-project) to register and link.",
+        ),
       },
     },
     async (args, extra) => {
       try {
-        const parsed = CreateProjectInputSchema.parse(args);
-        const project = await storage.createProject(parsed, { signal: extra.signal });
+        const parsed = CreateHostBoundProjectInputSchema.parse(args);
+        const { hostId, workspaceRoot, ...projectInput } = parsed;
+        if (workspaceRoot !== undefined && !options?.registerProjectHostFolder) {
+          throw new Error(
+            "T3 host folder registration is not available on this MCP server",
+          );
+        }
+        const project = await storage.createProject(projectInput, { signal: extra.signal });
+        let registered: RegisterProjectHostFolderToolResult | undefined;
+        if (workspaceRoot !== undefined && options?.registerProjectHostFolder) {
+          try {
+            registered = await options.registerProjectHostFolder({
+              projectId: project.id,
+              workspaceRoot,
+              hostId,
+            });
+          } catch (err) {
+            await storage.deleteProject(project.id, { signal: extra.signal }).catch(() => undefined);
+            throw err;
+          }
+        }
         const bitigFileContent = serializeProjectLink(project.id);
         return formatSuccessResult({
           ...project,
+          ...(registered ? { mapping: registered.mapping, created: registered.created } : {}),
           bitig_file_content: bitigFileContent,
           instructions: "Save bitig_file_content into a '.bitig' file in your project workspace root.",
         });
@@ -302,7 +365,8 @@ export function registerBitigTools(
   server.registerTool(
     "update_project",
     {
-      description: "Update project metadata (name, description, kind, resources, key, archived)",
+      description:
+        "Update project metadata (name, description, kind, resources, key, archived), or attach/reattach/detach a T3 host folder (workspaceRoot, hostId, force)",
       inputSchema: {
         id: IdSchema,
         name: ProjectNameSchema.optional(),
@@ -319,13 +383,74 @@ export function registerBitigTools(
           .nullable()
           .optional()
           .describe("true archives the project; false or null recovers/unarchives it."),
+        hostId: T3HostIdSchema.nullable()
+          .optional()
+          .describe(
+            "Selected T3 host ID when attaching or reattaching workspaceRoot, or null to detach the project from its host.",
+          ),
+        workspaceRoot: HostFolderPathSchema.nullable()
+          .optional()
+          .describe(
+            "Existing folder path on the selected T3 host to attach/reattach, or null to detach the project from its host without touching host files.",
+          ),
+        force: z
+          .boolean()
+          .optional()
+          .describe(
+            "Pass true when detaching (workspaceRoot: null) to forward force=true to t3_project_delete once Bitig verifies no sessions are active.",
+          ),
       },
     },
     async (args, extra) => {
       try {
-        const { id, ...patch } = args;
-        const project = await storage.updateProject(id, patch, { signal: extra.signal });
-        return formatSuccessResult(project);
+        const { id, ...rawPatch } = args;
+        const parsed = UpdateHostBoundProjectInputSchema.parse(rawPatch);
+        const { hostId, workspaceRoot, force, ...projectPatch } = parsed;
+        if (workspaceRoot === undefined && hostId === undefined) {
+          const project = await storage.updateProject(id, projectPatch, { signal: extra.signal });
+          return formatSuccessResult(project);
+        }
+        const hasProjectPatch = Object.values(projectPatch).some((value) => value !== undefined);
+        if (workspaceRoot === null || workspaceRoot === undefined) {
+          if (!options?.unregisterProjectHostFolder) {
+            throw new Error(
+              "T3 host folder registration is not available on this MCP server",
+            );
+          }
+          const detached = await options.unregisterProjectHostFolder({ projectId: id, force });
+          const project = hasProjectPatch
+            ? await storage.updateProject(id, projectPatch, { signal: extra.signal })
+            : await storage.getProject(id, { signal: extra.signal });
+          if (!project) {
+            throw new NotFoundError("project", id);
+          }
+          return formatSuccessResult({
+            ...project,
+            mapping: null,
+            unregistered: detached.unregistered,
+          });
+        }
+        if (!options?.registerProjectHostFolder) {
+          throw new Error(
+            "T3 host folder registration is not available on this MCP server",
+          );
+        }
+        const attached = await options.registerProjectHostFolder({
+          projectId: id,
+          workspaceRoot,
+          hostId: hostId ?? undefined,
+        });
+        const project = hasProjectPatch
+          ? await storage.updateProject(id, projectPatch, { signal: extra.signal })
+          : await storage.getProject(id, { signal: extra.signal });
+        if (!project) {
+          throw new NotFoundError("project", id);
+        }
+        return formatSuccessResult({
+          ...project,
+          mapping: attached.mapping,
+          created: attached.created,
+        });
       } catch (err) {
         return formatErrorResult(err);
       }

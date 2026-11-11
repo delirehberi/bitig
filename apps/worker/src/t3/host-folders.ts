@@ -1,8 +1,11 @@
 import {
   NotFoundError,
+  ProjectBusyError,
   isActiveAgentRunState,
   normalizeHostFolderPath,
+  type CreateProjectInput,
   type HostFolderCheckResult,
+  type Project,
   type StorageProvider,
   type T3ProjectMapping,
   type T3RemoteProject,
@@ -13,10 +16,11 @@ import { T3McpError, T3_PROJECT_OPERATION_TIMEOUT_MS, type T3CallOptions, type T
 import { resolveActiveT3ConnectionAndClient } from "./service";
 
 /**
- * Host project operations (#BIT-148, #BIT-147): check a folder on the selected T3 host, register it
- * as a T3 project and link it to a Bitig project, or unregister it. Bitig never creates, moves or
- * deletes files on the host: registering fails for a missing folder, and T3 keeps the folder on
- * disk when a project is unregistered.
+ * Host project operations (#BIT-148, #BIT-147, #BIT-151): check a folder on the selected T3 host,
+ * register it as a T3 project and link it to a Bitig project (including atomically on project
+ * creation), or unregister/detach it. Bitig never creates, moves or deletes files on the host:
+ * registering fails for a missing folder, and T3 keeps the folder on disk when a project is
+ * unregistered.
  */
 
 const HTTP_UNPROCESSABLE = 422;
@@ -67,6 +71,13 @@ export interface RegisterHostFolderResult {
   readonly created: boolean;
 }
 
+export interface CreateProjectFromHostFolderResult {
+  readonly project: Project;
+  readonly mapping: T3ProjectMapping;
+  /** True when this call registered the folder in T3; false when it reused an existing registration. */
+  readonly created: boolean;
+}
+
 export interface UnregisterHostFolderResult {
   /** False when the project had no T3 mapping, so there was nothing to unregister. */
   readonly unregistered: boolean;
@@ -80,7 +91,8 @@ function callOptions(deps: HostFolderDeps): T3CallOptions {
 }
 
 function sameHostId(a: string | null | undefined, b: string | null | undefined): boolean {
-  return Boolean(a && b && a === b);
+  if (!a || !b) return true;
+  return a === b;
 }
 
 /**
@@ -222,7 +234,7 @@ export async function registerHostFolder(
 
   if (existing) {
     if (sameHostId(existing.hostId, connection.id) && atPath?.id === existing.t3ProjectId) {
-      if (existing.hostId === connection.id) {
+      if (existing.hostId === connection.id && existing.workspaceRoot === workspaceRoot) {
         return { mapping: existing, created: false };
       }
       const updated = await deps.store.upsertProjectMapping({
@@ -230,6 +242,7 @@ export async function registerHostFolder(
         hostId: connection.id,
         t3ProjectId: existing.t3ProjectId,
         t3ProjectTitle: existing.t3ProjectTitle,
+        workspaceRoot,
       });
       return { mapping: updated, created: false };
     }
@@ -256,6 +269,7 @@ export async function registerHostFolder(
       hostId: connection.id,
       t3ProjectId: atPath.id,
       t3ProjectTitle: atPath.title,
+      workspaceRoot,
     });
     return { mapping, created: false };
   }
@@ -283,8 +297,35 @@ export async function registerHostFolder(
     hostId: connection.id,
     t3ProjectId: registered.id,
     t3ProjectTitle: registered.title,
+    workspaceRoot,
   });
   return { mapping, created: true };
+}
+
+/**
+ * Creates a Bitig project and binds it to an existing folder on the selected T3 host (#BIT-151).
+ * If registering or linking the host folder fails, the newly created Bitig project is rolled back
+ * so retries never fail on a duplicate project key or leave an unmapped project behind.
+ */
+export async function createProjectFromHostFolder(
+  deps: HostFolderDeps,
+  input: CreateProjectInput,
+  folder: { readonly workspaceRoot: string; readonly hostId?: string | undefined },
+): Promise<CreateProjectFromHostFolderResult> {
+  const project = await deps.storage.createProject(input, deps.signal ? { signal: deps.signal } : undefined);
+  try {
+    const registered = await registerHostFolder(deps, project.id, folder.workspaceRoot, folder.hostId);
+    return {
+      project,
+      mapping: registered.mapping,
+      created: registered.created,
+    };
+  } catch (err) {
+    await deps.storage.deleteProject(project.id).catch((cleanupErr: unknown) => {
+      console.error("could not roll back project after failed host folder registration", cleanupErr);
+    });
+    throw err;
+  }
 }
 
 /**
@@ -302,7 +343,14 @@ export async function unregisterHostFolder(
   if (!mapping) {
     return { unregistered: false };
   }
-  await deps.store.assertProjectIdle(projectId);
+  try {
+    await deps.store.assertProjectIdle(projectId);
+  } catch (err) {
+    if (err instanceof ProjectBusyError) {
+      throw new HostFolderError("project_busy", HTTP_CONFLICT, err.message);
+    }
+    throw err;
+  }
 
   const [mappings, runs, threads] = await Promise.all([
     deps.store.listProjectMappings(),

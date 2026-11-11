@@ -5,6 +5,7 @@ import subagentMigration from "../migrations/0021_agent_run_subagents.sql?raw";
 import gitMigration from "../migrations/0023_agent_run_git_metadata.sql?raw";
 import requestMigration from "../migrations/0024_t3_run_requests.sql?raw";
 import multiHostMigration from "../migrations/0025_multi_host_t3.sql?raw";
+import workspaceRootMigration from "../migrations/0026_project_mapping_workspace_root.sql?raw";
 import { DEFAULT_ORGANISATION_ID, defaultIdGenerator } from "@bitig/core";
 import { T3_REQUEST_LEASE_MS } from "./t3-request-store";
 import { T3D1Store, type SaveProjectT3ThreadInput } from "./t3-store";
@@ -267,6 +268,9 @@ describe("T3D1Store umbrella and child runs (BIT-141)", () => {
       await env.DB.prepare(statement.trim()).run();
     }
     for (const statement of multiHostMigration.split("--> statement-breakpoint")) {
+      await env.DB.prepare(statement.trim()).run();
+    }
+    for (const statement of workspaceRootMigration.split("--> statement-breakpoint")) {
       await env.DB.prepare(statement.trim()).run();
     }
     await env.DB.prepare("INSERT INTO projects (id, name) VALUES (?, ?), (?, ?)")
@@ -540,8 +544,11 @@ describe("T3D1Store multi-host persistence and migration (BIT-147)", () => {
       .bind("req-legacy-1", DEFAULT_ORGANISATION_ID, PARENT_TASK_ID, "reply", "{}", "queued", STARTED_AT)
       .run();
 
-    // Apply migration 0025
+    // Apply migration 0025 and 0026
     for (const statement of multiHostMigration.split("--> statement-breakpoint")) {
+      await env.DB.prepare(statement.trim()).run();
+    }
+    for (const statement of workspaceRootMigration.split("--> statement-breakpoint")) {
       await env.DB.prepare(statement.trim()).run();
     }
 
@@ -561,6 +568,29 @@ describe("T3D1Store multi-host persistence and migration (BIT-147)", () => {
       hostId: "default",
       t3ProjectId: "t3-legacy-proj",
       t3ProjectTitle: "Legacy Project",
+    });
+    expect(mapping?.workspaceRoot).toBeUndefined();
+
+    // Updating a host-bound mapping stores workspaceRoot, and omitting it on a same-project update preserves it
+    const withFolder = await store.upsertProjectMapping({
+      projectId: PROJECT_ID,
+      hostId: "default",
+      t3ProjectId: "t3-legacy-proj",
+      t3ProjectTitle: "Legacy Project",
+      workspaceRoot: "~/www/bitig",
+      now: LATER,
+    });
+    expect(withFolder.workspaceRoot).toBe("~/www/bitig");
+    const retitled = await store.upsertProjectMapping({
+      projectId: PROJECT_ID,
+      hostId: "default",
+      t3ProjectId: "t3-legacy-proj",
+      t3ProjectTitle: "Renamed Legacy Project",
+      now: LATER + 1000,
+    });
+    expect(retitled).toMatchObject({
+      t3ProjectTitle: "Renamed Legacy Project",
+      workspaceRoot: "~/www/bitig",
     });
 
     const run = await store.getAgentRunByTaskId(PARENT_TASK_ID);
@@ -601,6 +631,9 @@ describe("T3D1Store multi-host persistence and migration (BIT-147)", () => {
       await env.DB.prepare(statement.trim()).run();
     }
     for (const statement of multiHostMigration.split("--> statement-breakpoint")) {
+      await env.DB.prepare(statement.trim()).run();
+    }
+    for (const statement of workspaceRootMigration.split("--> statement-breakpoint")) {
       await env.DB.prepare(statement.trim()).run();
     }
 

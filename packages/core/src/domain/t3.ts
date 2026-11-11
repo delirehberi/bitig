@@ -194,6 +194,7 @@ export const T3ProjectMappingSchema = z.strictObject({
   hostId: T3HostIdSchema.exactOptional(),
   t3ProjectId: z.string().trim().min(1).max(200),
   t3ProjectTitle: z.string().trim().min(1).max(500),
+  workspaceRoot: HostFolderPathSchema.exactOptional(),
   updatedAt: TimestampSchema,
 });
 
@@ -203,6 +204,7 @@ export const UpsertT3ProjectMappingInputSchema = z.strictObject({
   hostId: T3HostIdSchema.exactOptional(),
   t3ProjectId: z.string().trim().min(1).max(200),
   t3ProjectTitle: z.string().trim().min(1).max(500),
+  workspaceRoot: HostFolderPathSchema.exactOptional(),
 });
 
 export type UpsertT3ProjectMappingInput = z.input<typeof UpsertT3ProjectMappingInputSchema>;

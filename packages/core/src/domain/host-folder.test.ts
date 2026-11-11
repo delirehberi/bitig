@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  CreateHostBoundProjectInputSchema,
   HOST_FOLDER_PATH_MAX,
   HostFolderPathSchema,
   RegisterHostFolderInputSchema,
   UnregisterHostFolderInputSchema,
+  UpdateHostBoundProjectInputSchema,
   findHostFolderPathIssue,
   normalizeHostFolderPath,
   suggestHostFolderPath,
@@ -95,6 +97,80 @@ describe("host folder inputs", () => {
     expect(UnregisterHostFolderInputSchema.parse({})).toEqual({});
     expect(UnregisterHostFolderInputSchema.parse({ force: true })).toEqual({ force: true });
     expect(UnregisterHostFolderInputSchema.safeParse({ force: "yes" }).success).toBe(false);
+  });
+
+  it("validates CreateHostBoundProjectInputSchema", () => {
+    expect(CreateHostBoundProjectInputSchema.parse({ name: "Plain" })).toEqual({
+      name: "Plain",
+      description: "",
+      kind: "hobby",
+    });
+    expect(
+      CreateHostBoundProjectInputSchema.parse({
+        name: "Bound",
+        key: "BND",
+        hostId: "host-a",
+        workspaceRoot: "/var/www/bound/",
+      }),
+    ).toEqual({
+      name: "Bound",
+      description: "",
+      kind: "hobby",
+      key: "BND",
+      hostId: "host-a",
+      workspaceRoot: "/var/www/bound",
+    });
+    expect(
+      CreateHostBoundProjectInputSchema.safeParse({
+        name: "MissingFolder",
+        hostId: "host-a",
+      }).success,
+    ).toBe(false);
+    expect(
+      CreateHostBoundProjectInputSchema.safeParse({
+        name: "InvalidFolder",
+        workspaceRoot: "../escape",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("validates UpdateHostBoundProjectInputSchema", () => {
+    expect(UpdateHostBoundProjectInputSchema.parse({ name: "Renamed" })).toEqual({ name: "Renamed" });
+    expect(
+      UpdateHostBoundProjectInputSchema.parse({
+        hostId: "host-b",
+        workspaceRoot: "~/www/reattached/",
+      }),
+    ).toEqual({
+      hostId: "host-b",
+      workspaceRoot: "~/www/reattached",
+    });
+    expect(
+      UpdateHostBoundProjectInputSchema.parse({
+        workspaceRoot: null,
+        force: true,
+      }),
+    ).toEqual({
+      workspaceRoot: null,
+      force: true,
+    });
+    expect(
+      UpdateHostBoundProjectInputSchema.safeParse({
+        hostId: "host-b",
+      }).success,
+    ).toBe(false);
+    expect(
+      UpdateHostBoundProjectInputSchema.safeParse({
+        hostId: "host-b",
+        workspaceRoot: null,
+      }).success,
+    ).toBe(false);
+    expect(
+      UpdateHostBoundProjectInputSchema.safeParse({
+        workspaceRoot: "/var/www/app",
+        force: true,
+      }).success,
+    ).toBe(false);
   });
 });
 

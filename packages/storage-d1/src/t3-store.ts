@@ -204,6 +204,7 @@ function toProjectMapping(row: T3ProjectMappingRecord): T3ProjectMapping {
     ...(row.hostId !== null ? { hostId: row.hostId } : {}),
     t3ProjectId: row.t3ProjectId,
     t3ProjectTitle: row.t3ProjectTitle,
+    ...(row.workspaceRoot !== null ? { workspaceRoot: row.workspaceRoot } : {}),
     updatedAt: toTimestamp(new Date(row.updatedAt)),
   });
 }
@@ -524,30 +525,43 @@ export class T3D1Store {
     hostId?: string | null | undefined;
     t3ProjectId: string;
     t3ProjectTitle: string;
+    workspaceRoot?: string | null | undefined;
     now?: number;
   }): Promise<T3ProjectMapping> {
     if (!(await this.canAccessProject(input.projectId))) throw new NotFoundError("project", input.projectId);
     const updatedAt = input.now ?? Date.now();
     let hostId = input.hostId;
+    const previous = await this.getProjectMapping(input.projectId);
     if (hostId === undefined) {
-      const existing = await this.getProjectMapping(input.projectId);
-      if (existing?.hostId) {
-        hostId = existing.hostId;
+      if (previous?.hostId) {
+        hostId = previous.hostId;
       } else {
         const primaryHost = await this.getConnection();
         hostId = primaryHost?.id ?? null;
       }
     }
     if (hostId && !(await this.getConnection(hostId))) throw new NotFoundError("t3_host", hostId);
-    const previous = await this.getProjectMapping(input.projectId);
     if (previous && (previous.hostId !== hostId || previous.t3ProjectId !== input.t3ProjectId)) {
       await this.assertProjectIdle(input.projectId);
+    }
+    let workspaceRoot: string | null;
+    if (input.workspaceRoot !== undefined) {
+      workspaceRoot = input.workspaceRoot === null ? null : normalizeHostFolderPath(input.workspaceRoot);
+    } else if (
+      previous &&
+      (previous.hostId ?? null) === (hostId ?? null) &&
+      previous.t3ProjectId === input.t3ProjectId
+    ) {
+      workspaceRoot = previous.workspaceRoot ?? null;
+    } else {
+      workspaceRoot = null;
     }
     const record: T3ProjectMappingRecord = {
       projectId: input.projectId,
       hostId: hostId ?? null,
       t3ProjectId: input.t3ProjectId,
       t3ProjectTitle: input.t3ProjectTitle,
+      workspaceRoot,
       updatedAt,
     };
     await this.db
@@ -559,6 +573,7 @@ export class T3D1Store {
           hostId: record.hostId,
           t3ProjectId: record.t3ProjectId,
           t3ProjectTitle: record.t3ProjectTitle,
+          workspaceRoot: record.workspaceRoot,
           updatedAt: record.updatedAt,
         },
       });

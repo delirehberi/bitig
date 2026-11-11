@@ -5,8 +5,9 @@ import { BITIG_SERVER_INSTRUCTIONS, registerBitigTools } from "@bitig/mcp-tools"
 import { hasMinimumOrgRole } from "@bitig/core";
 import { ForbiddenRoleError } from "../auth";
 import type { AppEnv } from "../index";
+import { registerHostFolder, unregisterHostFolder } from "../t3/host-folders";
 import { launchTaskInT3, reportTaskT3GitMetadata } from "../t3/service";
-import { buildServiceDeps } from "./t3";
+import { buildHostFolderDeps, buildServiceDeps, requireOrgOwner } from "./t3";
 import { handBackFinishedTaskInBackground } from "./tasks";
 
 const MCP_SERVER_NAME = "bitig";
@@ -48,6 +49,21 @@ export const mcpRouter = new Hono<AppEnv>().all("*", async (c) => {
         model: input.model,
         actor: input.actor,
         parentTaskRef: input.parentTaskId,
+      });
+    },
+    registerProjectHostFolder: (input) => {
+      requireOrgOwner(c);
+      return registerHostFolder(
+        buildHostFolderDeps(c),
+        input.projectId,
+        input.workspaceRoot,
+        input.hostId,
+      );
+    },
+    unregisterProjectHostFolder: (input) => {
+      requireOrgOwner(c);
+      return unregisterHostFolder(buildHostFolderDeps(c), input.projectId, {
+        force: input.force,
       });
     },
     // Resumes an umbrella task's T3 session waiting on the finished task (#BIT-141).

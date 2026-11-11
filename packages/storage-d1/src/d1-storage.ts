@@ -74,10 +74,14 @@ import {
 } from "@bitig/core";
 import * as schema from "./schema";
 import {
+  agentRuns,
   attachments,
   checkpoints,
   comments,
   projects,
+  projectT3Threads,
+  t3ProjectMappings,
+  t3RunRequests,
   tasks,
   webhooks,
   type AttachmentRecord,
@@ -529,6 +533,22 @@ export class D1Storage implements StorageProvider {
     if (attachmentRows.length > 0) {
       await this.#bucket.delete(attachmentRows.map((row) => attachmentBlobKey(row.taskId, row.id)));
     }
+    const ignoreMissingT3Table = async (query: Promise<unknown>): Promise<void> => {
+      try {
+        await query;
+      } catch (err) {
+        const message =
+          err instanceof Error
+            ? `${err.message} ${err.cause instanceof Error ? err.cause.message : ""}`
+            : String(err);
+        if (message.includes("no such table")) return;
+        throw err;
+      }
+    };
+    await ignoreMissingT3Table(this.#db.delete(t3RunRequests).where(inArray(t3RunRequests.taskId, projectTaskIds)));
+    await ignoreMissingT3Table(this.#db.delete(agentRuns).where(inArray(agentRuns.taskId, projectTaskIds)));
+    await ignoreMissingT3Table(this.#db.delete(projectT3Threads).where(eq(projectT3Threads.projectId, validId)));
+    await ignoreMissingT3Table(this.#db.delete(t3ProjectMappings).where(eq(t3ProjectMappings.projectId, validId)));
     await this.#db.delete(comments).where(inArray(comments.taskId, projectTaskIds));
     await this.#db.delete(checkpoints).where(inArray(checkpoints.taskId, projectTaskIds));
     await this.#db.delete(tasks).where(eq(tasks.projectId, validId));

@@ -370,6 +370,7 @@ export const t3ProjectMappings = sqliteTable(
     hostId: text("host_id"),
     t3ProjectId: text("t3_project_id").notNull(),
     t3ProjectTitle: text("t3_project_title").notNull(),
+    workspaceRoot: text("workspace_root"),
     updatedAt: integer("updated_at").notNull(),
   },
   (table) => [index("t3_project_mappings_host_id_idx").on(table.hostId)],

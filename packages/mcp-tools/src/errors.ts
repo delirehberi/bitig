@@ -17,6 +17,17 @@ export function formatErrorResult(error: unknown): McpToolResult {
     };
   }
 
+  if (
+    error instanceof Error &&
+    "code" in error &&
+    typeof (error as { code?: unknown }).code === "string"
+  ) {
+    return {
+      isError: true,
+      content: [{ type: "text", text: `[${(error as { code: string }).code}] ${error.message}` }],
+    };
+  }
+
   const message = error instanceof Error ? error.message : String(error);
   // Log unexpected errors to stderr
   console.error("Unexpected MCP tool error:", error);

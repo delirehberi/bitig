@@ -215,7 +215,7 @@ export async function fetchT3ProjectMappings(signal?: AbortSignal): Promise<T3Pr
 
 export async function saveT3ProjectMapping(
   projectId: string,
-  input: { t3ProjectId: string; t3ProjectTitle: string },
+  input: { t3ProjectId: string; t3ProjectTitle: string; hostId?: string; workspaceRoot?: string },
 ): Promise<T3ProjectMapping> {
   const response = await fetch(`/api/t3/mappings/${encodeURIComponent(projectId)}`, {
     method: "PUT",
@@ -253,17 +253,18 @@ function hostFolderPath(projectId: string): string {
   return `/api/t3/projects/${encodeURIComponent(projectId)}/host-folder`;
 }
 
-/** Registers an existing folder on the T3 host as the project's T3 project (#BIT-148). Owner only. */
+/** Registers an existing folder on the T3 host as the project's T3 project (#BIT-148, #BIT-151). Owner only. */
 export async function registerT3HostFolder(
   projectId: string,
   workspaceRoot: string,
   signal?: AbortSignal,
+  hostId?: string,
 ): Promise<RegisterHostFolderResponse> {
   const response = await fetch(hostFolderPath(projectId), {
     method: "PUT",
     headers: { ...baseHeaders(), "Content-Type": "application/json" },
     credentials: "same-origin",
-    body: JSON.stringify({ workspaceRoot }),
+    body: JSON.stringify({ workspaceRoot, ...(hostId ? { hostId } : {}) }),
     ...(signal ? { signal } : {}),
   });
   if (!response.ok) {
@@ -294,12 +295,16 @@ export async function unregisterT3HostFolder(
 }
 
 /** Whether a folder is already registered in T3, and which Bitig project uses it. Owner only. */
-export async function checkT3HostFolder(workspaceRoot: string, signal?: AbortSignal): Promise<HostFolderCheckResult> {
+export async function checkT3HostFolder(
+  workspaceRoot: string,
+  signal?: AbortSignal,
+  hostId?: string,
+): Promise<HostFolderCheckResult> {
   const response = await fetch("/api/t3/host-folders/check", {
     method: "POST",
     headers: { ...baseHeaders(), "Content-Type": "application/json" },
     credentials: "same-origin",
-    body: JSON.stringify({ workspaceRoot }),
+    body: JSON.stringify({ workspaceRoot, ...(hostId ? { hostId } : {}) }),
     ...(signal ? { signal } : {}),
   });
   if (!response.ok) {

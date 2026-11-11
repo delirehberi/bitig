@@ -798,6 +798,143 @@ describe("start_t3_thread workspace guard (#BIT-134)", () => {
   });
 });
 
+describe("host-bound project MCP tools (#BIT-151)", () => {
+  it("creates a project from a host folder, rolls back on failure, and detaches/reattaches via update_project", async () => {
+    const storage = new InMemoryStorage();
+    let failRegistration = false;
+    const registerProjectHostFolder = vi.fn(
+      ({
+        projectId,
+        workspaceRoot,
+        hostId,
+      }: {
+        readonly projectId: string;
+        readonly workspaceRoot: string;
+        readonly hostId?: string | undefined;
+      }) => {
+        if (failRegistration) {
+          const err = Object.assign(new Error(`Workspace root ${workspaceRoot} does not exist.`), {
+            code: "t3_rejected",
+          });
+          return Promise.reject(err);
+        }
+        return Promise.resolve({
+          created: true,
+          mapping: {
+            projectId,
+            hostId: hostId ?? "default",
+            t3ProjectId: `t3-${hostId ?? "default"}`,
+            t3ProjectTitle: "Acme",
+            workspaceRoot,
+            updatedAt: "2026-11-10T00:00:00.000Z",
+          },
+        });
+      },
+    );
+    const unregisterProjectHostFolder = vi.fn(() => Promise.resolve({ unregistered: true }));
+
+    const server = new McpServer({ name: "bitig-test", version: "1.0.0" });
+    registerBitigTools(server, storage, {
+      registerProjectHostFolder,
+      unregisterProjectHostFolder,
+    });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    const client = new Client({ name: "client-test", version: "1.0.0" }, { capabilities: {} });
+    await client.connect(clientTransport);
+
+    try {
+      // Failed registration rolls back the Bitig project so a retry with the same key succeeds
+      failRegistration = true;
+      const failedRes = await client.callTool({
+        name: "create_project",
+        arguments: {
+          name: "Acme",
+          key: "ACM",
+          hostId: "host-a",
+          workspaceRoot: "/var/www/missing",
+        },
+      });
+      expect(failedRes.isError).toBe(true);
+      expect((failedRes.content as { text: string }[])[0]?.text).toBe(
+        "[t3_rejected] Workspace root /var/www/missing does not exist.",
+      );
+      expect(await storage.getProjects()).toEqual([]);
+
+      // Retry succeeds with an existing folder
+      failRegistration = false;
+      const createdRes = await client.callTool({
+        name: "create_project",
+        arguments: {
+          name: "Acme",
+          key: "ACM",
+          hostId: "host-a",
+          workspaceRoot: "/var/www/acme/",
+        },
+      });
+      expect(createdRes.isError).toBeFalsy();
+      const created = JSON.parse((createdRes.content as { text: string }[])[0]?.text ?? "{}") as {
+        id: string;
+        key: string;
+        mapping: { hostId: string; workspaceRoot: string; t3ProjectId: string };
+        created: boolean;
+      };
+      expect(created).toMatchObject({
+        key: "ACM",
+        created: true,
+        mapping: {
+          hostId: "host-a",
+          workspaceRoot: "/var/www/acme",
+          t3ProjectId: "t3-host-a",
+        },
+      });
+
+      // Detach via update_project with workspaceRoot: null
+      const detachedRes = await client.callTool({
+        name: "update_project",
+        arguments: {
+          id: created.id,
+          workspaceRoot: null,
+          force: true,
+        },
+      });
+      expect(detachedRes.isError).toBeFalsy();
+      expect(unregisterProjectHostFolder).toHaveBeenCalledWith({
+        projectId: created.id,
+        force: true,
+      });
+      expect(JSON.parse((detachedRes.content as { text: string }[])[0]?.text ?? "{}")).toMatchObject({
+        id: created.id,
+        mapping: null,
+        unregistered: true,
+      });
+
+      // Reattach to another host via update_project
+      const reattachedRes = await client.callTool({
+        name: "update_project",
+        arguments: {
+          id: created.id,
+          hostId: "host-b",
+          workspaceRoot: "~/www/acme/",
+        },
+      });
+      expect(reattachedRes.isError).toBeFalsy();
+      expect(JSON.parse((reattachedRes.content as { text: string }[])[0]?.text ?? "{}")).toMatchObject({
+        id: created.id,
+        mapping: {
+          hostId: "host-b",
+          workspaceRoot: "~/www/acme",
+          t3ProjectId: "t3-host-b",
+        },
+        created: true,
+      });
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+});
+
 describe("umbrella task child sessions (#BIT-141)", () => {
   async function connect(
     storage: InMemoryStorage,

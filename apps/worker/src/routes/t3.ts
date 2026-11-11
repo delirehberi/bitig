@@ -64,14 +64,14 @@ const HTTP_OK = 200;
 const FORCE_QUERY_VALUES = new Set(["true", "false"]);
 
 /** Host project operations change the T3 host, so only the organisation owner may run them (#BIT-148). */
-function requireOrgOwner(c: Context<AppEnv>): void {
+export function requireOrgOwner(c: Context<AppEnv>): void {
   const role = c.get("orgRole");
   if (!role || !hasMinimumOrgRole(role, "owner")) {
     throw new ForbiddenRoleError("owner role required to manage organisation hosts and project mappings");
   }
 }
 
-function buildHostFolderDeps(c: Context<AppEnv>): HostFolderDeps {
+export function buildHostFolderDeps(c: Context<AppEnv>): HostFolderDeps {
   return {
     store: new T3D1Store(c.env.DB, c.get("orgId")),
     storage: c.get("storage"),
@@ -82,7 +82,7 @@ function buildHostFolderDeps(c: Context<AppEnv>): HostFolderDeps {
   };
 }
 
-function hostFolderErrorResponse(err: unknown, c: Context<AppEnv>): Response {
+export function hostFolderErrorResponse(err: unknown, c: Context<AppEnv>): Response {
   if (err instanceof HostFolderError) {
     return c.json({ error: err.code, message: err.message }, err.status);
   }
@@ -502,7 +502,7 @@ export const t3ApiRouter = new Hono<AppEnv>()
       if (!project) {
         throw new NotFoundError("project", projectId);
       }
-      const { hostId, t3ProjectId, t3ProjectTitle } = c.req.valid("json");
+      const { hostId, t3ProjectId, t3ProjectTitle, workspaceRoot } = c.req.valid("json");
       const store = new T3D1Store(c.env.DB, c.get("orgId"));
       const existing = await store.getProjectMapping(projectId);
       const host = await store.getConnection(hostId ?? existing?.hostId);
@@ -517,6 +517,7 @@ export const t3ApiRouter = new Hono<AppEnv>()
         hostId: host.id,
         t3ProjectId,
         t3ProjectTitle,
+        ...(workspaceRoot !== undefined ? { workspaceRoot } : {}),
       });
       return c.json(mapping);
     },
