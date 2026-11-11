@@ -39,6 +39,7 @@ import { formatFullTimestamp, formatTimeAgo } from "../../domain/time-ago";
 import { taskRef } from "../../domain/task-ref";
 import { useCheckpoints } from "../../hooks/useCheckpoints";
 import { useComments } from "../../hooks/useComments";
+import { useStickToBottom } from "../../hooks/useStickToBottom";
 import { Link } from "../../routing/Link";
 import { hrefFor, taskHref, taskPageHref, useLocationHref } from "../../routing/router";
 import { Markdown } from "../Markdown";
@@ -195,6 +196,7 @@ export function TaskDetailPage({
   const [needsHumanClearedAt, setNeedsHumanClearedAt] = useState<string | null>(null);
   const prevNeedsHumanRef = useRef<string | undefined>(task.needsHuman);
   const moreMenuRef = useRef<HTMLDivElement>(null);
+  const { attach: attachThread } = useStickToBottom<HTMLDivElement>();
 
   useEffect(() => {
     if (prevNeedsHumanRef.current !== undefined && task.needsHuman === undefined) {
@@ -366,7 +368,7 @@ export function TaskDetailPage({
       </header>
 
       {/* Shell: Main column (scrolling thread + pinned dock) and Side rail (collapsible on narrow screens) */}
-      <div className="flex min-h-0 flex-1 flex-col md:grid md:grid-cols-[minmax(0,1fr)_220px]">
+      <div className="flex min-h-0 flex-1 flex-col md:grid md:grid-cols-[minmax(0,1fr)_220px] md:grid-rows-[minmax(0,1fr)]">
         {/* Main column */}
         <div className="flex min-h-0 min-w-0 flex-1 flex-col md:border-r md:border-rule">
           {storage ? (
@@ -412,8 +414,9 @@ export function TaskDetailPage({
           ) : (
             <>
               <div
+                ref={attachThread}
                 data-testid="task-thread"
-                className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto py-4 md:pr-4"
+                className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto overscroll-contain py-4 md:pr-4"
               >
                 <DescriptionMessage
                   task={task}
@@ -1119,6 +1122,16 @@ function ThreadWithStorage({
   readonly actionRow: React.ReactNode;
 }) {
   const { comments, addComment, deleteComment } = useComments(storage, task.id);
+  const { attach: attachThread, scrollToBottom } = useStickToBottom<HTMLDivElement>();
+  const addCommentAndFollow = useCallback(
+    async (body: string) => {
+      const added = await addComment(body);
+      // The person just wrote this, so show it even if they had scrolled up to read history.
+      scrollToBottom();
+      return added;
+    },
+    [addComment, scrollToBottom],
+  );
   const { checkpoints } = useCheckpoints(storage, task.id);
 
   const lastAgentAuthor = useMemo(() => {
@@ -1149,8 +1162,9 @@ function ThreadWithStorage({
   return (
     <>
       <div
+        ref={attachThread}
         data-testid="task-thread"
-        className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto py-4 md:pr-4"
+        className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto overscroll-contain py-4 md:pr-4"
       >
         <DescriptionMessage
           task={task}
@@ -1178,7 +1192,7 @@ function ThreadWithStorage({
         <TaskComposer
           key={task.id}
           taskId={task.id}
-          addComment={addComment}
+          addComment={addCommentAndFollow}
           storage={storage}
           t3={t3}
           needsHuman={task.needsHuman !== undefined}
