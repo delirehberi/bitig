@@ -6,14 +6,21 @@ import {
   type CreateProjectInput,
   type Project,
   type ProjectKind,
+  type T3HostConnectionStatus,
   type T3ProjectActiveSession,
+  type T3ProjectMapping,
   type Task,
   type UpdateProjectInput,
 } from "@bitig/core";
 import { useT3Runs } from "../../hooks/useT3Runs";
-import { T3ApiError, fetchT3Connection, registerT3HostFolder } from "../../services/t3";
+import * as t3Service from "../../services/t3";
+import {
+  T3ApiError,
+  fetchT3Connection,
+  registerT3HostFolder,
+} from "../../services/t3";
 import { resolveProjectActiveSessions } from "./activeSessions";
-import { ProjectCard } from "./ProjectCard";
+import { ProjectCard, type ProjectBoundHostDisplay } from "./ProjectCard";
 import { ProjectDetailModal } from "./ProjectDetailModal";
 import { ProjectModal, type ProjectModalSubmitExtras } from "./ProjectModal";
 import { DeleteProjectDialog } from "./DeleteProjectDialog";
@@ -118,7 +125,18 @@ export function ProjectsView({
     openKey: 0,
   });
 
+  const [isCreating, setIsCreating] = useState(false);
+  const [hostConnected, setHostConnected] = useState(false);
+  const [hosts, setHosts] = useState<T3HostConnectionStatus[]>([]);
+  const [mappings, setMappings] = useState<T3ProjectMapping[]>([]);
+  const [isHostsLoading, setIsHostsLoading] = useState(false);
+  const [hostFolderNotice, setHostFolderNotice] = useState<HostFolderNotice | null>(null);
+
   function openProjectModal(project: Project | null) {
+    if (project === null && hostFolderEnabled) {
+      setIsHostsLoading(true);
+    }
+    setIsCreating(project === null);
     setModalState((prev) => ({
       isOpen: true,
       project,
@@ -127,6 +145,8 @@ export function ProjectsView({
   }
 
   function closeProjectModal() {
+    setIsCreating(false);
+    setIsHostsLoading(false);
     setModalState((prev) => ({
       ...prev,
       isOpen: false,
@@ -134,17 +154,54 @@ export function ProjectsView({
     }));
   }
 
-  const isCreating = modalState.isOpen && modalState.project === null;
-  const [hostConnected, setHostConnected] = useState(false);
-  const [hostFolderNotice, setHostFolderNotice] = useState<HostFolderNotice | null>(null);
+  useEffect(() => {
+    if (projects.length === 0) return;
+    const controller = new AbortController();
+    const loadHosts =
+      "fetchT3Hosts" in t3Service && typeof t3Service.fetchT3Hosts === "function"
+        ? Promise.resolve(t3Service.fetchT3Hosts(controller.signal)).catch((): T3HostConnectionStatus[] => [])
+        : Promise.resolve<T3HostConnectionStatus[]>([]);
+    const loadMappings =
+      "fetchT3ProjectMappings" in t3Service && typeof t3Service.fetchT3ProjectMappings === "function"
+        ? Promise.resolve(t3Service.fetchT3ProjectMappings(controller.signal)).catch((): T3ProjectMapping[] => [])
+        : Promise.resolve<T3ProjectMapping[]>([]);
+
+    void Promise.all([loadHosts, loadMappings]).then(([loadedHosts, loadedMappings]) => {
+      if (controller.signal.aborted) return;
+      if (Array.isArray(loadedHosts) && loadedHosts.length > 0) {
+        setHosts(loadedHosts);
+        setHostConnected(true);
+      }
+      if (Array.isArray(loadedMappings)) {
+        setMappings(loadedMappings);
+      }
+    });
+    return () => {
+      controller.abort();
+    };
+  }, [projects.length]);
 
   // Re-checks the T3 connection each time the New Project dialog opens, so a host connected or
   // disconnected in Settings is picked up without a reload.
   useEffect(() => {
     if (!hostFolderEnabled || !isCreating) return;
     const controller = new AbortController();
-    fetchT3Connection(controller.signal)
-      .then((status) => {
+    const loadHosts =
+      "fetchT3Hosts" in t3Service && typeof t3Service.fetchT3Hosts === "function"
+        ? Promise.resolve(t3Service.fetchT3Hosts(controller.signal)).catch((): T3HostConnectionStatus[] => [])
+        : Promise.resolve<T3HostConnectionStatus[]>([]);
+
+    void loadHosts
+      .then(async (loadedHosts) => {
+        if (controller.signal.aborted) return;
+        const safeHosts = Array.isArray(loadedHosts) ? loadedHosts : [];
+        if (safeHosts.length > 0) {
+          setHosts(safeHosts);
+          setHostConnected(true);
+          return;
+        }
+        const status = await fetchT3Connection(controller.signal);
+        setHosts([]);
         setHostConnected(status.connected);
       })
       .catch((err: unknown) => {
@@ -152,11 +209,33 @@ export function ProjectsView({
         // The folder field is optional; without a confirmed host the dialog just hides it.
         console.warn("could not check the T3 connection for the New Project dialog", err);
         setHostConnected(false);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) {
+          setIsHostsLoading(false);
+        }
       });
     return () => {
       controller.abort();
     };
   }, [hostFolderEnabled, isCreating, modalState.openKey]);
+
+  function resolveBoundHostDisplay(projectId: string): ProjectBoundHostDisplay | undefined {
+    const mapping = mappings.find((m) => m.projectId === projectId);
+    if (!mapping) return undefined;
+    const host = mapping.hostId
+      ? hosts.find((h) => h.id === mapping.hostId)
+      : hosts.length === 1
+        ? hosts[0]
+        : undefined;
+    const hostLabel = host
+      ? (host.label?.trim() ? host.label.trim() : host.mcpUrl || host.id)
+      : mapping.hostId;
+    return {
+      ...(hostLabel ? { hostLabel } : {}),
+      folder: mapping.workspaceRoot ?? mapping.t3ProjectTitle,
+    };
+  }
 
   const [deleteTarget, setDeleteTarget] = useState<Project | null>(null);
   const [viewProjectId, setViewProjectId] = useState<string | null>(null);
@@ -239,7 +318,13 @@ export function ProjectsView({
     // The project already exists, so a registration failure is reported as a notice rather
     // than thrown: throwing would keep the dialog open and a resubmit would create a duplicate.
     try {
-      const result = await registerT3HostFolder(created.id, folder);
+      const result = extras.hostId
+        ? await registerT3HostFolder(created.id, folder, undefined, extras.hostId)
+        : await registerT3HostFolder(created.id, folder);
+      setMappings((prev) => [
+        ...prev.filter((m) => m.projectId !== created.id),
+        result.mapping,
+      ]);
       setHostFolderNotice({
         tone: "success",
         text: result.created
@@ -493,6 +578,7 @@ export function ProjectsView({
               project={project}
               tasks={tasks}
               activeSessions={activeSessionsByProject.get(project.id) ?? []}
+              boundHost={resolveBoundHostDisplay(project.id)}
               onView={(p) => {
                 setFocusT3Composer(false);
                 setViewProjectId(p.id);
@@ -525,6 +611,13 @@ export function ProjectsView({
         activeSessions={viewProject ? (activeSessionsByProject.get(viewProject.id) ?? []) : []}
         focusT3Composer={focusT3Composer}
         canManageHostFolder={hostFolderEnabled}
+        onMappingChange={(projectId, nextMapping) => {
+          setMappings((prev) =>
+            nextMapping
+              ? [...prev.filter((m) => m.projectId !== projectId), nextMapping]
+              : prev.filter((m) => m.projectId !== projectId),
+          );
+        }}
         onClose={() => {
           setViewProjectId(null);
         }}
@@ -553,6 +646,8 @@ export function ProjectsView({
         onClose={closeProjectModal}
         onSubmit={handleModalSubmit}
         hostFolderEnabled={hostFolderEnabled && hostConnected}
+        hosts={hosts.length > 0 ? hosts : undefined}
+        isHostsLoading={isHostsLoading}
       />
 
       <DeleteProjectDialog

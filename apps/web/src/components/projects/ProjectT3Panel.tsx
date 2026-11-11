@@ -4,19 +4,23 @@ import {
   ChevronDown,
   ChevronUp,
   ExternalLink,
+  FolderOpen,
   GitBranch,
   MessageSquare,
   RefreshCw,
   Send,
+  Server,
   Terminal,
 } from "lucide-react";
 import {
   DEFAULT_PROJECT_T3_WORKSPACE_STRATEGY,
   canSwitchT3Model,
+  isActiveAgentRunState,
   stripProjectT3PromptHeader,
   type Project,
   type ProjectT3Thread,
   type T3ConnectionStatus,
+  type T3HostConnectionStatus,
   type T3ModelCapability,
   type T3ModelSelection,
   type T3ProjectMapping,
@@ -26,6 +30,7 @@ import {
 import { formatFullTimestamp, formatTimeAgo } from "../../domain/time-ago";
 import { Link } from "../../routing/Link";
 import { hrefFor } from "../../routing/router";
+import * as t3Service from "../../services/t3";
 import {
   fetchProjectT3ThreadMessages,
   fetchProjectT3Threads,
@@ -54,6 +59,10 @@ interface ProjectT3PanelProps {
   readonly focusComposer?: boolean | undefined;
   /** Shows the owner's register/unregister controls for the project's host folder (#BIT-148). */
   readonly canManageHostFolder?: boolean | undefined;
+  /** Count of active T3 sessions running on this project (#BIT-152). */
+  readonly activeSessionsCount?: number | undefined;
+  /** Notifies the parent when the project's host folder mapping changes (#BIT-152). */
+  readonly onMappingChange?: ((mapping: T3ProjectMapping | undefined) => void) | undefined;
 }
 
 /** T3 links come from the host; only http(s) URLs are rendered as links. */
@@ -468,8 +477,15 @@ function ProjectT3ThreadItem({ projectId, thread, capabilities, onUpdated, onSet
  * Sends messages to a project's T3 workspace without a task (#BIT-127), e.g. to check the
  * environment, and lists the threads Bitig started for the project with follow-ups and model switching.
  */
-export function ProjectT3Panel({ project, focusComposer = false, canManageHostFolder = false }: ProjectT3PanelProps) {
+export function ProjectT3Panel({
+  project,
+  focusComposer = false,
+  canManageHostFolder = false,
+  activeSessionsCount = 0,
+  onMappingChange,
+}: ProjectT3PanelProps) {
   const [connection, setConnection] = useState<T3ConnectionStatus | null>(null);
+  const [hosts, setHosts] = useState<T3HostConnectionStatus[]>([]);
   const [mapping, setMapping] = useState<T3ProjectMapping | undefined>(undefined);
   const [capabilities, setCapabilities] = useState<T3ModelCapability[]>([]);
   const [threads, setThreads] = useState<ProjectT3Thread[]>([]);
@@ -486,20 +502,37 @@ export function ProjectT3Panel({ project, focusComposer = false, canManageHostFo
   // Bumped after the host folder link changes, so threads and capabilities load for the new link.
   const [reloadKey, setReloadKey] = useState(0);
 
-  const isConnected = Boolean(connection?.connected && !connection.expired);
+  const hasUsableHost =
+    Boolean(connection?.connected && !connection.expired) || hosts.some((h) => !h.expired);
+  const isConnected = hasUsableHost;
   const isMapped = mapping !== undefined;
   const isReady = isConnected && isMapped;
 
   useEffect(() => {
     const controller = new AbortController();
     settledThreadIds.current.clear();
+    const loadHostsPromise =
+      "fetchT3Hosts" in t3Service && typeof t3Service.fetchT3Hosts === "function"
+        ? Promise.resolve(t3Service.fetchT3Hosts(controller.signal)).catch((): T3HostConnectionStatus[] => [])
+        : Promise.resolve<T3HostConnectionStatus[]>([]);
+
     void Promise.all([
       fetchT3Connection(controller.signal, { projectId: project.id }).catch((): T3ConnectionStatus => ({ connected: false })),
       fetchT3ProjectMappings(controller.signal).catch((): T3ProjectMapping[] => []),
+      loadHostsPromise,
     ])
-      .then(async ([conn, mappings]) => {
+      .then(async ([conn, mappings, loadedHosts]) => {
+        const safeHosts = Array.isArray(loadedHosts) ? loadedHosts : [];
         const projectMapping = mappings.find((m) => m.projectId === project.id);
-        const ready = conn.connected && !conn.expired && projectMapping !== undefined;
+        const boundHost = projectMapping?.hostId
+          ? safeHosts.find((h) => h.id === projectMapping.hostId)
+          : safeHosts.length === 1
+            ? safeHosts[0]
+            : undefined;
+        const hostReady = Boolean(
+          (conn.connected && !conn.expired) || (boundHost && !boundHost.expired),
+        );
+        const ready = hostReady && projectMapping !== undefined;
         const [caps, projectThreads] = ready
           ? await Promise.all([
               fetchT3Capabilities(controller.signal, { projectId: project.id }).catch((): T3ModelCapability[] => []),
@@ -513,6 +546,7 @@ export function ProjectT3Panel({ project, focusComposer = false, canManageHostFo
           : [[], []];
         if (controller.signal.aborted) return;
         setConnection(conn);
+        setHosts(safeHosts);
         setMapping(projectMapping);
         setCapabilities(caps);
         setThreads(projectThreads);
@@ -571,11 +605,25 @@ export function ProjectT3Panel({ project, focusComposer = false, canManageHostFo
     }
   }
 
+  const boundHost = mapping
+    ? mapping.hostId
+      ? hosts.find((h) => h.id === mapping.hostId)
+      : hosts.length === 1
+        ? hosts[0]
+        : undefined
+    : undefined;
+  const boundHostLabel = boundHost
+    ? (boundHost.label?.trim() ? boundHost.label.trim() : boundHost.mcpUrl || boundHost.id)
+    : connection?.label ?? connection?.mcpUrl;
+  const activeThreadCount = threads.filter((t) => isActiveAgentRunState(t.state)).length;
+  const effectiveActiveSessions = Math.max(activeSessionsCount, activeThreadCount);
+
   let gateReason: string | null = null;
   if (!isConnected) {
-    gateReason = connection?.expired
-      ? "T3 OAuth token has expired. Reconnect in Settings."
-      : "Connect a T3 Code host in Settings to message this project.";
+    gateReason =
+      connection?.expired || (hosts.length > 0 && hosts.every((h) => h.expired))
+        ? "T3 OAuth token has expired. Reconnect in Settings."
+        : "Connect a T3 Code host in Settings to message this project.";
   } else if (!isMapped) {
     gateReason = canManageHostFolder
       ? `Register a folder on the T3 host below, or map "${project.name}" to an existing T3 project in Settings.`
@@ -615,12 +663,40 @@ export function ProjectT3Panel({ project, focusComposer = false, canManageHostFo
         <ProjectHostFolder
           project={project}
           mapping={mapping}
+          hosts={hosts.length > 0 ? hosts : undefined}
+          activeSessionsCount={effectiveActiveSessions}
           onMappingChange={(next) => {
             setMapping(next);
             setThreads([]);
             setReloadKey((key) => key + 1);
+            onMappingChange?.(next);
           }}
         />
+      )}
+
+      {!isLoading && !canManageHostFolder && mapping && (
+        <div
+          data-testid="project-bound-host-readonly"
+          className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-rule bg-paper px-2.5 py-2 text-xs text-ink-2"
+        >
+          <div className="flex flex-wrap items-center gap-1.5">
+            <FolderOpen size={ICON_SIZE} aria-hidden="true" />
+            <span>
+              Bound to T3 project <strong className="font-semibold text-ink">{mapping.t3ProjectTitle}</strong>
+            </span>
+            {(boundHostLabel ?? mapping.hostId) && (
+              <span className="inline-flex items-center gap-1 rounded-xs border border-rule bg-paper-2 px-1.5 py-0.5 font-mono text-2xs text-ink">
+                <Server size={10} aria-hidden="true" />
+                {boundHostLabel ?? mapping.hostId}
+              </span>
+            )}
+          </div>
+          {mapping.workspaceRoot && (
+            <code className="rounded-xs bg-paper-2 px-1.5 py-0.5 font-mono text-2xs text-ink-2">
+              {mapping.workspaceRoot}
+            </code>
+          )}
+        </div>
       )}
 
       {isLoading ? (

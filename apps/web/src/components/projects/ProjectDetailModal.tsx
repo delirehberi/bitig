@@ -11,7 +11,7 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
-import type { Project, ProjectKind, Task } from "@bitig/core";
+import type { Project, ProjectKind, T3ProjectMapping, Task } from "@bitig/core";
 import { formatFullTimestamp, formatTimeAgo } from "../../domain/time-ago";
 import { useFocusTrap } from "../../hooks/useFocusTrap";
 import { Markdown } from "../Markdown";
@@ -28,6 +28,8 @@ interface ProjectDetailModalProps {
   readonly focusT3Composer?: boolean | undefined;
   /** Lets an organisation owner register or unregister the project's T3 host folder (#BIT-148). */
   readonly canManageHostFolder?: boolean | undefined;
+  /** Notifies the parent when the project's host folder mapping changes (#BIT-152). */
+  readonly onMappingChange?: ((projectId: string, mapping: T3ProjectMapping | undefined) => void) | undefined;
   readonly onClose: () => void;
   readonly onEdit: (project: Project) => void;
   readonly onDelete: (project: Project) => void;
@@ -72,6 +74,7 @@ export function ProjectDetailModal({
   activeSessions = [],
   focusT3Composer = false,
   canManageHostFolder = false,
+  onMappingChange,
   onClose,
   onEdit,
   onDelete,
@@ -172,6 +175,10 @@ export function ProjectDetailModal({
             project={project}
             focusComposer={focusT3Composer}
             canManageHostFolder={canManageHostFolder}
+            activeSessionsCount={activeSessions.length}
+            onMappingChange={(next) => {
+              onMappingChange?.(project.id, next);
+            }}
           />
         )}
 

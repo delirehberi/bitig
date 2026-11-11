@@ -14,6 +14,7 @@ import {
   fetchProjectT3Threads,
   fetchT3Capabilities,
   fetchT3Connection,
+  fetchT3Hosts,
   fetchT3ProjectMappings,
   sendProjectT3Message,
   settleProjectT3Thread,
@@ -29,6 +30,7 @@ vi.mock("../../services/t3", async (importOriginal) => {
     fetchProjectT3Threads: vi.fn(),
     fetchT3Capabilities: vi.fn(),
     fetchT3Connection: vi.fn(),
+    fetchT3Hosts: vi.fn(),
     fetchT3ProjectMappings: vi.fn(),
     sendProjectT3Message: vi.fn(),
     settleProjectT3Thread: vi.fn(),
@@ -483,5 +485,73 @@ describe("ProjectT3Panel (BIT-127)", () => {
     );
     expect(screen.queryByText("Host A thread")).not.toBeInTheDocument();
     expect(screen.getByText("Host B thread")).toBeInTheDocument();
+  });
+
+  it("shows read-only bound host info for non-owner members and hides host management controls (BIT-152)", async () => {
+    vi.mocked(fetchT3Connection).mockResolvedValue(CONNECTED);
+    vi.mocked(fetchT3Hosts).mockResolvedValue([
+      {
+        id: "host-laptop",
+        label: "Laptop",
+        mcpUrl: "https://laptop.example.com/mcp",
+        issuer: "https://laptop.example.com",
+        connected: true,
+        kind: "user",
+        projectsRoot: "~/www",
+        expiresAt: "2026-12-01T00:00:00.000Z",
+        expiresInDays: 20,
+        expiringSoon: false,
+        expired: false,
+        scope: "mcp:tools",
+        connectedAt: TIMESTAMP,
+      },
+    ]);
+    vi.mocked(fetchT3ProjectMappings).mockResolvedValue([
+      {
+        projectId: PROJECT.id,
+        hostId: "host-laptop",
+        t3ProjectId: "t3-proj",
+        t3ProjectTitle: "Bitig",
+        workspaceRoot: "~/www/bitig",
+        updatedAt: TIMESTAMP,
+      },
+    ]);
+    vi.mocked(fetchT3Capabilities).mockResolvedValue(CAPABILITIES);
+    vi.mocked(fetchProjectT3Threads).mockResolvedValue([]);
+
+    render(<ProjectT3Panel project={PROJECT} canManageHostFolder={false} />);
+
+    const readonlyBox = await screen.findByTestId("project-bound-host-readonly");
+    expect(readonlyBox).toHaveTextContent("Laptop");
+    expect(readonlyBox).toHaveTextContent("~/www/bitig");
+    expect(screen.queryByRole("button", { name: "Unregister folder" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Reattach on another host" })).not.toBeInTheDocument();
+  });
+
+  it("lets an owner attach an unmapped project when fetchT3Hosts returns a connected host even if project connection is unmapped (BIT-152)", async () => {
+    vi.mocked(fetchT3Connection).mockResolvedValue({ connected: false });
+    vi.mocked(fetchT3Hosts).mockResolvedValue([
+      {
+        id: "host-laptop",
+        label: "Laptop",
+        mcpUrl: "https://laptop.example.com/mcp",
+        issuer: "https://laptop.example.com",
+        connected: true,
+        kind: "user",
+        projectsRoot: "~/www",
+        expiresAt: "2026-12-01T00:00:00.000Z",
+        expiresInDays: 20,
+        expiringSoon: false,
+        expired: false,
+        scope: "mcp:tools",
+        connectedAt: TIMESTAMP,
+      },
+    ]);
+    vi.mocked(fetchT3ProjectMappings).mockResolvedValue([]);
+
+    render(<ProjectT3Panel project={PROJECT} canManageHostFolder />);
+
+    expect(await screen.findByLabelText("Folder on T3 host")).toHaveValue("~/www/bitig");
+    expect(screen.getByRole("button", { name: "Register" })).toBeInTheDocument();
   });
 });

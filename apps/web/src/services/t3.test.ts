@@ -1,7 +1,19 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { settleProjectT3Thread, startTaskT3Run, T3ApiError, T3WorkspaceBusyApiError } from "./t3";
+import {
+  disconnectT3Host,
+  fetchT3Host,
+  fetchT3Hosts,
+  fetchT3RemoteProjects,
+  settleProjectT3Thread,
+  startT3OAuth,
+  startTaskT3Run,
+  T3ApiError,
+  T3WorkspaceBusyApiError,
+  updateT3Host,
+} from "./t3";
 
 const TASK_ID = "01940000-0000-7000-8000-000000000001";
+const HTTP_OK = 200;
 const HTTP_CONFLICT = 409;
 const HTTP_NO_CONTENT = 204;
 const HTTP_BAD_GATEWAY = 502;
@@ -103,3 +115,75 @@ describe("startTaskT3Run workspace guard (#BIT-134)", () => {
     expect(await startError()).not.toBeInstanceOf(T3WorkspaceBusyApiError);
   });
 });
+
+describe("multi-host client APIs (#BIT-152)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("loads connected hosts and single host status", async () => {
+    const host = {
+      id: "host-1",
+      label: "Laptop",
+      kind: "user" as const,
+      projectsRoot: "~/www",
+      connected: true as const,
+      mcpUrl: "https://t3.example.test/mcp",
+      issuer: "https://t3.example.test",
+      connectedAt: "2026-01-01T00:00:00.000Z",
+      expiresAt: "2026-02-01T00:00:00.000Z",
+      expiresInDays: 30,
+      expiringSoon: false,
+      expired: false,
+    };
+    stubFetchResponse({ hosts: [host] }, HTTP_OK);
+    await expect(fetchT3Hosts()).resolves.toEqual([host]);
+
+    stubFetchResponse(host, HTTP_OK);
+    await expect(fetchT3Host("host/1")).resolves.toEqual(host);
+  });
+
+  it("starts OAuth for a new or reauthorised host and updates or disconnects a host", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      Response.json({ authorizationUrl: "https://t3.example.test/authorize", state: "s1" }, { status: HTTP_OK }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await startT3OAuth({
+      mcpUrl: "https://t3.example.test/mcp",
+      hostId: "host-1",
+      label: "Laptop",
+      kind: "user",
+      projectsRoot: "~/www",
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/t3/oauth/start",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          mcpUrl: "https://t3.example.test/mcp",
+          hostId: "host-1",
+          label: "Laptop",
+          kind: "user",
+          projectsRoot: "~/www",
+        }),
+      }),
+    );
+
+    stubFetchResponse({ id: "host-1", projectsRoot: "/srv/code" }, HTTP_OK);
+    await expect(updateT3Host("host-1", { projectsRoot: "/srv/code" })).resolves.toMatchObject({
+      id: "host-1",
+      projectsRoot: "/srv/code",
+    });
+
+    stubFetchResponse({ error: "host_busy", message: "Stop active sessions before disconnecting." }, HTTP_CONFLICT);
+    await expect(disconnectT3Host("host-1")).rejects.toMatchObject({
+      status: HTTP_CONFLICT,
+      message: "Stop active sessions before disconnecting.",
+    });
+
+    stubFetchResponse({ projects: [{ id: "p1", title: "Repo" }] }, HTTP_OK);
+    await expect(fetchT3RemoteProjects(undefined, "host-1")).resolves.toEqual([{ id: "p1", title: "Repo" }]);
+  });
+});
+

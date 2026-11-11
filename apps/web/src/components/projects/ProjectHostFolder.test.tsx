@@ -1,8 +1,22 @@
-import type { CreateProjectInput, Project, T3ConnectionStatus, T3ProjectMapping } from "@bitig/core";
+import type {
+  CreateProjectInput,
+  Project,
+  T3ConnectionStatus,
+  T3HostConnectionStatus,
+  T3ProjectMapping,
+} from "@bitig/core";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { T3ApiError, fetchT3Connection, registerT3HostFolder, unregisterT3HostFolder } from "../../services/t3";
+import {
+  T3ApiError,
+  checkT3HostFolder,
+  fetchT3Connection,
+  fetchT3Hosts,
+  fetchT3ProjectMappings,
+  registerT3HostFolder,
+  unregisterT3HostFolder,
+} from "../../services/t3";
 import { ProjectHostFolder } from "./ProjectHostFolder";
 import { ProjectModal } from "./ProjectModal";
 import { ProjectsView } from "./ProjectsView";
@@ -11,7 +25,10 @@ vi.mock("../../services/t3", async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return {
     ...actual,
+    checkT3HostFolder: vi.fn(),
     fetchT3Connection: vi.fn(),
+    fetchT3Hosts: vi.fn(),
+    fetchT3ProjectMappings: vi.fn(),
     registerT3HostFolder: vi.fn(),
     unregisterT3HostFolder: vi.fn(),
   };
@@ -194,5 +211,189 @@ describe("ProjectsView host folder registration (BIT-148)", () => {
       expect(fetchT3Connection).toHaveBeenCalled();
     });
     expect(screen.queryByLabelText("Folder on T3 host")).not.toBeInTheDocument();
+  });
+});
+
+describe("Multi-host project creation, detach/reattach, and error states (BIT-152)", () => {
+  const HOSTS: T3HostConnectionStatus[] = [
+    {
+      id: "host-laptop",
+      label: "Laptop",
+      mcpUrl: "https://laptop.example.com/mcp",
+      issuer: "https://laptop.example.com",
+      connected: true,
+      kind: "user",
+      projectsRoot: "~/www",
+      expiresAt: "2026-12-01T00:00:00.000Z",
+      expiresInDays: 20,
+      expiringSoon: false,
+      expired: false,
+      scope: "mcp:tools",
+      connectedAt: TIMESTAMP,
+    },
+    {
+      id: "host-server",
+      label: "Build Server",
+      mcpUrl: "https://server.example.com/mcp",
+      issuer: "https://server.example.com",
+      connected: true,
+      kind: "container",
+      projectsRoot: "/var/www",
+      expiresAt: "2026-12-01T00:00:00.000Z",
+      expiresInDays: 20,
+      expiringSoon: false,
+      expired: false,
+      scope: "mcp:tools",
+      connectedAt: TIMESTAMP,
+    },
+  ];
+
+  it("picks a host, prefills <projects root>/<project-slug>, explains cloned repo requirement, and checks already-registered folders", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn<
+      (input: CreateProjectInput, extras?: { hostFolderPath?: string; hostId?: string }) => Promise<void>
+    >();
+    onSubmit.mockResolvedValue(undefined);
+    vi.mocked(checkT3HostFolder).mockResolvedValueOnce({
+      workspaceRoot: "/var/www/website-redesign",
+      mappedProjectId: "other-project-id",
+    });
+
+    render(<ProjectModal isOpen onClose={vi.fn()} onSubmit={onSubmit} hostFolderEnabled hosts={HOSTS} />);
+
+    // Explains that the repository must already be cloned on the host and Git cloning UI is deferred
+    expect(
+      screen.getByText(/The repository must already be cloned at an existing folder on the host/u),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Git cloning from the web UI is deferred/u)).toBeInTheDocument();
+
+    // Typing project name prefills <projects root>/<slug> for default host (~/www)
+    await user.type(screen.getByLabelText(/Project Name/u), "Website Redesign");
+    const folderInput = screen.getByLabelText("Folder on T3 host");
+    expect(folderInput).toHaveValue("~/www/website-redesign");
+
+    // Switching host updates prefilled path to that host's projectsRoot (/var/www)
+    await user.selectOptions(screen.getByLabelText("T3 host"), "host-server");
+    expect(folderInput).toHaveValue("/var/www/website-redesign");
+
+    // Check folder shows already-registered conflict when mapped to another Bitig project
+    await user.click(screen.getByRole("button", { name: "Check folder" }));
+    expect(checkT3HostFolder).toHaveBeenCalledWith(
+      "/var/www/website-redesign",
+      undefined,
+      "host-server",
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /already registered in T3 and bound to another Bitig project/u,
+    );
+
+    // Submitting passes both hostFolderPath and hostId
+    await user.click(screen.getByRole("button", { name: "Create Project" }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ name: "Website Redesign" }), {
+      hostFolderPath: "/var/www/website-redesign",
+      hostId: "host-server",
+    });
+  });
+
+  it("blocks detaching or reattaching while sessions are running on the project", () => {
+    render(
+      <ProjectHostFolder
+        project={PROJECT}
+        mapping={{ ...MAPPING, hostId: "host-laptop", workspaceRoot: "~/www/website-redesign" }}
+        hosts={HOSTS}
+        activeSessionsCount={2}
+        onMappingChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId("project-bound-host-badge")).toHaveTextContent("Laptop");
+    expect(screen.getByTestId("project-host-busy-notice")).toHaveTextContent(/2 T3 sessions are running/u);
+    expect(screen.getByRole("button", { name: "Unregister folder" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Reattach on another host" })).toBeDisabled();
+  });
+
+  it("lets an owner reattach a bound project onto another host and surfaces missing-folder / offline-host errors", async () => {
+    const user = userEvent.setup();
+    const onMappingChange = vi.fn();
+    const reattachedMapping: T3ProjectMapping = {
+      projectId: PROJECT.id,
+      hostId: "host-server",
+      t3ProjectId: "t3-proj-2",
+      t3ProjectTitle: "Website Redesign",
+      workspaceRoot: "/var/www/website-redesign",
+      updatedAt: TIMESTAMP,
+    };
+
+    vi.mocked(registerT3HostFolder)
+      .mockRejectedValueOnce(new T3ApiError(503, "Could not reach the T3 host."))
+      .mockResolvedValueOnce({ mapping: reattachedMapping, created: false });
+
+    render(
+      <ProjectHostFolder
+        project={PROJECT}
+        mapping={{ ...MAPPING, hostId: "host-laptop", workspaceRoot: "~/www/website-redesign" }}
+        hosts={HOSTS}
+        activeSessionsCount={0}
+        onMappingChange={onMappingChange}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Reattach on another host" }));
+    const targetHostSelect = screen.getByLabelText("Target T3 host");
+    expect(targetHostSelect).toHaveValue("host-server");
+    const folderInput = screen.getByLabelText("Folder on target host");
+    expect(folderInput).toHaveValue("/var/www/website-redesign");
+
+    // First attempt: offline host error
+    await user.click(screen.getByRole("button", { name: "Reattach" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not reach the T3 host.");
+
+    // Second attempt: succeeds and reports already-registered folder linked (`created: false`)
+    await user.click(screen.getByRole("button", { name: "Reattach" }));
+    expect(registerT3HostFolder).toHaveBeenLastCalledWith(
+      PROJECT.id,
+      "/var/www/website-redesign",
+      expect.any(AbortSignal),
+      "host-server",
+    );
+    expect(onMappingChange).toHaveBeenCalledWith(reattachedMapping);
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      /\/var\/www\/website-redesign was already registered in T3; linked it\./u,
+    );
+  });
+
+  it("displays bound host on ProjectCard in ProjectsView", async () => {
+    vi.mocked(fetchT3Hosts).mockResolvedValue(HOSTS);
+    vi.mocked(fetchT3ProjectMappings).mockResolvedValue([
+      {
+        projectId: PROJECT.id,
+        hostId: "host-laptop",
+        t3ProjectId: "t3-proj-1",
+        t3ProjectTitle: "Website Redesign",
+        workspaceRoot: "~/www/website-redesign",
+        updatedAt: TIMESTAMP,
+      },
+    ]);
+
+    render(
+      <ProjectsView
+        projects={[PROJECT]}
+        tasks={[]}
+        isLoading={false}
+        error={null}
+        onCreateProject={vi.fn()}
+        onUpdateProject={vi.fn()}
+        onDeleteProject={vi.fn()}
+        onSelectProject={vi.fn()}
+        searchQuery=""
+        agentRuns={[]}
+        activeSessions={[]}
+        hostFolderEnabled
+      />,
+    );
+
+    const badge = await screen.findByTestId(`project-card-host-${PROJECT.id}`);
+    expect(badge).toHaveTextContent("Laptop");
+    expect(badge).toHaveTextContent("~/www/website-redesign");
   });
 });

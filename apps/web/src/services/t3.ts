@@ -10,13 +10,16 @@ import type {
   StartProjectT3ThreadInput,
   StartT3ThreadInput,
   T3ConnectionStatus,
+  T3HostConnectionStatus,
   T3ModelCapability,
   T3ProjectMapping,
   T3RemoteProject,
   T3RunsLiveResponse,
+  T3StartOAuthInput,
   T3TaskRunLiveResponse,
   T3WorkspaceBusySession,
   Task,
+  UpdateT3HostInput,
 } from "@bitig/core";
 
 const BASE_HEADERS = {
@@ -146,7 +149,73 @@ export async function fetchT3Connection(signal?: AbortSignal, context?: { projec
   return (await response.json()) as T3ConnectionStatus;
 }
 
-export async function startT3OAuth(mcpUrl: string): Promise<{ authorizationUrl: string; state: string }> {
+/** Lists all connected T3 hosts for the current organisation (#BIT-147, #BIT-152). */
+export async function fetchT3Hosts(signal?: AbortSignal): Promise<T3HostConnectionStatus[]> {
+  const response = await fetch("/api/t3/hosts", {
+    headers: baseHeaders(),
+    credentials: "same-origin",
+    ...(signal ? { signal } : {}),
+  });
+  if (!response.ok) {
+    throw new T3ApiError(response.status, await parseErrorMessage(response, "Could not load T3 hosts"));
+  }
+  const body = (await response.json()) as { hosts?: T3HostConnectionStatus[] } | T3HostConnectionStatus[] | null;
+  if (Array.isArray(body)) return body;
+  return Array.isArray(body?.hosts) ? body.hosts : [];
+}
+
+/** Reads a single T3 host connection status (#BIT-147). */
+export async function fetchT3Host(hostId: string, signal?: AbortSignal): Promise<T3HostConnectionStatus> {
+  const response = await fetch(`/api/t3/hosts/${encodeURIComponent(hostId)}`, {
+    headers: baseHeaders(),
+    credentials: "same-origin",
+    ...(signal ? { signal } : {}),
+  });
+  if (!response.ok) {
+    throw new T3ApiError(response.status, await parseErrorMessage(response, "Could not load T3 host"));
+  }
+  return (await response.json()) as T3HostConnectionStatus;
+}
+
+/** Updates a T3 host's label, kind, or projects root (#BIT-147, #BIT-152). Owner only. */
+export async function updateT3Host(
+  hostId: string,
+  input: UpdateT3HostInput,
+  signal?: AbortSignal,
+): Promise<T3HostConnectionStatus> {
+  const response = await fetch(`/api/t3/hosts/${encodeURIComponent(hostId)}`, {
+    method: "PATCH",
+    headers: {
+      ...baseHeaders(),
+      "Content-Type": "application/json",
+    },
+    credentials: "same-origin",
+    body: JSON.stringify(input),
+    ...(signal ? { signal } : {}),
+  });
+  if (!response.ok) {
+    throw new T3ApiError(response.status, await parseErrorMessage(response, "Could not update T3 host"));
+  }
+  return (await response.json()) as T3HostConnectionStatus;
+}
+
+/** Disconnects a specific T3 host (#BIT-147, #BIT-152). Refused with 409 while sessions run. Owner only. */
+export async function disconnectT3Host(hostId: string, signal?: AbortSignal): Promise<void> {
+  const response = await fetch(`/api/t3/hosts/${encodeURIComponent(hostId)}`, {
+    method: "DELETE",
+    headers: baseHeaders(),
+    credentials: "same-origin",
+    ...(signal ? { signal } : {}),
+  });
+  if (!response.ok) {
+    throw new T3ApiError(response.status, await parseErrorMessage(response, "Could not disconnect T3 host"));
+  }
+}
+
+export async function startT3OAuth(
+  input: string | T3StartOAuthInput,
+): Promise<{ authorizationUrl: string; state: string }> {
+  const payload: T3StartOAuthInput = typeof input === "string" ? { mcpUrl: input } : input;
   const response = await fetch("/api/t3/oauth/start", {
     method: "POST",
     headers: {
@@ -154,7 +223,7 @@ export async function startT3OAuth(mcpUrl: string): Promise<{ authorizationUrl: 
       "Content-Type": "application/json",
     },
     credentials: "same-origin",
-    body: JSON.stringify({ mcpUrl }),
+    body: JSON.stringify(payload),
   });
   if (!response.ok) {
     throw new T3ApiError(response.status, await parseErrorMessage(response, "Could not start T3 OAuth"));
@@ -173,8 +242,9 @@ export async function disconnectT3(): Promise<void> {
   }
 }
 
-export async function fetchT3RemoteProjects(signal?: AbortSignal): Promise<T3RemoteProject[]> {
-  const response = await fetch("/api/t3/projects", {
+export async function fetchT3RemoteProjects(signal?: AbortSignal, hostId?: string): Promise<T3RemoteProject[]> {
+  const query = hostId ? `?hostId=${encodeURIComponent(hostId)}` : "";
+  const response = await fetch(`/api/t3/projects${query}`, {
     headers: baseHeaders(),
     credentials: "same-origin",
     ...(signal ? { signal } : {}),
@@ -182,8 +252,9 @@ export async function fetchT3RemoteProjects(signal?: AbortSignal): Promise<T3Rem
   if (!response.ok) {
     throw new T3ApiError(response.status, await parseErrorMessage(response, "Could not load T3 projects"));
   }
-  const body = (await response.json()) as { projects: T3RemoteProject[] };
-  return body.projects;
+  const body = (await response.json()) as { projects?: T3RemoteProject[] } | T3RemoteProject[] | null;
+  if (Array.isArray(body)) return body;
+  return Array.isArray(body?.projects) ? body.projects : [];
 }
 
 export async function fetchT3Capabilities(signal?: AbortSignal, context?: { projectId?: string; taskId?: string; hostId?: string }): Promise<T3ModelCapability[]> {
@@ -209,8 +280,9 @@ export async function fetchT3ProjectMappings(signal?: AbortSignal): Promise<T3Pr
   if (!response.ok) {
     throw new T3ApiError(response.status, await parseErrorMessage(response, "Could not load T3 mappings"));
   }
-  const body = (await response.json()) as { mappings: T3ProjectMapping[] };
-  return body.mappings;
+  const body = (await response.json()) as { mappings?: T3ProjectMapping[] } | T3ProjectMapping[] | null;
+  if (Array.isArray(body)) return body;
+  return Array.isArray(body?.mappings) ? body.mappings : [];
 }
 
 export async function saveT3ProjectMapping(

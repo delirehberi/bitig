@@ -8,6 +8,7 @@ import {
   ListTodo,
   MessageSquare,
   Play,
+  Server,
   Square,
   Terminal,
   Trash2,
@@ -209,10 +210,16 @@ export function ProjectActiveSessionsList({
   );
 }
 
+export interface ProjectBoundHostDisplay {
+  readonly hostLabel?: string | undefined;
+  readonly folder: string;
+}
+
 interface ProjectCardProps {
   readonly project: Project;
   readonly tasks: Task[];
   readonly activeSessions?: readonly ResolvedProjectActiveSession[];
+  readonly boundHost?: ProjectBoundHostDisplay | undefined;
   readonly onEdit: (project: Project) => void;
   readonly onDelete: (project: Project) => void;
   readonly onSelect: (projectId: string) => void;
@@ -237,6 +244,7 @@ export function ProjectCard({
   project,
   tasks,
   activeSessions = [],
+  boundHost,
   onEdit,
   onDelete,
   onSelect,
@@ -417,6 +425,18 @@ export function ProjectCard({
           <p className="m-0 mt-1 line-clamp-2 text-xs text-ink-2">{project.description}</p>
         ) : (
           <p className="m-0 mt-1 text-xs italic text-ink-3">No description</p>
+        )}
+        {boundHost && (
+          <div
+            data-testid={`project-card-host-${project.id}`}
+            className="mt-2.5 inline-flex max-w-full items-center gap-1.5 rounded-md border border-rule bg-paper-2 px-2 py-1 text-2xs text-ink-2"
+          >
+            <Server size={11} aria-hidden="true" className="shrink-0 text-accent-ink" />
+            {boundHost.hostLabel && (
+              <span className="shrink-0 font-semibold text-ink">{boundHost.hostLabel}</span>
+            )}
+            <code className="truncate font-mono text-ink-2">{boundHost.folder}</code>
+          </div>
         )}
         <ResourceLinks resources={project.resources} />
         <ProjectActiveSessionsList projectId={project.id} sessions={activeSessions} />
