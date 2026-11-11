@@ -566,26 +566,87 @@ describe("MCP Tools integration", () => {
     it("never changes approval, blocking or needs-human state, and reports the live gates on resume", async () => {
       const project = await storage.createProject({ name: "Bitig", key: "BIT" });
       const blocker = await storage.saveTask({ projectId: project.id, title: "Blocker" });
+      const secondBlocker = await storage.saveTask({ projectId: project.id, title: "Second blocker", status: "in_progress" });
       const gated = await storage.saveTask({
-        projectId: project.id, title: "Gated", pendingApproval: true, needsHuman: "Pick a key", dependsOn: [blocker.id],
+        projectId: project.id,
+        title: "Gated",
+        pendingApproval: true,
+        needsHuman: "Pick a key",
+        dependsOn: [blocker.id, secondBlocker.id],
       });
       const before = await storage.getTask(gated.id);
       await call("save_checkpoint", {
-        taskId: "BIT-2", stepIndex: 0, status: "WAITING_HUMAN_APPROVAL", stateSnapshot: snapshot("Waiting"),
+        taskId: "BIT-3", stepIndex: 0, status: "WAITING_HUMAN_APPROVAL", stateSnapshot: snapshot("Waiting"),
       });
       expect(await storage.getTask(gated.id)).toEqual(before);
 
-      const refused = await call("update_task", { id: "BIT-2", status: "in_progress" });
+      const refused = await call("update_task", { id: "BIT-3", status: "in_progress" });
       expect(refused.isError).toBe(true);
 
-      const resumed = (await call("resume_from_checkpoint", { taskId: "BIT-2" })).data as {
-        gates: { pendingApproval: boolean; needsHuman: string | null; dependencies: { id: string; blocked: boolean }[] };
-      };
-      expect(resumed.gates).toEqual({
+      interface ResumeGates {
+        gates: {
+          pendingApproval: boolean;
+          needsHuman: string | null;
+          dependencies: { id: string; status: string | null; blocked: boolean }[];
+        };
+      }
+
+      const resumedInitial = (await call("resume_from_checkpoint", { taskId: "BIT-3" })).data as ResumeGates;
+      expect(resumedInitial.gates).toEqual({
         pendingApproval: true,
         needsHuman: "Pick a key",
-        dependencies: [{ id: blocker.id, status: "todo", blocked: true }],
+        dependencies: [
+          { id: blocker.id, status: "todo", blocked: true },
+          { id: secondBlocker.id, status: "in_progress", blocked: true },
+        ],
       });
+
+      // Transition first prerequisite: todo -> in_progress -> done -> archived while second remains in_progress
+      await call("update_task", { id: "BIT-1", status: "in_progress" });
+      expect(((await call("resume_from_checkpoint", { taskId: "BIT-3" })).data as ResumeGates).gates.dependencies).toEqual([
+        { id: blocker.id, status: "in_progress", blocked: true },
+        { id: secondBlocker.id, status: "in_progress", blocked: true },
+      ]);
+
+      await call("complete_task", { id: "BIT-1" });
+      expect(((await call("resume_from_checkpoint", { taskId: "BIT-3" })).data as ResumeGates).gates).toEqual({
+        pendingApproval: true,
+        needsHuman: "Pick a key",
+        dependencies: [
+          { id: blocker.id, status: "done", blocked: false },
+          { id: secondBlocker.id, status: "in_progress", blocked: true },
+        ],
+      });
+
+      await call("update_task", { id: "BIT-1", status: "archived" });
+      const resumedMixed = (await call("resume_from_checkpoint", { taskId: "BIT-3" })).data as ResumeGates;
+      expect(resumedMixed.gates).toEqual({
+        pendingApproval: true,
+        needsHuman: "Pick a key",
+        dependencies: [
+          { id: blocker.id, status: "archived", blocked: false },
+          { id: secondBlocker.id, status: "in_progress", blocked: true },
+        ],
+      });
+      // Consistent with get_task and list_tasks: only unfinished BIT-2 is in blockedBy
+      expect((await call("get_task", { id: "BIT-3" })).data).toMatchObject({
+        blockedBy: ["BIT-2"],
+      });
+
+      // Complete and archive second prerequisite; stored needsHuman and pendingApproval remain intact
+      await call("complete_task", { id: "BIT-2" });
+      await call("update_task", { id: "BIT-2", status: "archived" });
+      const resumedSatisfied = (await call("resume_from_checkpoint", { taskId: "BIT-3" })).data as ResumeGates;
+      expect(resumedSatisfied.gates).toEqual({
+        pendingApproval: true,
+        needsHuman: "Pick a key",
+        dependencies: [
+          { id: blocker.id, status: "archived", blocked: false },
+          { id: secondBlocker.id, status: "archived", blocked: false },
+        ],
+      });
+      expect((await call("get_task", { id: "BIT-3" })).data).not.toHaveProperty("blockedBy");
+      expect((await call("list_tasks", { projectId: "BIT", blocked: true })).data).toEqual([]);
     });
   });
 

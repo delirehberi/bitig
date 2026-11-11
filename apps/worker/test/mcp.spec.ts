@@ -484,6 +484,58 @@ describe("Remote MCP Protocol & Tool Execution", () => {
     expect(updatedTask.title).toBe("Updated Remote Task Title");
     expect(updatedTask.needsHuman).toBe("Confirm the deploy window");
 
+    // 8b. Archive prerequisite and verify resume_from_checkpoint on a dependent task treats archived as satisfied (blocked: false)
+    const addDependentRes = await client.callTool({
+      name: "add_task",
+      arguments: {
+        projectId: project.id,
+        title: "Dependent Remote Task",
+        dependsOn: [task.id],
+        needsHuman: "Verify prerequisite gate",
+      },
+    });
+    expect(addDependentRes.isError).toBeFalsy();
+    const dependentTask = JSON.parse((addDependentRes.content as { text: string }[])[0]?.text ?? "{}") as {
+      id: string;
+    };
+
+    const resumeDoneDepRes = await client.callTool({
+      name: "resume_from_checkpoint",
+      arguments: { taskId: dependentTask.id },
+    });
+    expect(resumeDoneDepRes.isError).toBeFalsy();
+    expect(JSON.parse((resumeDoneDepRes.content as { text: string }[])[0]?.text ?? "{}")).toMatchObject({
+      gates: {
+        pendingApproval: true,
+        needsHuman: "Verify prerequisite gate",
+        dependencies: [{ id: task.id, status: "done", blocked: false }],
+      },
+    });
+
+    const archivePrereqRes = await client.callTool({
+      name: "update_task",
+      arguments: { id: task.id, status: "archived" },
+    });
+    expect(archivePrereqRes.isError).toBeFalsy();
+
+    const resumeArchivedDepRes = await client.callTool({
+      name: "resume_from_checkpoint",
+      arguments: { taskId: dependentTask.id },
+    });
+    expect(resumeArchivedDepRes.isError).toBeFalsy();
+    expect(JSON.parse((resumeArchivedDepRes.content as { text: string }[])[0]?.text ?? "{}")).toMatchObject({
+      gates: {
+        pendingApproval: true,
+        needsHuman: "Verify prerequisite gate",
+        dependencies: [{ id: task.id, status: "archived", blocked: false }],
+      },
+    });
+
+    await client.callTool({
+      name: "delete_task",
+      arguments: { id: dependentTask.id },
+    });
+
     // 9. Delete task
     const deleteTaskRes = await client.callTool({
       name: "delete_task",

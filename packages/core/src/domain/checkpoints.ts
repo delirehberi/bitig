@@ -1,4 +1,5 @@
 import { CHECKPOINT_GOAL_MAX, CHECKPOINT_HISTORY_MAX } from "./constants";
+import { isTaskFinished } from "./dependencies";
 import { parseOrThrow } from "./errors";
 import { CheckpointSchema, SaveCheckpointInputSchema } from "./schemas";
 import type { Checkpoint, SaveCheckpointInput, Task } from "./types";
@@ -38,7 +39,7 @@ export function buildExecutionContext(task: Task, checkpoints: readonly Checkpoi
       needsHuman: task.needsHuman ?? null,
       dependencies: (task.dependsOn ?? []).map((id) => {
         const dependency = dependencies.find((candidate) => candidate.id === id);
-        return { id, status: dependency?.status ?? null, blocked: dependency?.status !== "done" };
+        return { id, status: dependency?.status ?? null, blocked: dependency === undefined || !isTaskFinished(dependency) };
       }),
     },
     history: previous.slice(-CHECKPOINT_HISTORY_MAX).map(({ stepIndex, status, stateSnapshot }) => ({ stepIndex, status, summary: stateSnapshot.summary })),

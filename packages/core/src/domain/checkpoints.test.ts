@@ -76,12 +76,32 @@ describe("checkpoint semantics", () => {
   it("reports live approval and dependency gates independently of snapshot status", () => {
     const { runtime, task, input } = setup();
     const missingId = runtime.generateId();
-    const dependency = { ...task, id: runtime.generateId(), status: "done" as const };
-    const guarded = { ...task, pendingApproval: true as const, dependsOn: [dependency.id, missingId] };
-    const context = buildExecutionContext(guarded, [buildCheckpoint(input, runtime)], [dependency]);
-    expect(context.gates).toEqual({ pendingApproval: true, needsHuman: null, dependencies: [
-      { id: dependency.id, status: "done", blocked: false }, { id: missingId, status: null, blocked: true },
-    ] });
+    const todoDep = { ...task, id: runtime.generateId(), status: "todo" as const };
+    const inProgressDep = { ...task, id: runtime.generateId(), status: "in_progress" as const };
+    const doneDep = { ...task, id: runtime.generateId(), status: "done" as const };
+    const archivedDep = { ...task, id: runtime.generateId(), status: "archived" as const };
+    const guarded = {
+      ...task,
+      pendingApproval: true as const,
+      needsHuman: "Confirm partner ID",
+      dependsOn: [todoDep.id, inProgressDep.id, doneDep.id, archivedDep.id, missingId],
+    };
+    const context = buildExecutionContext(
+      guarded,
+      [buildCheckpoint(input, runtime)],
+      [todoDep, inProgressDep, doneDep, archivedDep],
+    );
+    expect(context.gates).toEqual({
+      pendingApproval: true,
+      needsHuman: "Confirm partner ID",
+      dependencies: [
+        { id: todoDep.id, status: "todo", blocked: true },
+        { id: inProgressDep.id, status: "in_progress", blocked: true },
+        { id: doneDep.id, status: "done", blocked: false },
+        { id: archivedDep.id, status: "archived", blocked: false },
+        { id: missingId, status: null, blocked: true },
+      ],
+    });
     expect(context.task.status).toBe("todo");
   });
 });
