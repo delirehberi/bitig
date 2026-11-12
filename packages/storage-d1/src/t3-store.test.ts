@@ -6,6 +6,7 @@ import gitMigration from "../migrations/0023_agent_run_git_metadata.sql?raw";
 import requestMigration from "../migrations/0024_t3_run_requests.sql?raw";
 import multiHostMigration from "../migrations/0025_multi_host_t3.sql?raw";
 import workspaceRootMigration from "../migrations/0026_project_mapping_workspace_root.sql?raw";
+import runOrchestrationMigration from "../migrations/0027_run_orchestration.sql?raw";
 import { DEFAULT_ORGANISATION_ID, defaultIdGenerator } from "@bitig/core";
 import { T3_REQUEST_LEASE_MS } from "./t3-request-store";
 import { T3D1Store, type SaveProjectT3ThreadInput } from "./t3-store";
@@ -16,7 +17,14 @@ const STARTED_AT = Date.parse("2026-11-03T10:00:00.000Z");
 const LATER = Date.parse("2026-11-03T11:00:00.000Z");
 
 const SETUP = [
+  "DROP TABLE IF EXISTS `agent_run_children`",
+  "DROP TABLE IF EXISTS `project_run_settings`",
+  "DROP TABLE IF EXISTS `task_run_profiles`",
+  "DROP TABLE IF EXISTS `org_ai_router_settings`",
+  "DROP TABLE IF EXISTS `run_level_models`",
+  "DROP TABLE IF EXISTS `run_levels`",
   "DROP TABLE IF EXISTS `project_t3_threads`",
+  "DROP TABLE IF EXISTS `tasks`",
   "DROP TABLE IF EXISTS `projects`",
   "CREATE TABLE `projects` (`id` text PRIMARY KEY NOT NULL, `org_id` text DEFAULT '01a10000-0000-7000-8000-000000000001' NOT NULL, `name` text NOT NULL)",
 ];
@@ -188,6 +196,12 @@ const CHILD_TASK_ID = "01a14ecf-281e-7436-8c52-a524c5fabd02";
 
 /** `agent_runs` as it stood before #BIT-141, so the test also applies migrations 0021, 0023, 0024, and 0025. */
 const AGENT_RUN_SETUP = [
+  "DROP TABLE IF EXISTS `agent_run_children`",
+  "DROP TABLE IF EXISTS `project_run_settings`",
+  "DROP TABLE IF EXISTS `task_run_profiles`",
+  "DROP TABLE IF EXISTS `org_ai_router_settings`",
+  "DROP TABLE IF EXISTS `run_level_models`",
+  "DROP TABLE IF EXISTS `run_levels`",
   "DROP TABLE IF EXISTS `t3_run_requests`",
   "DROP TABLE IF EXISTS `agent_runs`",
   "DROP TABLE IF EXISTS `project_t3_threads`",
@@ -196,8 +210,11 @@ const AGENT_RUN_SETUP = [
   "DROP TABLE IF EXISTS `t3_connections`",
   "DROP TABLE IF EXISTS `tasks`",
   "DROP TABLE IF EXISTS `projects`",
+  "DROP TABLE IF EXISTS `organisations`",
+  "CREATE TABLE `organisations` (`id` text PRIMARY KEY NOT NULL, `name` text NOT NULL, `slug` text NOT NULL, `created_at` integer NOT NULL, `updated_at` integer NOT NULL, `deleted_at` integer)",
+  "INSERT INTO `organisations` (`id`, `name`, `slug`, `created_at`, `updated_at`) VALUES ('01a10000-0000-7000-8000-000000000001', 'Default Organisation', 'default', 1791723553130, 1791723553130)",
   "CREATE TABLE `projects` (`id` text PRIMARY KEY NOT NULL, `org_id` text DEFAULT '01a10000-0000-7000-8000-000000000001' NOT NULL, `name` text NOT NULL)",
-  "CREATE TABLE `tasks` (`id` text PRIMARY KEY NOT NULL, `project_id` text DEFAULT '01a14ecf-281e-7436-8c52-a524c5fabc2f' NOT NULL, `title` text NOT NULL)",
+  "CREATE TABLE `tasks` (`id` text PRIMARY KEY NOT NULL, `project_id` text DEFAULT '01a14ecf-281e-7436-8c52-a524c5fabc2f' NOT NULL, `title` text NOT NULL, `status` text DEFAULT 'todo' NOT NULL, `needs_human` text, `completed_at` integer)",
   `CREATE TABLE \`t3_connections\` (
     \`id\` text PRIMARY KEY NOT NULL,
     \`org_id\` text DEFAULT '01a10000-0000-7000-8000-000000000001' NOT NULL,
@@ -733,3 +750,625 @@ describe("T3D1Store multi-host persistence and migration (BIT-147)", () => {
     expect((await orgA.listConnections()).map((h) => h.id)).toEqual([host2.id]);
   });
 });
+
+describe("T3D1Store run orchestration tables and stores (BIT-185)", () => {
+  const ORG_B_ID = "01a10000-0000-7000-8000-000000000022";
+  const ORG_B_PROJECT_ID = "01a14ecf-281e-7436-8c52-a524c5fabc99";
+  const ORG_B_TASK_ID = "01a14ecf-281e-7436-8c52-a524c5fabd99";
+  const CHILD_TWO_TASK_ID = "01a14ecf-281e-7436-8c52-a524c5fabd03";
+  const CHILD_THREE_TASK_ID = "01a14ecf-281e-7436-8c52-a524c5fabd04";
+
+  async function applyPre0027Migrations(): Promise<void> {
+    for (const statement of AGENT_RUN_SETUP) {
+      await env.DB.prepare(statement).run();
+    }
+    for (const statement of migration.split("--> statement-breakpoint")) {
+      await env.DB.prepare(statement.trim()).run();
+    }
+    for (const statement of subagentMigration.split("--> statement-breakpoint")) {
+      await env.DB.prepare(statement.trim()).run();
+    }
+    for (const statement of gitMigration.split("--> statement-breakpoint")) {
+      await env.DB.prepare(statement.trim()).run();
+    }
+    for (const statement of requestMigration.split("--> statement-breakpoint")) {
+      await env.DB.prepare(statement.trim()).run();
+    }
+    for (const statement of multiHostMigration.split("--> statement-breakpoint")) {
+      await env.DB.prepare(statement.trim()).run();
+    }
+    for (const statement of workspaceRootMigration.split("--> statement-breakpoint")) {
+      await env.DB.prepare(statement.trim()).run();
+    }
+  }
+
+  async function apply0027Migration(): Promise<void> {
+    for (const statement of runOrchestrationMigration.split("--> statement-breakpoint")) {
+      await env.DB.prepare(statement.trim()).run();
+    }
+  }
+
+  beforeEach(async () => {
+    await applyPre0027Migrations();
+    await apply0027Migration();
+    await env.DB.prepare(
+      "INSERT INTO organisations (id, name, slug, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+    )
+      .bind(ORG_B_ID, "Second Org", "second", STARTED_AT, STARTED_AT)
+      .run();
+    await env.DB.prepare("INSERT INTO projects (id, org_id, name) VALUES (?, ?, ?), (?, ?, ?), (?, ?, ?)")
+      .bind(
+        PROJECT_ID,
+        DEFAULT_ORGANISATION_ID,
+        "Bitig",
+        OTHER_PROJECT_ID,
+        DEFAULT_ORGANISATION_ID,
+        "Other",
+        ORG_B_PROJECT_ID,
+        ORG_B_ID,
+        "Org B Project",
+      )
+      .run();
+    await env.DB.prepare(
+      "INSERT INTO tasks (id, project_id, title) VALUES (?, ?, ?), (?, ?, ?), (?, ?, ?), (?, ?, ?), (?, ?, ?)",
+    )
+      .bind(
+        PARENT_TASK_ID,
+        PROJECT_ID,
+        "Umbrella",
+        CHILD_TASK_ID,
+        PROJECT_ID,
+        "Child 1",
+        CHILD_TWO_TASK_ID,
+        PROJECT_ID,
+        "Child 2",
+        CHILD_THREE_TASK_ID,
+        PROJECT_ID,
+        "Child 3",
+        ORG_B_TASK_ID,
+        ORG_B_PROJECT_ID,
+        "Org B Task",
+      )
+      .run();
+  });
+
+  it("seeds cheap, standard, and strong on first read per organisation, supports default and per-host model bindings, and isolates tenants", async () => {
+    const orgA = new T3D1Store(env.DB, DEFAULT_ORGANISATION_ID);
+    const orgB = new T3D1Store(env.DB, ORG_B_ID);
+
+    // Seeded on first read
+    const seededA = await orgA.listRunLevels({ now: STARTED_AT });
+    expect(seededA.map((l) => ({ key: l.key, label: l.label, order: l.order }))).toEqual([
+      { key: "cheap", label: "Cheap", order: 0 },
+      { key: "standard", label: "Standard", order: 1 },
+      { key: "strong", label: "Strong", order: 2 },
+    ]);
+
+    // Connect two hosts in Org A
+    const host1 = await orgA.saveConnection({
+      id: "host-a",
+      mcpUrl: "https://host-a.example.com/mcp",
+      issuer: "https://host-a.example.com",
+      clientId: "c1",
+      encryptedAccessToken: "enc-1",
+      tokenIv: "iv-1",
+      scope: "mcp:tools",
+      expiresAt: LATER,
+    });
+    const host2 = await orgA.saveConnection({
+      id: "host-b",
+      mcpUrl: "https://host-b.example.com/mcp",
+      issuer: "https://host-b.example.com",
+      clientId: "c2",
+      encryptedAccessToken: "enc-2",
+      tokenIv: "iv-2",
+      scope: "mcp:tools",
+      expiresAt: LATER,
+    });
+
+    // Bind default (hostId: null) and host-specific models
+    await orgA.setRunLevelModel({
+      levelKey: "standard",
+      hostId: null,
+      selection: {
+        providerInstanceId: "claudeAgent",
+        model: "claude-sonnet-4-6",
+        options: [{ id: "effort", value: "medium" }],
+      },
+      now: STARTED_AT,
+    });
+    // Updating default binding in-place does not duplicate rows
+    await orgA.setRunLevelModel({
+      levelKey: "standard",
+      hostId: null,
+      selection: {
+        providerInstanceId: "claudeAgent",
+        model: "claude-sonnet-4-6",
+        options: [{ id: "effort", value: "high" }],
+      },
+      now: LATER,
+    });
+    await orgA.setRunLevelModel({
+      levelKey: "standard",
+      hostId: host1.id,
+      selection: {
+        providerInstanceId: "codex",
+        model: "gpt-5.4",
+      },
+      now: LATER,
+    });
+
+    const bindings = await orgA.listRunLevelModels();
+    expect(bindings).toHaveLength(2);
+
+    // Without hostId (or with host2 which has no override), resolves to the default binding
+    const defaultStandard = await orgA.getRunLevel("standard");
+    expect(defaultStandard?.selection).toEqual({
+      providerInstanceId: "claudeAgent",
+      model: "claude-sonnet-4-6",
+      options: [{ id: "effort", value: "high" }],
+    });
+    const host2Standard = await orgA.getRunLevel("standard", { hostId: host2.id });
+    expect(host2Standard?.selection).toEqual(defaultStandard?.selection);
+
+    // With host1, resolves to host1's specific model binding
+    const host1Standard = await orgA.getRunLevel("standard", { hostId: host1.id });
+    expect(host1Standard?.selection).toEqual({
+      providerInstanceId: "codex",
+      model: "gpt-5.4",
+    });
+
+    // Adding a custom level in Org A does not leak to Org B
+    await orgA.upsertRunLevel({
+      key: "review",
+      label: "Review",
+      description: "Focused review pass",
+      order: 3,
+      selection: { providerInstanceId: "claudeAgent", model: "claude-opus-4-7" },
+      now: LATER,
+    });
+    expect((await orgA.listRunLevels()).map((l) => l.key)).toEqual([
+      "cheap",
+      "standard",
+      "strong",
+      "review",
+    ]);
+    expect((await orgB.listRunLevels()).map((l) => l.key)).toEqual(["cheap", "standard", "strong"]);
+    expect(await orgB.listRunLevelModels()).toEqual([]);
+  });
+
+  it("refuses deleting or removing a run level still used by tasks or projects unless a replacement key is passed", async () => {
+    const orgA = new T3D1Store(env.DB, DEFAULT_ORGANISATION_ID);
+    const orgB = new T3D1Store(env.DB, ORG_B_ID);
+
+    await orgA.saveTaskRunProfile({
+      taskId: CHILD_TASK_ID,
+      level: "cheap",
+      source: "agent",
+      now: STARTED_AT,
+    });
+    await orgA.upsertProjectRunSettings(PROJECT_ID, {
+      defaultRunLevel: "cheap",
+      now: STARTED_AT,
+    });
+    // Org B also uses "cheap" on its own task
+    await orgB.saveTaskRunProfile({
+      taskId: ORG_B_TASK_ID,
+      level: "cheap",
+      source: "agent",
+      now: STARTED_AT,
+    });
+
+    // Refused without replacementKey
+    await expect(orgA.deleteRunLevel("cheap")).rejects.toThrow(/still used by 1 task and 1 project/);
+    await expect(
+      orgA.deleteRunLevel("cheap", { replacementKey: "cheap" }),
+    ).rejects.toThrow(/must be different/);
+    await expect(
+      orgA.deleteRunLevel("cheap", { replacementKey: "nonexistent" }),
+    ).rejects.toThrow(/does not exist/);
+
+    // Succeeds with replacementKey and reassigns Org A's task and project without touching Org B
+    expect(await orgA.deleteRunLevel("cheap", { replacementKey: "standard", now: LATER })).toBe(true);
+    expect((await orgA.listRunLevels()).map((l) => l.key)).toEqual(["standard", "strong"]);
+    expect((await orgA.getTaskRunProfile(CHILD_TASK_ID))?.level).toBe("standard");
+    expect((await orgA.getProjectRunSettings(PROJECT_ID))?.defaultRunLevel).toBe("standard");
+    expect((await orgB.getTaskRunProfile(ORG_B_TASK_ID))?.level).toBe("cheap");
+
+    // Bulk saveRunLevels also enforces replacementKeys when removing a used level
+    await expect(
+      orgA.saveRunLevels({
+        levels: [{ key: "strong", label: "Strong", description: "Only strong left" }],
+      }),
+    ).rejects.toThrow(/still used by tasks or projects/);
+
+    const saved = await orgA.saveRunLevels({
+      levels: [{ key: "strong", label: "Strong", description: "Only strong left" }],
+      replacementKeys: { standard: "strong" },
+      now: LATER + 1000,
+    });
+    expect(saved.map((l) => l.key)).toEqual(["strong"]);
+    expect((await orgA.getTaskRunProfile(CHILD_TASK_ID))?.level).toBe("strong");
+    expect((await orgA.getProjectRunSettings(PROJECT_ID))?.defaultRunLevel).toBe("strong");
+
+    // Cannot delete the last remaining level in an organisation
+    await expect(
+      orgA.deleteRunLevel("strong", { replacementKey: "standard" }),
+    ).rejects.toThrow(/at least one run level/);
+  });
+
+  it("persists per-organisation AI router settings with encrypted token fields and tenant isolation", async () => {
+    const orgA = new T3D1Store(env.DB, DEFAULT_ORGANISATION_ID);
+    const orgB = new T3D1Store(env.DB, ORG_B_ID);
+
+    expect(await orgA.getAiRouterSettings()).toBeUndefined();
+
+    const saved = await orgA.saveAiRouterSettings({
+      baseUrl: "https://api.cloudflare.com/client/v4/accounts/acc-1/ai/run",
+      model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+      apiStyle: "cloudflare-run",
+      encryptedApiToken: "ciphertext-base64",
+      tokenIv: "iv-base64",
+      tokenLast4: "9f2a",
+      enabled: true,
+      updatedBy: "emre",
+      now: STARTED_AT,
+    });
+    expect(saved).toEqual({
+      orgId: DEFAULT_ORGANISATION_ID,
+      baseUrl: "https://api.cloudflare.com/client/v4/accounts/acc-1/ai/run",
+      model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+      apiStyle: "cloudflare-run",
+      hasToken: true,
+      tokenLast4: "9f2a",
+      enabled: true,
+      updatedBy: "emre",
+      updatedAt: "2026-11-03T10:00:00.000Z",
+    });
+
+    const rawRecord = await orgA.getAiRouterSettingsRecord();
+    expect(rawRecord?.encryptedApiToken).toBe("ciphertext-base64");
+    expect(rawRecord?.tokenIv).toBe("iv-base64");
+
+    // Org B cannot see Org A's router settings
+    expect(await orgB.getAiRouterSettings()).toBeUndefined();
+
+    // Updating endpoint/model without touching token preserves existing encrypted token
+    const updated = await orgA.saveAiRouterSettings({
+      baseUrl: "https://router.example.com/v1",
+      model: "gpt-4o-mini",
+      apiStyle: "openai-chat",
+      now: LATER,
+    });
+    expect(updated).toMatchObject({
+      baseUrl: "https://router.example.com/v1",
+      model: "gpt-4o-mini",
+      apiStyle: "openai-chat",
+      hasToken: true,
+      tokenLast4: "9f2a",
+      enabled: true,
+    });
+
+    // Clearing the token removes ciphertext, IV, and tokenLast4
+    const cleared = await orgA.saveAiRouterSettings({
+      baseUrl: "https://router.example.com/v1",
+      model: "gpt-4o-mini",
+      apiStyle: "openai-chat",
+      clearToken: true,
+      enabled: false,
+      now: LATER + 1000,
+    });
+    expect(cleared.hasToken).toBe(false);
+    expect(cleared.tokenLast4).toBeUndefined();
+    expect(cleared.enabled).toBe(false);
+    expect((await orgA.getAiRouterSettingsRecord())?.encryptedApiToken).toBeNull();
+  });
+
+  it("persists task_run_profiles, enforces manual > agent > router precedence, and scopes by organisation", async () => {
+    const orgA = new T3D1Store(env.DB, DEFAULT_ORGANISATION_ID);
+    const orgB = new T3D1Store(env.DB, ORG_B_ID);
+
+    // 1. Router writes initial profile
+    const routerProfile = await orgA.saveTaskRunProfile({
+      taskId: CHILD_TASK_ID,
+      level: "cheap",
+      touches: ["packages/core/src/**"],
+      parallelSafe: true,
+      source: "router",
+      reason: "Small schema change",
+      confidence: 0.82,
+      now: STARTED_AT,
+    });
+    expect(routerProfile).toMatchObject({
+      taskId: CHILD_TASK_ID,
+      level: "cheap",
+      touches: ["packages/core/src/**"],
+      parallelSafe: true,
+      source: "router",
+      reason: "Small schema change",
+      confidence: 0.82,
+    });
+
+    // 2. Agent can overwrite router
+    const agentProfile = await orgA.saveTaskRunProfile({
+      taskId: CHILD_TASK_ID,
+      level: "standard",
+      touches: ["packages/storage-d1/src/**", "packages/storage-d1/migrations/**"],
+      parallelSafe: false,
+      source: "agent",
+      reason: "Touches D1 migrations",
+      updatedBy: "claude-umbrella",
+      now: LATER,
+    });
+    expect(agentProfile).toMatchObject({
+      level: "standard",
+      source: "agent",
+      parallelSafe: false,
+      updatedBy: "claude-umbrella",
+    });
+
+    // 3. Router cannot overwrite agent
+    const rejectedRouter = await orgA.saveTaskRunProfile({
+      taskId: CHILD_TASK_ID,
+      level: "cheap",
+      source: "router",
+      now: LATER + 500,
+    });
+    expect(rejectedRouter.level).toBe("standard");
+    expect(rejectedRouter.source).toBe("agent");
+
+    // 4. Manual can overwrite agent and preserves omitted fields (touches, parallelSafe)
+    const manualProfile = await orgA.saveTaskRunProfile({
+      taskId: CHILD_TASK_ID,
+      level: "strong",
+      selection: {
+        providerInstanceId: "claudeAgent",
+        model: "claude-opus-4-7",
+        options: [{ id: "effort", value: "max" }],
+      },
+      source: "manual",
+      updatedBy: "emre",
+      now: LATER + 1000,
+    });
+    expect(manualProfile).toMatchObject({
+      level: "strong",
+      selection: {
+        providerInstanceId: "claudeAgent",
+        model: "claude-opus-4-7",
+        options: [{ id: "effort", value: "max" }],
+      },
+      touches: ["packages/storage-d1/src/**", "packages/storage-d1/migrations/**"],
+      parallelSafe: false,
+      source: "manual",
+      updatedBy: "emre",
+    });
+
+    // 5. Neither agent nor router can overwrite manual
+    const rejectedAgent = await orgA.saveTaskRunProfile({
+      taskId: CHILD_TASK_ID,
+      level: "cheap",
+      source: "agent",
+      now: LATER + 2000,
+    });
+    expect(rejectedAgent.level).toBe("strong");
+    expect(rejectedAgent.source).toBe("manual");
+
+    // 6. Org B cannot read, list, update, or delete Org A's task profile
+    expect(await orgB.getTaskRunProfile(CHILD_TASK_ID)).toBeUndefined();
+    expect(await orgB.listTaskRunProfiles(PROJECT_ID)).toEqual([]);
+    await expect(
+      orgB.saveTaskRunProfile({ taskId: CHILD_TASK_ID, level: "cheap", source: "manual" }),
+    ).rejects.toThrow(/task/);
+    expect(await orgB.deleteTaskRunProfile(CHILD_TASK_ID)).toBe(false);
+    expect(await orgA.listTaskRunProfiles(PROJECT_ID)).toHaveLength(1);
+  });
+
+  it("persists project_run_settings with defaults, glob normalization, level validation, and org scoping", async () => {
+    const orgA = new T3D1Store(env.DB, DEFAULT_ORGANISATION_ID);
+    const orgB = new T3D1Store(env.DB, ORG_B_ID);
+
+    // Defaults when not yet written
+    const defaults = await orgA.getProjectRunSettings(PROJECT_ID);
+    expect(defaults).toEqual({
+      projectId: PROJECT_ID,
+      serialPaths: [],
+      maxParallelChildren: 3,
+    });
+
+    // Upsert settings
+    const updated = await orgA.upsertProjectRunSettings(PROJECT_ID, {
+      defaultRunLevel: "standard",
+      serialPaths: ["./packages/storage-d1/migrations/**", "pnpm-lock.yaml"],
+      maxParallelChildren: 5,
+      now: STARTED_AT,
+    });
+    expect(updated).toEqual({
+      projectId: PROJECT_ID,
+      defaultRunLevel: "standard",
+      serialPaths: ["packages/storage-d1/migrations/**", "pnpm-lock.yaml"],
+      maxParallelChildren: 5,
+      updatedAt: "2026-11-03T10:00:00.000Z",
+    });
+
+    // Rejects unknown run level
+    await expect(
+      orgA.upsertProjectRunSettings(PROJECT_ID, { defaultRunLevel: "unknown-level" }),
+    ).rejects.toThrow(/does not exist/);
+
+    // Org B cannot read or mutate Org A's project run settings
+    expect(await orgB.getProjectRunSettings(PROJECT_ID)).toBeUndefined();
+    await expect(
+      orgB.upsertProjectRunSettings(PROJECT_ID, { maxParallelChildren: 1 }),
+    ).rejects.toThrow(/project/);
+    expect(await orgB.deleteProjectRunSettings(PROJECT_ID)).toBe(false);
+  });
+
+  it("tracks multiple waiting children in agent_run_children, enforces single-flight claim, and migrates existing waiting_for_task_id rows", async () => {
+    // First test the SQL migration of existing agent_runs.waiting_for_task_id rows
+    await applyPre0027Migrations();
+    await env.DB.prepare("INSERT INTO projects (id, org_id, name) VALUES (?, ?, ?)")
+      .bind(PROJECT_ID, DEFAULT_ORGANISATION_ID, "Bitig")
+      .run();
+    await env.DB.prepare(
+      "INSERT INTO tasks (id, project_id, title, status, needs_human, completed_at) VALUES (?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?)",
+    )
+      .bind(
+        PARENT_TASK_ID,
+        PROJECT_ID,
+        "Umbrella 1",
+        "in_progress",
+        null,
+        null,
+        CHILD_TASK_ID,
+        PROJECT_ID,
+        "Running Child",
+        "in_progress",
+        null,
+        null,
+        CHILD_TWO_TASK_ID,
+        PROJECT_ID,
+        "Umbrella 2",
+        "in_progress",
+        null,
+        null,
+        CHILD_THREE_TASK_ID,
+        PROJECT_ID,
+        "Completed Child",
+        "done",
+        null,
+        LATER,
+      )
+      .run();
+
+    // Umbrella 1 waits on Running Child (with branch and head_sha); Umbrella 2 waits on Completed Child
+    await env.DB.prepare(
+      `INSERT INTO agent_runs (id, task_id, host_id, t3_project_id, thread_id, state, waiting_for_task_id, started_at, updated_at)
+       VALUES (?, ?, 'default', 't3-proj', 'thread-u1', 'waiting_subagent', ?, ?, ?),
+              (?, ?, 'default', 't3-proj', 'thread-u2', 'waiting_subagent', ?, ?, ?)`,
+    )
+      .bind(
+        defaultIdGenerator(),
+        PARENT_TASK_ID,
+        CHILD_TASK_ID,
+        STARTED_AT,
+        STARTED_AT,
+        defaultIdGenerator(),
+        CHILD_TWO_TASK_ID,
+        CHILD_THREE_TASK_ID,
+        STARTED_AT,
+        LATER,
+      )
+      .run();
+    await env.DB.prepare(
+      `INSERT INTO agent_runs (id, task_id, host_id, t3_project_id, thread_id, state, parent_task_id, branch, head_sha, started_at, updated_at)
+       VALUES (?, ?, 'default', 't3-proj', 'thread-c1', 'working', ?, 'feat/child-1', ?, ?, ?)`,
+    )
+      .bind(
+        defaultIdGenerator(),
+        CHILD_TASK_ID,
+        PARENT_TASK_ID,
+        "a".repeat(40),
+        STARTED_AT + 100,
+        STARTED_AT + 200,
+      )
+      .run();
+
+    await apply0027Migration();
+
+    const store = new T3D1Store(env.DB, DEFAULT_ORGANISATION_ID);
+
+    // Existing waiting_for_task_id column stays readable for #BIT-189 transition
+    expect((await store.getAgentRunByTaskId(PARENT_TASK_ID))?.waitingForTaskId).toBe(CHILD_TASK_ID);
+
+    // Migrated rows in agent_run_children
+    const migratedU1 = await store.listAgentRunChildren(PARENT_TASK_ID);
+    expect(migratedU1).toEqual([
+      {
+        parentTaskId: PARENT_TASK_ID,
+        childTaskId: CHILD_TASK_ID,
+        state: "running",
+        branch: "feat/child-1",
+        headSha: "a".repeat(40),
+        startedAt: new Date(STARTED_AT + 100).toISOString(),
+      },
+    ]);
+    const migratedU2 = await store.listAgentRunChildren(CHILD_TWO_TASK_ID);
+    expect(migratedU2).toEqual([
+      {
+        parentTaskId: CHILD_TWO_TASK_ID,
+        childTaskId: CHILD_THREE_TASK_ID,
+        state: "done",
+        startedAt: new Date(LATER).toISOString(),
+        finishedAt: new Date(LATER).toISOString(),
+      },
+    ]);
+
+    // Umbrella 1 can add multiple parallel children
+    const child2 = await store.addAgentRunChild({
+      parentTaskId: PARENT_TASK_ID,
+      childTaskId: CHILD_TWO_TASK_ID,
+      state: "running",
+      branch: "feat/child-2",
+      startedAt: STARTED_AT + 300,
+    });
+    const child3 = await store.addAgentRunChild({
+      parentTaskId: PARENT_TASK_ID,
+      childTaskId: CHILD_THREE_TASK_ID,
+      state: "running",
+      branch: "feat/child-3",
+      startedAt: STARTED_AT + 400,
+    });
+    expect(child2.state).toBe("running");
+    expect(child3.state).toBe("running");
+
+    const allChildren = await store.listAgentRunChildren(PARENT_TASK_ID);
+    expect(allChildren.map((c) => c.childTaskId)).toEqual([
+      CHILD_TASK_ID,
+      CHILD_TWO_TASK_ID,
+      CHILD_THREE_TASK_ID,
+    ]);
+    expect((await store.listAgentRunParentsForChild(CHILD_TWO_TASK_ID)).map((c) => c.parentTaskId)).toEqual([
+      PARENT_TASK_ID,
+    ]);
+
+    // Single-flight claim transitions running child to done once
+    const claimed = await store.claimAgentRunChild(PARENT_TASK_ID, CHILD_TASK_ID, {
+      state: "done",
+      headSha: "b".repeat(40),
+      now: LATER,
+    });
+    expect(claimed).toMatchObject({
+      parentTaskId: PARENT_TASK_ID,
+      childTaskId: CHILD_TASK_ID,
+      state: "done",
+      branch: "feat/child-1",
+      headSha: "b".repeat(40),
+      finishedAt: new Date(LATER).toISOString(),
+    });
+    expect(
+      await store.claimAgentRunChild(PARENT_TASK_ID, CHILD_TASK_ID, {
+        state: "done",
+        now: LATER + 100,
+      }),
+    ).toBeUndefined();
+
+    // Record merge on completed child
+    const merged = await store.recordAgentRunChildMerge(PARENT_TASK_ID, CHILD_TASK_ID, {
+      mergedSha: "c".repeat(40),
+      mergedAt: LATER + 500,
+    });
+    expect(merged).toMatchObject({
+      mergedSha: "c".repeat(40),
+      mergedAt: new Date(LATER + 500).toISOString(),
+    });
+
+    // Update child2 to needs_human
+    const paused = await store.updateAgentRunChild(PARENT_TASK_ID, CHILD_TWO_TASK_ID, {
+      state: "needs_human",
+      now: LATER + 600,
+    });
+    expect(paused?.state).toBe("needs_human");
+    expect(paused?.finishedAt).toBe(new Date(LATER + 600).toISOString());
+  });
+});
+

@@ -3,6 +3,7 @@ import { sql } from "drizzle-orm";
 import {
   DEFAULT_DESCRIPTION,
   DEFAULT_IS_PUBLIC,
+  DEFAULT_MAX_PARALLEL_CHILDREN,
   DEFAULT_ORGANISATION_ID,
   DEFAULT_PLATFORM_ROLE,
   DEFAULT_PROJECT_KIND,
@@ -11,7 +12,9 @@ import {
   DEFAULT_WEBHOOK_ENABLED,
   DEFAULT_WEBHOOK_PROVIDER,
   HOST_PROJECTS_ROOT_USER,
+  type AgentRunChildState,
   type AgentRunState,
+  type AiRouterApiStyle,
   type AttachmentMimeType,
   type ChecklistItem,
   type CheckpointStatus,
@@ -21,7 +24,9 @@ import {
   type PlatformRole,
   type ProjectKind,
   type ProjectResource,
+  type RunProfileSource,
   type T3HostKind,
+  type T3ModelSelectionOption,
   type T3WorkspaceStrategy,
   type TaskActor,
   type TaskActivityEntry,
@@ -526,3 +531,129 @@ export type AgentRunRecord = typeof agentRuns.$inferSelect;
 export type InsertAgentRunRecord = typeof agentRuns.$inferInsert;
 export type T3RunRequestRecord = typeof t3RunRequests.$inferSelect;
 export type InsertT3RunRequestRecord = typeof t3RunRequests.$inferInsert;
+
+export const runLevels = sqliteTable(
+  "run_levels",
+  {
+    orgId: text("org_id")
+      .notNull()
+      .references(() => organisations.id, { onDelete: "cascade" }),
+    key: text("key").notNull(),
+    label: text("label").notNull(),
+    description: text("description").notNull(),
+    sortOrder: integer("sort_order").notNull(),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("run_levels_org_key_unique").on(table.orgId, table.key),
+    index("run_levels_org_sort_idx").on(table.orgId, table.sortOrder),
+  ],
+);
+
+export const runLevelModels = sqliteTable(
+  "run_level_models",
+  {
+    orgId: text("org_id")
+      .notNull()
+      .references(() => organisations.id, { onDelete: "cascade" }),
+    levelKey: text("level_key").notNull(),
+    hostId: text("host_id"),
+    providerInstanceId: text("provider_instance_id").notNull(),
+    model: text("model").notNull(),
+    options: text("options", { mode: "json" }).$type<T3ModelSelectionOption[]>(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("run_level_models_org_level_host_unique").on(
+      table.orgId,
+      table.levelKey,
+      table.hostId,
+    ),
+  ],
+);
+
+export const orgAiRouterSettings = sqliteTable("org_ai_router_settings", {
+  orgId: text("org_id")
+    .primaryKey()
+    .references(() => organisations.id, { onDelete: "cascade" }),
+  baseUrl: text("base_url").notNull(),
+  model: text("model").notNull(),
+  apiStyle: text("api_style").$type<AiRouterApiStyle>().notNull().default("cloudflare-run"),
+  encryptedApiToken: text("encrypted_api_token"),
+  tokenIv: text("token_iv"),
+  tokenLast4: text("token_last4"),
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(false),
+  updatedBy: text("updated_by"),
+  updatedAt: integer("updated_at").notNull(),
+});
+
+export const taskRunProfiles = sqliteTable("task_run_profiles", {
+  taskId: text("task_id")
+    .primaryKey()
+    .references(() => tasks.id, { onDelete: "cascade" }),
+  levelKey: text("level_key"),
+  providerInstanceId: text("provider_instance_id"),
+  model: text("model"),
+  options: text("options", { mode: "json" }).$type<T3ModelSelectionOption[]>(),
+  touches: text("touches", { mode: "json" }).$type<string[]>(),
+  parallelSafe: integer("parallel_safe", { mode: "boolean" }),
+  source: text("source").$type<RunProfileSource>().notNull(),
+  reason: text("reason"),
+  confidence: real("confidence"),
+  updatedBy: text("updated_by"),
+  updatedAt: integer("updated_at").notNull(),
+});
+
+export const projectRunSettings = sqliteTable("project_run_settings", {
+  projectId: text("project_id")
+    .primaryKey()
+    .references(() => projects.id, { onDelete: "cascade" }),
+  defaultRunLevel: text("default_run_level"),
+  serialPaths: text("serial_paths", { mode: "json" }).$type<string[]>(),
+  maxParallelChildren: integer("max_parallel_children")
+    .notNull()
+    .default(DEFAULT_MAX_PARALLEL_CHILDREN),
+  updatedAt: integer("updated_at").notNull(),
+});
+
+export const agentRunChildren = sqliteTable(
+  "agent_run_children",
+  {
+    parentTaskId: text("parent_task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    childTaskId: text("child_task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    state: text("state").$type<AgentRunChildState>().notNull(),
+    branch: text("branch"),
+    headSha: text("head_sha"),
+    mergedAt: integer("merged_at"),
+    mergedSha: text("merged_sha"),
+    startedAt: integer("started_at").notNull(),
+    finishedAt: integer("finished_at"),
+  },
+  (table) => [
+    uniqueIndex("agent_run_children_parent_child_unique").on(
+      table.parentTaskId,
+      table.childTaskId,
+    ),
+    index("agent_run_children_parent_task_id_idx").on(table.parentTaskId),
+    index("agent_run_children_child_task_id_idx").on(table.childTaskId),
+  ],
+);
+
+export type RunLevelRecord = typeof runLevels.$inferSelect;
+export type InsertRunLevelRecord = typeof runLevels.$inferInsert;
+export type RunLevelModelRecord = typeof runLevelModels.$inferSelect;
+export type InsertRunLevelModelRecord = typeof runLevelModels.$inferInsert;
+export type OrgAiRouterSettingsRecord = typeof orgAiRouterSettings.$inferSelect;
+export type InsertOrgAiRouterSettingsRecord = typeof orgAiRouterSettings.$inferInsert;
+export type TaskRunProfileRecord = typeof taskRunProfiles.$inferSelect;
+export type InsertTaskRunProfileRecord = typeof taskRunProfiles.$inferInsert;
+export type ProjectRunSettingsRecord = typeof projectRunSettings.$inferSelect;
+export type InsertProjectRunSettingsRecord = typeof projectRunSettings.$inferInsert;
+export type AgentRunChildRecord = typeof agentRunChildren.$inferSelect;
+export type InsertAgentRunChildRecord = typeof agentRunChildren.$inferInsert;
+

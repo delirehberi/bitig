@@ -1,4 +1,4 @@
-import { and, count, eq, inArray, isNotNull, max, ne } from "drizzle-orm";
+import { and, count, eq, inArray, isNotNull, max, ne, or } from "drizzle-orm";
 import { drizzle, type DrizzleD1Database } from "drizzle-orm/d1";
 import {
   BUNDLE_VERSION,
@@ -74,14 +74,17 @@ import {
 } from "@bitig/core";
 import * as schema from "./schema";
 import {
+  agentRunChildren,
   agentRuns,
   attachments,
   checkpoints,
   comments,
+  projectRunSettings,
   projects,
   projectT3Threads,
   t3ProjectMappings,
   t3RunRequests,
+  taskRunProfiles,
   tasks,
   webhooks,
   type AttachmentRecord,
@@ -546,9 +549,21 @@ export class D1Storage implements StorageProvider {
       }
     };
     await ignoreMissingT3Table(this.#db.delete(t3RunRequests).where(inArray(t3RunRequests.taskId, projectTaskIds)));
+    await ignoreMissingT3Table(this.#db.delete(taskRunProfiles).where(inArray(taskRunProfiles.taskId, projectTaskIds)));
+    await ignoreMissingT3Table(
+      this.#db
+        .delete(agentRunChildren)
+        .where(
+          or(
+            inArray(agentRunChildren.parentTaskId, projectTaskIds),
+            inArray(agentRunChildren.childTaskId, projectTaskIds),
+          ),
+        ),
+    );
     await ignoreMissingT3Table(this.#db.delete(agentRuns).where(inArray(agentRuns.taskId, projectTaskIds)));
     await ignoreMissingT3Table(this.#db.delete(projectT3Threads).where(eq(projectT3Threads.projectId, validId)));
     await ignoreMissingT3Table(this.#db.delete(t3ProjectMappings).where(eq(t3ProjectMappings.projectId, validId)));
+    await ignoreMissingT3Table(this.#db.delete(projectRunSettings).where(eq(projectRunSettings.projectId, validId)));
     await this.#db.delete(comments).where(inArray(comments.taskId, projectTaskIds));
     await this.#db.delete(checkpoints).where(inArray(checkpoints.taskId, projectTaskIds));
     await this.#db.delete(tasks).where(eq(tasks.projectId, validId));
@@ -809,6 +824,24 @@ export class D1Storage implements StorageProvider {
     if (attachmentRows.length > 0) {
       await this.#bucket.delete(attachmentRows.map((row) => attachmentBlobKey(validId, row.id)));
     }
+    const ignoreMissingT3Table = async (query: Promise<unknown>): Promise<void> => {
+      try {
+        await query;
+      } catch (err) {
+        const message =
+          err instanceof Error
+            ? `${err.message} ${err.cause instanceof Error ? err.cause.message : ""}`
+            : String(err);
+        if (message.includes("no such table")) return;
+        throw err;
+      }
+    };
+    await ignoreMissingT3Table(this.#db.delete(taskRunProfiles).where(eq(taskRunProfiles.taskId, validId)));
+    await ignoreMissingT3Table(
+      this.#db
+        .delete(agentRunChildren)
+        .where(or(eq(agentRunChildren.parentTaskId, validId), eq(agentRunChildren.childTaskId, validId))),
+    );
     await this.#db.delete(comments).where(eq(comments.taskId, validId));
     await this.#db.delete(checkpoints).where(eq(checkpoints.taskId, validId));
     await this.#db.delete(tasks).where(eq(tasks.id, validId));

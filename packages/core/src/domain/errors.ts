@@ -29,6 +29,7 @@ export type EntityKind =
   | "webhook"
   | "t3_host"
   | "t3_thread"
+  | "run_level"
   | "user"
   | "organisation"
   | "membership"

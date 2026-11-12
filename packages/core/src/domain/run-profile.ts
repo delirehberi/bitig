@@ -979,3 +979,95 @@ export function parseRunLevelMap(input: unknown, context = "runLevelMap"): RunLe
 export function parseTaskRunProfile(input: unknown, context = "taskRunProfile"): TaskRunProfile {
   return parseOrThrow(TaskRunProfileSchema, input, context);
 }
+
+// ---------------------------------------------------------------------------
+// Run Level Model Bindings, AI Router Settings, Project Run Settings & Children (#BIT-185)
+// ---------------------------------------------------------------------------
+
+export const AI_ROUTER_API_STYLES = ["cloudflare-run", "openai", "openai-chat"] as const;
+export type AiRouterApiStyle = (typeof AI_ROUTER_API_STYLES)[number];
+export const AiRouterApiStyleSchema = z.enum(AI_ROUTER_API_STYLES);
+
+export const AI_ROUTER_BASE_URL_MAX = 1024;
+export const AI_ROUTER_MODEL_MAX = 200;
+export const AI_ROUTER_TOKEN_LAST4_LENGTH = 4;
+
+export const OrgAiRouterSettingsSchema = z.strictObject({
+  orgId: z.string().trim().min(1),
+  baseUrl: z.string().trim().min(1).max(AI_ROUTER_BASE_URL_MAX),
+  model: z.string().trim().min(1).max(AI_ROUTER_MODEL_MAX),
+  apiStyle: AiRouterApiStyleSchema.default("cloudflare-run"),
+  hasToken: z.boolean(),
+  tokenLast4: z.string().trim().min(1).max(AI_ROUTER_TOKEN_LAST4_LENGTH).exactOptional(),
+  enabled: z.boolean(),
+  updatedBy: z.string().trim().min(1).max(200).exactOptional(),
+  updatedAt: z.string().trim().min(1),
+});
+
+export type OrgAiRouterSettings = z.output<typeof OrgAiRouterSettingsSchema>;
+
+export const MAX_PARALLEL_CHILDREN_MIN = 1;
+export const MAX_PARALLEL_CHILDREN_MAX = 20;
+
+export const ProjectRunSettingsSchema = z.strictObject({
+  projectId: z.string().trim().min(1),
+  defaultRunLevel: RunLevelKeySchema.exactOptional(),
+  serialPaths: RunProfileTouchesSchema.default([]),
+  maxParallelChildren: z
+    .number()
+    .int()
+    .min(MAX_PARALLEL_CHILDREN_MIN)
+    .max(MAX_PARALLEL_CHILDREN_MAX)
+    .default(DEFAULT_MAX_PARALLEL_CHILDREN),
+  updatedAt: z.string().trim().min(1).exactOptional(),
+});
+
+export type ProjectRunSettings = z.output<typeof ProjectRunSettingsSchema>;
+
+export const UpsertProjectRunSettingsInputSchema = z.strictObject({
+  defaultRunLevel: RunLevelKeySchema.nullable().exactOptional(),
+  serialPaths: RunProfileTouchesSchema.exactOptional(),
+  maxParallelChildren: z
+    .number()
+    .int()
+    .min(MAX_PARALLEL_CHILDREN_MIN)
+    .max(MAX_PARALLEL_CHILDREN_MAX)
+    .exactOptional(),
+});
+
+export type UpsertProjectRunSettingsInput = z.input<typeof UpsertProjectRunSettingsInputSchema>;
+
+export const AGENT_RUN_CHILD_STATES = [
+  "running",
+  "done",
+  "failed",
+  "needs_human",
+  "stopped",
+] as const;
+
+export type AgentRunChildState = (typeof AGENT_RUN_CHILD_STATES)[number];
+export const AgentRunChildStateSchema = z.enum(AGENT_RUN_CHILD_STATES);
+
+export const AgentRunChildSchema = z.strictObject({
+  parentTaskId: z.string().trim().min(1),
+  childTaskId: z.string().trim().min(1),
+  state: AgentRunChildStateSchema,
+  branch: z.string().trim().min(1).max(256).exactOptional(),
+  headSha: z.string().regex(/^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$/).exactOptional(),
+  mergedAt: z.string().trim().min(1).exactOptional(),
+  mergedSha: z.string().regex(/^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$/).exactOptional(),
+  startedAt: z.string().trim().min(1),
+  finishedAt: z.string().trim().min(1).exactOptional(),
+});
+
+export type AgentRunChild = z.output<typeof AgentRunChildSchema>;
+
+export const RunLevelModelBindingSchema = z.strictObject({
+  levelKey: RunLevelKeySchema,
+  hostId: z.string().trim().min(1).max(200).nullable().exactOptional(),
+  selection: T3ModelSelectionSchema,
+  updatedAt: z.string().trim().min(1).exactOptional(),
+});
+
+export type RunLevelModelBinding = z.output<typeof RunLevelModelBindingSchema>;
+

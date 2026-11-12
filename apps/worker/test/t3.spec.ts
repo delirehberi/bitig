@@ -32,6 +32,12 @@ const T3_ORIGIN = "https://t3.example.test";
 const T3_MCP_URL = `${T3_ORIGIN}/mcp`;
 
 const STATEMENTS = [
+  "DROP TABLE IF EXISTS `agent_run_children`",
+  "DROP TABLE IF EXISTS `project_run_settings`",
+  "DROP TABLE IF EXISTS `task_run_profiles`",
+  "DROP TABLE IF EXISTS `org_ai_router_settings`",
+  "DROP TABLE IF EXISTS `run_level_models`",
+  "DROP TABLE IF EXISTS `run_levels`",
   "DROP TABLE IF EXISTS `t3_run_requests`",
   "DROP TABLE IF EXISTS `project_t3_threads`",
   "DROP TABLE IF EXISTS `agent_runs`",
@@ -44,6 +50,16 @@ const STATEMENTS = [
   "DROP TABLE IF EXISTS `comments`",
   "DROP TABLE IF EXISTS `tasks`",
   "DROP TABLE IF EXISTS `projects`",
+  `CREATE TABLE IF NOT EXISTS \`organisations\` (
+    \`id\` text PRIMARY KEY NOT NULL,
+    \`name\` text NOT NULL,
+    \`slug\` text NOT NULL,
+    \`created_at\` integer NOT NULL,
+    \`updated_at\` integer NOT NULL,
+    \`deleted_at\` integer
+  )`,
+  "CREATE UNIQUE INDEX IF NOT EXISTS `organisations_slug_unique` ON `organisations` (`slug`)",
+  "INSERT OR IGNORE INTO `organisations` (`id`, `name`, `slug`, `created_at`, `updated_at`) VALUES ('01a10000-0000-7000-8000-000000000001', 'Default Organisation', 'default', 1791723553130, 1791723553130)",
   `CREATE TABLE \`projects\` (
     \`id\` text PRIMARY KEY NOT NULL,
     \`org_id\` text DEFAULT '01a10000-0000-7000-8000-000000000001' NOT NULL,
@@ -237,6 +253,75 @@ const STATEMENTS = [
   "CREATE UNIQUE INDEX `project_t3_threads_host_thread_idx` ON `project_t3_threads` (`host_id`, `thread_id`)",
   "CREATE INDEX `project_t3_threads_project_id_idx` ON `project_t3_threads` (`project_id`)",
   "CREATE INDEX `project_t3_threads_host_id_idx` ON `project_t3_threads` (`host_id`)",
+  `CREATE TABLE \`run_levels\` (
+    \`org_id\` text NOT NULL REFERENCES \`organisations\` (\`id\`) ON DELETE CASCADE,
+    \`key\` text NOT NULL,
+    \`label\` text NOT NULL,
+    \`description\` text NOT NULL,
+    \`sort_order\` integer NOT NULL,
+    \`created_at\` integer NOT NULL,
+    \`updated_at\` integer NOT NULL
+  )`,
+  "CREATE UNIQUE INDEX `run_levels_org_key_unique` ON `run_levels` (`org_id`, `key`)",
+  "CREATE INDEX `run_levels_org_sort_idx` ON `run_levels` (`org_id`, `sort_order`)",
+  `CREATE TABLE \`run_level_models\` (
+    \`org_id\` text NOT NULL REFERENCES \`organisations\` (\`id\`) ON DELETE CASCADE,
+    \`level_key\` text NOT NULL,
+    \`host_id\` text,
+    \`provider_instance_id\` text NOT NULL,
+    \`model\` text NOT NULL,
+    \`options\` text,
+    \`updated_at\` integer NOT NULL
+  )`,
+  "CREATE UNIQUE INDEX `run_level_models_org_level_host_unique` ON `run_level_models` (`org_id`, `level_key`, `host_id`)",
+  "CREATE UNIQUE INDEX `run_level_models_org_level_default_unique` ON `run_level_models` (`org_id`, `level_key`) WHERE `host_id` IS NULL",
+  `CREATE TABLE \`org_ai_router_settings\` (
+    \`org_id\` text PRIMARY KEY NOT NULL REFERENCES \`organisations\` (\`id\`) ON DELETE CASCADE,
+    \`base_url\` text NOT NULL,
+    \`model\` text NOT NULL,
+    \`api_style\` text DEFAULT 'cloudflare-run' NOT NULL,
+    \`encrypted_api_token\` text,
+    \`token_iv\` text,
+    \`token_last4\` text,
+    \`enabled\` integer DEFAULT 0 NOT NULL,
+    \`updated_by\` text,
+    \`updated_at\` integer NOT NULL
+  )`,
+  `CREATE TABLE \`task_run_profiles\` (
+    \`task_id\` text PRIMARY KEY NOT NULL REFERENCES \`tasks\` (\`id\`) ON DELETE CASCADE,
+    \`level_key\` text,
+    \`provider_instance_id\` text,
+    \`model\` text,
+    \`options\` text,
+    \`touches\` text,
+    \`parallel_safe\` integer,
+    \`source\` text NOT NULL,
+    \`reason\` text,
+    \`confidence\` real,
+    \`updated_by\` text,
+    \`updated_at\` integer NOT NULL
+  )`,
+  `CREATE TABLE \`project_run_settings\` (
+    \`project_id\` text PRIMARY KEY NOT NULL REFERENCES \`projects\` (\`id\`) ON DELETE CASCADE,
+    \`default_run_level\` text,
+    \`serial_paths\` text,
+    \`max_parallel_children\` integer DEFAULT 3 NOT NULL,
+    \`updated_at\` integer NOT NULL
+  )`,
+  `CREATE TABLE \`agent_run_children\` (
+    \`parent_task_id\` text NOT NULL REFERENCES \`tasks\` (\`id\`) ON DELETE CASCADE,
+    \`child_task_id\` text NOT NULL REFERENCES \`tasks\` (\`id\`) ON DELETE CASCADE,
+    \`state\` text NOT NULL,
+    \`branch\` text,
+    \`head_sha\` text,
+    \`merged_at\` integer,
+    \`merged_sha\` text,
+    \`started_at\` integer NOT NULL,
+    \`finished_at\` integer
+  )`,
+  "CREATE UNIQUE INDEX `agent_run_children_parent_child_unique` ON `agent_run_children` (`parent_task_id`, `child_task_id`)",
+  "CREATE INDEX `agent_run_children_parent_task_id_idx` ON `agent_run_children` (`parent_task_id`)",
+  "CREATE INDEX `agent_run_children_child_task_id_idx` ON `agent_run_children` (`child_task_id`)",
 ];
 
 interface RecordedToolCall {
