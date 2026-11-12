@@ -9,15 +9,22 @@ import {
   getOrganisation,
   updateOrganisation,
 } from "../../services/multi-user";
+import { useRunProfiles } from "../../domain/run-profiles";
+import { AiRouterSection } from "./AiRouterSection";
+import { TaskLevelsEditor } from "./TaskLevelsEditor";
 
 interface OrgSettingsViewProps {
   readonly slug: string;
 }
 
 export function OrgSettingsView({ slug }: OrgSettingsViewProps) {
-  const { memberships, isAdmin, selectOrg, refreshAuth } = useAuth();
+  const { memberships, isAdmin, selectOrg, refreshAuth, currentOrg } = useAuth();
   const membership = memberships.find((m) => m.organisation.slug === slug);
   const canManage = isAdmin || membership?.role === "owner";
+  // Run levels and the AI router are owner-only on the server, without the platform admin bypass.
+  const isOwner = membership?.role === "owner";
+  const isActiveOrg = currentOrg?.slug === slug;
+  const { setLevels } = useRunProfiles();
 
   const [name, setName] = useState(membership?.organisation.name ?? "");
   const [newSlug, setNewSlug] = useState(membership?.organisation.slug ?? slug);
@@ -199,6 +206,18 @@ export function OrgSettingsView({ slug }: OrgSettingsViewProps) {
           )}
         </form>
       </section>
+
+      {isOwner && (
+        <TaskLevelsEditor
+          orgSlug={slug}
+          isActiveOrg={isActiveOrg}
+          onSaved={(saved) => {
+            if (isActiveOrg) setLevels(saved.levels);
+          }}
+        />
+      )}
+
+      {isOwner && <AiRouterSection orgSlug={slug} />}
 
       {canManage && (
         <section className="mb-6 rounded-lg border border-rule bg-paper p-6 shadow-xs">

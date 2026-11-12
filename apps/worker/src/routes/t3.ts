@@ -515,6 +515,13 @@ export const t3ApiRouter = new Hono<AppEnv>()
     const mappings = await store.listProjectMappings();
     return c.json({ mappings });
   })
+  // Every task run profile in the organisation plus its run levels, so task cards can show a level chip
+  // without one request per task (#BIT-188).
+  .get("/run-profiles", async (c) => {
+    const store = new T3D1Store(c.env.DB, c.get("orgId"));
+    const [profiles, levels] = await Promise.all([store.listTaskRunProfiles(), store.listRunLevels()]);
+    return c.json({ profiles, levels });
+  })
   .get("/runs", async (c) => {
     const result = await listT3RunsLive(buildServiceDeps(c));
     return c.json(result);

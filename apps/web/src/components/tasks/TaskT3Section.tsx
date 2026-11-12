@@ -7,6 +7,7 @@ import {
   Play,
   RefreshCw,
   Send,
+  TrendingUp,
   Square,
   Terminal,
 } from "lucide-react";
@@ -42,6 +43,11 @@ import {
   stopTaskT3Run,
   T3WorkspaceBusyApiError,
 } from "../../services/t3";
+import { fetchTaskRunProfile, type TaskRunProfileResponse } from "../../services/run-orchestration";
+import { useRunProfiles } from "../../domain/run-profiles";
+import { RunLevelChip } from "./RunLevelChip";
+import { TaskRunProfileControl } from "./TaskRunProfileControl";
+import { describeResolvedSelection } from "./run-profile-labels";
 
 interface TaskT3SectionProps {
   readonly task: Task;
@@ -53,6 +59,14 @@ interface TaskT3SectionProps {
   readonly onTaskUpdated?: ((task: Task) => void) | undefined;
   /** Reports the task's run and the T3 model list, so the comment box can switch models (#BIT-119). */
   readonly onT3ContextChange?: ((context: { run: AgentRun | null; capabilities: T3ModelCapability[] }) => void) | undefined;
+}
+
+const MODEL_KEY_SEPARATOR = "::";
+/** The Start in T3 picker's first option: no one-run override, the resolved model (or T3's default) applies. */
+const USE_RESOLVED_MODEL = "";
+
+function selectionKey(selection: { readonly providerInstanceId: string; readonly model: string }): string {
+  return `${selection.providerInstanceId}${MODEL_KEY_SEPARATOR}${selection.model}`;
 }
 
 interface WaitingChildDetails {
@@ -81,7 +95,11 @@ export function TaskT3Section({
   const [connection, setConnection] = useState<T3ConnectionStatus | null>(null);
   const [mapping, setMapping] = useState<T3ProjectMapping | undefined>(undefined);
   const [capabilities, setCapabilities] = useState<T3ModelCapability[]>([]);
-  const [selectedModelKey, setSelectedModelKey] = useState("");
+  /** A one-run model override picked in Start in T3; never stored on the task's run profile (#BIT-188). */
+  const [selectedModelKey, setSelectedModelKey] = useState(USE_RESOLVED_MODEL);
+  /** The task's run profile and the model a launch resolves to; `null` when unknown (e.g. local mode). */
+  const [runProfile, setRunProfile] = useState<TaskRunProfileResponse | null>(null);
+  const { levels, setProfile: publishProfile } = useRunProfiles();
   const [selectedRuntimeMode, setSelectedRuntimeMode] = useState<"" | T3RuntimeMode>("");
   const [useWorktree, setUseWorktree] = useState(true);
   const [isLoading, setIsLoading] = useState(true);
@@ -156,6 +174,34 @@ export function TaskT3Section({
       controller.abort();
     };
   }, [task.id, task.projectId]);
+
+  const runState = run?.state;
+  const runLevelKey = run?.levelKey;
+  // Reload when the run changes state, since "Retry on the next level up" is offered only after a failure.
+  useEffect(() => {
+    const controller = new AbortController();
+    fetchTaskRunProfile(task.id, controller.signal)
+      .then((res) => {
+        if (controller.signal.aborted) return;
+        setRunProfile(res);
+      })
+      .catch((err: unknown) => {
+        if (controller.signal.aborted) return;
+        // Without a run profile the section works as before: the model picker starts at T3's default.
+        console.warn("Could not load the task's run profile", err);
+      });
+    return () => {
+      controller.abort();
+    };
+  }, [task.id, runState, runLevelKey]);
+
+  const handleRunProfileChange = useCallback(
+    (res: TaskRunProfileResponse) => {
+      setRunProfile(res);
+      publishProfile(task.id, res.profile);
+    },
+    [publishProfile, task.id],
+  );
 
   useEffect(() => {
     onT3ContextChange?.({ run, capabilities });
@@ -253,6 +299,11 @@ export function TaskT3Section({
   const isConnected = Boolean(connection?.connected);
   const isMapped = Boolean(mapping);
 
+  const resolvedSelection = runProfile?.resolved.selection;
+  const resolvedModelLabel = resolvedSelection
+    ? capabilities.find((cap) => selectionKey(cap) === selectionKey(resolvedSelection))?.label
+    : undefined;
+
   let gateReason: string | null = null;
   if (isAwaitingApproval) {
     gateReason = "Approve this task before starting it in T3.";
@@ -272,8 +323,8 @@ export function TaskT3Section({
       const workspaceStrategy: T3WorkspaceStrategy = useWorktree ? "worktree" : "root";
       let providerInstanceId: string | undefined;
       let model: string | undefined;
-      if (selectedModelKey) {
-        const [prov, mod] = selectedModelKey.split("::");
+      if (selectedModelKey !== USE_RESOLVED_MODEL) {
+        const [prov, mod] = selectedModelKey.split(MODEL_KEY_SEPARATOR);
         if (prov && mod) {
           providerInstanceId = prov;
           model = mod;
@@ -298,6 +349,29 @@ export function TaskT3Section({
         setBusySession(err.session);
       }
       setError(err instanceof Error ? err.message : "Could not start T3 thread.");
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  /** Starts the task again one level above the failed run's; the stored profile keeps its level. */
+  async function handleRetryNextLevel(levelKey: string) {
+    setIsBusy(true);
+    setError(null);
+    setBusySession(null);
+    try {
+      const launched = await startTaskT3Run(task.id, {
+        workspaceStrategy: run?.workspaceStrategy ?? "worktree",
+        level: levelKey,
+      });
+      setRun(launched.run);
+      setStopReason(undefined);
+      onTaskUpdated?.(launched.task);
+    } catch (err) {
+      if (err instanceof T3WorkspaceBusyApiError) {
+        setBusySession(err.session);
+      }
+      setError(err instanceof Error ? err.message : "Could not retry on the next level up.");
     } finally {
       setIsBusy(false);
     }
@@ -371,6 +445,7 @@ export function TaskT3Section({
           <Terminal size={12} aria-hidden="true" />
           T3 Code Agent
         </h3>
+        <RunLevelChip profile={runProfile?.profile} levels={levels} />
 
         {run && (
           <div className="flex flex-wrap items-center gap-1.5">
@@ -431,6 +506,18 @@ export function TaskT3Section({
             </a>
           )}
         </div>
+      )}
+
+      {runProfile && (
+        <TaskRunProfileControl
+          taskId={task.id}
+          levels={levels}
+          capabilities={capabilities}
+          profile={runProfile.profile}
+          routerEnabled={runProfile.routerEnabled}
+          disabled={isBusy}
+          onChange={handleRunProfileChange}
+        />
       )}
 
       {run ? (
@@ -644,6 +731,22 @@ export function TaskT3Section({
             </div>
           )}
 
+          {runProfile?.nextLevelUp && !isActiveAgentRunState(run.state) && (
+            <div className="flex flex-wrap items-center gap-2 text-xs text-ink-2">
+              <button
+                type="button"
+                onClick={() => {
+                  if (runProfile.nextLevelUp) void handleRetryNextLevel(runProfile.nextLevelUp.key);
+                }}
+                disabled={isBusy || isDone}
+                className="inline-flex items-center gap-1 rounded-md border border-accent/40 bg-paper px-2.5 py-1 text-2xs font-semibold text-accent-ink hover:bg-accent-soft disabled:opacity-50"
+              >
+                <TrendingUp size={11} aria-hidden="true" />
+                Retry on the next level up ({runProfile.nextLevelUp.label})
+              </button>
+            </div>
+          )}
+
           {run.state !== "offline" && (
             <p className="m-0 flex items-center gap-1.5 text-2xs text-ink-3">
               <MessageSquare size={12} aria-hidden="true" className="shrink-0" />
@@ -703,9 +806,13 @@ export function TaskT3Section({
                   }}
                   className="rounded-md border border-rule bg-paper px-2 py-1 text-xs text-ink"
                 >
-                  <option value="">Default T3 model</option>
+                  <option value={USE_RESOLVED_MODEL}>
+                    {resolvedSelection ? `${resolvedModelLabel ?? resolvedSelection.model} (resolved)` : "Default T3 model"}
+                  </option>
                   {capabilities.map((cap) => {
-                    const key = `${cap.providerInstanceId}::${cap.model}`;
+                    const key = selectionKey(cap);
+                    // The resolved model is the first option already; listing it twice would make picking it look like an override.
+                    if (resolvedSelection && key === selectionKey(resolvedSelection)) return null;
                     return (
                       <option key={key} value={key}>
                         {cap.displayName ? `${cap.displayName}: ` : ""}
@@ -716,6 +823,17 @@ export function TaskT3Section({
                 </select>
               )}
             </div>
+          )}
+
+          {!gateReason && runProfile && (
+            <p data-testid="t3-model-source" className="m-0 text-2xs text-ink-3">
+              {selectedModelKey === USE_RESOLVED_MODEL
+                ? describeResolvedSelection(runProfile.resolved, levels)
+                : "One-run override: the task's run profile is unchanged."}
+              {selectedModelKey === USE_RESOLVED_MODEL && runProfile.resolved.skippedReason
+                ? ` (${runProfile.resolved.skippedReason})`
+                : ""}
+            </p>
           )}
 
           {!gateReason && visibleRootBusyRun && (

@@ -4894,6 +4894,18 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
           },
         });
 
+        // Task cards read every profile in the organisation and its levels in one request (#BIT-188)
+        const listRes = await multiRequest("/api/t3/run-profiles");
+        expect(listRes.status).toBe(200);
+        const listBody = await listRes.json<{
+          profiles: { taskId: string; level?: string; source: string }[];
+          levels: { key: string }[];
+        }>();
+        expect(listBody.profiles).toContainEqual(
+          expect.objectContaining({ taskId: task1.id, level: "high", source: "manual" }),
+        );
+        expect(listBody.levels.map((l) => l.key)).toContain("high");
+
         // Agent update_task with runProfile must NOT overwrite the manual profile
         const agentAttempt = await multiMcpCall("update_task", {
           id: task1.id,

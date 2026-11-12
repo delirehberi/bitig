@@ -27,6 +27,8 @@ import { BlockedBadge } from "./Blocked";
 import { NeedsHumanNote } from "./NeedsHuman";
 import { TaskCode } from "./TaskCode";
 import { T3GitBadges } from "./T3GitBadges";
+import { RunLevelChip } from "./RunLevelChip";
+import { useRunProfiles } from "../../domain/run-profiles";
 
 interface TaskCardProps {
   readonly task: Task;
@@ -71,6 +73,7 @@ export function TaskCard({
   showProject = true,
 }: TaskCardProps) {
   const project = projects.find((p) => p.id === task.projectId);
+  const runProfiles = useRunProfiles();
   const isDone = task.status === "done";
   const isArchived = task.status === "archived";
   const isCompleted = isDone || isArchived;
@@ -111,6 +114,7 @@ export function TaskCard({
                 {task.priority}
               </span>
             )}
+            <RunLevelChip profile={runProfiles.profileFor(task.id)} levels={runProfiles.levels} />
           </div>
 
           <div className="flex items-center gap-1 opacity-80 group-hover:opacity-100">

@@ -50,6 +50,7 @@ import { useWebhooks } from "./hooks/useWebhooks";
 import { LandingPage } from "./landing/LandingPage";
 import { findTaskByRef } from "./domain/task-ref";
 import { TaskMentionsProvider } from "./domain/task-mentions-context";
+import { RunProfilesProvider } from "./domain/run-profiles-context";
 import { Link } from "./routing/Link";
 import { hrefFor, navigate, taskHref, useLocationHref, useRoute, type Route } from "./routing/router";
 
@@ -83,7 +84,7 @@ interface WorkspaceProps {
 function Workspace({ mode, health, route }: WorkspaceProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const locationHref = useLocationHref();
-  const { profile, user, currentRole } = useAuth();
+  const { profile, user, currentRole, currentOrg } = useAuth();
   const actorName = profile?.displayName ?? user ?? "you";
   const activeTab = route.name;
   const routeProjectId = route.name === "tasks" || route.name === "webhooks" ? route.projectId : undefined;
@@ -290,6 +291,7 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
         />
 
         <TaskMentionsProvider projects={projects} tasks={tasks}>
+          <RunProfilesProvider enabled={mode === "cloudflare"} scopeKey={currentOrg?.id}>
           <main
             className={
               activeTab === "task"
@@ -558,6 +560,7 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
               </>
             )}
           </main>
+          </RunProfilesProvider>
         </TaskMentionsProvider>
       </div>
     </div>

@@ -18,6 +18,8 @@ import { Markdown } from "../Markdown";
 import type { ResolvedProjectActiveSession } from "./activeSessions";
 import { ProjectActiveSessionsList } from "./ProjectCard";
 import { ProjectT3Panel } from "./ProjectT3Panel";
+import { ProjectRunSettingsPanel } from "./ProjectRunSettingsPanel";
+import { useRunProfiles } from "../../domain/run-profiles";
 import { ResourceLinks } from "./Resources";
 
 interface ProjectDetailModalProps {
@@ -85,6 +87,7 @@ export function ProjectDetailModal({
   const isOpen = project !== null;
   const panelRef = useRef<HTMLDivElement>(null);
   useFocusTrap(panelRef, isOpen);
+  const { levels: runLevels } = useRunProfiles();
 
   useEffect(() => {
     if (!isOpen) return;
@@ -180,6 +183,10 @@ export function ProjectDetailModal({
               onMappingChange?.(project.id, next);
             }}
           />
+        )}
+
+        {project.archived !== true && (
+          <ProjectRunSettingsPanel key={`run-settings-${project.id}`} projectId={project.id} levels={runLevels} />
         )}
 
         {activeSessions.length > 0 && (
