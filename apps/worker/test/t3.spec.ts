@@ -24,6 +24,13 @@ import { sha256Hex } from "../src/auth-crypto";
 import { reportTaskT3GitMetadata } from "../src/t3/service";
 import { DEFAULT_ORGANISATION_ID, defaultIdGenerator, InMemoryStorage, type OrganisationRole } from "@bitig/core";
 import { decryptT3Token, encryptT3Token } from "../src/t3/crypto";
+import {
+  HttpRunProfileRouter,
+  buildAiRouterEndpointUrl,
+  buildRouterRequest,
+  isPrivateOrLoopbackHost,
+  validateAiRouterBaseUrl,
+} from "../src/t3/router";
 import { parseThreadGitMetadata, parseWorktreeCurrentBranch, resolveT3OAuthScope } from "../src/t3/client";
 import { TEST_AUTH_HEADER, TEST_MCP_AUTH_HEADER, TEST_T3_ENCRYPTION_KEY } from "./constants";
 
@@ -5182,6 +5189,905 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
           modelOptions: [{ id: "effort", value: "high" }],
           modelSource: "explicit_level",
           levelKey: "high",
+        });
+      });
+
+      it("validates AI router URLs and models, builds dynamic level rubrics without model names or comments/attachments, and supports cloudflare-run and openai styles (#BIT-187)", async () => {
+        // 1. URL validation & SSRF protection
+        expect(
+          validateAiRouterBaseUrl(
+            "https://api.cloudflare.com/client/v4/accounts/8423a8bddcba5f61bc5f599e64bbdd62/ai/run/",
+          ),
+        ).toBe(
+          "https://api.cloudflare.com/client/v4/accounts/8423a8bddcba5f61bc5f599e64bbdd62/ai/run",
+        );
+        expect(
+          buildAiRouterEndpointUrl(
+            "https://api.cloudflare.com/client/v4/accounts/8423a8bddcba5f61bc5f599e64bbdd62/ai/run",
+            "@cf/cloudflare/clef",
+            "cloudflare-run",
+          ),
+        ).toBe(
+          "https://api.cloudflare.com/client/v4/accounts/8423a8bddcba5f61bc5f599e64bbdd62/ai/run/@cf/cloudflare/clef",
+        );
+        expect(
+          buildAiRouterEndpointUrl(
+            "https://gateway.ai.cloudflare.com/v1/acc/gw/compat",
+            "@cf/cloudflare/clef",
+            "openai",
+          ),
+        ).toBe("https://gateway.ai.cloudflare.com/v1/acc/gw/compat/chat/completions");
+
+        for (const badHost of [
+          "localhost",
+          "api.localhost",
+          "service.local",
+          "db.internal",
+          "127.0.0.1",
+          "10.0.0.5",
+          "172.16.0.1",
+          "192.168.1.10",
+          "169.254.169.254",
+          "0.0.0.0",
+          "[::1]",
+          "[fe80::1]",
+          "[fd00::1]",
+          "singlelabel",
+        ]) {
+          expect(isPrivateOrLoopbackHost(badHost)).toBe(true);
+          expect(() => validateAiRouterBaseUrl(`https://${badHost}/ai/run`)).toThrow();
+        }
+        expect(() => validateAiRouterBaseUrl("http://api.cloudflare.com/ai/run")).toThrow();
+        expect(() => validateAiRouterBaseUrl("https://user:pass@api.cloudflare.com/ai/run")).toThrow();
+        expect(() => validateAiRouterBaseUrl("https://api.cloudflare.com/ai/run?foo=bar")).toThrow();
+
+        // 2. Rubric & JSON schema dynamically reflect custom levels and effort options, and never mention mapped models
+        const customLevels = [
+          {
+            key: "nano",
+            label: "Nano",
+            description: "One-line typo and copy fixes",
+            order: 0,
+            selection: {
+              providerInstanceId: "prov-codex",
+              model: "gpt-6-sol",
+              options: [{ id: "reasoningEffort", value: "low" }],
+            },
+          },
+          {
+            key: "architect",
+            label: "Architect",
+            description: "Multi-package architectural changes",
+            order: 1,
+            selection: {
+              providerInstanceId: "prov-claude",
+              model: "claude-opus-4-7",
+              options: [{ id: "effort", value: "high" }],
+            },
+          },
+        ];
+
+        const built = buildRouterRequest(
+          {
+            title: "Fix typo in README",
+            description: "Correct spelling of organisation in README.md",
+            checklist: [{ text: "Fix spelling", done: false }],
+            labels: ["docs"],
+          },
+          {
+            levels: customLevels,
+            effortValuesByLevel: {
+              nano: ["low", "medium"],
+              architect: ["medium", "high"],
+            },
+            serialPaths: ["packages/storage-d1/migrations/**"],
+            repoMap: ["apps/worker", "packages/core"],
+          },
+        );
+        if (!built) {
+          throw new Error("Expected built router request");
+        }
+        const sysPrompt = built.messages[0].content;
+        expect(sysPrompt).toContain('1. "nano" — Nano: One-line typo and copy fixes');
+        expect(sysPrompt).toContain('2. "architect" — Architect: Multi-package architectural changes');
+        // Never names a model in the rubric or user payload
+        expect(sysPrompt).not.toContain("gpt-6-sol");
+        expect(sysPrompt).not.toContain("claude-opus-4-7");
+        expect(built.messages[1].content).not.toContain("gpt-6-sol");
+        expect(built.messages[1].content).not.toContain("claude-opus-4-7");
+        expect((built.jsonSchema.properties.level as { enum: string[] }).enum).toEqual([
+          "nano",
+          "architect",
+        ]);
+
+        // 3. Direct HttpRunProfileRouter test for both cloudflare-run and openai styles, plus rejection of invalid keys/efforts/low confidence
+        const capturedCalls: { url: string; auth: string | null; body: Record<string, unknown> }[] = [];
+        const cfRouter = new HttpRunProfileRouter({
+          baseUrl:
+            "https://api.cloudflare.com/client/v4/accounts/8423a8bddcba5f61bc5f599e64bbdd62/ai/run",
+          model: "@cf/cloudflare/clef",
+          apiToken: "cf-secret-token-9876",
+          apiStyle: "cloudflare-run",
+          fetchFn: async (input, init) => {
+            const req = input instanceof Request ? input : new Request(input, init);
+            capturedCalls.push({
+              url: req.url,
+              auth: req.headers.get("Authorization"),
+              body: JSON.parse(await req.text()) as Record<string, unknown>,
+            });
+            return new Response(
+              JSON.stringify({
+                success: true,
+                result: {
+                  response: {
+                    level: "nano",
+                    effort: "low",
+                    touches: ["./README.md"],
+                    parallelSafe: true,
+                    reason: "Simple documentation fix in README.",
+                    confidence: 0.94,
+                  },
+                },
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            );
+          },
+        });
+
+        const cfSuggestion = await cfRouter.suggest(
+          { title: "Fix typo in README", description: "Update README.md" },
+          {
+            levels: customLevels,
+            effortValuesByLevel: { nano: ["low", "medium"], architect: ["medium", "high"] },
+          },
+        );
+        expect(cfSuggestion).toEqual({
+          level: "nano",
+          effort: "low",
+          touches: ["README.md"],
+          parallelSafe: true,
+          reason: "Simple documentation fix in README.",
+          confidence: 0.94,
+        });
+        expect(capturedCalls).toHaveLength(1);
+        expect(capturedCalls[0]?.url).toBe(
+          "https://api.cloudflare.com/client/v4/accounts/8423a8bddcba5f61bc5f599e64bbdd62/ai/run/@cf/cloudflare/clef",
+        );
+        expect(capturedCalls[0]?.auth).toBe("Bearer cf-secret-token-9876");
+
+        // OpenAI /chat/completions style
+        const openAiCalls: { url: string; body: Record<string, unknown> }[] = [];
+        const openAiRouter = new HttpRunProfileRouter({
+          baseUrl: "https://gateway.ai.cloudflare.com/v1/acc/gw/compat",
+          model: "@cf/cloudflare/clef",
+          apiToken: "oa-secret-token-1234",
+          apiStyle: "openai",
+          fetchFn: async (input, init) => {
+            const req = input instanceof Request ? input : new Request(input, init);
+            openAiCalls.push({
+              url: req.url,
+              body: JSON.parse(await req.text()) as Record<string, unknown>,
+            });
+            return new Response(
+              JSON.stringify({
+                choices: [
+                  {
+                    message: {
+                      content: JSON.stringify({
+                        level: "architect",
+                        effort: "high",
+                        touches: ["packages/core/**", "apps/worker/**"],
+                        parallelSafe: false,
+                        reason: "Cross-package domain and worker changes.",
+                        confidence: 0.88,
+                      }),
+                    },
+                  },
+                ],
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            );
+          },
+        });
+
+        const oaSuggestion = await openAiRouter.suggest(
+          { title: "Refactor domain and worker", description: "Cross-cutting" },
+          {
+            levels: customLevels,
+            effortValuesByLevel: { nano: ["low", "medium"], architect: ["medium", "high"] },
+          },
+        );
+        expect(oaSuggestion).toEqual({
+          level: "architect",
+          effort: "high",
+          touches: ["packages/core/**", "apps/worker/**"],
+          parallelSafe: false,
+          reason: "Cross-package domain and worker changes.",
+          confidence: 0.88,
+        });
+        expect(openAiCalls).toHaveLength(1);
+        expect(openAiCalls[0]?.url).toBe(
+          "https://gateway.ai.cloudflare.com/v1/acc/gw/compat/chat/completions",
+        );
+        expect(openAiCalls[0]?.body.model).toBe("@cf/cloudflare/clef");
+
+        // Rejects unknown level key, effort not supported by that level, or low confidence
+        for (const badPayload of [
+          {
+            level: "cheap", // not in [nano, architect]
+            touches: ["README.md"],
+            parallelSafe: true,
+            reason: "Wrong level key",
+            confidence: 0.9,
+          },
+          {
+            level: "nano",
+            effort: "high", // nano only offers [low, medium]
+            touches: ["README.md"],
+            parallelSafe: true,
+            reason: "Unsupported effort for nano",
+            confidence: 0.9,
+          },
+          {
+            level: "nano",
+            touches: ["README.md"],
+            parallelSafe: true,
+            reason: "Low confidence",
+            confidence: 0.2,
+          },
+        ]) {
+          const badRouter = new HttpRunProfileRouter({
+            baseUrl: "https://api.cloudflare.com/client/v4/accounts/8423a8bddcba5f61bc5f599e64bbdd62/ai/run",
+            model: "@cf/cloudflare/clef",
+            apiToken: "token",
+            fetchFn: () =>
+              Promise.resolve(
+                new Response(JSON.stringify({ success: true, result: { response: badPayload } }), {
+                  status: 200,
+                }),
+              ),
+          });
+          expect(
+            await badRouter.suggest(
+              { title: "Test" },
+              {
+                levels: customLevels,
+                effortValuesByLevel: { nano: ["low", "medium"], architect: ["medium", "high"] },
+              },
+            ),
+          ).toBeNull();
+        }
+      });
+
+      it("manages per-org AI router settings (owners only, token encryption & masking, org isolation), runs router on task approval and on-demand (REST & MCP), falls back on failure, and offers nextLevelUp on failed or needsHuman runs (#BIT-187)", async () => {
+        const ROUTER_CF_BASE =
+          "https://api.cloudflare.com/client/v4/accounts/8423a8bddcba5f61bc5f599e64bbdd62/ai/run";
+        const ROUTER_OPENAI_BASE = "https://gateway.ai.cloudflare.com/v1/acc/gw/compat";
+        const ROUTER_SECRET_TOKEN = "cf_SuperSecretRouterToken_AbCd9876";
+
+        const routerCalls: {
+          url: string;
+          auth: string | null;
+          body: {
+            model?: string;
+            messages: { role: string; content: string }[];
+            response_format?: Record<string, unknown>;
+          };
+        }[] = [];
+        let routerResponder: (url: string, body: unknown) => Promise<Response> | Response = () =>
+          new Response(
+            JSON.stringify({
+              success: true,
+              result: {
+                response: {
+                  level: "fast",
+                  effort: "low",
+                  touches: ["packages/core/src/**"],
+                  parallelSafe: true,
+                  reason: "Scoped update inside packages/core.",
+                  confidence: 0.91,
+                },
+              },
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+
+        hostAState.remoteProjects = [{ id: "t3-proj-a", title: "AppA", workspaceRoot: "~/www/app-a" }];
+        const fetchA = createMockT3Fetch(hostAState);
+        const routerFetch: typeof fetch = async (input, init) => {
+          const req = input instanceof Request ? input : new Request(input, init);
+          const url = new URL(req.url);
+          if (url.origin === HOST_A_ORIGIN) return fetchA(input, init);
+          if (
+            req.url.startsWith(ROUTER_CF_BASE) ||
+            req.url.startsWith(ROUTER_OPENAI_BASE)
+          ) {
+            const parsedBody = JSON.parse(await req.clone().text()) as {
+              model?: string;
+              messages: { role: string; content: string }[];
+              response_format?: Record<string, unknown>;
+            };
+            routerCalls.push({
+              url: req.url,
+              auth: req.headers.get("Authorization"),
+              body: parsedBody,
+            });
+            return await routerResponder(req.url, parsedBody);
+          }
+          return new Response("Unknown origin", { status: 404 });
+        };
+        multiApp = createApp({ t3Fetch: routerFetch });
+
+        await authorizeHost({ mcpUrl: HOST_A_MCP_URL, label: "Host A", kind: "user" });
+        const { hosts } = await (await multiRequest("/api/t3/hosts")).json<{ hosts: T3HostConnectionStatus[] }>();
+        const hostA = hosts[0];
+        if (!hostA) {
+          throw new Error("Expected connected host A");
+        }
+
+        const viewerAuth = await createOrgMemberToken("viewer", false);
+        const editorAuth = await createOrgMemberToken("editor", false);
+        const outsiderAuth = await createOutsiderOwnerToken();
+
+        // 1. Configure custom run levels for the organisation: fast -> balanced -> deep
+        const putLevelsRes = await multiRequest(`/api/orgs/${DEFAULT_ORGANISATION_ID}/run-levels`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            levels: [
+              { key: "fast", label: "Fast", description: "Quick isolated edits", order: 0 },
+              { key: "balanced", label: "Balanced", description: "Standard feature work", order: 1 },
+              { key: "deep", label: "Deep", description: "Architectural and security work", order: 2 },
+            ],
+            models: [
+              {
+                levelKey: "fast",
+                providerInstanceId: "prov-codex",
+                model: "gpt-6-sol",
+                options: [{ id: "reasoningEffort", value: "low" }],
+              },
+              {
+                levelKey: "balanced",
+                providerInstanceId: "prov-claude",
+                model: "claude-opus-4-7",
+                options: [{ id: "effort", value: "medium" }],
+              },
+              {
+                levelKey: "deep",
+                providerInstanceId: "prov-claude",
+                model: "claude-opus-4-7",
+                options: [{ id: "effort", value: "high" }],
+              },
+            ],
+            replacementKeys: {
+              cheap: "fast",
+              standard: "balanced",
+              strong: "deep",
+            },
+          }),
+        });
+        expect(putLevelsRes.status).toBe(200);
+
+        // 2. Permissions on /api/orgs/:id/ai-router: owners only (viewer & editor get 403, outsider gets 404)
+        for (const Authorization of [viewerAuth, editorAuth]) {
+          expect(
+            (
+              await multiRequest(`/api/orgs/${DEFAULT_ORGANISATION_ID}/ai-router`, {
+                headers: { Authorization },
+              })
+            ).status,
+          ).toBe(403);
+          expect(
+            (
+              await multiRequest(`/api/orgs/${DEFAULT_ORGANISATION_ID}/ai-router`, {
+                method: "PUT",
+                headers: { Authorization, "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  baseUrl: ROUTER_CF_BASE,
+                  model: "@cf/cloudflare/clef",
+                  apiToken: ROUTER_SECRET_TOKEN,
+                  enabled: true,
+                }),
+              })
+            ).status,
+          ).toBe(403);
+          expect(
+            (
+              await multiRequest(`/api/orgs/${DEFAULT_ORGANISATION_ID}/ai-router/test`, {
+                method: "POST",
+                headers: { Authorization, "Content-Type": "application/json" },
+                body: JSON.stringify({}),
+              })
+            ).status,
+          ).toBe(403);
+          expect(
+            (
+              await multiRequest(`/api/orgs/${DEFAULT_ORGANISATION_ID}/ai-router`, {
+                method: "DELETE",
+                headers: { Authorization },
+              })
+            ).status,
+          ).toBe(403);
+        }
+        expect(
+          (
+            await multiRequest(`/api/orgs/${DEFAULT_ORGANISATION_ID}/ai-router`, {
+              headers: { Authorization: outsiderAuth },
+            })
+          ).status,
+        ).toBe(404);
+
+        // 3. Initial GET returns unconfigured / not set
+        const initialGetRes = await multiRequest(`/api/orgs/${DEFAULT_ORGANISATION_ID}/ai-router`);
+        expect(initialGetRes.status).toBe(200);
+        expect(await initialGetRes.json()).toEqual({
+          orgId: DEFAULT_ORGANISATION_ID,
+          baseUrl: "",
+          model: "",
+          apiStyle: "cloudflare-run",
+          hasToken: false,
+          tokenStatus: "not set",
+          enabled: false,
+          configured: false,
+        });
+
+        // 4. Rejects non-https and private/loopback baseUrl on PUT and POST /test
+        for (const badUrl of [
+          "http://api.cloudflare.com/client/v4/accounts/123/ai/run",
+          "https://127.0.0.1/ai/run",
+          "https://localhost:8787/ai/run",
+          "https://10.0.0.1/ai/run",
+          "https://192.168.1.1/ai/run",
+          "https://router.internal/ai/run",
+        ]) {
+          const badPut = await multiRequest(`/api/orgs/${DEFAULT_ORGANISATION_ID}/ai-router`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              baseUrl: badUrl,
+              model: "@cf/cloudflare/clef",
+              apiToken: ROUTER_SECRET_TOKEN,
+              enabled: true,
+            }),
+          });
+          expect(badPut.status).toBe(400);
+        }
+
+        // 5. PUT valid settings encrypts token in D1 and never returns plaintext token (only tokenStatus: "set" and tokenLast4: "9876")
+        const putRouterRes = await multiRequest(`/api/orgs/${DEFAULT_ORGANISATION_ID}/ai-router`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            baseUrl: ROUTER_CF_BASE,
+            model: "@cf/cloudflare/clef",
+            apiToken: ROUTER_SECRET_TOKEN,
+            apiStyle: "cloudflare-run",
+            enabled: true,
+          }),
+        });
+        expect(putRouterRes.status).toBe(200);
+        const putRouterText = await putRouterRes.text();
+        expect(putRouterText).not.toContain(ROUTER_SECRET_TOKEN);
+        const putRouterBody = JSON.parse(putRouterText) as Record<string, unknown>;
+        expect(putRouterBody).toMatchObject({
+          orgId: DEFAULT_ORGANISATION_ID,
+          baseUrl: ROUTER_CF_BASE,
+          model: "@cf/cloudflare/clef",
+          apiStyle: "cloudflare-run",
+          hasToken: true,
+          tokenStatus: "set",
+          tokenLast4: "9876",
+          enabled: true,
+          configured: true,
+        });
+        expect(putRouterBody).not.toHaveProperty("apiToken");
+        expect(putRouterBody).not.toHaveProperty("encryptedApiToken");
+
+        // Verify D1 record is AES-GCM encrypted and isolated from other organisations
+        const rawRecord = await new T3D1Store(env.DB, DEFAULT_ORGANISATION_ID).getAiRouterSettingsRecord();
+        if (!rawRecord?.encryptedApiToken || !rawRecord.tokenIv) {
+          throw new Error("Expected encrypted AI router token record in D1");
+        }
+        expect(rawRecord.encryptedApiToken).not.toContain(ROUTER_SECRET_TOKEN);
+        expect(
+          await decryptT3Token(
+            {
+              ciphertext: rawRecord.encryptedApiToken,
+              iv: rawRecord.tokenIv,
+            },
+            TEST_T3_ENCRYPTION_KEY,
+          ),
+        ).toBe(ROUTER_SECRET_TOKEN);
+        expect(
+          await new T3D1Store(env.DB, "01a10000-0000-7000-8000-000000000099").getAiRouterSettings(),
+        ).toBeUndefined();
+
+        // 6. POST /api/orgs/:id/ai-router/test sends a tiny request using stored encrypted token and reports success or error without leaking token
+        routerCalls.length = 0;
+        const testOkRes = await multiRequest(`/api/orgs/${DEFAULT_ORGANISATION_ID}/ai-router/test`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        });
+        expect(testOkRes.status).toBe(200);
+        const testOkBody = await testOkRes.json<{ ok: boolean; status: number; suggestion: { level: string } }>();
+        expect(testOkBody.ok).toBe(true);
+        expect(testOkBody.suggestion.level).toBe("fast");
+        expect(routerCalls).toHaveLength(1);
+        expect(routerCalls[0]?.url).toBe(`${ROUTER_CF_BASE}/@cf/cloudflare/clef`);
+        expect(routerCalls[0]?.auth).toBe(`Bearer ${ROUTER_SECRET_TOKEN}`);
+
+        // If upstream fails and echoes token in error text, test endpoint redacts it
+        routerResponder = () =>
+          new Response(`Upstream error for token ${ROUTER_SECRET_TOKEN}`, { status: 502 });
+        const testFailRes = await multiRequest(`/api/orgs/${DEFAULT_ORGANISATION_ID}/ai-router/test`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        });
+        expect(testFailRes.status).toBe(200);
+        const testFailText = await testFailRes.text();
+        expect(testFailText).not.toContain(ROUTER_SECRET_TOKEN);
+        expect(JSON.parse(testFailText)).toMatchObject({
+          ok: false,
+          status: 502,
+        });
+
+        // Restore responder
+        routerResponder = () =>
+          new Response(
+            JSON.stringify({
+              success: true,
+              result: {
+                response: {
+                  level: "fast",
+                  effort: "low",
+                  touches: ["packages/core/src/**"],
+                  parallelSafe: true,
+                  reason: "Scoped update inside packages/core.",
+                  confidence: 0.91,
+                },
+              },
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+
+        // 7. Create project with defaultRunLevel: "balanced" and serialPaths
+        const proj = await (
+          await multiRequest("/api/projects", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: "Router Project", key: "RTR" }),
+          })
+        ).json<Project>();
+        await multiRequest(`/api/t3/mappings/${proj.id}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ hostId: hostA.id, t3ProjectId: "t3-proj-a", t3ProjectTitle: "AppA" }),
+        });
+        await multiRequest(`/api/projects/${proj.id}/run-settings`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            defaultRunLevel: "balanced",
+            serialPaths: ["packages/storage-d1/migrations/**"],
+          }),
+        });
+
+        // 8. Create an unapproved task with comments & attachments; approving it triggers router automatically!
+        // Verify comments and attachments are NEVER sent to the router endpoint.
+        const unapprovedTask = await (
+          await multiRequest("/api/tasks", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              projectId: proj.id,
+              title: "Add helper in core",
+              description: "Add a small string helper to packages/core",
+              checklist: [{ text: "Write helper", done: false }],
+              labels: ["core"],
+              pendingApproval: true,
+            }),
+          })
+        ).json<Task>();
+
+        await multiRequest(`/api/tasks/${unapprovedTask.id}/comments`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            body: "SENSITIVE_COMMENT_CONTENT_DO_NOT_SEND_TO_ROUTER",
+            author: "emre",
+          }),
+        });
+        await multiRequest(`/api/tasks/${unapprovedTask.id}/attachments`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: "secret-notes.md",
+            content: "SENSITIVE_ATTACHMENT_CONTENT_DO_NOT_SEND_TO_ROUTER",
+          }),
+        });
+
+        routerCalls.length = 0;
+        const approveRes = await multiRequest(`/api/tasks/${unapprovedTask.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pendingApproval: null }),
+        });
+        expect(approveRes.status).toBe(200);
+
+        // Router was called exactly once on approval
+        expect(routerCalls).toHaveLength(1);
+        const sentPayloadStr = JSON.stringify(routerCalls[0]?.body);
+        expect(sentPayloadStr).not.toContain("SENSITIVE_COMMENT_CONTENT_DO_NOT_SEND_TO_ROUTER");
+        expect(sentPayloadStr).not.toContain("SENSITIVE_ATTACHMENT_CONTENT_DO_NOT_SEND_TO_ROUTER");
+        expect(sentPayloadStr).not.toContain("secret-notes.md");
+        expect(sentPayloadStr).not.toContain("gpt-6-sol");
+        expect(sentPayloadStr).not.toContain("claude-opus-4-7");
+        expect(sentPayloadStr).toContain("packages/storage-d1/migrations/**");
+
+        // Profile is stored with source: "router", level: "fast", effort: "low", and resolved model reflects effort
+        const profileAfterApprove = await (
+          await multiRequest(`/api/tasks/${unapprovedTask.id}/run-profile`)
+        ).json<{
+          profile: {
+            level: string;
+            effort: string;
+            touches: string[];
+            parallelSafe: boolean;
+            source: string;
+            reason: string;
+            confidence: number;
+          };
+          resolved: {
+            source: string;
+            levelKey: string;
+            profileSource: string;
+            selection: { providerInstanceId: string; model: string; options: { id: string; value: string }[] };
+          };
+          routerEnabled: boolean;
+        }>();
+        expect(profileAfterApprove.routerEnabled).toBe(true);
+        expect(profileAfterApprove.profile).toMatchObject({
+          level: "fast",
+          effort: "low",
+          touches: ["packages/core/src/**"],
+          parallelSafe: true,
+          source: "router",
+          reason: "Scoped update inside packages/core.",
+          confidence: 0.91,
+        });
+        expect(profileAfterApprove.resolved).toMatchObject({
+          source: "profile_level",
+          levelKey: "fast",
+          profileSource: "router",
+          selection: {
+            providerInstanceId: "prov-codex",
+            model: "gpt-6-sol",
+            options: [{ id: "reasoningEffort", value: "low" }],
+          },
+        });
+
+        // 9. Switch org AI router to OpenAI style and test on-demand POST /api/tasks/:id/run-profile/suggest and MCP suggest_run_profile
+        await multiRequest(`/api/orgs/${DEFAULT_ORGANISATION_ID}/ai-router`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            baseUrl: ROUTER_OPENAI_BASE,
+            model: "@cf/cloudflare/clef",
+            apiStyle: "openai",
+            enabled: true,
+          }),
+        });
+        routerResponder = () =>
+          new Response(
+            JSON.stringify({
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({
+                      level: "balanced",
+                      effort: "high",
+                      touches: ["apps/worker/src/**"],
+                      parallelSafe: false,
+                      reason: "Touches worker routes and middleware.",
+                      confidence: 0.87,
+                    }),
+                  },
+                },
+              ],
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+
+        routerCalls.length = 0;
+        const onDemandRes = await multiRequest(`/api/tasks/${unapprovedTask.id}/run-profile/suggest`, {
+          method: "POST",
+          headers: { Authorization: editorAuth },
+        });
+        expect(onDemandRes.status).toBe(200);
+        const onDemandBody = await onDemandRes.json<{
+          stored: boolean;
+          profile: { level: string; effort: string; source: string };
+          resolved: { selection: { model: string; options: { id: string; value: string }[] } };
+        }>();
+        expect(onDemandBody.stored).toBe(true);
+        expect(onDemandBody.profile).toMatchObject({
+          level: "balanced",
+          effort: "high",
+          source: "router",
+        });
+        expect(onDemandBody.resolved.selection).toEqual({
+          providerInstanceId: "prov-claude",
+          model: "claude-opus-4-7",
+          options: [{ id: "effort", value: "high" }],
+        });
+        expect(routerCalls).toHaveLength(1);
+        expect(routerCalls[0]?.url).toBe(`${ROUTER_OPENAI_BASE}/chat/completions`);
+
+        // MCP suggest_run_profile also works on a new task
+        const mcpTask = await (
+          await multiRequest("/api/tasks", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ projectId: proj.id, title: "MCP router task" }),
+          })
+        ).json<Task>();
+        const mcpSuggest = await multiMcpCall("suggest_run_profile", { taskId: mcpTask.id });
+        expect(mcpSuggest.isError).toBeFalsy();
+        expect(JSON.parse(mcpSuggest.text)).toMatchObject({
+          stored: true,
+          routerEnabled: true,
+          profile: {
+            level: "balanced",
+            effort: "high",
+            source: "router",
+          },
+        });
+
+        // 10. Router never overwrites an 'agent' or 'manual' profile
+        await multiMcpCall("update_task", {
+          id: mcpTask.id,
+          runProfile: {
+            level: "fast",
+            touches: ["apps/cli/**"],
+            parallelSafe: true,
+            reason: "Agent set fast",
+          },
+        });
+        routerCalls.length = 0;
+        const suggestOverAgent = await multiRequest(`/api/tasks/${mcpTask.id}/run-profile/suggest`, {
+          method: "POST",
+        });
+        expect(suggestOverAgent.status).toBe(200);
+        expect(await suggestOverAgent.json()).toMatchObject({
+          stored: false,
+          profile: {
+            level: "fast",
+            source: "agent",
+            reason: "Agent set fast",
+          },
+        });
+        expect(routerCalls).toHaveLength(0);
+
+        await multiRequest(`/api/tasks/${mcpTask.id}/run-profile`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            level: "deep",
+            reason: "Human locked to deep",
+          }),
+        });
+        const suggestOverManual = await multiMcpCall("suggest_run_profile", { taskId: mcpTask.id });
+        expect(suggestOverManual.isError).toBeFalsy();
+        expect(JSON.parse(suggestOverManual.text)).toMatchObject({
+          stored: false,
+          profile: {
+            level: "deep",
+            source: "manual",
+            reason: "Human locked to deep",
+          },
+        });
+        expect(routerCalls).toHaveLength(0);
+
+        // 11. Failure, non-2xx, invalid JSON, or low confidence stores no profile so project default level ("balanced") applies
+        routerResponder = () => new Response("Internal Server Error", { status: 500 });
+        const fallbackTask = await (
+          await multiRequest("/api/tasks", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ projectId: proj.id, title: "Router fails on this task" }),
+          })
+        ).json<Task>();
+        const failedSuggestRes = await multiRequest(
+          `/api/tasks/${fallbackTask.id}/run-profile/suggest`,
+          { method: "POST" },
+        );
+        expect(failedSuggestRes.status).toBe(200);
+        expect(await failedSuggestRes.json()).toMatchObject({
+          stored: false,
+          profile: null,
+          suggestion: null,
+          resolved: {
+            source: "project_default_level",
+            levelKey: "balanced",
+            selection: {
+              providerInstanceId: "prov-claude",
+              model: "claude-opus-4-7",
+              options: [{ id: "effort", value: "medium" }],
+            },
+          },
+        });
+
+        // 12. Failed runs or needsHuman on a lower level offer nextLevelUp ("Retry on the next level up") without automatic escalation
+        // unapprovedTask has profile level "balanced"; launch it, then mark its run as failed
+        hostAState.launchThreadId = "thread-low-failed";
+        const launchLowRes = await multiRequest(`/api/tasks/${unapprovedTask.id}/t3-run`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ level: "fast", workspaceStrategy: "worktree" }),
+        });
+        expect(launchLowRes.status).toBe(201);
+
+        // Simulate run ending failed on level "fast"
+        hostAState.threadStatus = "idle";
+        hostAState.recentRunStatus = "failed";
+        const liveFailedRes = await multiRequest(`/api/tasks/${unapprovedTask.id}/t3-run`);
+        expect(liveFailedRes.status).toBe(200);
+        const liveFailedBody = await liveFailedRes.json<T3TaskRunLiveResponse>();
+        expect(liveFailedBody.run?.state).toBe("failed");
+        expect(liveFailedBody.nextLevelUp).toMatchObject({
+          key: "balanced",
+          label: "Balanced",
+          order: 1,
+        });
+        // No automatic escalation launch happened
+        expect(hostAState.toolCalls.filter((c) => c.name === "t3_thread_launch")).toHaveLength(1);
+
+        // Also when a task sets needsHuman on level "balanced", GET /:id/run-profile and MCP get_task offer nextLevelUp: "deep"
+        await multiRequest(`/api/tasks/${fallbackTask.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ needsHuman: "Need clarification on edge case" }),
+        });
+        const needsHumanProfileRes = await multiRequest(`/api/tasks/${fallbackTask.id}/run-profile`);
+        expect(needsHumanProfileRes.status).toBe(200);
+        expect(await needsHumanProfileRes.json()).toMatchObject({
+          nextLevelUp: {
+            key: "deep",
+            label: "Deep",
+            order: 2,
+          },
+        });
+        const mcpNeedsHumanTask = await multiMcpCall("get_task", { id: fallbackTask.id });
+        expect(JSON.parse(mcpNeedsHumanTask.text)).toMatchObject({
+          nextLevelUp: {
+            key: "deep",
+            label: "Deep",
+          },
+        });
+
+        // When already on highest level ("deep"), nextLevelUp is undefined
+        await multiRequest(`/api/tasks/${mcpTask.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ needsHuman: "Already at highest level" }),
+        });
+        const highestProfileRes = await multiRequest(`/api/tasks/${mcpTask.id}/run-profile`);
+        expect(highestProfileRes.status).toBe(200);
+        expect((await highestProfileRes.json<{ nextLevelUp?: unknown }>()).nextLevelUp).toBeUndefined();
+
+        // 13. DELETE /api/orgs/:id/ai-router clears settings and turns router off
+        const delRouterRes = await multiRequest(`/api/orgs/${DEFAULT_ORGANISATION_ID}/ai-router`, {
+          method: "DELETE",
+        });
+        expect(delRouterRes.status).toBe(200);
+        expect(await delRouterRes.json()).toMatchObject({
+          orgId: DEFAULT_ORGANISATION_ID,
+          hasToken: false,
+          tokenStatus: "not set",
+          enabled: false,
+          configured: false,
         });
       });
     });

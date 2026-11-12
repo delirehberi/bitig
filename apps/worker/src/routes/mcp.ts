@@ -10,6 +10,7 @@ import {
   launchTaskInT3,
   reportTaskT3GitMetadata,
   resolveTaskRunProfileWithSelection,
+  suggestTaskRunProfile,
 } from "../t3/service";
 import { buildHostFolderDeps, buildServiceDeps, requireOrgOwner } from "./t3";
 import { handBackFinishedTaskInBackground } from "./tasks";
@@ -88,10 +89,11 @@ export const mcpRouter = new Hono<AppEnv>().all("*", async (c) => {
       ? {
           getTaskRunProfileWithSelection: async (taskId) => {
             try {
-              const { profile, resolved } = await resolveTaskRunProfileWithSelection(t3Deps, taskId);
+              const { profile, resolved, nextLevelUp } = await resolveTaskRunProfileWithSelection(t3Deps, taskId);
               return {
                 profile: profile ?? null,
                 resolved,
+                ...(nextLevelUp ? { nextLevelUp } : {}),
               };
             } catch {
               return {
@@ -117,12 +119,24 @@ export const mcpRouter = new Hono<AppEnv>().all("*", async (c) => {
             return await t3Deps.store.saveTaskRunProfile({
               taskId: input.taskId,
               ...(input.level !== undefined ? { level: input.level } : {}),
+              ...(input.effort !== undefined ? { effort: input.effort } : {}),
               ...(input.selection !== undefined ? { selection: input.selection } : {}),
               ...(input.touches !== undefined ? { touches: input.touches } : {}),
               ...(input.parallelSafe !== undefined ? { parallelSafe: input.parallelSafe } : {}),
               ...(input.reason !== undefined ? { reason: input.reason } : {}),
               source: input.source,
               updatedBy: c.get("user")?.id ?? input.actor,
+            });
+          },
+          suggestTaskRunProfile: async (input) => {
+            const role = c.get("orgRole");
+            if (!role || !hasMinimumOrgRole(role, "editor")) {
+              throw new ForbiddenRoleError("Forbidden: editor role required to suggest a run profile");
+            }
+            return await suggestTaskRunProfile(t3Deps, input.taskId, {
+              actor: c.get("user")?.id ?? input.actor,
+              cache: caches.default,
+              signal: input.signal,
             });
           },
         }

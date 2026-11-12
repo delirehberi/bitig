@@ -64,6 +64,7 @@ describe("MCP Tools integration", () => {
       "report_t3_git_metadata",
       "start_t3_thread",
       "list_run_levels",
+      "suggest_run_profile",
     ]);
 
     // Create project
@@ -1180,12 +1181,53 @@ describe("run orchestration MCP tools (#BIT-186)", () => {
       }),
     );
 
+    const suggestTaskRunProfile = vi.fn(async (input: { taskId: string; actor?: string | undefined }) => {
+      const existing = profiles.get(input.taskId);
+      if (existing && (existing.source === "manual" || existing.source === "agent")) {
+        const resolved = (await resolveTaskRunProfile(input.taskId)).resolved;
+        return {
+          profile: existing,
+          resolved,
+          suggestion: null,
+          stored: false,
+          routerEnabled: true,
+        };
+      }
+      const suggestion = {
+        level: "med",
+        effort: "medium",
+        touches: ["packages/core/**"],
+        parallelSafe: true,
+        reason: "Router suggested medium level",
+        confidence: 0.91,
+      };
+      const saved: TaskRunProfile = {
+        level: suggestion.level,
+        effort: suggestion.effort,
+        touches: suggestion.touches,
+        parallelSafe: suggestion.parallelSafe,
+        reason: suggestion.reason,
+        confidence: suggestion.confidence,
+        source: "router",
+      };
+      profiles.set(input.taskId, saved);
+      const resolved = (await resolveTaskRunProfile(input.taskId)).resolved;
+      return {
+        profile: saved,
+        resolved,
+        suggestion,
+        stored: true,
+        routerEnabled: true,
+      };
+    });
+
     const server = new McpServer({ name: "bitig-test", version: "1.0.0" });
     registerBitigTools(server, storage, {
       listRunLevels: () => Promise.resolve(levels),
       saveTaskRunProfile,
       resolveTaskRunProfile,
       startT3Thread,
+      suggestTaskRunProfile,
     });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await server.connect(serverTransport);
@@ -1305,6 +1347,49 @@ describe("run orchestration MCP tools (#BIT-186)", () => {
           options: [{ id: "effort", value: "max" }],
         }),
       );
+
+      // 7. suggest_run_profile suggests and stores for an unprofiled task, and does not overwrite manual profiles
+      const unprofiledTaskRes = await client.callTool({
+        name: "add_task",
+        arguments: {
+          projectId: project.id,
+          title: "Unprofiled task for router",
+        },
+      });
+      const unprofiledTask = JSON.parse((unprofiledTaskRes.content as { text: string }[])[0]?.text ?? "{}") as {
+        id: string;
+        code: string;
+      };
+      const suggestRes = await client.callTool({
+        name: "suggest_run_profile",
+        arguments: { taskId: unprofiledTask.code },
+      });
+      expect(suggestRes.isError).toBeFalsy();
+      expect(JSON.parse((suggestRes.content as { text: string }[])[0]?.text ?? "{}")).toMatchObject({
+        stored: true,
+        routerEnabled: true,
+        profile: {
+          level: "med",
+          effort: "medium",
+          touches: ["packages/core/**"],
+          parallelSafe: true,
+          source: "router",
+          confidence: 0.91,
+        },
+      });
+
+      const suggestManualRes = await client.callTool({
+        name: "suggest_run_profile",
+        arguments: { taskId: addedTask.code },
+      });
+      expect(suggestManualRes.isError).toBeFalsy();
+      expect(JSON.parse((suggestManualRes.content as { text: string }[])[0]?.text ?? "{}")).toMatchObject({
+        stored: false,
+        profile: {
+          level: "low",
+          source: "manual",
+        },
+      });
     } finally {
       await client.close();
       await server.close();

@@ -176,12 +176,14 @@ export const RunProfileTouchesSchema = z
   .max(RUN_PROFILE_TOUCHES_MAX_COUNT)
   .transform((globs) => [...new Set(globs)]);
 
+export const RunProfileEffortSchema = z.string().trim().min(1).max(64);
 export const RunProfileReasonSchema = z.string().trim().min(1).max(RUN_PROFILE_REASON_MAX);
 export const RunProfileConfidenceSchema = z.number().min(0).max(1);
 
 /**
- * Per-task run profile (#BIT-184):
+ * Per-task run profile (#BIT-184, #BIT-187):
  * - `level`: organisation run level key
+ * - `effort`: optional effort value suggested or chosen for the level's model
  * - `selection`: explicit model override
  * - `touches`: declared path globs the task modifies
  * - `parallelSafe`: whether the task is safe to run alongside siblings when paths do not overlap
@@ -191,6 +193,7 @@ export const RunProfileConfidenceSchema = z.number().min(0).max(1);
  */
 export const TaskRunProfileSchema = z.strictObject({
   level: RunLevelKeySchema.exactOptional(),
+  effort: RunProfileEffortSchema.exactOptional(),
   selection: T3ModelSelectionSchema.exactOptional(),
   touches: RunProfileTouchesSchema.exactOptional(),
   parallelSafe: z.boolean().exactOptional(),
@@ -208,6 +211,7 @@ export type TaskRunProfileInput = z.input<typeof TaskRunProfileSchema>;
  */
 export const UpsertTaskRunProfileInputSchema = z.strictObject({
   level: RunLevelKeySchema.exactOptional(),
+  effort: RunProfileEffortSchema.exactOptional(),
   selection: T3ModelSelectionSchema.exactOptional(),
   touches: RunProfileTouchesSchema.exactOptional(),
   parallelSafe: z.boolean().exactOptional(),
@@ -276,7 +280,7 @@ export interface ResolveRunSelectionInput {
   /** Optional explicit level key passed in the launch call (e.g. MCP `start_t3_thread({ level })`). */
   readonly explicitLevel?: string | null | undefined;
   /** The task's stored run profile, if any. */
-  readonly profile?: Pick<TaskRunProfile, "level" | "selection" | "source"> | null | undefined;
+  readonly profile?: Pick<TaskRunProfile, "level" | "effort" | "selection" | "source"> | null | undefined;
   /** The project's default run level key, if configured. */
   readonly projectDefaultLevel?: string | null | undefined;
   /** The organisation's configured run levels (with model selections mapped for the target host). */
@@ -353,6 +357,7 @@ export function resolveRunSelection(input: ResolveRunSelectionInput): ResolvedRu
     rule: RunSelectionSkipRule,
     source: RunSelectionSource,
     profileSource?: RunProfileSource,
+    profileEffort?: string,
   ): ResolvedRunSelection | undefined => {
     const key = rawKey?.trim().toLowerCase();
     if (!key) return undefined;
@@ -375,8 +380,27 @@ export function resolveRunSelection(input: ResolveRunSelectionInput): ResolvedRu
       });
       return undefined;
     }
+    const baseSelection = cloneSelection(level.selection);
+    const trimmedEffort = profileEffort?.trim();
+    let finalSelection = baseSelection;
+    if (trimmedEffort) {
+      const existingOptions = baseSelection.options ? [...baseSelection.options] : [];
+      const effortIdx = existingOptions.findIndex(
+        (opt) => opt.id === "effort" || opt.id === "reasoningEffort" || opt.id === "thinkingEffort",
+      );
+      const currentEffortOption = effortIdx >= 0 ? existingOptions[effortIdx] : undefined;
+      if (currentEffortOption) {
+        existingOptions[effortIdx] = { id: currentEffortOption.id, value: trimmedEffort };
+      } else {
+        existingOptions.push({ id: "effort", value: trimmedEffort });
+      }
+      finalSelection = {
+        ...baseSelection,
+        options: existingOptions,
+      };
+    }
     return withSkipped({
-      selection: cloneSelection(level.selection),
+      selection: finalSelection,
       source,
       levelKey: level.key,
       ...(profileSource ? { profileSource } : {}),
@@ -425,6 +449,7 @@ export function resolveRunSelection(input: ResolveRunSelectionInput): ResolvedRu
     "profile_level",
     "profile_level",
     input.profile?.source,
+    input.profile?.effort,
   );
   if (fromProfileLevel) return fromProfileLevel;
 

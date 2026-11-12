@@ -277,6 +277,27 @@ describe("resolveRunSelection", () => {
       skipped: [],
     });
 
+    // 4b. Profile level with router effort overrides or appends the effort option on the level's model
+    const r4Effort = resolveRunSelection({
+      profile: {
+        level: "standard",
+        effort: "high",
+        source: "router",
+      },
+      levels: MAPPED_LEVELS,
+    });
+    expect(r4Effort).toEqual({
+      selection: {
+        providerInstanceId: "prov-claude",
+        model: "claude-sonnet-4-6",
+        options: [{ id: "effort", value: "high" }],
+      },
+      source: "profile_level",
+      levelKey: "standard",
+      profileSource: "router",
+      skipped: [],
+    });
+
     // 5. Project default level applies when task has no profile
     const r5 = resolveRunSelection({
       projectDefaultLevel: "standard",

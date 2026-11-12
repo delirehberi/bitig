@@ -1,5 +1,8 @@
 import { Hono } from "hono";
 import {
+  AI_ROUTER_BASE_URL_MAX,
+  AI_ROUTER_MODEL_MAX,
+  AiRouterApiStyleSchema,
   IdSchema,
   NotFoundError,
   OrganisationRoleSchema,
@@ -28,7 +31,15 @@ import { ForbiddenRoleError } from "../auth";
 import { generateOpaqueToken, sha256Hex } from "../auth-crypto";
 import { buildInvitationEmail } from "../mailer";
 import { disconnectRealtimeUser } from "../realtime";
-import { validateAndSaveOrgRunLevels } from "../t3/service";
+import { decryptT3Token, encryptT3Token } from "../t3/crypto";
+import {
+  buildEffortValuesByLevel,
+  formatOrgAiRouterSettingsResponse,
+  testAiRouterEndpoint,
+  validateAiRouterBaseUrl,
+  validateAiRouterModel,
+} from "../t3/router";
+import { readCachedCapabilitiesForOrg, validateAndSaveOrgRunLevels } from "../t3/service";
 import { handleT3RouteError } from "./t3";
 
 const createOrgBodySchema = z.object({
@@ -552,6 +563,253 @@ orgsRouter.put("/:id/run-levels", async (c) => {
   } catch (err) {
     return handleT3RouteError(err, c);
   }
+});
+
+const putAiRouterBodySchema = z.strictObject({
+  baseUrl: z.string().trim().min(1).max(AI_ROUTER_BASE_URL_MAX).optional(),
+  model: z.string().trim().min(1).max(AI_ROUTER_MODEL_MAX).optional(),
+  apiToken: z.string().nullable().optional(),
+  clearToken: z.boolean().optional(),
+  apiStyle: AiRouterApiStyleSchema.optional(),
+  enabled: z.boolean().optional(),
+});
+
+const testAiRouterBodySchema = z
+  .strictObject({
+    baseUrl: z.string().trim().min(1).max(AI_ROUTER_BASE_URL_MAX).optional(),
+    model: z.string().trim().min(1).max(AI_ROUTER_MODEL_MAX).optional(),
+    apiToken: z.string().min(1).optional(),
+    apiStyle: AiRouterApiStyleSchema.optional(),
+  })
+  .optional();
+
+orgsRouter.get("/:id/ai-router", async (c) => {
+  const user = c.get("user");
+  if (!user) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+  const idParam = c.req.param("id");
+  const { org, membership } = await resolveOrgForMember(c.env.DB, idParam, user.id);
+  const isBearerOrHeaderScoped =
+    Boolean(c.req.header("Authorization")?.startsWith("Bearer ")) ||
+    Boolean(c.req.header("X-Bitig-Org")?.trim());
+  if (isBearerOrHeaderScoped && c.get("orgId") && c.get("orgId") !== org.id) {
+    throw new NotFoundError("organisation", idParam);
+  }
+
+  const effectiveRole =
+    isBearerOrHeaderScoped && c.get("orgId") === org.id && c.get("orgRole")
+      ? (c.get("orgRole") ?? membership.role)
+      : membership.role;
+  if (!hasMinimumOrgRole(effectiveRole, "owner")) {
+    throw new ForbiddenRoleError("owner role required");
+  }
+
+  const store = new T3D1Store(c.env.DB, org.id);
+  const settings = await store.getAiRouterSettings();
+  return c.json(formatOrgAiRouterSettingsResponse(settings, org.id));
+});
+
+orgsRouter.put("/:id/ai-router", async (c) => {
+  const user = c.get("user");
+  if (!user) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+  const idParam = c.req.param("id");
+  const { org, membership } = await resolveOrgForMember(c.env.DB, idParam, user.id);
+  const isBearerOrHeaderScoped =
+    Boolean(c.req.header("Authorization")?.startsWith("Bearer ")) ||
+    Boolean(c.req.header("X-Bitig-Org")?.trim());
+  if (isBearerOrHeaderScoped && c.get("orgId") && c.get("orgId") !== org.id) {
+    throw new NotFoundError("organisation", idParam);
+  }
+
+  const effectiveRole =
+    isBearerOrHeaderScoped && c.get("orgId") === org.id && c.get("orgRole")
+      ? (c.get("orgRole") ?? membership.role)
+      : membership.role;
+  if (!hasMinimumOrgRole(effectiveRole, "owner")) {
+    throw new ForbiddenRoleError("owner role required");
+  }
+
+  const rawBody: unknown = await c.req.json().catch(() => null);
+  const parsed = putAiRouterBodySchema.safeParse(rawBody);
+  if (!parsed.success) {
+    return c.json({ error: "validation_error", details: parsed.error.issues }, 400);
+  }
+
+  const store = new T3D1Store(c.env.DB, org.id);
+  const existing = await store.getAiRouterSettingsRecord();
+
+  const rawBaseUrl = parsed.data.baseUrl ?? existing?.baseUrl ?? "";
+  const rawModel = parsed.data.model ?? existing?.model ?? "";
+  const baseUrl = validateAiRouterBaseUrl(rawBaseUrl);
+  const model = validateAiRouterModel(rawModel);
+
+  let encryptedApiToken: string | null | undefined;
+  let tokenIv: string | null | undefined;
+  let tokenLast4: string | null | undefined;
+  let clearToken = false;
+
+  if (parsed.data.clearToken === true || parsed.data.apiToken === null || parsed.data.apiToken === "") {
+    clearToken = true;
+    encryptedApiToken = null;
+    tokenIv = null;
+    tokenLast4 = null;
+  } else if (typeof parsed.data.apiToken === "string") {
+    const trimmedToken = parsed.data.apiToken.trim();
+    if (!trimmedToken) {
+      clearToken = true;
+      encryptedApiToken = null;
+      tokenIv = null;
+      tokenLast4 = null;
+    } else {
+      const encryptionKey = c.get("config").T3_ENCRYPTION_KEY;
+      if (!encryptionKey) {
+        return c.json(
+          { error: "configuration_error", message: "T3_ENCRYPTION_KEY is not configured" },
+          400,
+        );
+      }
+      const encrypted = await encryptT3Token(trimmedToken, encryptionKey);
+      encryptedApiToken = encrypted.ciphertext;
+      tokenIv = encrypted.iv;
+      tokenLast4 = trimmedToken.slice(-4);
+    }
+  }
+
+  const saved = await store.saveAiRouterSettings({
+    baseUrl,
+    model,
+    ...(parsed.data.apiStyle !== undefined
+      ? { apiStyle: parsed.data.apiStyle }
+      : existing?.apiStyle
+        ? { apiStyle: existing.apiStyle }
+        : {}),
+    ...(encryptedApiToken !== undefined ? { encryptedApiToken } : {}),
+    ...(tokenIv !== undefined ? { tokenIv } : {}),
+    ...(tokenLast4 !== undefined ? { tokenLast4 } : {}),
+    ...(clearToken ? { clearToken: true } : {}),
+    ...(parsed.data.enabled !== undefined
+      ? { enabled: parsed.data.enabled }
+      : existing !== undefined
+        ? { enabled: existing.enabled }
+        : {}),
+    updatedBy: user.id,
+  });
+
+  return c.json(formatOrgAiRouterSettingsResponse(saved, org.id));
+});
+
+orgsRouter.delete("/:id/ai-router", async (c) => {
+  const user = c.get("user");
+  if (!user) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+  const idParam = c.req.param("id");
+  const { org, membership } = await resolveOrgForMember(c.env.DB, idParam, user.id);
+  const isBearerOrHeaderScoped =
+    Boolean(c.req.header("Authorization")?.startsWith("Bearer ")) ||
+    Boolean(c.req.header("X-Bitig-Org")?.trim());
+  if (isBearerOrHeaderScoped && c.get("orgId") && c.get("orgId") !== org.id) {
+    throw new NotFoundError("organisation", idParam);
+  }
+
+  const effectiveRole =
+    isBearerOrHeaderScoped && c.get("orgId") === org.id && c.get("orgRole")
+      ? (c.get("orgRole") ?? membership.role)
+      : membership.role;
+  if (!hasMinimumOrgRole(effectiveRole, "owner")) {
+    throw new ForbiddenRoleError("owner role required");
+  }
+
+  const store = new T3D1Store(c.env.DB, org.id);
+  await store.deleteAiRouterSettings();
+  return c.json(formatOrgAiRouterSettingsResponse(undefined, org.id));
+});
+
+orgsRouter.post("/:id/ai-router/test", async (c) => {
+  const user = c.get("user");
+  if (!user) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+  const idParam = c.req.param("id");
+  const { org, membership } = await resolveOrgForMember(c.env.DB, idParam, user.id);
+  const isBearerOrHeaderScoped =
+    Boolean(c.req.header("Authorization")?.startsWith("Bearer ")) ||
+    Boolean(c.req.header("X-Bitig-Org")?.trim());
+  if (isBearerOrHeaderScoped && c.get("orgId") && c.get("orgId") !== org.id) {
+    throw new NotFoundError("organisation", idParam);
+  }
+
+  const effectiveRole =
+    isBearerOrHeaderScoped && c.get("orgId") === org.id && c.get("orgRole")
+      ? (c.get("orgRole") ?? membership.role)
+      : membership.role;
+  if (!hasMinimumOrgRole(effectiveRole, "owner")) {
+    throw new ForbiddenRoleError("owner role required");
+  }
+
+  const rawBody: unknown = await c.req.json().catch(() => undefined);
+  const parsed = testAiRouterBodySchema.safeParse(rawBody === null ? undefined : rawBody);
+  if (!parsed.success) {
+    return c.json({ error: "validation_error", details: parsed.error.issues }, 400);
+  }
+
+  const store = new T3D1Store(c.env.DB, org.id);
+  const existing = await store.getAiRouterSettingsRecord();
+
+  const rawBaseUrl = parsed.data?.baseUrl ?? existing?.baseUrl ?? "";
+  const rawModel = parsed.data?.model ?? existing?.model ?? "";
+  const apiStyle = parsed.data?.apiStyle ?? existing?.apiStyle ?? "cloudflare-run";
+
+  const baseUrl = validateAiRouterBaseUrl(rawBaseUrl);
+  const model = validateAiRouterModel(rawModel);
+
+  let apiToken = parsed.data?.apiToken?.trim();
+  if (!apiToken) {
+    if (!existing?.encryptedApiToken || !existing.tokenIv) {
+      throw new ValidationError("aiRouter", [
+        {
+          code: "custom",
+          path: ["apiToken"],
+          message: "AI router API token is not set.",
+        },
+      ]);
+    }
+    const encryptionKey = c.get("config").T3_ENCRYPTION_KEY;
+    if (!encryptionKey) {
+      return c.json(
+        { error: "configuration_error", message: "T3_ENCRYPTION_KEY is not configured" },
+        400,
+      );
+    }
+    apiToken = await decryptT3Token(
+      {
+        ciphertext: existing.encryptedApiToken,
+        iv: existing.tokenIv,
+      },
+      encryptionKey,
+    );
+  }
+
+  const [levels, capabilities] = await Promise.all([
+    store.listRunLevels(),
+    readCachedCapabilitiesForOrg(store, caches.default),
+  ]);
+  const effortValuesByLevel = buildEffortValuesByLevel(levels, capabilities);
+
+  const result = await testAiRouterEndpoint({
+    baseUrl,
+    model,
+    apiToken,
+    apiStyle,
+    levels,
+    effortValuesByLevel,
+    fetchFn: c.get("t3Fetch"),
+  });
+
+  return c.json(result);
 });
 
 export const invitationsPublicRouter = new Hono<AppEnv>();

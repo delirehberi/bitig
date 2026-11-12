@@ -10,6 +10,7 @@ import {
   RespondT3PendingRequestInputSchema,
   RunLevelKeySchema,
   RunProfileConfidenceSchema,
+  RunProfileEffortSchema,
   RunProfileReasonSchema,
   RunProfileTouchesSchema,
   SendProjectT3MessageInputSchema,
@@ -58,6 +59,7 @@ import {
   sendProjectT3Message,
   settleProjectT3Thread,
   stopTaskT3Run,
+  suggestTaskRunProfile,
   T3ModelSwitchConflictError,
   type T3ServiceDeps,
 } from "../t3/service";
@@ -130,6 +132,7 @@ export function handleT3RouteError(err: unknown, c: Context<AppEnv>): Response {
 
 export const PutTaskRunProfileBodySchema = z.strictObject({
   level: RunLevelKeySchema.nullable().exactOptional(),
+  effort: RunProfileEffortSchema.nullable().exactOptional(),
   selection: T3ModelSelectionSchema.nullable().exactOptional(),
   touches: RunProfileTouchesSchema.nullable().exactOptional(),
   parallelSafe: z.boolean().nullable().exactOptional(),
@@ -709,6 +712,8 @@ export const t3TaskRunsRouter = new Hono<AppEnv>()
       return c.json({
         profile: result.profile ?? null,
         resolved: result.resolved,
+        ...(result.nextLevelUp ? { nextLevelUp: result.nextLevelUp } : {}),
+        routerEnabled: result.routerEnabled,
       });
     } catch (err) {
       return handleT3RouteError(err, c);
@@ -746,6 +751,7 @@ export const t3TaskRunsRouter = new Hono<AppEnv>()
       const saved = await deps.store.saveTaskRunProfile({
         taskId: task.id,
         ...(body.level !== undefined ? { level: body.level } : {}),
+        ...(body.effort !== undefined ? { effort: body.effort } : {}),
         ...(body.selection !== undefined ? { selection: body.selection } : {}),
         ...(body.touches !== undefined ? { touches: body.touches } : {}),
         ...(body.parallelSafe !== undefined ? { parallelSafe: body.parallelSafe } : {}),
@@ -754,12 +760,14 @@ export const t3TaskRunsRouter = new Hono<AppEnv>()
         ...(body.confidence !== undefined ? { confidence: body.confidence } : {}),
         updatedBy: c.get("user")?.id ?? c.req.header("X-Bitig-Actor") ?? "you",
       });
-      const { resolved } = await resolveTaskRunProfileWithSelection(deps, task.id, {
+      const { resolved, nextLevelUp, routerEnabled } = await resolveTaskRunProfileWithSelection(deps, task.id, {
         hostId: readHostIdQuery(c.req.query("hostId")),
       });
       return c.json({
         profile: saved,
         resolved,
+        ...(nextLevelUp ? { nextLevelUp } : {}),
+        routerEnabled,
       });
     },
   )
@@ -771,13 +779,37 @@ export const t3TaskRunsRouter = new Hono<AppEnv>()
     }
     const deps = buildServiceDeps(c);
     await deps.store.deleteTaskRunProfile(task.id);
-    const { resolved } = await resolveTaskRunProfileWithSelection(deps, task.id, {
+    const { resolved, nextLevelUp, routerEnabled } = await resolveTaskRunProfileWithSelection(deps, task.id, {
       hostId: readHostIdQuery(c.req.query("hostId")),
     });
     return c.json({
       profile: null,
       resolved,
+      ...(nextLevelUp ? { nextLevelUp } : {}),
+      routerEnabled,
     });
+  })
+  .post("/:id/run-profile/suggest", async (c) => {
+    const id = c.req.param("id");
+    const actor = c.get("user")?.id ?? c.req.header("X-Bitig-Actor") ?? c.req.header("X-Bitig-Agent") ?? "router";
+    try {
+      const result = await suggestTaskRunProfile(buildServiceDeps(c), id, {
+        actor,
+        hostId: readHostIdQuery(c.req.query("hostId")),
+        cache: caches.default,
+        signal: c.req.raw.signal,
+      });
+      return c.json({
+        profile: result.profile,
+        resolved: result.resolved,
+        suggestion: result.suggestion,
+        stored: result.stored,
+        routerEnabled: result.routerEnabled,
+        ...(result.nextLevelUp ? { nextLevelUp: result.nextLevelUp } : {}),
+      });
+    } catch (err) {
+      return handleT3RouteError(err, c);
+    }
   })
   .get("/:id/t3-run", async (c) => {
     const id = c.req.param("id");

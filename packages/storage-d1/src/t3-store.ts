@@ -1832,6 +1832,7 @@ export class T3D1Store {
 
     const now = input.now ?? Date.now();
     const nextLevel = input.level === undefined ? existing?.level : (input.level ?? undefined);
+    const nextEffort = input.effort === undefined ? existing?.effort : (input.effort ?? undefined);
     const nextSelection =
       input.selection === undefined ? existing?.selection : (input.selection ?? undefined);
     const nextTouches =
@@ -1850,6 +1851,7 @@ export class T3D1Store {
       TaskRunProfileSchema,
       {
         ...(nextLevel !== undefined ? { level: nextLevel } : {}),
+        ...(nextEffort !== undefined ? { effort: nextEffort } : {}),
         ...(nextSelection !== undefined ? { selection: nextSelection } : {}),
         ...(nextTouches !== undefined ? { touches: nextTouches } : {}),
         ...(nextParallelSafe !== undefined ? { parallelSafe: nextParallelSafe } : {}),
@@ -1860,15 +1862,19 @@ export class T3D1Store {
       "saveTaskRunProfile",
     );
 
+    let recordOptions: T3ModelSelectionOption[] | null = null;
+    if (parsedProfile.selection?.options && parsedProfile.selection.options.length > 0) {
+      recordOptions = [...parsedProfile.selection.options];
+    } else if (parsedProfile.effort !== undefined) {
+      recordOptions = [{ id: "effort", value: parsedProfile.effort }];
+    }
+
     const record: TaskRunProfileRecord = {
       taskId: input.taskId,
       levelKey: parsedProfile.level ?? null,
       providerInstanceId: parsedProfile.selection?.providerInstanceId ?? null,
       model: parsedProfile.selection?.model ?? null,
-      options:
-        parsedProfile.selection?.options && parsedProfile.selection.options.length > 0
-          ? [...parsedProfile.selection.options]
-          : null,
+      options: recordOptions,
       touches: parsedProfile.touches ? [...parsedProfile.touches] : null,
       parallelSafe: parsedProfile.parallelSafe ?? null,
       source: parsedProfile.source,
@@ -2304,6 +2310,7 @@ export interface StoredTaskRunProfile extends TaskRunProfile {
 export interface SaveTaskRunProfileInput {
   taskId: string;
   level?: string | null | undefined;
+  effort?: string | null | undefined;
   selection?: T3ModelSelection | null | undefined;
   touches?: readonly string[] | null | undefined;
   parallelSafe?: boolean | null | undefined;
@@ -2374,6 +2381,16 @@ function toStoredTaskRunProfile(row: TaskRunProfileRecord): StoredTaskRunProfile
         })
       : undefined;
 
+  const effortOption =
+    !selection?.success && row.options && row.options.length > 0
+      ? row.options.find(
+          (opt) =>
+            (opt.id === "effort" || opt.id === "reasoningEffort" || opt.id === "thinkingEffort") &&
+            typeof opt.value === "string" &&
+            opt.value.trim().length > 0,
+        )
+      : undefined;
+
   const touches =
     row.touches && row.touches.length > 0
       ? RunProfileTouchesSchema.safeParse(row.touches)
@@ -2381,6 +2398,9 @@ function toStoredTaskRunProfile(row: TaskRunProfileRecord): StoredTaskRunProfile
 
   const profile = TaskRunProfileSchema.parse({
     ...(row.levelKey !== null ? { level: row.levelKey } : {}),
+    ...(effortOption && typeof effortOption.value === "string"
+      ? { effort: effortOption.value.trim() }
+      : {}),
     ...(selection?.success ? { selection: selection.data } : {}),
     ...(touches?.success && touches.data.length > 0 ? { touches: touches.data } : {}),
     ...(row.parallelSafe !== null ? { parallelSafe: row.parallelSafe } : {}),

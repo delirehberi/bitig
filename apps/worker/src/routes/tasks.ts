@@ -16,12 +16,39 @@ import {
 import type { Context } from "hono";
 import type { AppEnv } from "../index";
 import { runInBackground } from "../background";
-import { forwardCommentToT3Run, handBackCompletedChildTask, settleTaskT3Run } from "../t3/service";
+import {
+  forwardCommentToT3Run,
+  handBackCompletedChildTask,
+  settleTaskT3Run,
+  suggestTaskRunProfile,
+} from "../t3/service";
 import { buildServiceDeps } from "./t3";
 
 const HTTP_CREATED = 201;
 const HTTP_NO_CONTENT = 204;
 const HTTP_BAD_REQUEST = 400;
+
+/**
+ * Suggests a run profile via the organisation's AI router when a task is approved and has no profile (#BIT-187).
+ * Approval never fails because of the router: errors are logged with context.
+ */
+async function suggestApprovedTaskProfileInBackground(c: Context<AppEnv>, taskId: string): Promise<void> {
+  if (c.get("customStorageFactory")) {
+    return;
+  }
+  const actor = c.get("user")?.id ?? c.req.header("X-Bitig-Actor") ?? "router";
+  const work = suggestTaskRunProfile(buildServiceDeps(c), taskId, {
+    actor,
+    onlyWhenUnprofiled: true,
+    cache: caches.default,
+  }).then(
+    () => undefined,
+    (error: unknown) => {
+      console.error("suggesting run profile for approved task failed", { taskId, error });
+    },
+  );
+  await runInBackground(c, work);
+}
 
 /**
  * Forwards a new comment to the task's T3 thread (#BIT-112, #BIT-166). Comment creation never fails
@@ -168,8 +195,12 @@ export const tasksRouter = new Hono<AppEnv>()
       const id = c.req.param("id");
       const patch = c.req.valid("json");
       const finishing = patch.status === "archived" || patch.status === "done";
-      const previous = finishing ? await storage.getTask(id) : null;
+      const approving = patch.pendingApproval === null;
+      const previous = finishing || approving ? await storage.getTask(id) : null;
       const updated = await storage.updateTask(id, patch, await statusChangeOptions(c, id, patch.status, "updateTask"));
+      if (approving && previous?.pendingApproval === true && !updated.pendingApproval) {
+        await suggestApprovedTaskProfileInBackground(c, updated.id);
+      }
       if (patch.status === "archived" && previous?.status !== "archived") {
         await settleArchivedTaskInBackground(c, updated.id);
       }

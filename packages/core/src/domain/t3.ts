@@ -330,6 +330,19 @@ export interface T3TaskRunLiveResponse {
   readonly pendingQuestions: T3PendingQuestion[];
   /** Why the thread stopped or failed (e.g. usage limit, credit exhaustion, runtime error, #BIT-132). */
   readonly stopReason?: string | undefined;
+  /**
+   * When a run ended `failed` or the task has `needsHuman` set and a higher level exists in the
+   * organisation's ordered run levels, offers "Retry on the next level up" to a person (#BIT-187).
+   */
+  readonly nextLevelUp?:
+    | {
+        readonly key: string;
+        readonly label: string;
+        readonly description: string;
+        readonly order: number;
+        readonly selection?: T3ModelSelection | undefined;
+      }
+    | undefined;
 }
 
 export interface T3ThreadListItem {

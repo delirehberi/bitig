@@ -23,6 +23,7 @@ import {
   ReportT3GitMetadataInputSchema,
   type ReportT3GitMetadataInput,
   RunLevelKeySchema,
+  RunProfileEffortSchema,
   RunProfileReasonSchema,
   RunProfileTouchesSchema,
   SaveCheckpointInputSchema,
@@ -67,6 +68,7 @@ import {
   type OperationOptions,
   type ResolvedRunSelection,
   type RunLevel,
+  type RunLevelKey,
   type RunProfileSource,
   type StorageProvider,
   type T3ModelSelection,
@@ -101,12 +103,15 @@ const WEBHOOK_MAPPING_DESCRIPTION =
   "Optional JSON dot-path mappings from incoming payload fields to task fields, e.g. { title: 'issue.fields.summary', description: 'issue.fields.description', priority: 'issue.fields.priority.name', labels: 'issue.fields.labels' }.";
 
 const RUN_PROFILE_DESCRIPTION =
-  "Optional run profile for the task: { level, touches, parallelSafe, reason }. Stored with source 'agent' and never overwrites a profile set manually by a person.";
+  "Optional run profile for the task: { level, effort, touches, parallelSafe, reason }. Stored with source 'agent' and never overwrites a profile set manually by a person.";
 
 const AgentRunProfileInputSchema = z
   .strictObject({
     level: RunLevelKeySchema.optional().describe(
       "Organisation run level key (call list_run_levels to inspect valid keys), e.g. 'cheap', 'standard', 'strong'",
+    ),
+    effort: RunProfileEffortSchema.optional().describe(
+      "Optional effort value supported by the level's model, e.g. 'low', 'medium', 'high'",
     ),
     selection: T3ModelSelectionSchema.optional().describe(
       "Optional explicit model selection override ({ providerInstanceId, model, options })",
@@ -170,12 +175,31 @@ export interface UnregisterProjectHostFolderToolResult {
 export interface SaveMcpTaskRunProfileInput {
   readonly taskId: string;
   readonly level?: string | null | undefined;
+  readonly effort?: string | null | undefined;
   readonly selection?: T3ModelSelection | null | undefined;
   readonly touches?: readonly string[] | null | undefined;
   readonly parallelSafe?: boolean | null | undefined;
   readonly reason?: string | null | undefined;
   readonly source: RunProfileSource;
   readonly actor?: string | undefined;
+}
+
+export interface McpRunProfileSuggestion {
+  readonly level: RunLevelKey;
+  readonly effort?: string | undefined;
+  readonly touches: readonly string[];
+  readonly parallelSafe: boolean;
+  readonly reason: string;
+  readonly confidence: number;
+}
+
+export interface SuggestMcpTaskRunProfileResult {
+  readonly profile: TaskRunProfile | null;
+  readonly resolved: ResolvedRunSelection;
+  readonly suggestion: McpRunProfileSuggestion | null;
+  readonly stored: boolean;
+  readonly routerEnabled: boolean;
+  readonly nextLevelUp?: RunLevel | undefined;
 }
 
 export interface RegisterBitigToolsOptions {
@@ -225,12 +249,14 @@ export interface RegisterBitigToolsOptions {
     | ((taskId: string) => Promise<{
         readonly profile: TaskRunProfile | null;
         readonly resolved: ResolvedRunSelection;
+        readonly nextLevelUp?: RunLevel | undefined;
       }>)
     | undefined;
   readonly resolveTaskRunProfile?:
     | ((taskId: string) => Promise<{
         readonly profile: TaskRunProfile | null;
         readonly resolved: ResolvedRunSelection;
+        readonly nextLevelUp?: RunLevel | undefined;
       }>)
     | undefined;
   /**
@@ -238,6 +264,16 @@ export interface RegisterBitigToolsOptions {
    */
   readonly saveTaskRunProfile?:
     | ((input: SaveMcpTaskRunProfileInput) => Promise<TaskRunProfile | null>)
+    | undefined;
+  /**
+   * Optional callback invoking the organisation's AI router to suggest a run profile for `taskId` (#BIT-187).
+   */
+  readonly suggestTaskRunProfile?:
+    | ((input: {
+        readonly taskId: string;
+        readonly actor?: string | undefined;
+        readonly signal?: AbortSignal | undefined;
+      }) => Promise<SuggestMcpTaskRunProfileResult>)
     | undefined;
 }
 
@@ -351,6 +387,7 @@ export function registerBitigTools(
   async function getRunProfileAndResolved(taskId: string): Promise<{
     readonly profile: TaskRunProfile | null;
     readonly resolved: ResolvedRunSelection;
+    readonly nextLevelUp?: RunLevel | undefined;
   }> {
     const resolver = options?.getTaskRunProfileWithSelection ?? options?.resolveTaskRunProfile;
     if (resolver) {
@@ -376,6 +413,7 @@ export function registerBitigTools(
       return await options.saveTaskRunProfile({
         taskId,
         level: input.level,
+        effort: input.effort,
         selection: input.selection,
         touches: input.touches,
         parallelSafe: input.parallelSafe,
@@ -393,6 +431,11 @@ export function registerBitigTools(
         ? { level: input.level }
         : existing?.level !== undefined
           ? { level: existing.level }
+          : {}),
+      ...(input.effort !== undefined
+        ? { effort: input.effort }
+        : existing?.effort !== undefined
+          ? { effort: existing.effort }
           : {}),
       ...(input.selection !== undefined
         ? { selection: input.selection }
@@ -789,6 +832,7 @@ export function registerBitigTools(
                   : {}),
               }
             : null,
+          ...(runSelection.nextLevelUp ? { nextLevelUp: runSelection.nextLevelUp } : {}),
         });
       } catch (err) {
         return formatErrorResult(err);
@@ -1471,6 +1515,60 @@ export function registerBitigTools(
       try {
         const levels = await getRunLevels();
         return formatSuccessResult(levels);
+      } catch (err) {
+        return formatErrorResult(err);
+      }
+    },
+  );
+
+  // 21. suggest_run_profile
+  server.registerTool(
+    "suggest_run_profile",
+    {
+      description:
+        "Suggest a run profile (level, effort, touches, parallelSafe, reason, confidence) for a task using the organisation's configured AI router. Stores the suggestion with source 'router' when valid and never overwrites a 'manual' or 'agent' profile.",
+      inputSchema: {
+        taskId: TASK_REF.optional().describe("Task ID or ticket code, e.g. BIT-12"),
+        id: TASK_REF.optional().describe("Alias for taskId"),
+      },
+    },
+    async (args, extra) => {
+      try {
+        const actor = resolveMcpActor(server, extra, options?.fallbackActor);
+        const opts: OperationOptions = { signal: extra.signal, actor };
+        const rawRef = args.taskId ?? args.id;
+        if (!rawRef) {
+          throw new ValidationError("suggest_run_profile", [
+            {
+              code: "custom",
+              path: ["taskId"],
+              message: "taskId is required",
+              input: rawRef,
+            },
+          ]);
+        }
+        const taskId = await resolveTaskRef(storage, rawRef, opts);
+        const task = await storage.getTask(taskId, opts);
+        if (!task) {
+          throw new NotFoundError("task", rawRef);
+        }
+        if (!options?.suggestTaskRunProfile) {
+          const { profile, resolved, nextLevelUp } = await getRunProfileAndResolved(taskId);
+          return formatSuccessResult({
+            profile,
+            resolved,
+            suggestion: null,
+            stored: false,
+            routerEnabled: false,
+            ...(nextLevelUp ? { nextLevelUp } : {}),
+          });
+        }
+        const result = await options.suggestTaskRunProfile({
+          taskId,
+          actor,
+          signal: extra.signal,
+        });
+        return formatSuccessResult(result);
       } catch (err) {
         return formatErrorResult(err);
       }

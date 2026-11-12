@@ -19,6 +19,7 @@ import {
   buildT3SubagentEndedComment,
   buildT3SubagentEndedPrompt,
   buildT3SubagentStartedComment,
+  canOverwriteRunProfile,
   canSwitchT3Model,
   checkStatusChange,
   computeT3ConnectionStatus,
@@ -30,6 +31,7 @@ import {
   formatT3ModelSelection,
   isActiveAgentRunState,
   isSameT3ModelSelection,
+  nextLevelUp,
   parseT3RunCommentCommand,
   resolveRunSelection,
   resolveTaskRef,
@@ -69,6 +71,12 @@ import {
 import type { SaveRunLevelsInput, T3ConnectionRecord, T3D1Store } from "@bitig/storage-d1";
 import { T3McpClient, T3McpError } from "./client";
 import { decryptT3Token } from "./crypto";
+import {
+  HttpRunProfileRouter,
+  buildEffortValuesByLevel,
+  type RunProfileRouter,
+  type RunProfileSuggestion,
+} from "./router";
 
 /** How long the model list from `orchestrator_capabilities` is reused before T3 is asked again. */
 export const T3_CAPABILITIES_CACHE_TTL_SECONDS = 5 * 60;
@@ -98,6 +106,7 @@ export interface T3ServiceDeps {
   storage: StorageProvider;
   encryptionKey: string;
   fetchFn?: typeof fetch | undefined;
+  runProfileRouter?: RunProfileRouter | undefined;
   publishRealtime?: ((event: RealtimeEvent) => Promise<void>) | undefined;
   now?: (() => number) | undefined;
 }
@@ -1216,6 +1225,46 @@ async function persistLiveGitMetadata(deps: T3ServiceDeps, run: AgentRun, metada
   return (await deps.store.updateAgentRunGitMetadata(run.taskId, run.id, run.threadId, metadata, now)) ?? run;
 }
 
+async function resolveNextLevelUpForTask(
+  deps: Pick<T3ServiceDeps, "store" | "storage" | "now">,
+  taskId: string,
+  run: AgentRun | null,
+  hostId?: string,
+): Promise<RunLevel | undefined> {
+  const task = await deps.storage.getTask(taskId);
+  const isFailedOrNeedsHuman = run?.state === "failed" || Boolean(task?.needsHuman);
+  if (!isFailedOrNeedsHuman) {
+    return undefined;
+  }
+
+  const now = deps.now ? deps.now() : Date.now();
+  const [profile, projectSettings, levels] = await Promise.all([
+    deps.store.getTaskRunProfile(taskId),
+    task ? deps.store.getProjectRunSettings(task.projectId) : Promise.resolve(undefined),
+    deps.store.listRunLevels({
+      ...(hostId ? { hostId } : {}),
+      now,
+    }),
+  ]);
+
+  let currentLevelKey =
+    run?.levelKey ??
+    profile?.level ??
+    projectSettings?.defaultRunLevel;
+
+  if (!currentLevelKey && run?.model) {
+    const matchedLevel = levels.find((l) => l.selection?.model.trim() === run.model?.trim());
+    if (matchedLevel) {
+      currentLevelKey = matchedLevel.key;
+    }
+  }
+
+  if (!currentLevelKey) {
+    return undefined;
+  }
+  return nextLevelUp(levels, currentLevelKey);
+}
+
 /**
  * Checks the live T3 thread status when a task is opened.
  * Updates run state and Git metadata in D1 and broadcasts `agent_run.updated` if changed,
@@ -1225,12 +1274,20 @@ export async function getTaskT3RunLiveStatus(
   deps: T3ServiceDeps,
   taskId: string,
 ): Promise<T3TaskRunLiveResponse> {
+  const withNextLevel = async (
+    base: T3TaskRunLiveResponse,
+    hostId?: string,
+  ): Promise<T3TaskRunLiveResponse> => {
+    const nextLevel = await resolveNextLevelUpForTask(deps, taskId, base.run, hostId);
+    return nextLevel ? { ...base, nextLevelUp: nextLevel } : base;
+  };
+
   let existingRun = await deps.store.getAgentRunByTaskId(taskId);
   if (!existingRun) {
-    return {
+    return await withNextLevel({
       run: null,
       pendingQuestions: [],
-    };
+    });
   }
 
   const now = deps.now ? deps.now() : Date.now();
@@ -1254,10 +1311,13 @@ export async function getTaskT3RunLiveStatus(
       if (queuedRun.state !== existingRun.state && deps.publishRealtime) {
         await deps.publishRealtime({ type: "agent_run.updated", run: queuedRun }).catch(() => undefined);
       }
-      return {
-        run: queuedRun,
-        pendingQuestions: [],
-      };
+      return await withNextLevel(
+        {
+          run: queuedRun,
+          pendingQuestions: [],
+        },
+        targetHostId,
+      );
     }
     const offlineRun =
       existingRun.state === "offline"
@@ -1266,10 +1326,13 @@ export async function getTaskT3RunLiveStatus(
     if (offlineRun.state !== existingRun.state && deps.publishRealtime) {
       await deps.publishRealtime({ type: "agent_run.updated", run: offlineRun }).catch(() => undefined);
     }
-    return {
-      run: offlineRun,
-      pendingQuestions: [],
-    };
+    return await withNextLevel(
+      {
+        run: offlineRun,
+        pendingQuestions: [],
+      },
+      targetHostId,
+    );
   }
 
   if (hasPendingBefore || existingRun.state === "queued") {
@@ -1286,10 +1349,13 @@ export async function getTaskT3RunLiveStatus(
   }
 
   if ((await deps.store.requests.hasPending(taskId)) || existingRun.threadId.startsWith("queued:")) {
-    return {
-      run: (await deps.store.getAgentRunByTaskId(taskId)) ?? existingRun,
-      pendingQuestions: [],
-    };
+    return await withNextLevel(
+      {
+        run: (await deps.store.getAgentRunByTaskId(taskId)) ?? existingRun,
+        pendingQuestions: [],
+      },
+      targetHostId,
+    );
   }
 
   try {
@@ -1315,19 +1381,25 @@ export async function getTaskT3RunLiveStatus(
     }
     await afterRunStateChange(deps, existingRun, updatedRun, live.stopReason);
 
-    return {
-      run: updatedRun,
-      ...(live.pendingRequestId ? { pendingRequestId: live.pendingRequestId } : {}),
-      pendingQuestions: live.pendingQuestions,
-      ...(live.stopReason ? { stopReason: live.stopReason } : {}),
-    };
+    return await withNextLevel(
+      {
+        run: updatedRun,
+        ...(live.pendingRequestId ? { pendingRequestId: live.pendingRequestId } : {}),
+        pendingQuestions: live.pendingQuestions,
+        ...(live.stopReason ? { stopReason: live.stopReason } : {}),
+      },
+      targetHostId,
+    );
   } catch (err) {
     if (err instanceof T3McpError) {
       if (await deps.store.requests.hasPending(taskId)) {
-        return {
-          run: (await deps.store.getAgentRunByTaskId(taskId)) ?? existingRun,
-          pendingQuestions: [],
-        };
+        return await withNextLevel(
+          {
+            run: (await deps.store.getAgentRunByTaskId(taskId)) ?? existingRun,
+            pendingQuestions: [],
+          },
+          targetHostId,
+        );
       }
       const offlineRun =
         existingRun.state === "offline"
@@ -1336,10 +1408,13 @@ export async function getTaskT3RunLiveStatus(
       if (offlineRun.state !== existingRun.state && deps.publishRealtime) {
         await deps.publishRealtime({ type: "agent_run.updated", run: offlineRun }).catch(() => undefined);
       }
-      return {
-        run: offlineRun,
-        pendingQuestions: [],
-      };
+      return await withNextLevel(
+        {
+          run: offlineRun,
+          pendingQuestions: [],
+        },
+        targetHostId,
+      );
     }
     throw err;
   }
@@ -2866,25 +2941,248 @@ export async function resolveTaskRunProfileWithSelection(
 ): Promise<{
   readonly profile: TaskRunProfile | null;
   readonly resolved: ResolvedRunSelection;
+  readonly nextLevelUp?: RunLevel | undefined;
+  readonly routerEnabled: boolean;
 }> {
   const taskId = await resolveTaskRef(deps.storage, taskRef);
   const task = await deps.storage.getTask(taskId);
   if (!task) {
     throw new NotFoundError("task", taskId);
   }
-  const [profile, mapping] = await Promise.all([
+  const [profile, mapping, existingRun, routerSettings] = await Promise.all([
     deps.store.getTaskRunProfile(task.id),
     deps.store.getProjectMapping(task.projectId),
+    deps.store.getAgentRunByTaskId(task.id).catch(() => undefined),
+    deps.store.getAiRouterSettings().catch(() => undefined),
+  ]);
+  const targetHostId = options?.hostId ?? existingRun?.hostId ?? mapping?.hostId;
+  const now = deps.now ? deps.now() : Date.now();
+  const [resolved, nextLevel] = await Promise.all([
+    resolveTaskLaunchRunSelection(deps, {
+      taskId: task.id,
+      projectId: task.projectId,
+      hostId: targetHostId,
+      now,
+    }),
+    resolveNextLevelUpForTask(deps, task.id, existingRun ?? null, targetHostId),
+  ]);
+  const routerEnabled = Boolean(
+    routerSettings &&
+      routerSettings.enabled &&
+      routerSettings.baseUrl.trim().length > 0 &&
+      routerSettings.model.trim().length > 0 &&
+      routerSettings.hasToken,
+  );
+  return {
+    profile: profile ?? null,
+    resolved,
+    ...(nextLevel ? { nextLevelUp: nextLevel } : {}),
+    routerEnabled,
+  };
+}
+
+export async function createOrgRunProfileRouter(
+  deps: Pick<T3ServiceDeps, "store" | "encryptionKey" | "fetchFn" | "runProfileRouter">,
+): Promise<RunProfileRouter | null> {
+  if (deps.runProfileRouter) {
+    return deps.runProfileRouter;
+  }
+  if (!deps.encryptionKey) {
+    return null;
+  }
+  const record = await deps.store.getAiRouterSettingsRecord().catch(() => undefined);
+  if (
+    !record ||
+    !record.enabled ||
+    !record.baseUrl.trim() ||
+    !record.model.trim() ||
+    !record.encryptedApiToken ||
+    !record.tokenIv
+  ) {
+    return null;
+  }
+
+  let apiToken: string;
+  try {
+    apiToken = await decryptT3Token(
+      {
+        ciphertext: record.encryptedApiToken,
+        iv: record.tokenIv,
+      },
+      deps.encryptionKey,
+    );
+  } catch {
+    return null;
+  }
+  if (!apiToken.trim()) {
+    return null;
+  }
+
+  return new HttpRunProfileRouter({
+    baseUrl: record.baseUrl,
+    model: record.model,
+    apiToken,
+    apiStyle: record.apiStyle,
+    enabled: record.enabled,
+    fetchFn: deps.fetchFn,
+  });
+}
+
+export async function readCachedCapabilitiesForOrg(
+  store: T3D1Store,
+  cache?: Cache,
+): Promise<T3ModelCapability[]> {
+  if (!cache) return [];
+  try {
+    const connections = await store.listConnections();
+    const collected: T3ModelCapability[] = [];
+    for (const connection of connections) {
+      const key = await capabilitiesCacheKey(connection);
+      const cached = await cache.match(key).catch(() => undefined);
+      if (cached) {
+        const body: unknown = await cached.json().catch(() => undefined);
+        if (Array.isArray(body)) {
+          collected.push(...(body as T3ModelCapability[]));
+        }
+      }
+    }
+    return collected;
+  } catch {
+    return [];
+  }
+}
+
+export interface SuggestTaskRunProfileOptions {
+  readonly onlyWhenUnprofiled?: boolean | undefined;
+  readonly actor?: string | undefined;
+  readonly hostId?: string | undefined;
+  readonly cache?: Cache | undefined;
+  readonly signal?: AbortSignal | undefined;
+}
+
+export interface SuggestTaskRunProfileResult {
+  readonly profile: TaskRunProfile | null;
+  readonly resolved: ResolvedRunSelection;
+  readonly suggestion: RunProfileSuggestion | null;
+  readonly stored: boolean;
+  readonly suggested: boolean;
+  readonly nextLevelUp?: RunLevel | undefined;
+  readonly routerEnabled: boolean;
+}
+
+/**
+ * Runs the organisation's AI router for a task (on approval when unprofiled, or on demand via
+ * `POST /api/tasks/:id/run-profile/suggest` and MCP `suggest_run_profile`, #BIT-187).
+ *
+ * - Stored with `source: "router"`; never overwrites a `manual` or `agent` profile.
+ * - On failure, timeout, non-2xx, invalid JSON, or low confidence, no profile is stored so the
+ *   project default level applies.
+ */
+export async function suggestTaskRunProfile(
+  deps: T3ServiceDeps,
+  taskRef: string,
+  options?: SuggestTaskRunProfileOptions,
+): Promise<SuggestTaskRunProfileResult> {
+  const taskId = await resolveTaskRef(deps.storage, taskRef);
+  const task = await deps.storage.getTask(taskId);
+  if (!task) {
+    throw new NotFoundError("task", taskId);
+  }
+
+  const existingProfile = await deps.store.getTaskRunProfile(task.id);
+  if (
+    (options?.onlyWhenUnprofiled && existingProfile !== undefined) ||
+    (existingProfile !== undefined && !canOverwriteRunProfile(existingProfile, "router"))
+  ) {
+    const current = await resolveTaskRunProfileWithSelection(deps, task.id, {
+      hostId: options?.hostId,
+    });
+    return {
+      ...current,
+      suggestion: null,
+      stored: false,
+      suggested: false,
+    };
+  }
+
+  const router = await createOrgRunProfileRouter(deps);
+  if (!router) {
+    const current = await resolveTaskRunProfileWithSelection(deps, task.id, {
+      hostId: options?.hostId,
+    });
+    return {
+      ...current,
+      suggestion: null,
+      stored: false,
+      suggested: false,
+    };
+  }
+
+  const now = deps.now ? deps.now() : Date.now();
+  const [projectSettings, mapping, cachedCaps] = await Promise.all([
+    deps.store.getProjectRunSettings(task.projectId),
+    deps.store.getProjectMapping(task.projectId),
+    readCachedCapabilitiesForOrg(deps.store, options?.cache),
   ]);
   const targetHostId = options?.hostId ?? mapping?.hostId;
-  const now = deps.now ? deps.now() : Date.now();
-  const resolved = await resolveTaskLaunchRunSelection(deps, {
-    taskId: task.id,
-    projectId: task.projectId,
-    hostId: targetHostId,
+  const levels = await deps.store.listRunLevels({
+    ...(targetHostId ? { hostId: targetHostId } : {}),
     now,
   });
-  return { profile: profile ?? null, resolved };
+  const effortValuesByLevel = buildEffortValuesByLevel(levels, cachedCaps);
+
+  const suggestion = await router.suggest(
+    {
+      title: task.title,
+      description: task.description,
+      checklist: task.checklist,
+      labels: task.labels,
+    },
+    {
+      levels,
+      effortValuesByLevel,
+      serialPaths: projectSettings?.serialPaths ?? [],
+      ...(options?.signal ? { signal: options.signal } : {}),
+    },
+  );
+
+  if (!suggestion) {
+    const current = await resolveTaskRunProfileWithSelection(deps, task.id, {
+      hostId: targetHostId,
+    });
+    return {
+      ...current,
+      suggestion: null,
+      stored: false,
+      suggested: false,
+    };
+  }
+
+  const saved = await deps.store.saveTaskRunProfile({
+    taskId: task.id,
+    level: suggestion.level,
+    effort: suggestion.effort ?? null,
+    touches: suggestion.touches,
+    parallelSafe: suggestion.parallelSafe,
+    source: "router",
+    reason: suggestion.reason,
+    confidence: suggestion.confidence,
+    updatedBy: options?.actor ?? "router",
+    now,
+  });
+
+  const updated = await resolveTaskRunProfileWithSelection(deps, task.id, {
+    hostId: targetHostId,
+  });
+
+  const wasStored = saved.source === "router";
+  return {
+    ...updated,
+    profile: saved,
+    suggestion,
+    stored: wasStored,
+    suggested: wasStored,
+  };
 }
 
 export interface ValidateAndSaveOrgRunLevelsInput {
@@ -3011,4 +3309,5 @@ export async function validateAndSaveOrgRunLevels(
   ]);
   return { levels, models };
 }
+
 
