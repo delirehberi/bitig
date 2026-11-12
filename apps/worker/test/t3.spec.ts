@@ -360,6 +360,8 @@ interface MockT3ServerState {
   threadList: Record<string, unknown>[];
   /** Thread ID the next `t3_thread_launch` returns; defaults to `thread-abc-123`. */
   launchThreadId?: string;
+  /** Optional FIFO queue of thread IDs returned by consecutive `t3_thread_launch` calls (#BIT-189). */
+  launchThreadIds?: string[];
   /** Raw `items` returned by `t3_thread_read` (#BIT-131). */
   threadItems?: unknown[];
   /** Override `hasMore` on `t3_thread_read` (#BIT-131). */
@@ -559,7 +561,7 @@ function createMockT3Fetch(state: MockT3ServerState): typeof fetch {
                 ],
               };
             } else if (toolName === "t3_thread_launch") {
-              const launchedId = state.launchThreadId ?? "thread-abc-123";
+              const launchedId = state.launchThreadIds?.shift() ?? state.launchThreadId ?? "thread-abc-123";
               payload = {
                 threadId: launchedId,
                 link: `${origin}/threads/${launchedId}`,
@@ -2635,6 +2637,417 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
     expect(String(sendCallFailure?.arguments.message)).toContain(
       "The T3 session of child task #BIT-3 failed before the task was done.",
     );
+  });
+
+  it("orchestrates parallel child batches via start_ready_children and start_t3_thread, enforces overlap/serial/cap/worktree gates, and resumes the umbrella once when all batch children end (#BIT-189)", async () => {
+    await connectT3Host();
+    const project = await (
+      await request("/api/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Bitig", key: "BIT" }),
+      })
+    ).json<Project>();
+    await request(`/api/t3/mappings/${project.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ t3ProjectId: "t3-proj-bitig", t3ProjectTitle: "bitig" }),
+    });
+
+    // Configure project run settings: maxParallelChildren: 2, serialPaths: ["packages/storage-d1/migrations/**"]
+    const putSettingsRes = await request(`/api/projects/${project.id}/run-settings`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        maxParallelChildren: 2,
+        serialPaths: ["packages/storage-d1/migrations/**"],
+      }),
+    });
+    expect(putSettingsRes.status).toBe(200);
+
+    const mcpApp = new Hono<AppEnv>();
+    const config = parseConfig(env);
+    mcpApp.use("*", async (c, next) => {
+      c.set("config", config);
+      c.set("orgId", DEFAULT_ORGANISATION_ID);
+      c.set("orgRole", "owner");
+      c.set("storage", new D1Storage({ db: env.DB, orgId: DEFAULT_ORGANISATION_ID }));
+      c.set("t3Fetch", createMockT3Fetch(mockState));
+      await next();
+    });
+    mcpApp.route("/mcp", mcpRouter);
+
+    async function callMcpTool(name: string, args: Record<string, unknown>): Promise<{ isError?: boolean; text: string }> {
+      const res = await mcpApp.request(
+        `${BASE_URL}/mcp`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json, text/event-stream",
+            "X-Bitig-Agent": "claude-umbrella",
+          },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "tools/call",
+            params: { name, arguments: args },
+          }),
+        },
+        env,
+      );
+      expect(res.status).toBe(200);
+      const raw = await res.text();
+      const dataLine = raw
+        .split("\n")
+        .find((line) => line.startsWith("data: "));
+      const payload = JSON.parse(dataLine ? dataLine.slice(6) : raw) as {
+        result?: { isError?: boolean; content?: { text?: string }[] };
+      };
+      return {
+        ...(payload.result?.isError ? { isError: true } : {}),
+        text: payload.result?.content?.[0]?.text ?? "",
+      };
+    }
+
+    // BIT-1: Umbrella task
+    const umbrella = await (
+      await request("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: project.id, title: "Parallel Umbrella" }),
+      })
+    ).json<Task>();
+
+    // BIT-2: Disjoint child A (packages/core/**)
+    const childA = await (
+      await request("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: project.id,
+          title: "Child A (core)",
+          dependsOn: [umbrella.id],
+        }),
+      })
+    ).json<Task>();
+    await request(`/api/tasks/${childA.id}/run-profile`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        touches: ["packages/core/**"],
+        parallelSafe: true,
+        reason: "Core domain changes",
+      }),
+    });
+
+    // BIT-3: Overlapping with BIT-2 (packages/core/src/**)
+    const childOverlap = await (
+      await request("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: project.id,
+          title: "Child Overlap (core/src)",
+          dependsOn: [umbrella.id],
+        }),
+      })
+    ).json<Task>();
+    await request(`/api/tasks/${childOverlap.id}/run-profile`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        touches: ["packages/core/src/**"],
+        parallelSafe: true,
+        reason: "Overlaps with Child A",
+      }),
+    });
+
+    // BIT-4: Disjoint child B (packages/mcp-tools/**)
+    const childB = await (
+      await request("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: project.id,
+          title: "Child B (mcp-tools)",
+          dependsOn: [umbrella.id],
+        }),
+      })
+    ).json<Task>();
+    await request(`/api/tasks/${childB.id}/run-profile`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        touches: ["packages/mcp-tools/**"],
+        parallelSafe: true,
+        reason: "MCP tool changes",
+      }),
+    });
+
+    // BIT-5: Disjoint child C (apps/web/**) — exceeds cap of 2 when A and B are picked
+    const childC = await (
+      await request("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: project.id,
+          title: "Child C (web)",
+          dependsOn: [umbrella.id],
+        }),
+      })
+    ).json<Task>();
+    await request(`/api/tasks/${childC.id}/run-profile`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        touches: ["apps/web/**"],
+        parallelSafe: true,
+        reason: "Web UI changes",
+      }),
+    });
+
+    // BIT-6: Serial path child (packages/storage-d1/migrations/**) — must run alone
+    const childSerial = await (
+      await request("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: project.id,
+          title: "Child Serial (migrations)",
+          dependsOn: [umbrella.id],
+        }),
+      })
+    ).json<Task>();
+    await request(`/api/tasks/${childSerial.id}/run-profile`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        touches: ["packages/storage-d1/migrations/0009.sql"],
+        parallelSafe: true,
+        reason: "D1 migration",
+      }),
+    });
+
+    // BIT-7: Unprofiled child (no declared touches) — must run alone
+    await request("/api/tasks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        projectId: project.id,
+        title: "Child Unprofiled",
+        dependsOn: [umbrella.id],
+      }),
+    });
+
+    // 1. Start umbrella BIT-1
+    mockState.launchThreadIds = ["thread-umbrella"];
+    const startUmbrellaRes = await request(`/api/tasks/${umbrella.id}/t3-run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workspaceStrategy: "worktree" }),
+    });
+    expect(startUmbrellaRes.status).toBe(201);
+
+    // 2. Refusal gate on workspaceStrategy: "root" when parentTaskId is passed
+    const rootRefusal = await callMcpTool("start_t3_thread", {
+      taskId: "BIT-2",
+      parentTaskId: "BIT-1",
+      workspaceStrategy: "root",
+    });
+    expect(rootRefusal.isError).toBe(true);
+    expect(rootRefusal.text).toContain('workspaceStrategy: "worktree"');
+
+    // 3. Call start_ready_children({ parentTaskId: "BIT-1" }) -> starts BIT-2 and BIT-4, skips BIT-3 (overlap), BIT-5/6/7 (cap)
+    mockState.launchThreadIds = ["thread-child-a", "thread-child-b"];
+    const batchOneRes = await callMcpTool("start_ready_children", {
+      parentTaskId: "BIT-1",
+    });
+    expect(batchOneRes.isError, batchOneRes.text).toBeUndefined();
+    const batchOne = JSON.parse(batchOneRes.text) as {
+      started: { code: string; threadId: string; workspaceStrategy: string }[];
+      skipped: { code: string; reason: string; blockingTaskCode?: string; overlappingPath?: string }[];
+    };
+    expect(batchOne.started.map((s) => ({ code: s.code, threadId: s.threadId }))).toEqual([
+      { code: "BIT-2", threadId: "thread-child-a" },
+      { code: "BIT-4", threadId: "thread-child-b" },
+    ]);
+    expect(batchOne.skipped).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "BIT-3",
+          reason: "overlaps_picked",
+          blockingTaskCode: "BIT-2",
+          overlappingPath: "packages/core/src/**",
+        }),
+        expect.objectContaining({
+          code: "BIT-5",
+          reason: "cap_reached",
+        }),
+      ]),
+    );
+
+    // Verify agent_run_children has both BIT-2 and BIT-4 as running, and BIT-1 is waiting_subagent
+    const store = new T3D1Store(env.DB, DEFAULT_ORGANISATION_ID);
+    const childrenAfterStart = await store.listAgentRunChildren(umbrella.id);
+    expect(childrenAfterStart).toEqual([
+      expect.objectContaining({ parentTaskId: umbrella.id, childTaskId: childA.id, state: "running" }),
+      expect.objectContaining({ parentTaskId: umbrella.id, childTaskId: childB.id, state: "running" }),
+    ]);
+    expect((await store.getAgentRunByTaskId(umbrella.id))?.state).toBe("waiting_subagent");
+
+    // 4. Direct start_t3_thread refusals while BIT-2 and BIT-4 are running:
+    //    - Cap refusal (maxParallelChildren is 2)
+    const capRefusal = await callMcpTool("start_t3_thread", {
+      taskId: "BIT-5",
+      parentTaskId: "BIT-1",
+    });
+    expect(capRefusal.isError).toBe(true);
+    expect(capRefusal.text).toContain("Parallel cap (2) reached");
+
+    // Raise cap to 4 to test overlap, serial path, and no-touches refusals directly on start_t3_thread
+    await request(`/api/projects/${project.id}/run-settings`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        maxParallelChildren: 4,
+        serialPaths: ["packages/storage-d1/migrations/**"],
+      }),
+    });
+
+    const overlapRefusal = await callMcpTool("start_t3_thread", {
+      taskId: "BIT-3",
+      parentTaskId: "BIT-1",
+    });
+    expect(overlapRefusal.isError).toBe(true);
+    expect(overlapRefusal.text).toContain("BIT-2");
+    expect(overlapRefusal.text).toContain("packages/core/**");
+
+    const serialRefusal = await callMcpTool("start_t3_thread", {
+      taskId: "BIT-6",
+      parentTaskId: "BIT-1",
+    });
+    expect(serialRefusal.isError).toBe(true);
+    expect(serialRefusal.text).toContain("BIT-2");
+    expect(serialRefusal.text).toContain("packages/storage-d1/migrations/**");
+
+    const noTouchesRefusal = await callMcpTool("start_t3_thread", {
+      taskId: "BIT-7",
+      parentTaskId: "BIT-1",
+    });
+    expect(noTouchesRefusal.isError).toBe(true);
+    expect(noTouchesRefusal.text).toContain("no declared touched paths");
+    expect(noTouchesRefusal.text).toContain("BIT-2");
+
+    // 5. Launch BIT-5 (disjoint apps/web/**) via start_t3_thread so 3 children (BIT-2, BIT-4, BIT-5) run in parallel!
+    mockState.launchThreadIds = ["thread-child-c"];
+    const startChildC = await callMcpTool("start_t3_thread", {
+      taskId: "BIT-5",
+      parentTaskId: "BIT-1",
+    });
+    expect(startChildC.isError).toBeUndefined();
+
+    // Report git metadata on BIT-2 before completing it
+    const runA = await store.getAgentRunByTaskId(childA.id);
+    const reportGitRes = await callMcpTool("report_t3_git_metadata", {
+      taskId: "BIT-2",
+      runId: runA?.id,
+      threadId: "thread-child-a",
+      metadata: {
+        branch: "feat/child-a",
+        headSha: "1111111111111111111111111111111111111111",
+        diffStat: { filesChanged: 2, insertions: 30, deletions: 4 },
+      },
+    });
+    expect(reportGitRes.isError, reportGitRes.text).toBeUndefined();
+    await callMcpTool("add_comment", {
+      taskId: "BIT-2",
+      author: "claude-child-a",
+      body: "Completed Child A in packages/core.",
+    });
+
+    // 6. Complete BIT-2 while BIT-4 and BIT-5 are still running:
+    //    Umbrella BIT-1 MUST NOT resume yet, and MUST remain waiting_subagent!
+    const sendCountBeforeA = mockState.toolCalls.filter((c) => c.name === "t3_thread_send").length;
+    const completeARes = await callMcpTool("complete_task", { id: "BIT-2" });
+    expect(completeARes.isError).toBeUndefined();
+    expect(mockState.toolCalls.filter((c) => c.name === "t3_thread_send").length).toBe(sendCountBeforeA);
+
+    const umbrellaAfterA = await store.getAgentRunByTaskId(umbrella.id);
+    expect(umbrellaAfterA?.state).toBe("waiting_subagent");
+    expect(umbrellaAfterA?.waitingForTaskId).toBe(childB.id);
+
+    // 7. Child B (BIT-4) sets needsHuman via MCP update_task while BIT-5 is still running:
+    //    BIT-5 keeps running and BIT-1 STILL does not resume yet!
+    const needsHumanBRes = await callMcpTool("update_task", {
+      id: "BIT-4",
+      needsHuman: "Need approval for new MCP parameter name",
+    });
+    expect(needsHumanBRes.isError).toBeUndefined();
+    expect(mockState.toolCalls.filter((c) => c.name === "t3_thread_send").length).toBe(sendCountBeforeA);
+
+    const umbrellaAfterB = await store.getAgentRunByTaskId(umbrella.id);
+    expect(umbrellaAfterB?.state).toBe("waiting_subagent");
+    expect(umbrellaAfterB?.waitingForTaskId).toBe(childC.id);
+
+    // 8. Child C (BIT-5) fails on T3: now ALL 3 children in the batch have ended (done, needs_human, failed).
+    //    Reconciling live runs resumes BIT-1 ONCE with a single batch message listing all 3 children!
+    mockState.threadList = [
+      {
+        threadId: "thread-umbrella",
+        projectId: "t3-proj-bitig",
+        status: "completed",
+        pendingRequestCount: 0,
+        activeRunId: null,
+        settled: false,
+      },
+      {
+        threadId: "thread-child-c",
+        projectId: "t3-proj-bitig",
+        status: "failed",
+        pendingRequestCount: 0,
+        activeRunId: null,
+        settled: false,
+      },
+    ];
+    const runsAfterBatch = await (await request("/api/t3/runs")).json<T3RunsLiveResponse>();
+    const umbrellaAfterBatch = runsAfterBatch.runs.find((r) => r.taskId === umbrella.id);
+    expect(umbrellaAfterBatch?.state).toBe("working");
+    expect(umbrellaAfterBatch?.waitingForTaskId).toBeUndefined();
+
+    const sendCallsAfterBatch = mockState.toolCalls.filter((c) => c.name === "t3_thread_send");
+    expect(sendCallsAfterBatch.length).toBe(sendCountBeforeA + 1);
+    const batchMessage = String(sendCallsAfterBatch.at(-1)?.arguments.message);
+    expect(batchMessage).toContain(
+      "All 3 child tasks in the batch you started from BIT-1 have ended: BIT-2 (done), BIT-4 (needs_human), BIT-5 (failed).",
+    );
+    expect(batchMessage).toContain("### #BIT-2: Child A (core) (done)");
+    expect(batchMessage).toContain("- Branch: `feat/child-a`");
+    expect(batchMessage).toContain("- Head commit: `1111111111111111111111111111111111111111`");
+    expect(batchMessage).toContain("- Diff stat: 2 files changed (+30 / -4)");
+    expect(batchMessage).toContain("Completed Child A in packages/core.");
+    expect(batchMessage).toContain("### #BIT-4: Child B (mcp-tools) (needs_human)");
+    expect(batchMessage).toContain("- Needs human: Need approval for new MCP parameter name");
+    expect(batchMessage).toContain("### #BIT-5: Child C (web) (failed)");
+
+    // Verify agent_run_children records all 3 children's terminal states and BIT-2's git metadata
+    const finalChildren = await store.listAgentRunChildren(umbrella.id);
+    expect(finalChildren).toEqual([
+      expect.objectContaining({
+        childTaskId: childA.id,
+        state: "done",
+        branch: "feat/child-a",
+        headSha: "1111111111111111111111111111111111111111",
+      }),
+      expect.objectContaining({
+        childTaskId: childB.id,
+        state: "needs_human",
+      }),
+      expect.objectContaining({
+        childTaskId: childC.id,
+        state: "failed",
+      }),
+    ]);
   });
   describe("host folder registration (BIT-148)", () => {
     const FOLDER = "/var/www/acme";

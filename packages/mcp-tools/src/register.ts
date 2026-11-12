@@ -152,6 +152,42 @@ export interface StartT3ThreadToolResult {
   readonly code?: string | undefined;
 }
 
+export interface StartReadyChildrenToolInput {
+  readonly parentTaskId: string;
+  readonly max?: number | undefined;
+  readonly actor?: string | undefined;
+}
+
+export interface StartReadyChildrenStartedItem {
+  readonly taskId: string;
+  readonly code?: string | undefined;
+  readonly title: string;
+  readonly threadId: string;
+  readonly link?: string | undefined;
+  readonly state: AgentRun["state"];
+  readonly queued: boolean;
+  readonly workspaceStrategy: T3WorkspaceStrategy;
+  readonly providerInstanceId?: string | undefined;
+  readonly model?: string | undefined;
+  readonly level?: string | undefined;
+}
+
+export interface StartReadyChildrenSkippedItem {
+  readonly taskId: string;
+  readonly code?: string | undefined;
+  readonly title: string;
+  readonly reason: string;
+  readonly detail: string;
+  readonly blockingTaskId?: string | undefined;
+  readonly blockingTaskCode?: string | undefined;
+  readonly overlappingPath?: string | undefined;
+}
+
+export interface StartReadyChildrenToolResult {
+  readonly started: readonly StartReadyChildrenStartedItem[];
+  readonly skipped: readonly StartReadyChildrenSkippedItem[];
+}
+
 export interface RegisterProjectHostFolderToolInput {
   readonly projectId: string;
   readonly workspaceRoot: string;
@@ -214,6 +250,10 @@ export interface RegisterBitigToolsOptions {
    */
   readonly startT3Thread?: ((input: StartT3ThreadToolInput) => Promise<StartT3ThreadToolResult>) | undefined;
   /**
+   * Optional callback to pick and launch the next batch of parallel-safe child tasks for an umbrella task (#BIT-189).
+   */
+  readonly startReadyChildren?: ((input: StartReadyChildrenToolInput) => Promise<StartReadyChildrenToolResult>) | undefined;
+  /**
    * Optional callback to register an existing folder on a connected T3 Code host and save the
    * host-bound project mapping (#BIT-151).
    */
@@ -228,10 +268,16 @@ export interface RegisterBitigToolsOptions {
     | undefined;
   /**
    * Optional callback run after `complete_task`, or `update_task` with status `done` or `archived`,
-   * e.g. to resume an umbrella task's T3 session waiting on this task (#BIT-141). It must report its
+   * e.g. to resume an umbrella task's T3 session waiting on this task (#BIT-141, #BIT-189). It must report its
    * own failures rather than throw: the task has already changed by the time it runs.
    */
   readonly onTaskFinished?: ((task: Task) => Promise<void>) | undefined;
+  /**
+   * Optional callback run after `update_task` sets a non-empty `needsHuman` on a task (#BIT-189),
+   * so an umbrella task waiting on a child batch records the child as `needs_human` and resumes
+   * once all running siblings end.
+   */
+  readonly onTaskNeedsHuman?: ((task: Task) => Promise<void>) | undefined;
   /**
    * Optional lookup returning the umbrella parent task ID recorded on `taskId`'s T3 run (#BIT-141),
    * so a child task that listed its umbrella parent in `dependsOn` is not blocked by that parent
@@ -961,6 +1007,9 @@ export function registerBitigTools(
             ? await saveRunProfileForTask(task.id, runProfile, actor, "update_task")
             : undefined;
         if (rest.status !== undefined && FINISHED_STATUSES.has(rest.status)) await options?.onTaskFinished?.(task);
+        if (typeof rest.needsHuman === "string" && rest.needsHuman.trim().length > 0) {
+          await options?.onTaskNeedsHuman?.(task);
+        }
         const coded = await withCode(task, opts);
         return formatSuccessResult(
           savedProfile !== undefined ? { ...coded, runProfile: savedProfile } : coded,
@@ -1424,14 +1473,14 @@ export function registerBitigTools(
     "start_t3_thread",
     {
       description:
-        "Launch a T3 Code thread for a task on the connected T3 host. Refused if the task has pendingApproval: true, has unfinished dependencies in dependsOn, belongs to an unmapped project, or if no T3 host is connected. Moves the task to in_progress and records the T3 thread link. From an umbrella task's T3 session, pass parentTaskId to start one related task as a child session: the umbrella session then waits (waiting_subagent), so end your turn; Bitig resumes it with the child's completion context when the child task is done, or tells it when the child session fails or stops. Checklist items are steps of a task, never child sessions.",
+        "Launch a T3 Code thread for a task on the connected T3 host. Refused if the task has pendingApproval: true, has unfinished dependencies in dependsOn, belongs to an unmapped project, or if no T3 host is connected. Moves the task to in_progress and records the T3 thread link. From an umbrella task's T3 session, pass parentTaskId to start one related task as a child session (must use workspaceStrategy 'worktree', stay under the project's max_parallel_children, and have no path overlap with running siblings): the umbrella session then waits (waiting_subagent), so end your turn; Bitig resumes it once every running child in the batch has ended. Checklist items are steps of a task, never child sessions.",
       inputSchema: {
         taskId: TASK_REF,
         parentTaskId: TASK_REF.optional().describe(
-          "Umbrella task whose T3 session starts this task as a child session, as a task ID or ticket code, e.g. TAS-1. It must have a T3 session and not already wait on another unfinished child task. A dependency of taskId on it does not block the launch.",
+          "Umbrella task whose T3 session starts this task as a child session, as a task ID or ticket code, e.g. TAS-1. It must have an active T3 session. A dependency of taskId on it does not block the launch.",
         ),
         workspaceStrategy: T3WorkspaceStrategySchema.optional().describe(
-          "Workspace strategy: 'worktree' (default, isolated git worktree on HEAD) or 'root'",
+          "Workspace strategy: 'worktree' (default, isolated git worktree on HEAD; required when parentTaskId is passed) or 'root'",
         ),
         providerInstanceId: z
           .string()
@@ -1496,6 +1545,52 @@ export function registerBitigTools(
           run: result.run,
           task: await withCode(result.task, opts),
         });
+      } catch (err) {
+        return formatErrorResult(err);
+      }
+    },
+  );
+
+  // 19a. start_ready_children
+  server.registerTool(
+    "start_ready_children",
+    {
+      description:
+        "Pick the next parallel-safe batch of child tasks for an umbrella task (tasks the umbrella mentions or that depend on it), start them in T3 with worktree isolation and their resolved run profiles, and return what started and why the rest were skipped. After starting a batch, end your turn without polling: Bitig resumes the umbrella session once when every running child in the batch has ended.",
+      inputSchema: {
+        parentTaskId: TASK_REF.describe(
+          "Umbrella task ID or ticket code (e.g. BIT-183) whose T3 session is starting the batch",
+        ),
+        max: z
+          .number()
+          .int()
+          .min(1)
+          .max(10)
+          .optional()
+          .describe("Optional maximum number of children to start in this call (capped by the project's max_parallel_children)"),
+      },
+    },
+    async (args, extra) => {
+      try {
+        const actor = resolveMcpActor(server, extra, options?.fallbackActor);
+        const opts: OperationOptions = { signal: extra.signal, actor };
+        const parentTaskId = await resolveTaskRef(storage, args.parentTaskId, opts);
+        if (!options?.startReadyChildren) {
+          throw new ValidationError("start_ready_children", [
+            {
+              code: "custom",
+              path: ["t3Connection"],
+              message: "T3 integration is not configured on this server",
+              input: args.parentTaskId,
+            },
+          ]);
+        }
+        const result = await options.startReadyChildren({
+          parentTaskId,
+          ...(args.max !== undefined ? { max: args.max } : {}),
+          actor,
+        });
+        return formatSuccessResult(result);
       } catch (err) {
         return formatErrorResult(err);
       }

@@ -63,6 +63,7 @@ describe("MCP Tools integration", () => {
       "delete_webhook",
       "report_t3_git_metadata",
       "start_t3_thread",
+      "start_ready_children",
       "list_run_levels",
       "suggest_run_profile",
     ]);
@@ -1098,6 +1099,65 @@ describe("umbrella task child sessions (#BIT-141)", () => {
         third.id,
       ]);
       expect(onTaskFinished).toHaveBeenNthCalledWith(1, expect.objectContaining({ status: "done" }));
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("delegates start_ready_children with resolved parentTaskId and runs onTaskNeedsHuman when needsHuman is set (#BIT-189)", async () => {
+    const storage = new InMemoryStorage();
+    const project = await storage.createProject({ name: "Bitig", key: "BIT" });
+    const umbrella = await storage.saveTask({ projectId: project.id, title: "Umbrella", status: "in_progress" });
+    const child = await storage.saveTask({ projectId: project.id, title: "Child", status: "in_progress" });
+
+    const startReadyChildren = vi.fn().mockResolvedValue({
+      started: [
+        {
+          taskId: child.id,
+          code: "BIT-2",
+          title: "Child",
+          threadId: "thread-child-1",
+          state: "working" as const,
+          queued: false,
+          workspaceStrategy: "worktree" as const,
+        },
+      ],
+      skipped: [],
+    });
+    const onTaskNeedsHuman = vi.fn<(task: { id: string; needsHuman?: string }) => Promise<void>>().mockResolvedValue(
+      undefined,
+    );
+    const { client, server } = await connect(storage, { startReadyChildren, onTaskNeedsHuman });
+
+    try {
+      const batchRes = await client.callTool({
+        name: "start_ready_children",
+        arguments: { parentTaskId: "BIT-1", max: 2 },
+      });
+      expect(batchRes.isError).toBeFalsy();
+      expect(startReadyChildren).toHaveBeenCalledWith(
+        expect.objectContaining({ parentTaskId: umbrella.id, max: 2 }),
+      );
+      expect(JSON.parse((batchRes.content as { text: string }[])[0]?.text ?? "{}")).toMatchObject({
+        started: [expect.objectContaining({ code: "BIT-2", threadId: "thread-child-1" })],
+        skipped: [],
+      });
+
+      await client.callTool({
+        name: "update_task",
+        arguments: { id: "BIT-2", needsHuman: "Need API key" },
+      });
+      expect(onTaskNeedsHuman).toHaveBeenCalledTimes(1);
+      expect(onTaskNeedsHuman).toHaveBeenCalledWith(
+        expect.objectContaining({ id: child.id, needsHuman: "Need API key" }),
+      );
+
+      await client.callTool({
+        name: "update_task",
+        arguments: { id: "BIT-2", needsHuman: null },
+      });
+      expect(onTaskNeedsHuman).toHaveBeenCalledTimes(1);
     } finally {
       await client.close();
       await server.close();

@@ -1,4 +1,5 @@
 import {
+  DEFAULT_MAX_PARALLEL_CHILDREN,
   DEFAULT_PROJECT_T3_WORKSPACE_STRATEGY,
   ReportT3GitMetadataInputSchema,
   type ReportT3GitMetadataInput,
@@ -8,20 +9,20 @@ import {
   PROJECT_T3_MESSAGE_MAX_CHARS,
   T3WorkspaceBusyError,
   ValidationError,
+  buildMentionIndex,
   buildProjectT3LaunchPrompt,
   buildProjectT3ModelSwitchNotice,
   buildProjectT3ThreadTitle,
   buildT3LaunchPrompt,
   buildT3ModelSwitchComment,
   buildT3ModelSwitchNotice,
-  buildT3SubagentCompletedComment,
-  buildT3SubagentCompletedPrompt,
-  buildT3SubagentEndedComment,
-  buildT3SubagentEndedPrompt,
+  buildT3SubagentBatchHandbackComment,
+  buildT3SubagentBatchHandbackPrompt,
   buildT3SubagentStartedComment,
   canOverwriteRunProfile,
   canSwitchT3Model,
   checkStatusChange,
+  compareTasks,
   computeT3ConnectionStatus,
   computeT3HostConnectionStatus,
   defaultIdGenerator,
@@ -33,14 +34,19 @@ import {
   isSameT3ModelSelection,
   nextLevelUp,
   parseT3RunCommentCommand,
+  pickParallelBatch,
   resolveRunSelection,
   resolveTaskRef,
   taskCode,
   type ActiveAgentRunState,
   type AgentRun,
+  type AgentRunChild,
+  type AgentRunChildState,
   type AgentRunState,
   type Checkpoint,
   type Comment,
+  type ParallelBatchCandidate,
+  type ParallelSkipReason,
   type Project,
   type ProjectT3Thread,
   type ProjectT3ThreadMessagesResponse,
@@ -50,6 +56,7 @@ import {
   type RunLevel,
   type RunLevelModelBinding,
   type RunSelectionSource,
+  type RunningParallelTask,
   type StorageProvider,
   type T3CommentAttachmentInfo,
   type T3ConnectionStatus,
@@ -60,7 +67,7 @@ import {
   type T3ProjectActiveSession,
   type T3RunsLiveResponse,
   type T3RuntimeMode,
-  type T3SubagentHandbackInput,
+  type T3SubagentBatchHandbackChildItem,
   type T3TaskRunLiveResponse,
   type T3ThreadListItem,
   type T3WorkspaceBusySession,
@@ -581,13 +588,24 @@ export async function dispatchQueuedTaskT3Run(
         }
 
         if (payload.parentTaskId) {
-          const waitingRun = await deps.store.setAgentRunWaitingFor(payload.parentTaskId, {
-            childTaskId: taskId,
-            now: stepNow,
-          });
-          if (waitingRun && deps.publishRealtime) {
-            await deps.publishRealtime({ type: "agent_run.updated", run: waitingRun }).catch(() => undefined);
+          const existingChildRecord = await deps.store.getAgentRunChild(payload.parentTaskId, taskId);
+          if (existingChildRecord?.state !== "running") {
+            await deps.store.addAgentRunChild({
+              parentTaskId: payload.parentTaskId,
+              childTaskId: taskId,
+              state: "running",
+              ...(currentRun.branch ? { branch: currentRun.branch } : {}),
+              ...(currentRun.headSha ? { headSha: currentRun.headSha } : {}),
+              startedAt: stepNow,
+            });
+          } else if (currentRun.branch || currentRun.headSha) {
+            await deps.store.updateAgentRunChild(payload.parentTaskId, taskId, {
+              ...(currentRun.branch ? { branch: currentRun.branch } : {}),
+              ...(currentRun.headSha ? { headSha: currentRun.headSha } : {}),
+              now: stepNow,
+            });
           }
+          await syncParentWaitingSubagentState(deps, payload.parentTaskId, stepNow);
           await deps.storage.addComment(
             {
               taskId: payload.parentTaskId,
@@ -717,9 +735,9 @@ export async function drainAllQueuedT3Runs(
  * 4. A T3 OAuth connection is configured for the mapped host. When the host is offline or its token is expired,
  *    the approved launch is durably queued in D1 (`state: "queued"`) and dispatched once on reconnect (#BIT-161).
  *
- * With `parentTaskRef` (#BIT-141), the task starts as a child session of an umbrella task: a
- * dependency on that umbrella task does not block it, the child run records the umbrella task,
- * and the umbrella task's run moves to `waiting_subagent` until the child task is done.
+ * With `parentTaskRef` (#BIT-141, #BIT-189), the task starts as a child session of an umbrella task: a
+ * dependency on that umbrella task does not block it, the child run is recorded in `agent_run_children`,
+ * and the umbrella task's run moves to `waiting_subagent` until all running children of the batch have ended.
  */
 export async function launchTaskInT3(
   deps: T3ServiceDeps,
@@ -738,6 +756,12 @@ export async function launchTaskInT3(
   }
 
   const parent = options.parentTaskRef ? await requireUmbrellaParent(deps, task, options.parentTaskRef) : undefined;
+  if (parent && options.workspaceStrategy === "root") {
+    makeValidationIssue(
+      "workspaceStrategy",
+      "Child tasks started from an umbrella session must run in an isolated git worktree (workspaceStrategy: \"worktree\"), never the root checkout.",
+    );
+  }
 
   // Enforce pendingApproval and unfinished dependency gates (same rules as an agent moving to in_progress).
   // The umbrella task is in progress while it delegates, so a dependency on it does not block its child.
@@ -745,6 +769,11 @@ export async function launchTaskInT3(
     requireApproval: true,
     ...(parent ? { dependsOn: (task.dependsOn ?? []).filter((id) => id !== parent.task.id) } : {}),
   });
+
+  const code = taskCode(task, project);
+  if (parent) {
+    await assertChildLaunchParallelGate(deps, parent, task, code, now);
+  }
 
   const mapping = await deps.store.getProjectMapping(task.projectId);
   if (!mapping) {
@@ -803,7 +832,6 @@ export async function launchTaskInT3(
   }
 
   const comments = await deps.storage.getComments(task.id);
-  const code = taskCode(task, project);
   const gitMetadataRunId = defaultIdGenerator();
   const builtPrompt = buildT3LaunchPrompt({
     gitMetadataRunId,
@@ -978,6 +1006,15 @@ export async function launchTaskInT3(
     },
   });
 
+  if (parent) {
+    await deps.store.addAgentRunChild({
+      parentTaskId: parent.task.id,
+      childTaskId: task.id,
+      state: "running",
+      startedAt: now,
+    });
+  }
+
   if (mcpClient) {
     const dispatched = await dispatchQueuedTaskT3Run(deps, task.id, mcpClient);
     const finalRun = dispatched.run ?? (await deps.store.getAgentRunByTaskId(task.id));
@@ -985,10 +1022,7 @@ export async function launchTaskInT3(
       throw new Error("Queued run was not persisted");
     }
     if (!dispatched.dispatched && parent) {
-      const waitingRun = await deps.store.setAgentRunWaitingFor(parent.task.id, { childTaskId: task.id, now });
-      if (waitingRun && deps.publishRealtime) {
-        await deps.publishRealtime({ type: "agent_run.updated", run: waitingRun }).catch(() => undefined);
-      }
+      await syncParentWaitingSubagentState(deps, parent.task.id, now);
     }
     return {
       run: finalRun,
@@ -1005,10 +1039,7 @@ export async function launchTaskInT3(
     await deps.publishRealtime({ type: "agent_run.updated", run: queuedRun }).catch(() => undefined);
   }
   if (parent) {
-    const waitingRun = await deps.store.setAgentRunWaitingFor(parent.task.id, { childTaskId: task.id, now });
-    if (waitingRun && deps.publishRealtime) {
-      await deps.publishRealtime({ type: "agent_run.updated", run: waitingRun }).catch(() => undefined);
-    }
+    await syncParentWaitingSubagentState(deps, parent.task.id, now);
   }
 
   return {
@@ -1043,9 +1074,155 @@ async function labelTask(storage: StorageProvider, task: Task): Promise<string> 
 }
 
 /**
- * Resolves the umbrella task a child session is started from (#BIT-141). Refused when it is the
- * task itself, has no T3 session to resume, already waits on another unfinished child task, or
- * when the child already has an active session of its own.
+ * Synchronizes an umbrella task run's `waiting_subagent` state and `waitingForTaskId` pointer
+ * from its currently `"running"` rows in `agent_run_children` (#BIT-189).
+ */
+async function syncParentWaitingSubagentState(
+  deps: T3ServiceDeps,
+  parentTaskId: string,
+  now: number,
+): Promise<AgentRun | undefined> {
+  const children = await deps.store.listAgentRunChildren(parentTaskId);
+  const firstRunning = children.find((child) => child.state === "running");
+  if (!firstRunning) {
+    return await deps.store.getAgentRunByTaskId(parentTaskId);
+  }
+  const waitingRun = await deps.store.setAgentRunWaitingFor(parentTaskId, {
+    childTaskId: firstRunning.childTaskId,
+    now,
+  });
+  if (waitingRun && deps.publishRealtime) {
+    await deps.publishRealtime({ type: "agent_run.updated", run: waitingRun }).catch(() => undefined);
+  }
+  return waitingRun;
+}
+
+/**
+ * Reconciles any stale `"running"` rows in `agent_run_children` for `parentTaskId` and returns
+ * the active running children with their declared `touches` and `parallelSafe` flags (#BIT-189).
+ */
+async function listActiveRunningChildren(
+  deps: T3ServiceDeps,
+  parentTaskId: string,
+  now = Date.now(),
+): Promise<RunningParallelTask[]> {
+  let children = await deps.store.listAgentRunChildren(parentTaskId);
+  const parentRun = await deps.store.getAgentRunByTaskId(parentTaskId);
+  if (
+    parentRun?.waitingForTaskId &&
+    !children.some((c) => c.childTaskId === parentRun.waitingForTaskId)
+  ) {
+    const legacyChild = await deps.storage.getTask(parentRun.waitingForTaskId);
+    if (legacyChild) {
+      await deps.store.addAgentRunChild({
+        parentTaskId,
+        childTaskId: legacyChild.id,
+        state: "running",
+        startedAt: Date.parse(parentRun.updatedAt) || now,
+      });
+      children = await deps.store.listAgentRunChildren(parentTaskId);
+    }
+  }
+
+  const running: RunningParallelTask[] = [];
+  for (const row of children) {
+    if (row.state !== "running") continue;
+    const [childTask, childRun] = await Promise.all([
+      deps.storage.getTask(row.childTaskId),
+      deps.store.getAgentRunByTaskId(row.childTaskId),
+    ]);
+    if (!childTask) {
+      await deps.store.removeAgentRunChild(parentTaskId, row.childTaskId);
+      continue;
+    }
+    if (FINISHED_TASK_STATUSES.has(childTask.status)) {
+      await deps.store.claimAgentRunChild(parentTaskId, row.childTaskId, {
+        state: "done",
+        branch: childRun?.branch ?? row.branch ?? null,
+        headSha: childRun?.headSha ?? row.headSha ?? null,
+        now,
+      });
+      continue;
+    }
+    if (childTask.needsHuman) {
+      await deps.store.claimAgentRunChild(parentTaskId, row.childTaskId, {
+        state: "needs_human",
+        branch: childRun?.branch ?? row.branch ?? null,
+        headSha: childRun?.headSha ?? row.headSha ?? null,
+        now,
+      });
+      continue;
+    }
+    if (!childRun || ENDED_CHILD_RUN_STATES.has(childRun.state)) {
+      await deps.store.claimAgentRunChild(parentTaskId, row.childTaskId, {
+        state: childRun?.state === "failed" ? "failed" : "stopped",
+        branch: childRun?.branch ?? row.branch ?? null,
+        headSha: childRun?.headSha ?? row.headSha ?? null,
+        now,
+      });
+      continue;
+    }
+    if (!isActiveAgentRunState(childRun.state)) {
+      continue;
+    }
+    const [code, profile] = await Promise.all([
+      labelTask(deps.storage, childTask),
+      deps.store.getTaskRunProfile(childTask.id),
+    ]);
+    running.push({
+      id: childTask.id,
+      code,
+      touches: profile?.touches,
+      parallelSafe: profile?.parallelSafe,
+    });
+  }
+  return running;
+}
+
+/**
+ * Enforces the server-side parallel batch gate when launching a child task under an umbrella (#BIT-189):
+ * - Under the project's `maxParallelChildren` (default 3).
+ * - No path overlap with a running sibling using `pickParallelBatch` rules.
+ * - A task with no declared `touches`, `parallelSafe === false`, or touching a serial path only runs alone.
+ */
+async function assertChildLaunchParallelGate(
+  deps: T3ServiceDeps,
+  parent: UmbrellaParent,
+  child: Task,
+  childCode: string | undefined,
+  now: number,
+): Promise<void> {
+  const [running, projectSettings, profile] = await Promise.all([
+    listActiveRunningChildren(deps, parent.task.id, now),
+    deps.store.getProjectRunSettings(child.projectId),
+    deps.store.getTaskRunProfile(child.id),
+  ]);
+  const candidate: ParallelBatchCandidate = {
+    id: child.id,
+    code: childCode ?? child.id,
+    pendingApproval: Boolean(child.pendingApproval),
+    blockedBy: [],
+    profile,
+  };
+  const batch = pickParallelBatch([candidate], {
+    running,
+    cap: projectSettings?.maxParallelChildren ?? DEFAULT_MAX_PARALLEL_CHILDREN,
+    serialPaths: projectSettings?.serialPaths ?? [],
+  });
+  const skip = batch.skipped[0];
+  if (skip) {
+    const details =
+      skip.blockingTask && !skip.message.includes(skip.blockingTask)
+        ? `${skip.message} (blocked by ${skip.blockingTask}).`
+        : skip.message;
+    makeValidationIssue("parentTaskId", details);
+  }
+}
+
+/**
+ * Resolves the umbrella task a child session is started from (#BIT-141, #BIT-189). Refused when it
+ * is the task itself, has no T3 session to resume, or when the child already has an active session
+ * of its own.
  */
 async function requireUmbrellaParent(deps: T3ServiceDeps, child: Task, parentRef: string): Promise<UmbrellaParent> {
   const parentId = await resolveTaskRef(deps.storage, parentRef);
@@ -1063,15 +1240,6 @@ async function requireUmbrellaParent(deps: T3ServiceDeps, child: Task, parentRef
       "parentTaskId",
       `Umbrella task ${label} has no T3 session, so Bitig cannot resume it when the child task is done. Start ${label} in T3 first.`,
     );
-  }
-  if (run.waitingForTaskId && run.waitingForTaskId !== child.id) {
-    const waitedOn = await deps.storage.getTask(run.waitingForTaskId);
-    if (waitedOn && !FINISHED_TASK_STATUSES.has(waitedOn.status)) {
-      makeValidationIssue(
-        "parentTaskId",
-        `Umbrella task ${label} already waits on ${await labelTask(deps.storage, waitedOn)}. Start one child task at a time.`,
-      );
-    }
   }
   const childRun = await deps.store.getAgentRunByTaskId(child.id);
   if (childRun && isActiveAgentRunState(childRun.state)) {
@@ -1195,6 +1363,22 @@ async function describeBusyRun(
   };
 }
 
+async function syncAgentRunChildGitMetadata(
+  deps: Pick<T3ServiceDeps, "store">,
+  run: AgentRun,
+  now: number,
+): Promise<void> {
+  if (!run.parentTaskId) return;
+  if (run.branch === undefined && run.headSha === undefined) return;
+  await deps.store
+    .updateAgentRunChild(run.parentTaskId, run.taskId, {
+      ...(run.branch !== undefined ? { branch: run.branch } : {}),
+      ...(run.headSha !== undefined ? { headSha: run.headSha } : {}),
+      now,
+    })
+    .catch(() => undefined);
+}
+
 /** Records agent-reported Git data after organisation and run identity validation. */
 export async function reportTaskT3GitMetadata(
   deps: T3ServiceDeps,
@@ -1208,8 +1392,10 @@ export async function reportTaskT3GitMetadata(
   const taskId = await resolveTaskRef(deps.storage, parsed.taskId, operationOptions);
   if (!await deps.storage.getTask(taskId, operationOptions)) throw new NotFoundError("task", taskId);
   signal?.throwIfAborted();
-  const run = await deps.store.updateAgentRunGitMetadata(taskId, parsed.runId, parsed.threadId, parsed.metadata, deps.now?.() ?? Date.now());
+  const now = deps.now?.() ?? Date.now();
+  const run = await deps.store.updateAgentRunGitMetadata(taskId, parsed.runId, parsed.threadId, parsed.metadata, now);
   if (!run) makeValidationIssue("runId", "The run or thread no longer matches this task; metadata was not recorded.");
+  await syncAgentRunChildGitMetadata(deps, run, now);
   if (deps.publishRealtime) {
     await deps.publishRealtime({ type: "agent_run.updated", run }).catch((err: unknown) => {
       console.warn("Could not publish T3 Git metadata update", err);
@@ -1222,7 +1408,9 @@ async function persistLiveGitMetadata(deps: T3ServiceDeps, run: AgentRun, metada
   if (!metadata || !Object.entries(metadata).some(([key, value]) =>
     JSON.stringify(run[key as keyof T3GitMetadata] ?? null) !== JSON.stringify(value),
   )) return run;
-  return (await deps.store.updateAgentRunGitMetadata(run.taskId, run.id, run.threadId, metadata, now)) ?? run;
+  const updated = (await deps.store.updateAgentRunGitMetadata(run.taskId, run.id, run.threadId, metadata, now)) ?? run;
+  await syncAgentRunChildGitMetadata(deps, updated, now);
+  return updated;
 }
 
 async function resolveNextLevelUpForTask(
@@ -1497,17 +1685,26 @@ export async function listT3RunsLive(deps: T3ServiceDeps): Promise<T3RunsLiveRes
     reconciledById.set(existingRun.id, run);
   };
 
-  // Umbrella runs waiting on a child task go last, so they see their child's reconciled state (#BIT-141).
+  // Umbrella runs waiting on a child task go last, so they see their child's reconciled state (#BIT-141, #BIT-189).
   const reconcileOrder = [
     ...existingRuns.filter((run) => !run.waitingForTaskId),
     ...existingRuns.filter((run) => run.waitingForTaskId),
   ];
-  for (const existingRun of reconcileOrder) {
+  for (const snapshotRun of reconcileOrder) {
+    // Re-read umbrella runs in case an earlier child's state change in this pass already handed back the batch.
+    const existingRun = snapshotRun.waitingForTaskId
+      ? ((await deps.store.getAgentRunByTaskId(snapshotRun.taskId)) ?? snapshotRun)
+      : snapshotRun;
+    if (snapshotRun.waitingForTaskId && !existingRun.waitingForTaskId && existingRun.state === "working") {
+      pushRun(existingRun, snapshotRun);
+      continue;
+    }
+
     const runHostId = resolveRunHostId(existingRun);
     const mcpClient = runHostId ? clientsByHostId.get(runHostId) : undefined;
     const hostThreadsById = runHostId ? threadsByHostId.get(runHostId) : undefined;
     if (!mcpClient || !hostThreadsById || existingRun.state === "queued" || existingRun.threadId.startsWith("queued:")) {
-      pushRun(existingRun, existingRun);
+      pushRun(existingRun, snapshotRun);
       continue;
     }
 
@@ -1523,15 +1720,16 @@ export async function listT3RunsLive(deps: T3ServiceDeps): Promise<T3RunsLiveRes
           settled: listedThread.settled,
         }),
       );
-      const nextLink = listedThread.link ?? existingRun.link;
+      const refreshedAfterUmbrella = (await deps.store.getAgentRunByTaskId(existingRun.taskId)) ?? existingRun;
+      const nextLink = listedThread.link ?? refreshedAfterUmbrella.link;
       const stateUpdatedRun =
-        nextState === existingRun.state && nextLink === existingRun.link
-          ? existingRun
+        nextState === refreshedAfterUmbrella.state && nextLink === refreshedAfterUmbrella.link
+          ? refreshedAfterUmbrella
           : ((await deps.store.updateAgentRunState(existingRun.taskId, {
               state: nextState,
               ...(nextLink ? { link: nextLink } : {}),
               now,
-            })) ?? existingRun);
+            })) ?? refreshedAfterUmbrella);
       const listedGitMetadata = listedThread.gitMetadata
         ? {
             ...(typeof listedThread.gitMetadata.branch === "string"
@@ -1543,11 +1741,11 @@ export async function listT3RunsLive(deps: T3ServiceDeps): Promise<T3RunsLiveRes
           }
         : undefined;
       const updatedRun = await persistLiveGitMetadata(deps, stateUpdatedRun, listedGitMetadata, now);
-      if (updatedRun.state !== existingRun.state && deps.publishRealtime) {
+      if (updatedRun.state !== snapshotRun.state && deps.publishRealtime) {
         await deps.publishRealtime({ type: "agent_run.updated", run: updatedRun }).catch(() => undefined);
       }
       await afterRunStateChange(deps, existingRun, updatedRun);
-      pushRun(updatedRun, existingRun);
+      pushRun(updatedRun, snapshotRun);
     } else if (isActiveAgentRunState(existingRun.state)) {
       try {
         const live = await mcpClient.readThreadLiveStatus(existingRun.threadId);
@@ -1560,25 +1758,26 @@ export async function listT3RunsLive(deps: T3ServiceDeps): Promise<T3RunsLiveRes
             pendingRequestIds: live.pendingRequestIds,
           }),
         );
+        const refreshedAfterUmbrella = (await deps.store.getAgentRunByTaskId(existingRun.taskId)) ?? existingRun;
         const stateUpdatedRun =
-          nextState === existingRun.state
-            ? existingRun
-            : ((await deps.store.updateAgentRunState(existingRun.taskId, { state: nextState, now })) ?? existingRun);
+          nextState === refreshedAfterUmbrella.state
+            ? refreshedAfterUmbrella
+            : ((await deps.store.updateAgentRunState(existingRun.taskId, { state: nextState, now })) ?? refreshedAfterUmbrella);
         const updatedRun = await persistLiveGitMetadata(deps, stateUpdatedRun, live.gitMetadata, now);
-        if (updatedRun !== existingRun && deps.publishRealtime) {
+        if (updatedRun !== snapshotRun && deps.publishRealtime) {
           await deps.publishRealtime({ type: "agent_run.updated", run: updatedRun }).catch(() => undefined);
         }
         await afterRunStateChange(deps, existingRun, updatedRun, live.stopReason);
-        pushRun(updatedRun, existingRun);
+        pushRun(updatedRun, snapshotRun);
       } catch (err) {
         if (err instanceof T3McpError) {
-          pushRun(existingRun, existingRun);
+          pushRun(existingRun, snapshotRun);
         } else {
           throw err;
         }
       }
     } else {
-      pushRun(existingRun, existingRun);
+      pushRun(existingRun, snapshotRun);
     }
   }
   for (const existingRun of existingRuns) {
@@ -1672,72 +1871,260 @@ async function latestCheckpoint(storage: StorageProvider, taskId: string): Promi
   return (await storage.getCheckpoints(taskId)).at(-1);
 }
 
-/** Collects the child task's completion context for its umbrella session (#BIT-141). */
-async function buildHandbackInput(
-  deps: T3ServiceDeps,
-  parentTask: Task,
-  child: Task,
-): Promise<T3SubagentHandbackInput> {
-  const [parentLabel, childLabel, checkpoint, comments] = await Promise.all([
-    labelTask(deps.storage, parentTask),
-    labelTask(deps.storage, child),
-    latestCheckpoint(deps.storage, child.id),
-    deps.storage.getComments(child.id),
-  ]);
-  // The child agent's final report; Bitig's own notes (e.g. model switches) are not a report.
-  const finalComment = comments.findLast(
-    (comment) => comment.authorType === "agent" && comment.author !== T3_BITIG_COMMENT_AUTHOR,
-  );
-  return {
-    parentLabel,
-    childLabel,
-    child,
-    ...(checkpoint ? { checkpoint } : {}),
-    ...(finalComment ? { finalComment } : {}),
-  };
-}
-
-interface UmbrellaHandbackMessage {
-  readonly comment: string;
-  readonly prompt: string;
-}
-
 async function publishRun(deps: T3ServiceDeps, run: AgentRun | undefined): Promise<void> {
   if (run && deps.publishRealtime) {
     await deps.publishRealtime({ type: "agent_run.updated", run }).catch(() => undefined);
   }
 }
 
+function selectCurrentBatchChildren(allChildren: readonly AgentRunChild[]): AgentRunChild[] {
+  if (allChildren.length <= 1) return [...allChildren];
+  const sorted = [...allChildren].sort((a, b) => Date.parse(a.startedAt) - Date.parse(b.startedAt));
+  const batches: AgentRunChild[][] = [];
+  let currentBatch: AgentRunChild[] = [];
+  let maxFinishedMs = -Infinity;
+
+  for (const child of sorted) {
+    const startedMs = Date.parse(child.startedAt);
+    if (currentBatch.length > 0 && Number.isFinite(maxFinishedMs) && startedMs > maxFinishedMs) {
+      batches.push(currentBatch);
+      currentBatch = [];
+      maxFinishedMs = -Infinity;
+    }
+    currentBatch.push(child);
+    if (child.finishedAt) {
+      const finMs = Date.parse(child.finishedAt);
+      if (Number.isFinite(finMs) && finMs > maxFinishedMs) {
+        maxFinishedMs = finMs;
+      }
+    } else {
+      maxFinishedMs = Infinity;
+    }
+  }
+  if (currentBatch.length > 0) {
+    batches.push(currentBatch);
+  }
+  return batches.at(-1) ?? [...allChildren];
+}
+
+type AgentRunChildEndState = Exclude<AgentRunChildState, "running">;
+
+async function buildBatchChildHandbackItem(
+  deps: T3ServiceDeps,
+  childRow: AgentRunChild,
+  stopReasonByChildId?: ReadonlyMap<string, string>,
+): Promise<T3SubagentBatchHandbackChildItem | undefined> {
+  const child = await deps.storage.getTask(childRow.childTaskId);
+  if (!child) return undefined;
+  const [childLabel, checkpoint, comments, childRun] = await Promise.all([
+    labelTask(deps.storage, child),
+    latestCheckpoint(deps.storage, child.id),
+    deps.storage.getComments(child.id),
+    deps.store.getAgentRunByTaskId(child.id),
+  ]);
+  const finalComment = comments.findLast(
+    (comment) => comment.authorType === "agent" && comment.author !== T3_BITIG_COMMENT_AUTHOR,
+  );
+  const gitMetadata: T3GitMetadata = {
+    ...(childRow.branch !== undefined
+      ? { branch: childRow.branch }
+      : childRun?.branch !== undefined
+        ? { branch: childRun.branch }
+        : {}),
+    ...(childRow.headSha !== undefined
+      ? { headSha: childRow.headSha }
+      : childRun?.headSha !== undefined
+        ? { headSha: childRun.headSha }
+        : {}),
+    ...(childRun?.diffStat !== undefined ? { diffStat: childRun.diffStat } : {}),
+    ...(childRun?.pullRequestUrls !== undefined ? { pullRequestUrls: childRun.pullRequestUrls } : {}),
+  };
+  const hasGitMetadata = Object.keys(gitMetadata).length > 0;
+
+  let state: AgentRunChildEndState;
+  if (FINISHED_TASK_STATUSES.has(child.status)) {
+    state = "done";
+  } else if (childRow.state === "needs_human" || Boolean(child.needsHuman)) {
+    state = "needs_human";
+  } else if (childRow.state === "failed" || childRun?.state === "failed") {
+    state = "failed";
+  } else {
+    state = "stopped";
+  }
+
+  const explicitReason = stopReasonByChildId?.get(child.id);
+  const stopReason =
+    state === "done"
+      ? undefined
+      : explicitReason ?? (state === "needs_human" && child.needsHuman ? child.needsHuman : undefined);
+
+  return {
+    childLabel,
+    child,
+    state,
+    ...(checkpoint ? { checkpoint } : {}),
+    ...(finalComment ? { finalComment } : {}),
+    ...(hasGitMetadata ? { gitMetadata } : {}),
+    ...(stopReason ? { stopReason } : {}),
+  };
+}
+
 /**
- * Ends an umbrella session's wait on `child` and resumes its thread with `buildMessage`'s prompt,
- * then records the comment on the umbrella task (#BIT-141). The wait is claimed first, so a
- * concurrent handback for the same child does nothing. When T3 cannot be reached, the wait is
- * restored (a later live-status check retries) and the error is rethrown with context. An umbrella
- * task that is already done or archived only drops the wait. Resolves to the updated umbrella run,
- * or `undefined` when another caller already handed the child back.
+ * Ensures any legacy `waitingForTaskId` on `parentRun` is mirrored into `agent_run_children` so
+ * existing single-child umbrella waits and multi-child batch waits share one codepath (#BIT-189).
  */
-async function resumeUmbrellaSession(
+async function ensureParentChildRows(
   deps: T3ServiceDeps,
   parentRun: AgentRun,
-  child: Task,
-  buildMessage: (input: T3SubagentHandbackInput) => UmbrellaHandbackMessage,
-): Promise<AgentRun | undefined> {
+  now: number,
+): Promise<AgentRunChild[]> {
+  let children = await deps.store.listAgentRunChildren(parentRun.taskId);
+  if (
+    parentRun.waitingForTaskId &&
+    !children.some((c) => c.childTaskId === parentRun.waitingForTaskId)
+  ) {
+    await deps.store.addAgentRunChild({
+      parentTaskId: parentRun.taskId,
+      childTaskId: parentRun.waitingForTaskId,
+      state: "running",
+      startedAt: now,
+    });
+    children = await deps.store.listAgentRunChildren(parentRun.taskId);
+  }
+  return children;
+}
+
+/**
+ * Transitions `childTaskId` to `endState` in `agent_run_children` (and reconciles any siblings
+ * whose tasks have already finished or whose sessions have ended), then checks whether every
+ * running child of `parentTaskId` has ended (#BIT-189).
+ *
+ * - While any sibling is still `running`, the umbrella session stays in `waiting_subagent` (pointing
+ *   `waitingForTaskId` at the next running child) and is NOT resumed yet.
+ * - Once the last running child of the batch ends, the umbrella's wait is claimed and its T3 thread
+ *   is resumed once with a single message summarizing every child in the batch.
+ */
+async function transitionChildAndMaybeResumeUmbrella(
+  deps: T3ServiceDeps,
+  input: {
+    parentTaskId: string;
+    childTaskId: string;
+    endState: AgentRunChildEndState;
+    stopReason?: string | undefined;
+  },
+): Promise<boolean> {
+  if (!deps.encryptionKey) return false;
   const now = deps.now ? deps.now() : Date.now();
-  const parentTask = await deps.storage.getTask(parentRun.taskId);
+  const parentRun = await deps.store.getAgentRunByTaskId(input.parentTaskId);
+  if (!parentRun) return false;
+
+  const initialChildren = await ensureParentChildRows(deps, parentRun, now);
+  if (initialChildren.length === 0) return false;
+
+  // Claim or update the target child row if it is currently running.
+  const targetRow = initialChildren.find((c) => c.childTaskId === input.childTaskId);
+  if (!targetRow) return false;
+  const childRunForGit = await deps.store.getAgentRunByTaskId(input.childTaskId);
+  if (targetRow.state === "running") {
+    await deps.store.claimAgentRunChild(input.parentTaskId, input.childTaskId, {
+      state: input.endState,
+      ...(childRunForGit?.branch !== undefined ? { branch: childRunForGit.branch } : {}),
+      ...(childRunForGit?.headSha !== undefined ? { headSha: childRunForGit.headSha } : {}),
+      now,
+    });
+  }
+
+  // Reconcile any other running children that have also finished or ended concurrently.
+  for (const sibling of initialChildren) {
+    if (sibling.childTaskId === input.childTaskId || sibling.state !== "running") continue;
+    const [sibTask, sibRun] = await Promise.all([
+      deps.storage.getTask(sibling.childTaskId),
+      deps.store.getAgentRunByTaskId(sibling.childTaskId),
+    ]);
+    let sibEndState: AgentRunChildEndState | undefined;
+    if (!sibTask || FINISHED_TASK_STATUSES.has(sibTask.status)) {
+      sibEndState = "done";
+    } else if (sibTask.needsHuman) {
+      sibEndState = "needs_human";
+    } else if (sibRun && ENDED_CHILD_RUN_STATES.has(sibRun.state)) {
+      sibEndState = sibRun.state === "failed" ? "failed" : "stopped";
+    }
+    if (sibEndState) {
+      await deps.store.claimAgentRunChild(input.parentTaskId, sibling.childTaskId, {
+        state: sibEndState,
+        ...(sibRun?.branch !== undefined ? { branch: sibRun.branch } : {}),
+        ...(sibRun?.headSha !== undefined ? { headSha: sibRun.headSha } : {}),
+        now,
+      });
+    }
+  }
+
+  const allChildren = await deps.store.listAgentRunChildren(input.parentTaskId);
+  const stillRunning = allChildren.filter((c) => c.state === "running");
+  if (stillRunning.length > 0) {
+    // Keep the umbrella waiting on the remaining running sibling(s).
+    await syncParentWaitingSubagentState(deps, input.parentTaskId, now);
+    return false;
+  }
+
+  const currentParentRun = (await deps.store.getAgentRunByTaskId(input.parentTaskId)) ?? parentRun;
+  const parentTask = await deps.storage.getTask(input.parentTaskId);
   if (!parentTask || FINISHED_TASK_STATUSES.has(parentTask.status)) {
-    const dropped = await deps.store.claimAgentRunWaitingFor(parentRun.taskId, child.id, { state: "finished", now });
-    await publishRun(deps, dropped);
-    return dropped;
+    if (currentParentRun.waitingForTaskId) {
+      const dropped = await deps.store.claimAgentRunWaitingFor(
+        input.parentTaskId,
+        currentParentRun.waitingForTaskId,
+        { state: "finished", now },
+      );
+      await publishRun(deps, dropped);
+    }
+    return false;
   }
 
-  const input = await buildHandbackInput(deps, parentTask, child);
-  const message = buildMessage(input);
-  const claimed = await deps.store.claimAgentRunWaitingFor(parentRun.taskId, child.id, { state: "working", now });
-  if (!claimed) {
-    return undefined;
+  // Claim the umbrella's wait so concurrent endings of the last two children only resume once.
+  const waitingChildId = currentParentRun.waitingForTaskId;
+  let claimed: AgentRun | undefined;
+  if (waitingChildId) {
+    claimed = await deps.store.claimAgentRunWaitingFor(input.parentTaskId, waitingChildId, {
+      state: "working",
+      now,
+    });
+    if (!claimed) {
+      return false;
+    }
+  } else {
+    claimed = await deps.store.updateAgentRunState(input.parentTaskId, { state: "working", now });
+    if (!claimed) {
+      return false;
+    }
   }
 
-  const parentHostId = await resolveOriginatingTaskHostId(deps, parentRun.taskId, parentRun);
+  const batchRows = selectCurrentBatchChildren(allChildren);
+  const stopReasonByChildId = new Map<string, string>();
+  if (input.stopReason) {
+    stopReasonByChildId.set(input.childTaskId, input.stopReason);
+  }
+  const parentLabel = await labelTask(deps.storage, parentTask);
+  const childItems: T3SubagentBatchHandbackChildItem[] = [];
+  for (const row of batchRows) {
+    const item = await buildBatchChildHandbackItem(deps, row, stopReasonByChildId);
+    if (item) {
+      childItems.push(item);
+    }
+  }
+  if (childItems.length === 0) {
+    await publishRun(deps, claimed);
+    return false;
+  }
+
+  const batchInput = {
+    parentLabel,
+    children: childItems,
+  };
+  const comment = buildT3SubagentBatchHandbackComment(batchInput);
+  const prompt = buildT3SubagentBatchHandbackPrompt(batchInput);
+
+  const parentHostId = await resolveOriginatingTaskHostId(deps, input.parentTaskId, claimed);
   try {
     const mcpClient = await createActiveT3McpClient({
       store: deps.store,
@@ -1746,50 +2133,101 @@ async function resumeUmbrellaSession(
       fetchFn: deps.fetchFn,
       now,
     });
-    await mcpClient.sendThreadMessage({ threadId: claimed.threadId, prompt: message.prompt });
+    await mcpClient.sendThreadMessage({ threadId: claimed.threadId, prompt });
   } catch (err) {
-    const restored = await deps.store.setAgentRunWaitingFor(parentRun.taskId, { childTaskId: child.id, now });
+    // Restore the child row and waitingForTaskId so a later live-status check retries when T3 reconnects.
+    await deps.store.updateAgentRunChild(input.parentTaskId, input.childTaskId, {
+      state: "running",
+      finishedAt: null,
+      now,
+    });
+    const restored = await deps.store.setAgentRunWaitingFor(input.parentTaskId, {
+      childTaskId: input.childTaskId,
+      now,
+    });
     await publishRun(deps, restored);
-    throw new Error(`resuming the T3 session of ${input.parentLabel} after ${input.childLabel}`, { cause: err });
+    const childLabels = childItems.map((c) => c.childLabel).join(", ");
+    throw new Error(`resuming the T3 session of ${parentLabel} after ${childLabels}`, { cause: err });
   }
 
   await publishRun(deps, claimed);
   await deps.storage.addComment(
-    { taskId: parentTask.id, body: message.comment, authorType: "agent", author: T3_BITIG_COMMENT_AUTHOR },
+    { taskId: parentTask.id, body: comment, authorType: "agent", author: T3_BITIG_COMMENT_AUTHOR },
     { actor: T3_BITIG_COMMENT_AUTHOR },
   );
-  return claimed;
+  return claimed.state === "working";
+}
+
+async function listWaitingParentIdsForChild(deps: T3ServiceDeps, childTaskId: string): Promise<string[]> {
+  const [parentRows, waitingRuns] = await Promise.all([
+    deps.store.listAgentRunParentsForChild(childTaskId),
+    deps.store.listAgentRunsWaitingFor(childTaskId),
+  ]);
+  const parentIds = new Set<string>();
+  for (const row of parentRows) {
+    parentIds.add(row.parentTaskId);
+  }
+  for (const run of waitingRuns) {
+    parentIds.add(run.taskId);
+  }
+  return [...parentIds];
 }
 
 /**
- * Hands a finished child task back to the umbrella sessions waiting on it (#BIT-141): records the
- * child's status, checklist, latest checkpoint and final agent comment on the umbrella task, sends
- * them to its T3 thread, and moves its run back to `working`. Called when a task moves to `done`
- * (or `archived`) over MCP or HTTP. Resolves to how many umbrella sessions were resumed; it is a
- * no-op when T3 is not configured, nothing waits on the task, or the task is not finished.
+ * Hands a finished child task back to the umbrella sessions waiting on it (#BIT-141, #BIT-189):
+ * transitions the child in `agent_run_children` to `done` and, once every running child in the
+ * umbrella's batch has ended, records their results on the umbrella task, sends them to its T3
+ * thread, and moves its run back to `working`.
  */
 export async function handBackCompletedChildTask(deps: T3ServiceDeps, childTaskId: string): Promise<number> {
   if (!deps.encryptionKey) return 0;
-  const waiting = await deps.store.listAgentRunsWaitingFor(childTaskId);
-  if (waiting.length === 0) return 0;
+  const parentIds = await listWaitingParentIdsForChild(deps, childTaskId);
+  if (parentIds.length === 0) return 0;
   const child = await deps.storage.getTask(childTaskId);
   if (!child || !FINISHED_TASK_STATUSES.has(child.status)) return 0;
 
   let resumed = 0;
-  for (const parentRun of waiting) {
-    const run = await resumeUmbrellaSession(deps, parentRun, child, (input) => ({
-      comment: buildT3SubagentCompletedComment(input),
-      prompt: buildT3SubagentCompletedPrompt(input),
-    }));
-    if (run?.state === "working") resumed += 1;
+  for (const parentTaskId of parentIds) {
+    const didResume = await transitionChildAndMaybeResumeUmbrella(deps, {
+      parentTaskId,
+      childTaskId: child.id,
+      endState: "done",
+    });
+    if (didResume) resumed += 1;
+  }
+  return resumed;
+}
+
+/**
+ * Marks a child task that set `needsHuman` as ended (`needs_human`) in `agent_run_children` (#BIT-189).
+ * Running siblings continue unaffected; once every child of the batch has ended, the umbrella is
+ * resumed with all children's results.
+ */
+export async function handBackNeedsHumanChildTask(deps: T3ServiceDeps, childTaskId: string): Promise<number> {
+  if (!deps.encryptionKey) return 0;
+  const parentIds = await listWaitingParentIdsForChild(deps, childTaskId);
+  if (parentIds.length === 0) return 0;
+  const child = await deps.storage.getTask(childTaskId);
+  if (!child?.needsHuman) return 0;
+
+  let resumed = 0;
+  for (const parentTaskId of parentIds) {
+    const didResume = await transitionChildAndMaybeResumeUmbrella(deps, {
+      parentTaskId,
+      childTaskId: child.id,
+      endState: "needs_human",
+      stopReason: child.needsHuman,
+    });
+    if (didResume) resumed += 1;
   }
   return resumed;
 }
 
 /**
  * Tells the umbrella sessions waiting on a child task that the child's session failed or stopped
- * before the task was done (#BIT-141), so they do not wait forever. A child task that is finished
- * after all is handed back as completed instead.
+ * before the task was done (#BIT-141, #BIT-189), so they do not wait forever. A child task that is
+ * finished after all is handed back as completed instead; one with `needsHuman` set is recorded as
+ * `needs_human`.
  */
 async function handBackEndedChildRun(
   deps: T3ServiceDeps,
@@ -1798,21 +2236,26 @@ async function handBackEndedChildRun(
 ): Promise<number> {
   const state = childRun.state === "failed" || childRun.state === "stopped" ? childRun.state : undefined;
   if (!state || !deps.encryptionKey) return 0;
-  const waiting = await deps.store.listAgentRunsWaitingFor(childRun.taskId);
-  if (waiting.length === 0) return 0;
+  const parentIds = await listWaitingParentIdsForChild(deps, childRun.taskId);
+  if (parentIds.length === 0) return 0;
   const child = await deps.storage.getTask(childRun.taskId);
   if (!child) return 0;
   if (FINISHED_TASK_STATUSES.has(child.status)) {
     return handBackCompletedChildTask(deps, child.id);
   }
+  if (child.needsHuman && state === "stopped") {
+    return handBackNeedsHumanChildTask(deps, child.id);
+  }
 
   let resumed = 0;
-  for (const parentRun of waiting) {
-    const run = await resumeUmbrellaSession(deps, parentRun, child, (input) => {
-      const ended = { ...input, state, ...(stopReason ? { stopReason } : {}) };
-      return { comment: buildT3SubagentEndedComment(ended), prompt: buildT3SubagentEndedPrompt(ended) };
+  for (const parentTaskId of parentIds) {
+    const didResume = await transitionChildAndMaybeResumeUmbrella(deps, {
+      parentTaskId,
+      childTaskId: child.id,
+      endState: state,
+      stopReason,
     });
-    if (run?.state === "working") resumed += 1;
+    if (didResume) resumed += 1;
   }
   return resumed;
 }
@@ -1841,44 +2284,94 @@ async function afterRunStateChange(
 }
 
 /**
- * The state to store for a run whose thread T3 reports as `liveState` (#BIT-141). An umbrella
- * session that waits on a child task is idle on T3 (`finished`), but stays `waiting_subagent` while
- * the child task is in progress with an active session. When the child task is already finished,
- * or its session failed or stopped, the umbrella session is handed the child's context instead:
- * this also retries a handback that failed earlier because T3 could not be reached.
+ * The state to store for a run whose thread T3 reports as `liveState` (#BIT-141, #BIT-189). An
+ * umbrella session that waits on child tasks is idle on T3 (`finished`), but stays
+ * `waiting_subagent` while any child in the batch is in progress with an active session. When all
+ * children in the batch have finished, set `needsHuman`, or failed/stopped, the umbrella session is
+ * handed the batch's context instead: this also retries a handback that failed earlier because T3
+ * could not be reached.
  */
 async function resolveUmbrellaRunState(
   deps: T3ServiceDeps,
   run: AgentRun,
   liveState: AgentRunState,
 ): Promise<AgentRunState> {
-  const childId = run.waitingForTaskId;
-  if (!childId || liveState !== "finished") return liveState;
+  if (liveState !== "finished") return liveState;
+  const now = deps.now ? deps.now() : Date.now();
+  const latestRun = (await deps.store.getAgentRunByTaskId(run.taskId)) ?? run;
+  const children = await ensureParentChildRows(deps, latestRun, now);
+  const runningRows = children.filter((c) => c.state === "running");
+  if (runningRows.length === 0 && !latestRun.waitingForTaskId) {
+    return liveState;
+  }
 
-  const child = await deps.storage.getTask(childId);
-  if (!child) return liveState;
-  const childRun = await deps.store.getAgentRunByTaskId(child.id);
-  const childFinished = FINISHED_TASK_STATUSES.has(child.status);
-  if (!childFinished && !(childRun && ENDED_CHILD_RUN_STATES.has(childRun.state))) {
-    return child.status === "in_progress" && childRun && isActiveAgentRunState(childRun.state)
-      ? "waiting_subagent"
-      : liveState;
+  let anyStillActive = false;
+  let lastEndedChildId: string | undefined;
+  let lastEndedChildState: AgentRunChildEndState | undefined;
+
+  for (const row of runningRows) {
+    const child = await deps.storage.getTask(row.childTaskId);
+    if (!child) {
+      await deps.store.claimAgentRunChild(run.taskId, row.childTaskId, { state: "stopped", now });
+      lastEndedChildId = row.childTaskId;
+      lastEndedChildState = "stopped";
+      continue;
+    }
+    const childRun = await deps.store.getAgentRunByTaskId(child.id);
+    const childFinished = FINISHED_TASK_STATUSES.has(child.status);
+    const childNeedsHuman = Boolean(child.needsHuman);
+    const childRunEnded = Boolean(childRun && ENDED_CHILD_RUN_STATES.has(childRun.state));
+
+    if (!childFinished && !childNeedsHuman && !childRunEnded) {
+      if (child.status === "in_progress" && childRun && isActiveAgentRunState(childRun.state)) {
+        anyStillActive = true;
+      }
+      continue;
+    }
+
+    lastEndedChildId = child.id;
+    lastEndedChildState = childFinished
+      ? "done"
+      : childNeedsHuman
+        ? "needs_human"
+        : childRun?.state === "failed"
+          ? "failed"
+          : "stopped";
+  }
+
+  if (anyStillActive) {
+    await syncParentWaitingSubagentState(deps, run.taskId, now);
+    return "waiting_subagent";
+  }
+
+  const triggerChildId = lastEndedChildId ?? run.waitingForTaskId;
+  if (!triggerChildId) {
+    return liveState;
   }
 
   try {
-    if (childFinished) {
-      await handBackCompletedChildTask(deps, child.id);
-    } else if (childRun) {
-      await handBackEndedChildRun(deps, childRun);
+    const triggerTask = await deps.storage.getTask(triggerChildId);
+    const triggerRun = await deps.store.getAgentRunByTaskId(triggerChildId);
+    if (triggerTask && FINISHED_TASK_STATUSES.has(triggerTask.status)) {
+      await handBackCompletedChildTask(deps, triggerTask.id);
+    } else if (triggerTask?.needsHuman) {
+      await handBackNeedsHumanChildTask(deps, triggerTask.id);
+    } else if (triggerRun && ENDED_CHILD_RUN_STATES.has(triggerRun.state)) {
+      await handBackEndedChildRun(deps, triggerRun);
+    } else if (lastEndedChildState) {
+      await transitionChildAndMaybeResumeUmbrella(deps, {
+        parentTaskId: run.taskId,
+        childTaskId: triggerChildId,
+        endState: lastEndedChildState,
+      });
     }
   } catch (error) {
-    console.error("handing a child task back to its umbrella T3 session failed", {
+    console.error("handing child task batch back to its umbrella T3 session failed", {
       taskId: run.taskId,
-      childTaskId: child.id,
+      childTaskId: triggerChildId,
       error,
     });
   }
-  // The handback stored the umbrella run's new state (working, or waiting again after a failure).
   return (await deps.store.getAgentRunByTaskId(run.taskId))?.state ?? liveState;
 }
 
@@ -2082,7 +2575,14 @@ export async function stopTaskT3Run(
     }
   }
 
-  // A person stopping an umbrella session also ends its wait on a child task (#BIT-141).
+  // A person stopping an umbrella session also ends its wait on any running child tasks (#BIT-141, #BIT-189).
+  const parentChildren = await deps.store.listAgentRunChildren(taskId);
+  for (const child of parentChildren) {
+    if (child.state === "running") {
+      await deps.store.claimAgentRunChild(taskId, child.childTaskId, { state: "stopped", now });
+    }
+  }
+
   const updatedRun =
     (existingRun.waitingForTaskId
       ? await deps.store.claimAgentRunWaitingFor(taskId, existingRun.waitingForTaskId, { state: "stopped", now })
@@ -2097,6 +2597,222 @@ export async function stopTaskT3Run(
     run: updatedRun,
     pendingQuestions: [],
   };
+}
+
+export interface StartReadyChildrenInput {
+  parentTaskRef: string;
+  max?: number | undefined;
+  actor: string;
+}
+
+export interface StartedReadyChildSummary {
+  taskId: string;
+  code?: string | undefined;
+  title: string;
+  threadId: string;
+  link?: string | undefined;
+  state: AgentRunState;
+  queued: boolean;
+  workspaceStrategy: T3WorkspaceStrategy;
+  providerInstanceId?: string | undefined;
+  model?: string | undefined;
+  level?: string | undefined;
+}
+
+export interface SkippedReadyChildSummary {
+  taskId: string;
+  code?: string | undefined;
+  title: string;
+  reason: ParallelSkipReason;
+  detail: string;
+  blockingTaskId?: string | undefined;
+  blockingTaskCode?: string | undefined;
+  overlappingPath?: string | undefined;
+}
+
+export interface StartReadyChildrenResult {
+  started: StartedReadyChildSummary[];
+  skipped: SkippedReadyChildSummary[];
+}
+
+/**
+ * Picks the next parallel-safe batch of child tasks for an umbrella task (tasks the umbrella
+ * mentions or that depend on it), starts them in T3 with `workspaceStrategy: "worktree"` and their
+ * resolved run profiles, and returns what started and why the rest were skipped (#BIT-189).
+ */
+export async function startReadyChildrenInT3(
+  deps: T3ServiceDeps,
+  input: StartReadyChildrenInput,
+): Promise<StartReadyChildrenResult> {
+  const now = deps.now ? deps.now() : Date.now();
+  const parentTaskId = await resolveTaskRef(deps.storage, input.parentTaskRef);
+  const parentTask = await deps.storage.getTask(parentTaskId);
+  if (!parentTask) {
+    throw new NotFoundError("task", parentTaskId);
+  }
+  if (FINISHED_TASK_STATUSES.has(parentTask.status)) {
+    const label = await labelTask(deps.storage, parentTask);
+    makeValidationIssue(
+      "parentTaskId",
+      `Umbrella task ${label} is already ${parentTask.status} and cannot launch child sessions.`,
+    );
+  }
+  const parentRun = await deps.store.getAgentRunByTaskId(parentTask.id);
+  if (!parentRun) {
+    const label = await labelTask(deps.storage, parentTask);
+    makeValidationIssue("parentTaskId", `Umbrella task ${label} has no T3 session.`);
+  }
+  if (ENDED_CHILD_RUN_STATES.has(parentRun.state)) {
+    const label = await labelTask(deps.storage, parentTask);
+    makeValidationIssue(
+      "parentTaskId",
+      `Umbrella task ${label}'s T3 session is ${parentRun.state}; only an active umbrella session can start child tasks.`,
+    );
+  }
+
+  const [allTasks, allProjects, parentComments, projectSettings, activeRunning] = await Promise.all([
+    deps.storage.getTasks(),
+    deps.storage.getProjects(),
+    deps.storage.getComments(parentTask.id),
+    deps.store.getProjectRunSettings(parentTask.projectId),
+    listActiveRunningChildren(deps, parentTask.id, now),
+  ]);
+
+  const projectById = new Map(allProjects.map((p) => [p.id, p]));
+  const taskById = new Map(allTasks.map((t) => [t.id, t]));
+  const mentionIndex = buildMentionIndex(allTasks, allProjects);
+  const mentionedIds = new Set(
+    mentionIndex.linksFor(parentTask, parentComments).mentions.map((m) => m.id),
+  );
+
+  // Related child tasks: tasks mentioned by the umbrella or tasks that declare `parentTask.id` in `dependsOn`.
+  const relatedTasks = allTasks
+    .filter(
+      (t) =>
+        t.id !== parentTask.id &&
+        !FINISHED_TASK_STATUSES.has(t.status) &&
+        (mentionedIds.has(t.id) || (t.dependsOn ?? []).includes(parentTask.id)),
+    )
+    .sort(compareTasks);
+
+  const runningSet = new Set(activeRunning.map((r) => r.id));
+  const candidateTasks = relatedTasks.filter((t) => !runningSet.has(t.id));
+
+  const candidateProfiles = new Map<string, TaskRunProfile | undefined>();
+  await Promise.all(
+    candidateTasks.map(async (t) => {
+      candidateProfiles.set(t.id, await deps.store.getTaskRunProfile(t.id));
+    }),
+  );
+
+  const codeOrTitle = (idOrCode: string): { id?: string | undefined; code?: string | undefined; title: string; label: string } => {
+    const direct = taskById.get(idOrCode);
+    if (direct) {
+      const code = taskCode(direct, projectById.get(direct.projectId));
+      return { id: direct.id, ...(code ? { code } : {}), title: direct.title, label: code ?? `"${direct.title}"` };
+    }
+    for (const t of allTasks) {
+      const code = taskCode(t, projectById.get(t.projectId));
+      if (code === idOrCode) {
+        return { id: t.id, code, title: t.title, label: code };
+      }
+    }
+    return { title: idOrCode, label: idOrCode };
+  };
+
+  const candidates: ParallelBatchCandidate[] = [];
+  const alreadyActiveSkips: SkippedReadyChildSummary[] = [];
+
+  for (const candidateTask of candidateTasks) {
+    const code = taskCode(candidateTask, projectById.get(candidateTask.projectId));
+    const existingChildRun = await deps.store.getAgentRunByTaskId(candidateTask.id);
+    if (existingChildRun && isActiveAgentRunState(existingChildRun.state)) {
+      alreadyActiveSkips.push({
+        taskId: candidateTask.id,
+        ...(code ? { code } : {}),
+        title: candidateTask.title,
+        reason: "already_running",
+        detail: `${code ?? candidateTask.title} already has an active T3 session (${existingChildRun.state}).`,
+      });
+      continue;
+    }
+
+    const blockedBy: string[] = [];
+    for (const depId of candidateTask.dependsOn ?? []) {
+      if (depId === parentTask.id) continue;
+      const depTask = taskById.get(depId);
+      if (depTask && !FINISHED_TASK_STATUSES.has(depTask.status)) {
+        const depCode = taskCode(depTask, projectById.get(depTask.projectId));
+        blockedBy.push(depCode ?? depId);
+      }
+    }
+
+    candidates.push({
+      id: candidateTask.id,
+      ...(code ? { code } : {}),
+      pendingApproval: Boolean(candidateTask.pendingApproval),
+      blockedBy,
+      profile: candidateProfiles.get(candidateTask.id),
+    });
+  }
+
+  const projectCap = projectSettings?.maxParallelChildren ?? DEFAULT_MAX_PARALLEL_CHILDREN;
+  const requestedMax =
+    typeof input.max === "number" && Number.isFinite(input.max) && input.max >= 1
+      ? Math.floor(input.max)
+      : undefined;
+  const effectiveCap =
+    requestedMax !== undefined ? Math.min(projectCap, activeRunning.length + requestedMax) : projectCap;
+
+  const batchSelection = pickParallelBatch(candidates, {
+    running: activeRunning,
+    cap: effectiveCap,
+    serialPaths: projectSettings?.serialPaths ?? [],
+  });
+
+  const skipped: SkippedReadyChildSummary[] = [
+    ...alreadyActiveSkips,
+    ...batchSelection.skipped.map((skip) => {
+      const self = codeOrTitle(skip.taskId);
+      const blocker = skip.blockingTask ? codeOrTitle(skip.blockingTask) : undefined;
+      return {
+        taskId: skip.taskId,
+        ...(skip.code ? { code: skip.code } : self.code ? { code: self.code } : {}),
+        title: self.title,
+        reason: skip.reason,
+        detail: skip.message,
+        ...(blocker?.id ? { blockingTaskId: blocker.id } : {}),
+        ...(blocker?.code ? { blockingTaskCode: blocker.code } : skip.blockingTask ? { blockingTaskCode: skip.blockingTask } : {}),
+        ...(skip.blockingPath ? { overlappingPath: skip.blockingPath } : {}),
+      };
+    }),
+  ];
+  const started: StartedReadyChildSummary[] = [];
+
+  for (const picked of batchSelection.picked) {
+    const launched = await launchTaskInT3(deps, {
+      taskRef: picked.id,
+      parentTaskRef: parentTask.id,
+      workspaceStrategy: "worktree",
+      actor: input.actor,
+    });
+    const code = taskCode(launched.task, projectById.get(launched.task.projectId));
+    started.push({
+      taskId: launched.task.id,
+      ...(code ? { code } : {}),
+      title: launched.task.title,
+      threadId: launched.run.threadId,
+      ...(launched.run.link ? { link: launched.run.link } : {}),
+      state: launched.run.state,
+      queued: launched.run.state === "queued",
+      workspaceStrategy: "worktree",
+      ...(launched.run.providerInstanceId ? { providerInstanceId: launched.run.providerInstanceId } : {}),
+      ...(launched.run.model ? { model: launched.run.model } : {}),
+      ...(launched.run.levelKey ? { level: launched.run.levelKey } : {}),
+    });
+  }
+
+  return { started, skipped };
 }
 
 export async function respondToTaskT3Request(
@@ -3309,5 +4025,6 @@ export async function validateAndSaveOrgRunLevels(
   ]);
   return { levels, models };
 }
+
 
 

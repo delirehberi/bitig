@@ -19,6 +19,7 @@ import { runInBackground } from "../background";
 import {
   forwardCommentToT3Run,
   handBackCompletedChildTask,
+  handBackNeedsHumanChildTask,
   settleTaskT3Run,
   suggestTaskRunProfile,
 } from "../t3/service";
@@ -96,6 +97,20 @@ export async function handBackFinishedTaskInBackground(c: Context<AppEnv>, taskI
     () => undefined,
     (error: unknown) => {
       console.error("handing a finished child task back to its umbrella T3 session failed", { taskId, error });
+    },
+  );
+  await runInBackground(c, work);
+}
+
+/**
+ * Marks a child task that set `needsHuman` as ended (`needs_human`) in `agent_run_children` (#BIT-189)
+ * and resumes its umbrella session once every child in the batch has ended.
+ */
+export async function handBackNeedsHumanTaskInBackground(c: Context<AppEnv>, taskId: string): Promise<void> {
+  const work = handBackNeedsHumanChildTask(buildServiceDeps(c), taskId).then(
+    () => undefined,
+    (error: unknown) => {
+      console.error("handing a needsHuman child task back to its umbrella T3 session failed", { taskId, error });
     },
   );
   await runInBackground(c, work);
@@ -196,6 +211,7 @@ export const tasksRouter = new Hono<AppEnv>()
       const patch = c.req.valid("json");
       const finishing = patch.status === "archived" || patch.status === "done";
       const approving = patch.pendingApproval === null;
+      const settingNeedsHuman = typeof patch.needsHuman === "string" && patch.needsHuman.trim().length > 0;
       const previous = finishing || approving ? await storage.getTask(id) : null;
       const updated = await storage.updateTask(id, patch, await statusChangeOptions(c, id, patch.status, "updateTask"));
       if (approving && previous?.pendingApproval === true && !updated.pendingApproval) {
@@ -206,6 +222,9 @@ export const tasksRouter = new Hono<AppEnv>()
       }
       if (finishing && previous?.status !== patch.status) {
         await handBackFinishedTaskInBackground(c, updated.id);
+      }
+      if (settingNeedsHuman) {
+        await handBackNeedsHumanTaskInBackground(c, updated.id);
       }
       return c.json(updated);
     },

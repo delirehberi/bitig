@@ -1134,7 +1134,7 @@ export function buildT3LaunchPrompt({
       `6. Before every final response in T3, post that same substantive response as a comment on ${code} with the outcome, work done, verification, and any next action. Do this for completion, partial progress, failure, and blocked work; the comment in step 5 can satisfy this rule. If Bitig MCP cannot post the comment, say so explicitly in the T3 response.`,
       `7. When the work is finished and verified, post the final comment first, then move the task to \`done\` via \`complete_task({ id: "${code}" })\`. Leave unfinished or unverified work in progress.`,
       "8. Never move the task to `archived` — a human reviews `done` tasks and archives them.",
-      `9. Checklist items are steps of ${code}, not separate tasks: do them in this session and never start child sessions for them. If ${code} is an umbrella over other Bitig tasks (tasks it mentions or that depend on it), you may hand one approved, unblocked related task to its own T3 session with \`start_t3_thread({ taskId: "<child-code>", parentTaskId: "${code}" })\`. Start one child at a time, then end your turn without polling: Bitig resumes this thread with the child's completion context when it is done, or tells you if its session fails or stops.`,
+      `9. Checklist items are steps of ${code}, not separate tasks: do them in this session and never start child sessions for them. If ${code} is an umbrella over other Bitig tasks (tasks it mentions or that depend on it), call \`start_ready_children({ parentTaskId: "${code}" })\` to start the next batch of approved, unblocked, non-overlapping child tasks in parallel (or \`start_t3_thread({ taskId: "<child-code>", parentTaskId: "${code}" })\` for a single child). Start a batch, then end your turn without polling: Bitig resumes this thread once all running children in the batch have finished with each child's result, branch, head commit, diff stat, and completion context.`,
     ].join("\n"),
   );
 
@@ -1242,12 +1242,42 @@ export interface T3SubagentHandbackInput {
   readonly checkpoint?: Checkpoint | undefined;
   /** The child's latest agent comment, usually its final report. */
   readonly finalComment?: Comment | undefined;
+  /** Reported git metadata from the child run (#BIT-189). */
+  readonly gitMetadata?: T3GitMetadata | undefined;
 }
 
-/** The child task's completion context: status, checklist, latest checkpoint, and final agent comment. */
-function buildT3SubagentContext(input: T3SubagentHandbackInput): string {
+function formatChildGitHandbackLines(git: T3GitMetadata | undefined): string[] {
+  if (!git) return [];
+  const lines: string[] = [];
+  if (git.branch) {
+    lines.push(`- Branch: \`${git.branch}\``);
+  }
+  if (git.headSha) {
+    lines.push(`- Head commit: \`${git.headSha}\``);
+  }
+  if (git.diffStat) {
+    lines.push(
+      `- Diff stat: ${String(git.diffStat.filesChanged)} files changed (+${String(git.diffStat.insertions)} / -${String(git.diffStat.deletions)})`,
+    );
+  }
+  if (git.pullRequestUrls && git.pullRequestUrls.length > 0) {
+    lines.push(`- Pull requests: ${git.pullRequestUrls.join(", ")}`);
+  }
+  return lines;
+}
+
+/** The child task's completion context: status, git state, checklist, latest checkpoint, and final agent comment. */
+function buildT3SubagentContext(
+  input: T3SubagentHandbackInput,
+  extraLines: readonly string[] = [],
+): string {
   const { child } = input;
-  const lines: string[] = [`- Task: #${input.childLabel} "${child.title}"`, `- Status: ${child.status}`];
+  const lines: string[] = [
+    `- Task: #${input.childLabel} "${child.title}"`,
+    `- Status: ${child.status}`,
+    ...extraLines,
+    ...formatChildGitHandbackLines(input.gitMetadata),
+  ];
 
   const checklist = child.checklist ?? [];
   if (checklist.length > 0) {
@@ -1258,7 +1288,7 @@ function buildT3SubagentContext(input: T3SubagentHandbackInput): string {
     }
     const hidden = checklist.length - T3_HANDBACK_CHECKLIST_MAX;
     if (hidden > 0) {
-      lines.push(`  - …and ${String(hidden)} more`);
+      lines.push(`  - \u2026and ${String(hidden)} more`);
     }
   }
 
@@ -1304,34 +1334,124 @@ export function buildT3SubagentCompletedPrompt(input: T3SubagentHandbackInput): 
 }
 
 export interface T3SubagentEndedInput extends T3SubagentHandbackInput {
-  /** The child session's end state: it failed or was stopped before the task was done. */
-  readonly state: "failed" | "stopped";
+  /** The child session's end state: it failed, was stopped, or paused for human input before the task was done. */
+  readonly state: "failed" | "stopped" | "needs_human";
   readonly stopReason?: string | undefined;
 }
 
 function describeEndedChild(input: T3SubagentEndedInput): string {
+  if (input.state === "needs_human") {
+    const what = input.child.needsHuman ?? input.stopReason;
+    const reason = what ? ` Needs human: ${truncateText(what, T3_STOP_REASON_MAX)}` : "";
+    return `Child task #${input.childLabel} is waiting on a person (needs_human) before the task was done.${reason}`;
+  }
   const reason = input.stopReason ? ` Reason: ${truncateText(input.stopReason, T3_STOP_REASON_MAX)}` : "";
   return `The T3 session of child task #${input.childLabel} ${input.state} before the task was done.${reason}`;
 }
 
-/** The comment recorded on the umbrella task when a child session fails or stops (#BIT-141). */
+/** The comment recorded on the umbrella task when a child session fails, stops, or sets needsHuman (#BIT-141, #BIT-189). */
 export function buildT3SubagentEndedComment(input: T3SubagentEndedInput): string {
+  const extra =
+    input.state === "needs_human" && input.child.needsHuman
+      ? [`- Needs human: ${truncateText(input.child.needsHuman, T3_STOP_REASON_MAX)}`]
+      : [];
   return truncateText(
-    `${describeEndedChild(input)} This session no longer waits for it.\n\n${buildT3SubagentContext(input)}`,
+    `${describeEndedChild(input)} This session no longer waits for it.\n\n${buildT3SubagentContext(input, extra)}`,
     COMMENT_BODY_MAX,
   );
 }
 
-/** The prompt sent to the umbrella task's T3 thread when a child session fails or stops (#BIT-141). */
+/** The prompt sent to the umbrella task's T3 thread when a child session fails, stops, or sets needsHuman (#BIT-141, #BIT-189). */
 export function buildT3SubagentEndedPrompt(input: T3SubagentEndedInput): string {
+  const extra =
+    input.state === "needs_human" && input.child.needsHuman
+      ? [`- Needs human: ${truncateText(input.child.needsHuman, T3_STOP_REASON_MAX)}`]
+      : [];
   return truncateText(
     [
       `${describeEndedChild(input)} You started it from ${input.parentLabel}.`,
       "",
-      buildT3SubagentContext(input),
+      buildT3SubagentContext(input, extra),
       "",
       `Decide how ${input.parentLabel} continues: restart the child with \`start_t3_thread({ taskId: "${input.childLabel}", parentTaskId: "${input.parentLabel}" })\`, move on to another related task, or ask a person through a comment and \`needsHuman\` on ${input.parentLabel}.`,
     ].join("\n"),
     COMMENT_BODY_MAX,
   );
+}
+
+export interface T3SubagentBatchHandbackChildItem extends Omit<T3SubagentHandbackInput, "parentLabel"> {
+  readonly state: "done" | "failed" | "stopped" | "needs_human";
+  readonly stopReason?: string | undefined;
+}
+
+export interface T3SubagentBatchHandbackInput {
+  readonly parentLabel: string;
+  readonly children: readonly T3SubagentBatchHandbackChildItem[];
+}
+
+function buildBatchChildSection(
+  parentLabel: string,
+  item: T3SubagentBatchHandbackChildItem,
+): string {
+  const extra: string[] = [`- Result: ${item.state}`];
+  if (item.state === "needs_human" && item.child.needsHuman) {
+    extra.push(`- Needs human: ${truncateText(item.child.needsHuman, T3_STOP_REASON_MAX)}`);
+  } else if ((item.state === "failed" || item.state === "stopped") && item.stopReason) {
+    extra.push(`- Stop reason: ${truncateText(item.stopReason, T3_STOP_REASON_MAX)}`);
+  }
+  const context = buildT3SubagentContext({ ...item, parentLabel }, extra);
+  return [`### #${item.childLabel}: ${item.child.title} (${item.state})`, "", context].join("\n");
+}
+
+/**
+ * Builds the comment recorded on the umbrella task when all running child tasks in a batch have
+ * ended (#BIT-189). For a single-child batch, delegates to the single-child builders so existing
+ * single-child wording is unchanged.
+ */
+export function buildT3SubagentBatchHandbackComment(input: T3SubagentBatchHandbackInput): string {
+  if (input.children.length === 1) {
+    const only = input.children[0];
+    if (only) {
+      if (only.state === "done") {
+        return buildT3SubagentCompletedComment({ ...only, parentLabel: input.parentLabel });
+      }
+      return buildT3SubagentEndedComment({
+        ...only,
+        parentLabel: input.parentLabel,
+        state: only.state,
+        stopReason: only.stopReason,
+      });
+    }
+  }
+  const summaryParts = input.children.map((c) => `#${c.childLabel} (${c.state})`);
+  const header = `Child batch (${String(input.children.length)} tasks: ${summaryParts.join(", ")}) has ended. Resuming this session.`;
+  const sections = input.children.map((c) => buildBatchChildSection(input.parentLabel, c));
+  return truncateText([header, "", ...sections].join("\n\n"), COMMENT_BODY_MAX);
+}
+
+/**
+ * Builds the resume prompt sent to the umbrella task's T3 thread when all running child tasks in
+ * a batch have ended (#BIT-189). For a single-child batch, delegates to the single-child builders
+ * so existing single-child wording is unchanged.
+ */
+export function buildT3SubagentBatchHandbackPrompt(input: T3SubagentBatchHandbackInput): string {
+  if (input.children.length === 1) {
+    const only = input.children[0];
+    if (only) {
+      if (only.state === "done") {
+        return buildT3SubagentCompletedPrompt({ ...only, parentLabel: input.parentLabel });
+      }
+      return buildT3SubagentEndedPrompt({
+        ...only,
+        parentLabel: input.parentLabel,
+        state: only.state,
+        stopReason: only.stopReason,
+      });
+    }
+  }
+  const summaryParts = input.children.map((c) => `${c.childLabel} (${c.state})`);
+  const header = `All ${String(input.children.length)} child tasks in the batch you started from ${input.parentLabel} have ended: ${summaryParts.join(", ")}.`;
+  const sections = input.children.map((c) => buildBatchChildSection(input.parentLabel, c));
+  const footer = `Continue ${input.parentLabel}: call \`get_task({ id: "${input.parentLabel}" })\` and \`resume_from_checkpoint({ taskId: "${input.parentLabel}" })\`, review each child's result, branch, head commit, and diff stat above, then start the next batch with \`start_ready_children({ parentTaskId: "${input.parentLabel}" })\`, retry or escalate any failed/stopped/needs_human child, or finish ${input.parentLabel}.`;
+  return truncateText([header, "", ...sections, "", footer].join("\n\n"), COMMENT_BODY_MAX);
 }

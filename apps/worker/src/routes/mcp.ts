@@ -10,10 +10,11 @@ import {
   launchTaskInT3,
   reportTaskT3GitMetadata,
   resolveTaskRunProfileWithSelection,
+  startReadyChildrenInT3,
   suggestTaskRunProfile,
 } from "../t3/service";
 import { buildHostFolderDeps, buildServiceDeps, requireOrgOwner } from "./t3";
-import { handBackFinishedTaskInBackground } from "./tasks";
+import { handBackFinishedTaskInBackground, handBackNeedsHumanTaskInBackground } from "./tasks";
 
 const MCP_SERVER_NAME = "bitig";
 const MCP_SERVER_VERSION = "1.0.0";
@@ -59,6 +60,17 @@ export const mcpRouter = new Hono<AppEnv>().all("*", async (c) => {
         parentTaskRef: input.parentTaskId,
       });
     },
+    startReadyChildren: (input) => {
+      const role = c.get("orgRole");
+      if (!role || !hasMinimumOrgRole(role, "editor")) {
+        throw new ForbiddenRoleError("Forbidden: editor role required to start child runs");
+      }
+      return startReadyChildrenInT3(t3Deps, {
+        parentTaskRef: input.parentTaskId,
+        max: input.max,
+        actor: input.actor ?? "mcp",
+      });
+    },
     registerProjectHostFolder: (input) => {
       requireOrgOwner(c);
       return registerHostFolder(
@@ -74,8 +86,9 @@ export const mcpRouter = new Hono<AppEnv>().all("*", async (c) => {
         force: input.force,
       });
     },
-    // Resumes an umbrella task's T3 session waiting on the finished task (#BIT-141).
+    // Resumes an umbrella task's T3 session waiting on the finished task (#BIT-141, #BIT-189).
     onTaskFinished: (task) => handBackFinishedTaskInBackground(c, task.id),
+    onTaskNeedsHuman: (task) => handBackNeedsHumanTaskInBackground(c, task.id),
     getUmbrellaParentTaskId: async (taskId) =>
       (await t3Deps.store.getAgentRunByTaskId(taskId).catch(() => null))?.parentTaskId,
     listRunLevels: async () => {

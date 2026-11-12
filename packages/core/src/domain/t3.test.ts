@@ -26,6 +26,8 @@ import {
   AgentRunSchema,
   T3GitMetadataSchema,
   T3_HANDBACK_CHECKLIST_MAX,
+  buildT3SubagentBatchHandbackComment,
+  buildT3SubagentBatchHandbackPrompt,
   buildT3SubagentCompletedComment,
   buildT3SubagentCompletedPrompt,
   buildT3SubagentEndedComment,
@@ -186,6 +188,7 @@ describe("buildT3LaunchPrompt", () => {
     expect(built.prompt).toContain("complete_task");
     expect(built.prompt).toContain("Never move the task to `archived`");
     expect(built.prompt).toContain("Checklist items are steps of BIT-107, not separate tasks");
+    expect(built.prompt).toContain('start_ready_children({ parentTaskId: "BIT-107" })');
     expect(built.prompt).toContain('start_t3_thread({ taskId: "<child-code>", parentTaskId: "BIT-107" })');
     expect(built.prompt).toContain("end your turn without polling");
     expect(built.prompt).not.toContain("## Umbrella Task");
@@ -247,7 +250,7 @@ describe("buildT3LaunchPrompt", () => {
   });
 });
 
-describe("T3 subagent handback (BIT-141)", () => {
+describe("T3 subagent handback (BIT-141, BIT-189)", () => {
   const child: Task = {
     id: "0196ed60-0000-7000-8000-000000000021",
     projectId: "0196ed60-0000-7000-8000-000000000002",
@@ -338,7 +341,7 @@ describe("T3 subagent handback (BIT-141)", () => {
     expect(prompt).not.toContain(`Item ${String(T3_HANDBACK_CHECKLIST_MAX)}\n`);
   });
 
-  it("tells the umbrella session when a child session fails or stops", () => {
+  it("tells the umbrella session when a child session fails, stops, or sets needsHuman", () => {
     const ended = { ...input, child: { ...child, status: "in_progress" as const }, state: "failed" as const, stopReason: "Usage limit" };
     expect(buildT3SubagentEndedComment(ended)).toContain(
       "The T3 session of child task #BIT-108 failed before the task was done. Reason: Usage limit",
@@ -346,6 +349,87 @@ describe("T3 subagent handback (BIT-141)", () => {
     const prompt = buildT3SubagentEndedPrompt(ended);
     expect(prompt).toContain("You started it from BIT-100.");
     expect(prompt).toContain('start_t3_thread({ taskId: "BIT-108", parentTaskId: "BIT-100" })');
+
+    const needsHumanChild = {
+      ...input,
+      child: { ...child, status: "in_progress" as const, needsHuman: "Need staging API credentials" },
+      state: "needs_human" as const,
+    };
+    expect(buildT3SubagentEndedComment(needsHumanChild)).toContain(
+      "Child task #BIT-108 is waiting on a person (needs_human) before the task was done. Needs human: Need staging API credentials",
+    );
+    expect(buildT3SubagentEndedPrompt(needsHumanChild)).toContain("- Needs human: Need staging API credentials");
+  });
+
+  it("formats a multi-child batch handback with mixed results, branch, head commit, and diff stat (BIT-189)", () => {
+    const shaA = "a".repeat(40);
+    const shaB = "b".repeat(40);
+    const batchInput = {
+      parentLabel: "BIT-100",
+      children: [
+        {
+          childLabel: "BIT-108",
+          child,
+          state: "done" as const,
+          checkpoint,
+          finalComment,
+          gitMetadata: {
+            branch: "feat/bit-108",
+            headSha: shaA,
+            diffStat: { filesChanged: 3, insertions: 85, deletions: 12 },
+          },
+        },
+        {
+          childLabel: "BIT-109",
+          child: {
+            ...child,
+            id: "0196ed60-0000-7000-8000-000000000024",
+            title: "Add webhook verifier",
+            status: "in_progress" as const,
+            needsHuman: "Confirm HMAC header name",
+          },
+          state: "needs_human" as const,
+          gitMetadata: {
+            branch: "feat/bit-109",
+            headSha: shaB,
+            diffStat: { filesChanged: 1, insertions: 20, deletions: 0 },
+          },
+        },
+      ],
+    };
+
+    const batchComment = buildT3SubagentBatchHandbackComment(batchInput);
+    const batchPrompt = buildT3SubagentBatchHandbackPrompt(batchInput);
+    for (const text of [batchComment, batchPrompt]) {
+      expect(text).toContain("### #BIT-108: Store encrypted token (done)");
+      expect(text).toContain("- Result: done");
+      expect(text).toContain("- Branch: `feat/bit-108`");
+      expect(text).toContain(`- Head commit: \`${shaA}\``);
+      expect(text).toContain("- Diff stat: 3 files changed (+85 / -12)");
+      expect(text).toContain("### #BIT-109: Add webhook verifier (needs_human)");
+      expect(text).toContain("- Result: needs_human");
+      expect(text).toContain("- Needs human: Confirm HMAC header name");
+      expect(text).toContain("- Branch: `feat/bit-109`");
+      expect(text).toContain(`- Head commit: \`${shaB}\``);
+      expect(text).toContain("- Diff stat: 1 files changed (+20 / -0)");
+    }
+    expect(batchPrompt).toContain("All 2 child tasks in the batch you started from BIT-100 have ended: BIT-108 (done), BIT-109 (needs_human).");
+    expect(batchPrompt).toContain('start_ready_children({ parentTaskId: "BIT-100" })');
+
+    // Single-child batch delegates to the single-child builders unchanged
+    const firstBatchChild = batchInput.children[0];
+    if (!firstBatchChild) throw new Error("Expected first batch child");
+    expect(
+      buildT3SubagentBatchHandbackPrompt({
+        parentLabel: "BIT-100",
+        children: [firstBatchChild],
+      }),
+    ).toBe(
+      buildT3SubagentCompletedPrompt({
+        ...firstBatchChild,
+        parentLabel: "BIT-100",
+      }),
+    );
   });
 });
 

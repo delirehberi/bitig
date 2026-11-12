@@ -286,6 +286,7 @@ describe("Remote MCP Protocol & Tool Execution", () => {
       "report_t3_git_metadata",
       "resume_from_checkpoint",
       "save_checkpoint",
+      "start_ready_children",
       "start_t3_thread",
       "suggest_run_profile",
       "update_project",
