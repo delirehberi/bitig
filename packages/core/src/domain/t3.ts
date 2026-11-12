@@ -138,9 +138,18 @@ export const T3DiffStatSchema = z.strictObject({
   insertions: z.number().int().nonnegative(),
   deletions: z.number().int().nonnegative(),
 });
+export const T3GitCommitShaSchema = z.string().regex(/^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$/);
 export const T3GitMetadataSchema = z.strictObject({
   branch: z.string().trim().min(1).max(T3_GIT_TEXT_MAX).nullable().exactOptional(),
-  headSha: z.string().regex(/^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$/).nullable().exactOptional(),
+  headSha: T3GitCommitShaSchema.nullable().exactOptional(),
+  /** Absolute path of the git worktree where the session is working (#BIT-190). */
+  worktreePath: z.string().trim().min(1).max(1024).nullable().exactOptional(),
+  /** Whether uncommitted tracked changes exist in the worktree (#BIT-190). */
+  dirty: z.boolean().nullable().exactOptional(),
+  /** Alias for `dirty`: whether uncommitted tracked changes exist in the worktree (#BIT-190). */
+  uncommittedChanges: z.boolean().nullable().exactOptional(),
+  /** Repo-relative file paths changed by the run (#BIT-190). */
+  changedPaths: z.array(z.string().trim().min(1).max(1024)).max(500).nullable().exactOptional(),
   /** Tracked changes in the working tree or latest task commit; excludes untracked files. */
   diffStat: T3DiffStatSchema.nullable().exactOptional(),
   pullRequestUrls: z.array(T3PullRequestUrlSchema).max(T3_PR_COUNT_MAX).exactOptional(),
@@ -153,6 +162,14 @@ export const ReportT3GitMetadataInputSchema = z.strictObject({
   metadata: T3GitMetadataSchema,
 });
 export type ReportT3GitMetadataInput = z.output<typeof ReportT3GitMetadataInputSchema>;
+
+/** Records that an umbrella session merged a finished child task's branch into its integration branch (#BIT-190). */
+export const ReportChildMergeInputSchema = z.strictObject({
+  parentTaskId: z.string().trim().min(1),
+  childTaskId: z.string().trim().min(1),
+  mergedSha: T3GitCommitShaSchema,
+});
+export type ReportChildMergeInput = z.output<typeof ReportChildMergeInputSchema>;
 
 export const AgentRunSchema = z.strictObject({
   ...T3GitMetadataSchema.shape,
@@ -972,6 +989,10 @@ export interface BuildT3LaunchPromptInput {
   readonly comments?: readonly Comment[] | undefined;
   /** Set when an umbrella task's session started this task as a child session (#BIT-141). */
   readonly parentTaskCode?: string | undefined;
+  /** Branch created for a child session from the umbrella's worktree (e.g. `bitig/<child-code>`, #BIT-190). */
+  readonly childBranch?: string | undefined;
+  /** Declared path globs (`touches`) from the child task's run profile (#BIT-190). */
+  readonly declaredTouches?: readonly string[] | undefined;
   /** Latest checkpoint snapshot to seed a fresh follow-up session (#BIT-165). */
   readonly checkpoint?: Checkpoint | null | undefined;
   /** Prior run's Git branch/commit/diff/PR summary when relaunching in a fresh session (#BIT-165). */
@@ -1051,6 +1072,8 @@ export function buildT3LaunchPrompt({
   code: codeAlias,
   comments = [],
   parentTaskCode,
+  childBranch,
+  declaredTouches,
   checkpoint,
   priorGitMetadata,
   followUpComment,
@@ -1060,7 +1083,9 @@ export function buildT3LaunchPrompt({
   const title = `${code} ${task.title}`.slice(0, 512);
   const sections: string[] = [`# ${code}: ${task.title}`];
   if (gitMetadataRunId) {
-    sections.push(`## Git metadata reporting\n\nBefore every final response (whether completing the task, pausing for human input, or replying to a follow-up comment), call report_t3_git_metadata with taskId "${code}", runId "${gitMetadataRunId}", your current T3 threadId, and metadata. Read branch with git branch --show-current (if you merged the branch into master or main and detached the worktree, report that target branch instead of null), headSha with git rev-parse HEAD, and diffStat with git diff HEAD --numstat when uncommitted tracked changes exist, or git show --numstat --format="" HEAD when your changes are already committed (exclude untracked files; count binary files but not binary lines). diffStat is { filesChanged, insertions, deletions }. Include known HTTP(S) pullRequestUrls. Omit unknown fields, use null to clear branch/headSha/diffStat, and [] for a known empty PR list. Never guess values or substitute another run's identity. If reporting fails, mention it in your final task comment.`);
+    sections.push(
+      `## Git metadata reporting\n\nBefore every final response (whether completing the task, pausing for human input, or replying to a follow-up comment), call report_t3_git_metadata with taskId "${code}", runId "${gitMetadataRunId}", your current T3 threadId, and metadata. Read branch with git branch --show-current (if you merged the branch into master or main and detached the worktree, report that target branch instead of null), headSha with git rev-parse HEAD, worktreePath with git rev-parse --show-toplevel, dirty as true when git status --porcelain --untracked-files=no is non-empty or false when clean, changedPaths with git diff --name-only HEAD (or git show --name-only --format="" HEAD when already committed), and diffStat with git diff HEAD --numstat when uncommitted tracked changes exist, or git show --numstat --format="" HEAD when your changes are already committed (exclude untracked files; count binary files but not binary lines). diffStat is { filesChanged, insertions, deletions }. Include known HTTP(S) pullRequestUrls. Omit unknown fields, use null to clear branch/headSha/worktreePath/dirty/changedPaths/diffStat, and [] for a known empty PR list. Never guess values or substitute another run's identity. If reporting fails, mention it in your final task comment.`,
+    );
   }
 
   if (task.description.trim().length > 0) {
@@ -1113,12 +1138,20 @@ export function buildT3LaunchPrompt({
 
   const parentCode = parentTaskCode?.trim();
   if (parentCode) {
+    const resolvedChildBranch = (childBranch ?? "").trim() || `bitig/${code}`;
+    const touchesInstruction =
+      declaredTouches && declaredTouches.length > 0
+        ? `- Stay inside your declared paths (${declaredTouches.map((p) => `\`${p}\``).join(", ")}) and say so in a comment on ${code} if you had to leave them.`
+        : `- Stay inside your declared paths (\`touches\`) and say so in a comment on ${code} if you had to leave them.`;
     sections.push(
       [
         "## Umbrella Task",
         "",
         `This session was started from the T3 session of umbrella task ${parentCode}. Work only on ${code}; do not start, update, or complete ${parentCode}.`,
-        `When ${code} is finished and verified, post the final comment and call \`complete_task({ id: "${code}" })\`: Bitig then hands your final comment and latest checkpoint back to ${parentCode}'s session.`,
+        `- Work only in your own worktree and on your own branch (\`${resolvedChildBranch}\`, branched from ${parentCode}'s worktree). Do not touch ${parentCode}'s worktree.`,
+        touchesInstruction,
+        `- Commit your changes on \`${resolvedChildBranch}\`. Do not merge and do not open a pull request (${parentCode} merges child branches and opens one pull request from its integration branch).`,
+        `- Report git metadata via \`report_t3_git_metadata\` (including \`branch\`, \`headSha\`, \`worktreePath\`, \`dirty: false\`, \`changedPaths\`, and \`diffStat\`), then when ${code} is finished and verified, post the final comment and call \`complete_task({ id: "${code}" })\`: Bitig then hands your final comment and latest checkpoint back to ${parentCode}'s session.`,
       ].join("\n"),
     );
   }
@@ -1134,7 +1167,7 @@ export function buildT3LaunchPrompt({
       `6. Before every final response in T3, post that same substantive response as a comment on ${code} with the outcome, work done, verification, and any next action. Do this for completion, partial progress, failure, and blocked work; the comment in step 5 can satisfy this rule. If Bitig MCP cannot post the comment, say so explicitly in the T3 response.`,
       `7. When the work is finished and verified, post the final comment first, then move the task to \`done\` via \`complete_task({ id: "${code}" })\`. Leave unfinished or unverified work in progress.`,
       "8. Never move the task to `archived` — a human reviews `done` tasks and archives them.",
-      `9. Checklist items are steps of ${code}, not separate tasks: do them in this session and never start child sessions for them. If ${code} is an umbrella over other Bitig tasks (tasks it mentions or that depend on it), call \`start_ready_children({ parentTaskId: "${code}" })\` to start the next batch of approved, unblocked, non-overlapping child tasks in parallel (or \`start_t3_thread({ taskId: "<child-code>", parentTaskId: "${code}" })\` for a single child). Start a batch, then end your turn without polling: Bitig resumes this thread once all running children in the batch have finished with each child's result, branch, head commit, diff stat, and completion context.`,
+      `9. Checklist items are steps of ${code}, not separate tasks: do them in this session and never start child sessions for them. If ${code} is an umbrella over other Bitig tasks (tasks it mentions or that depend on it), work in your own worktree on integration branch \`bitig/${code}\`. Before starting children, commit your own work so the worktree has no uncommitted tracked changes and call \`report_t3_git_metadata\` with \`branch\`, \`headSha\`, \`worktreePath\`, and \`dirty: false\` (child launches are refused until the umbrella run has reported them and when uncommitted tracked changes exist). Then call \`start_ready_children({ parentTaskId: "${code}" })\` to start the next batch of approved, unblocked, non-overlapping child tasks in parallel (or \`start_t3_thread({ taskId: "<child-code>", parentTaskId: "${code}" })\` for a single child). Start a batch, then end your turn without polling: Bitig resumes this thread once all running children in the batch have finished with each child's result, branch, head commit, diff stat, and completion context. When resumed, merge each finished child branch (\`bitig/<child-code>\`) into \`bitig/${code}\` in task \`order\` (merging with care any child flagged for leaving its declared paths), resolve conflicts, run \`make check\`, call \`report_child_merge({ parentTaskId: "${code}", childTaskId: "<child-code>", mergedSha: "<sha>" })\`, and remove that child's worktree and branch (\`git worktree remove\` and \`git branch -d\`). A conflict you cannot resolve safely, or a failing \`make check\`, sets \`needsHuman\` on ${code}. Otherwise report updated git metadata on ${code} and start the next batch (whose children branch from the updated umbrella head). When all children are merged, open one pull request from \`bitig/${code}\` (nothing auto-merges to the default branch).`,
     ].join("\n"),
   );
 
@@ -1244,6 +1277,10 @@ export interface T3SubagentHandbackInput {
   readonly finalComment?: Comment | undefined;
   /** Reported git metadata from the child run (#BIT-189). */
   readonly gitMetadata?: T3GitMetadata | undefined;
+  /** Declared path globs (`touches`) from the child task's run profile (#BIT-190). */
+  readonly declaredTouches?: readonly string[] | undefined;
+  /** Actual modified file paths that left the child's declared `touches` (#BIT-190). */
+  readonly outOfBoundsPaths?: readonly string[] | undefined;
 }
 
 function formatChildGitHandbackLines(git: T3GitMetadata | undefined): string[] {
@@ -1254,6 +1291,9 @@ function formatChildGitHandbackLines(git: T3GitMetadata | undefined): string[] {
   }
   if (git.headSha) {
     lines.push(`- Head commit: \`${git.headSha}\``);
+  }
+  if (git.worktreePath) {
+    lines.push(`- Worktree: \`${git.worktreePath}\``);
   }
   if (git.diffStat) {
     lines.push(
@@ -1266,7 +1306,7 @@ function formatChildGitHandbackLines(git: T3GitMetadata | undefined): string[] {
   return lines;
 }
 
-/** The child task's completion context: status, git state, checklist, latest checkpoint, and final agent comment. */
+/** The child task's completion context: status, git state, out-of-bounds warning, checklist, latest checkpoint, and final agent comment. */
 function buildT3SubagentContext(
   input: T3SubagentHandbackInput,
   extraLines: readonly string[] = [],
@@ -1278,6 +1318,16 @@ function buildT3SubagentContext(
     ...extraLines,
     ...formatChildGitHandbackLines(input.gitMetadata),
   ];
+
+  if (input.outOfBoundsPaths && input.outOfBoundsPaths.length > 0) {
+    const declaredInfo =
+      input.declaredTouches && input.declaredTouches.length > 0
+        ? ` (declared touches: ${input.declaredTouches.map((p) => `\`${p}\``).join(", ")})`
+        : "";
+    lines.push(
+      `- Warning — left declared paths${declaredInfo}: ${input.outOfBoundsPaths.map((p) => `\`${p}\``).join(", ")} — merge with care`,
+    );
+  }
 
   const checklist = child.checklist ?? [];
   if (checklist.length > 0) {
@@ -1319,7 +1369,7 @@ export function buildT3SubagentCompletedComment(input: T3SubagentHandbackInput):
   );
 }
 
-/** The prompt sent to the umbrella task's T3 thread when a child task is completed (#BIT-141). */
+/** The prompt sent to the umbrella task's T3 thread when a child task is completed (#BIT-141, #BIT-190). */
 export function buildT3SubagentCompletedPrompt(input: T3SubagentHandbackInput): string {
   return truncateText(
     [
@@ -1327,7 +1377,7 @@ export function buildT3SubagentCompletedPrompt(input: T3SubagentHandbackInput): 
       "",
       buildT3SubagentContext(input),
       "",
-      `Continue ${input.parentLabel}: call \`get_task({ id: "${input.parentLabel}" })\` and \`resume_from_checkpoint({ taskId: "${input.parentLabel}" })\`, then move on to the next related task or finish the umbrella task.`,
+      `Continue ${input.parentLabel}: call \`get_task({ id: "${input.parentLabel}" })\` and \`resume_from_checkpoint({ taskId: "${input.parentLabel}" })\`, merge ${input.childLabel}'s branch into ${input.parentLabel}'s integration branch (merging with care if ${input.childLabel} left its declared paths, resolving conflicts, running \`make check\`, calling \`report_child_merge({ parentTaskId: "${input.parentLabel}", childTaskId: "${input.childLabel}", mergedSha: "<sha>" })\`, and removing ${input.childLabel}'s worktree and branch; or setting \`needsHuman\` on ${input.parentLabel} if a conflict cannot be resolved safely or \`make check\` fails), then move on to the next related task or finish the umbrella task.`,
     ].join("\n"),
     COMMENT_BODY_MAX,
   );
@@ -1431,7 +1481,7 @@ export function buildT3SubagentBatchHandbackComment(input: T3SubagentBatchHandba
 
 /**
  * Builds the resume prompt sent to the umbrella task's T3 thread when all running child tasks in
- * a batch have ended (#BIT-189). For a single-child batch, delegates to the single-child builders
+ * a batch have ended (#BIT-189, #BIT-190). For a single-child batch, delegates to the single-child builders
  * so existing single-child wording is unchanged.
  */
 export function buildT3SubagentBatchHandbackPrompt(input: T3SubagentBatchHandbackInput): string {
@@ -1452,6 +1502,6 @@ export function buildT3SubagentBatchHandbackPrompt(input: T3SubagentBatchHandbac
   const summaryParts = input.children.map((c) => `${c.childLabel} (${c.state})`);
   const header = `All ${String(input.children.length)} child tasks in the batch you started from ${input.parentLabel} have ended: ${summaryParts.join(", ")}.`;
   const sections = input.children.map((c) => buildBatchChildSection(input.parentLabel, c));
-  const footer = `Continue ${input.parentLabel}: call \`get_task({ id: "${input.parentLabel}" })\` and \`resume_from_checkpoint({ taskId: "${input.parentLabel}" })\`, review each child's result, branch, head commit, and diff stat above, then start the next batch with \`start_ready_children({ parentTaskId: "${input.parentLabel}" })\`, retry or escalate any failed/stopped/needs_human child, or finish ${input.parentLabel}.`;
+  const footer = `Continue ${input.parentLabel}: call \`get_task({ id: "${input.parentLabel}" })\` and \`resume_from_checkpoint({ taskId: "${input.parentLabel}" })\`, review each child's result, branch, head commit, and diff stat above, merge each finished child branch into ${input.parentLabel}'s integration branch in task \`order\` (merging with care any child flagged for leaving its declared paths, resolving conflicts, running \`make check\`, calling \`report_child_merge({ parentTaskId: "${input.parentLabel}", childTaskId: "<child-code>", mergedSha: "<sha>" })\`, and removing that child's worktree and branch; or setting \`needsHuman\` on ${input.parentLabel} if a conflict cannot be resolved safely or \`make check\` fails), report updated git metadata on ${input.parentLabel}, then start the next batch with \`start_ready_children({ parentTaskId: "${input.parentLabel}" })\`, retry or escalate any failed/stopped/needs_human child, or open one pull request from ${input.parentLabel}'s integration branch and finish ${input.parentLabel}.`;
   return truncateText([header, "", ...sections, "", footer].join("\n\n"), COMMENT_BODY_MAX);
 }

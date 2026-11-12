@@ -283,6 +283,7 @@ describe("Remote MCP Protocol & Tool Execution", () => {
       "list_tasks",
       "list_webhooks",
       "next_task",
+      "report_child_merge",
       "report_t3_git_metadata",
       "resume_from_checkpoint",
       "save_checkpoint",

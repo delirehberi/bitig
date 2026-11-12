@@ -1,7 +1,9 @@
 import {
   DEFAULT_MAX_PARALLEL_CHILDREN,
   DEFAULT_PROJECT_T3_WORKSPACE_STRATEGY,
+  ReportChildMergeInputSchema,
   ReportT3GitMetadataInputSchema,
+  type ReportChildMergeInput,
   type ReportT3GitMetadataInput,
   type T3GitMetadata,
   NotFoundError,
@@ -28,6 +30,7 @@ import {
   defaultIdGenerator,
   deriveLiveAgentRunState,
   extractCommentAttachmentReferences,
+  findOutOfBoundsPaths,
   formatT3CommentAttachmentContext,
   formatT3ModelSelection,
   isActiveAgentRunState,
@@ -267,6 +270,9 @@ interface QueuedLaunchPayload {
   prompt: string;
   clientRequestId: string;
   workspaceStrategy: T3WorkspaceStrategy;
+  baseRef?: string | undefined;
+  branch?: string | undefined;
+  startFromOrigin?: boolean | undefined;
   explicitProviderInstanceId?: string | undefined;
   explicitModel?: string | undefined;
   explicitOptions?: readonly T3ModelSelectionOption[] | undefined;
@@ -550,6 +556,9 @@ export async function dispatchQueuedTaskT3Run(
           prompt: payload.prompt,
           clientRequestId: payload.clientRequestId,
           workspaceStrategy: payload.workspaceStrategy,
+          ...(payload.baseRef ? { baseRef: payload.baseRef } : {}),
+          ...(payload.branch ? { branch: payload.branch } : {}),
+          ...(payload.startFromOrigin !== undefined ? { startFromOrigin: payload.startFromOrigin } : {}),
           providerInstanceId: resolvedProviderInstanceId,
           model: resolvedModel,
           options: resolvedOptions,
@@ -588,19 +597,20 @@ export async function dispatchQueuedTaskT3Run(
         }
 
         if (payload.parentTaskId) {
+          const childBranch = currentRun.branch ?? payload.branch;
           const existingChildRecord = await deps.store.getAgentRunChild(payload.parentTaskId, taskId);
           if (existingChildRecord?.state !== "running") {
             await deps.store.addAgentRunChild({
               parentTaskId: payload.parentTaskId,
               childTaskId: taskId,
               state: "running",
-              ...(currentRun.branch ? { branch: currentRun.branch } : {}),
+              ...(childBranch ? { branch: childBranch } : {}),
               ...(currentRun.headSha ? { headSha: currentRun.headSha } : {}),
               startedAt: stepNow,
             });
-          } else if (currentRun.branch || currentRun.headSha) {
+          } else if (childBranch || currentRun.headSha) {
             await deps.store.updateAgentRunChild(payload.parentTaskId, taskId, {
-              ...(currentRun.branch ? { branch: currentRun.branch } : {}),
+              ...(childBranch ? { branch: childBranch } : {}),
               ...(currentRun.headSha ? { headSha: currentRun.headSha } : {}),
               now: stepNow,
             });
@@ -735,9 +745,10 @@ export async function drainAllQueuedT3Runs(
  * 4. A T3 OAuth connection is configured for the mapped host. When the host is offline or its token is expired,
  *    the approved launch is durably queued in D1 (`state: "queued"`) and dispatched once on reconnect (#BIT-161).
  *
- * With `parentTaskRef` (#BIT-141, #BIT-189), the task starts as a child session of an umbrella task: a
- * dependency on that umbrella task does not block it, the child run is recorded in `agent_run_children`,
- * and the umbrella task's run moves to `waiting_subagent` until all running children of the batch have ended.
+ * With `parentTaskRef` (#BIT-141, #BIT-189, #BIT-190), the task starts as a child session of an umbrella task: a
+ * dependency on that umbrella task does not block it, the child worktree branches from the umbrella's reported
+ * branch/head (`bitig/<child-code>`), the child run is recorded in `agent_run_children`, and the umbrella task's
+ * run moves to `waiting_subagent` until all running children of the batch have ended.
  */
 export async function launchTaskInT3(
   deps: T3ServiceDeps,
@@ -831,7 +842,13 @@ export async function launchTaskInT3(
     }
   }
 
-  const comments = await deps.storage.getComments(task.id);
+  const [comments, childProfile] = await Promise.all([
+    deps.storage.getComments(task.id),
+    parent ? deps.store.getTaskRunProfile(task.id) : Promise.resolve(undefined),
+  ]);
+  const childCode = code ?? task.id;
+  const childBranch = parent ? `bitig/${childCode}` : undefined;
+  const childBaseRef = parent ? (parent.run.branch ?? parent.run.headSha) : undefined;
   const gitMetadataRunId = defaultIdGenerator();
   const builtPrompt = buildT3LaunchPrompt({
     gitMetadataRunId,
@@ -840,6 +857,8 @@ export async function launchTaskInT3(
     projectName: project.name,
     comments,
     ...(parent ? { parentTaskCode: parent.label } : {}),
+    ...(childBranch ? { childBranch } : {}),
+    ...(childProfile?.touches ? { declaredTouches: childProfile.touches } : {}),
   });
 
   const actor = (options.actor?.trim() ?? "") || "t3";
@@ -893,6 +912,9 @@ export async function launchTaskInT3(
         ? `${builtPrompt.clientRequestId}:${gitMetadataRunId}`
         : builtPrompt.clientRequestId,
       workspaceStrategy,
+      ...(childBaseRef ? { baseRef: childBaseRef } : {}),
+      ...(childBranch ? { branch: childBranch } : {}),
+      ...(parent ? { startFromOrigin: false } : {}),
       providerInstanceId: resolvedProviderInstanceId,
       model: resolvedModel,
       options: resolvedOptions,
@@ -957,6 +979,9 @@ export async function launchTaskInT3(
     prompt: builtPrompt.prompt,
     clientRequestId: builtPrompt.clientRequestId,
     workspaceStrategy,
+    ...(childBaseRef ? { baseRef: childBaseRef } : {}),
+    ...(childBranch ? { branch: childBranch } : {}),
+    ...(parent ? { startFromOrigin: false } : {}),
     ...(resolvedProviderInstanceId ? { providerInstanceId: resolvedProviderInstanceId } : {}),
     ...(resolvedModel ? { model: resolvedModel } : {}),
     ...(resolvedOptions ? { options: resolvedOptions } : {}),
@@ -1011,6 +1036,7 @@ export async function launchTaskInT3(
       parentTaskId: parent.task.id,
       childTaskId: task.id,
       state: "running",
+      ...(childBranch ? { branch: childBranch } : {}),
       startedAt: now,
     });
   }
@@ -1220,8 +1246,35 @@ async function assertChildLaunchParallelGate(
 }
 
 /**
- * Resolves the umbrella task a child session is started from (#BIT-141, #BIT-189). Refused when it
- * is the task itself, has no T3 session to resume, or when the child already has an active session
+ * Verifies that an umbrella task's T3 session has reported its integration branch, head commit,
+ * and worktree path, and that it has no uncommitted tracked changes (#BIT-190).
+ */
+function assertUmbrellaParentGitReady(run: AgentRun, label: string): void {
+  const hasBranch = typeof run.branch === "string" && run.branch.trim().length > 0;
+  const hasHeadSha = typeof run.headSha === "string" && run.headSha.trim().length > 0;
+  const hasWorktreePath = typeof run.worktreePath === "string" && run.worktreePath.trim().length > 0;
+  if (!hasBranch || !hasHeadSha || !hasWorktreePath) {
+    const missing: string[] = [];
+    if (!hasBranch) missing.push("branch");
+    if (!hasHeadSha) missing.push("headSha");
+    if (!hasWorktreePath) missing.push("worktreePath");
+    makeValidationIssue(
+      "parentTaskId",
+      `Umbrella task ${label} must report its git metadata (${missing.join(", ")}) via report_t3_git_metadata before starting child tasks, so each child worktree can branch from the umbrella's worktree.`,
+    );
+  }
+  if (run.dirty === true || run.uncommittedChanges === true) {
+    makeValidationIssue(
+      "parentTaskId",
+      `Umbrella task ${label} has uncommitted tracked changes in its worktree. Commit your work and report clean git metadata (dirty: false) via report_t3_git_metadata before starting child tasks.`,
+    );
+  }
+}
+
+/**
+ * Resolves the umbrella task a child session is started from (#BIT-141, #BIT-189, #BIT-190).
+ * Refused when it is the task itself, has no T3 session to resume, has not reported clean git
+ * metadata (`branch`, `headSha`, `worktreePath`), or when the child already has an active session
  * of its own.
  */
 async function requireUmbrellaParent(deps: T3ServiceDeps, child: Task, parentRef: string): Promise<UmbrellaParent> {
@@ -1241,6 +1294,7 @@ async function requireUmbrellaParent(deps: T3ServiceDeps, child: Task, parentRef
       `Umbrella task ${label} has no T3 session, so Bitig cannot resume it when the child task is done. Start ${label} in T3 first.`,
     );
   }
+  assertUmbrellaParentGitReady(run, label);
   const childRun = await deps.store.getAgentRunByTaskId(child.id);
   if (childRun && isActiveAgentRunState(childRun.state)) {
     makeValidationIssue(
@@ -1402,6 +1456,47 @@ export async function reportTaskT3GitMetadata(
     });
   }
   return run;
+}
+
+/**
+ * Records that an umbrella session merged a finished child task's branch into the integration
+ * branch (`merged_at` / `merged_sha` in `agent_run_children`, #BIT-190).
+ */
+export async function reportChildMerge(
+  deps: T3ServiceDeps,
+  input: ReportChildMergeInput,
+  signal?: AbortSignal,
+): Promise<AgentRunChild> {
+  const parsed = ReportChildMergeInputSchema.parse(input);
+  signal?.throwIfAborted();
+  const operationOptions = signal ? { signal } : {};
+  const [parentTaskId, childTaskId] = await Promise.all([
+    resolveTaskRef(deps.storage, parsed.parentTaskId, operationOptions),
+    resolveTaskRef(deps.storage, parsed.childTaskId, operationOptions),
+  ]);
+  const [parentTask, childTask] = await Promise.all([
+    deps.storage.getTask(parentTaskId, operationOptions),
+    deps.storage.getTask(childTaskId, operationOptions),
+  ]);
+  if (!parentTask) throw new NotFoundError("task", parentTaskId);
+  if (!childTask) throw new NotFoundError("task", childTaskId);
+  signal?.throwIfAborted();
+  const now = deps.now?.() ?? Date.now();
+  const updated = await deps.store.recordAgentRunChildMerge(parentTaskId, childTaskId, {
+    mergedSha: parsed.mergedSha,
+    mergedAt: now,
+  });
+  if (!updated) {
+    const [parentLabel, childLabel] = await Promise.all([
+      labelTask(deps.storage, parentTask),
+      labelTask(deps.storage, childTask),
+    ]);
+    makeValidationIssue(
+      "childTaskId",
+      `Task ${childLabel} has no recorded child T3 run under umbrella task ${parentLabel}.`,
+    );
+  }
+  return updated;
 }
 
 async function persistLiveGitMetadata(deps: T3ServiceDeps, run: AgentRun, metadata: T3GitMetadata | undefined, now: number): Promise<AgentRun> {
@@ -1916,11 +2011,12 @@ async function buildBatchChildHandbackItem(
 ): Promise<T3SubagentBatchHandbackChildItem | undefined> {
   const child = await deps.storage.getTask(childRow.childTaskId);
   if (!child) return undefined;
-  const [childLabel, checkpoint, comments, childRun] = await Promise.all([
+  const [childLabel, checkpoint, comments, childRun, childProfile] = await Promise.all([
     labelTask(deps.storage, child),
     latestCheckpoint(deps.storage, child.id),
     deps.storage.getComments(child.id),
     deps.store.getAgentRunByTaskId(child.id),
+    deps.store.getTaskRunProfile(child.id),
   ]);
   const finalComment = comments.findLast(
     (comment) => comment.authorType === "agent" && comment.author !== T3_BITIG_COMMENT_AUTHOR,
@@ -1936,10 +2032,19 @@ async function buildBatchChildHandbackItem(
       : childRun?.headSha !== undefined
         ? { headSha: childRun.headSha }
         : {}),
+    ...(childRun?.worktreePath !== undefined ? { worktreePath: childRun.worktreePath } : {}),
+    ...(childRun?.dirty !== undefined ? { dirty: childRun.dirty } : {}),
+    ...(childRun?.uncommittedChanges !== undefined ? { uncommittedChanges: childRun.uncommittedChanges } : {}),
+    ...(childRun?.changedPaths !== undefined ? { changedPaths: childRun.changedPaths } : {}),
     ...(childRun?.diffStat !== undefined ? { diffStat: childRun.diffStat } : {}),
     ...(childRun?.pullRequestUrls !== undefined ? { pullRequestUrls: childRun.pullRequestUrls } : {}),
   };
   const hasGitMetadata = Object.keys(gitMetadata).length > 0;
+  const actualPaths = [
+    ...(childRun?.changedPaths ?? []),
+    ...(checkpoint?.stateSnapshot.modifiedArtifacts ?? []),
+  ];
+  const outOfBoundsPaths = findOutOfBoundsPaths(childProfile?.touches, actualPaths);
 
   let state: AgentRunChildEndState;
   if (FINISHED_TASK_STATUSES.has(child.status)) {
@@ -1966,6 +2071,10 @@ async function buildBatchChildHandbackItem(
     ...(finalComment ? { finalComment } : {}),
     ...(hasGitMetadata ? { gitMetadata } : {}),
     ...(stopReason ? { stopReason } : {}),
+    ...(childProfile?.touches && childProfile.touches.length > 0
+      ? { declaredTouches: childProfile.touches }
+      : {}),
+    ...(outOfBoundsPaths.length > 0 ? { outOfBoundsPaths } : {}),
   };
 }
 
@@ -2116,6 +2225,7 @@ async function transitionChildAndMaybeResumeUmbrella(
     await publishRun(deps, claimed);
     return false;
   }
+  childItems.sort((a, b) => compareTasks(a.child, b.child));
 
   const batchInput = {
     parentLabel,
@@ -2638,7 +2748,7 @@ export interface StartReadyChildrenResult {
 /**
  * Picks the next parallel-safe batch of child tasks for an umbrella task (tasks the umbrella
  * mentions or that depend on it), starts them in T3 with `workspaceStrategy: "worktree"` and their
- * resolved run profiles, and returns what started and why the rest were skipped (#BIT-189).
+ * resolved run profiles, and returns what started and why the rest were skipped (#BIT-189, #BIT-190).
  */
 export async function startReadyChildrenInT3(
   deps: T3ServiceDeps,
@@ -2650,25 +2760,24 @@ export async function startReadyChildrenInT3(
   if (!parentTask) {
     throw new NotFoundError("task", parentTaskId);
   }
+  const parentLabel = await labelTask(deps.storage, parentTask);
   if (FINISHED_TASK_STATUSES.has(parentTask.status)) {
-    const label = await labelTask(deps.storage, parentTask);
     makeValidationIssue(
       "parentTaskId",
-      `Umbrella task ${label} is already ${parentTask.status} and cannot launch child sessions.`,
+      `Umbrella task ${parentLabel} is already ${parentTask.status} and cannot launch child sessions.`,
     );
   }
   const parentRun = await deps.store.getAgentRunByTaskId(parentTask.id);
   if (!parentRun) {
-    const label = await labelTask(deps.storage, parentTask);
-    makeValidationIssue("parentTaskId", `Umbrella task ${label} has no T3 session.`);
+    makeValidationIssue("parentTaskId", `Umbrella task ${parentLabel} has no T3 session.`);
   }
   if (ENDED_CHILD_RUN_STATES.has(parentRun.state)) {
-    const label = await labelTask(deps.storage, parentTask);
     makeValidationIssue(
       "parentTaskId",
-      `Umbrella task ${label}'s T3 session is ${parentRun.state}; only an active umbrella session can start child tasks.`,
+      `Umbrella task ${parentLabel}'s T3 session is ${parentRun.state}; only an active umbrella session can start child tasks.`,
     );
   }
+  assertUmbrellaParentGitReady(parentRun, parentLabel);
 
   const [allTasks, allProjects, parentComments, projectSettings, activeRunning] = await Promise.all([
     deps.storage.getTasks(),

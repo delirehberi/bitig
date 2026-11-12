@@ -8,6 +8,7 @@ import {
   UpsertTaskRunProfileInputSchema,
    ValidationError,
   canOverwriteRunProfile,
+  findOutOfBoundsPaths,
   findOverlappingPaths,
   nextLevelUp,
   normalizePathGlob,
@@ -558,3 +559,33 @@ describe("pickParallelBatch", () => {
     );
   });
 });
+
+describe("findOutOfBoundsPaths (BIT-190)", () => {
+  it("returns empty when declared touches or actual paths are empty, or when all paths match declared globs", () => {
+    expect(findOutOfBoundsPaths(undefined, ["packages/core/src/index.ts"])).toEqual([]);
+    expect(findOutOfBoundsPaths([], ["packages/core/src/index.ts"])).toEqual([]);
+    expect(findOutOfBoundsPaths(["packages/core/**"], undefined)).toEqual([]);
+    expect(findOutOfBoundsPaths(["packages/core/**"], [])).toEqual([]);
+    expect(
+      findOutOfBoundsPaths(
+        ["packages/core/src/**", "apps/worker/src/t3/service.ts"],
+        ["./packages/core/src/domain/t3.ts", "apps/worker/src/t3/service.ts"],
+      ),
+    ).toEqual([]);
+  });
+
+  it("returns deduplicated normalized paths that fall outside declared touches", () => {
+    expect(
+      findOutOfBoundsPaths(
+        ["packages/core/src/**"],
+        [
+          "packages/core/src/domain/t3.ts",
+          "apps/worker/src/t3/service.ts",
+          "./apps/worker/src/t3/service.ts",
+          "packages/mcp-tools/src/register.ts",
+        ],
+      ),
+    ).toEqual(["apps/worker/src/t3/service.ts", "packages/mcp-tools/src/register.ts"]);
+  });
+});
+

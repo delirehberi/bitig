@@ -659,6 +659,31 @@ export function pathsOverlap(
   return findOverlappingPaths(a, b) !== undefined;
 }
 
+/**
+ * Returns the unique normalized file paths from `actualPaths` that do not match any glob in
+ * `declaredTouches` (#BIT-190). When `declaredTouches` is empty or missing, returns `[]`.
+ */
+export function findOutOfBoundsPaths(
+  declaredTouches: Iterable<string> | null | undefined,
+  actualPaths: Iterable<string> | null | undefined,
+): string[] {
+  if (!declaredTouches || !actualPaths) return [];
+  const globs = [...declaredTouches].map(normalizePathGlob).filter(Boolean);
+  if (globs.length === 0) return [];
+  const outOfBounds: string[] = [];
+  const seen = new Set<string>();
+  for (const rawPath of actualPaths) {
+    const filePath = normalizePathGlob(rawPath);
+    if (!filePath || seen.has(filePath)) continue;
+    seen.add(filePath);
+    const covered = globs.some((glob) => globPairOverlaps(glob, filePath));
+    if (!covered) {
+      outOfBounds.push(filePath);
+    }
+  }
+  return outOfBounds;
+}
+
 // ---------------------------------------------------------------------------
 // Parallel Batch Picking
 // ---------------------------------------------------------------------------

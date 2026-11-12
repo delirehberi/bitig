@@ -8,6 +8,7 @@ import type { AppEnv } from "../index";
 import { registerHostFolder, unregisterHostFolder } from "../t3/host-folders";
 import {
   launchTaskInT3,
+  reportChildMerge,
   reportTaskT3GitMetadata,
   resolveTaskRunProfileWithSelection,
   startReadyChildrenInT3,
@@ -42,6 +43,13 @@ export const mcpRouter = new Hono<AppEnv>().all("*", async (c) => {
         throw new ForbiddenRoleError("Forbidden: editor role required to report Git metadata");
       }
       return reportTaskT3GitMetadata(t3Deps, input, signal);
+    },
+    reportChildMerge: (input, signal) => {
+      const role = c.get("orgRole");
+      if (!role || !hasMinimumOrgRole(role, "editor")) {
+        throw new ForbiddenRoleError("Forbidden: editor role required to report a child merge");
+      }
+      return reportChildMerge(t3Deps, input, signal);
     },
     fallbackActor: () => lastInitializedClientName,
     startT3Thread: (input) => {

@@ -457,6 +457,10 @@ export function parseThreadGitMetadata(raw: unknown): T3GitMetadata {
   const metadata: T3GitMetadata = {};
   const branch = T3GitMetadataSchema.safeParse({ branch: thread.branch });
   if (thread.branch !== undefined && branch.success) Object.assign(metadata, branch.data);
+  if (thread.worktreePath !== undefined) {
+    const worktreePath = T3GitMetadataSchema.safeParse({ worktreePath: thread.worktreePath });
+    if (worktreePath.success) Object.assign(metadata, worktreePath.data);
+  }
   const prs = thread.pullRequests;
   if (Array.isArray(prs)) {
     const urls: string[] = [];
@@ -1164,6 +1168,12 @@ export class T3McpClient {
     prompt: string;
     clientRequestId: string;
     workspaceStrategy: T3WorkspaceStrategy;
+    /** Base ref for worktree creation (defaults to `HEAD`; set to the umbrella's branch or headSha for child launches, #BIT-190). */
+    baseRef?: string | undefined;
+    /** Branch name for worktree creation (e.g. `bitig/<child-code>` for child launches, #BIT-190). */
+    branch?: string | undefined;
+    /** Whether to create the worktree branch from `origin/<baseRef>` (set `false` for local umbrella refs, #BIT-190). */
+    startFromOrigin?: boolean | undefined;
     providerInstanceId?: string | undefined;
     model?: string | undefined;
     /** Model options (e.g. effort) sent with the model, in the `t3_thread_configure` shape. */
@@ -1181,7 +1191,9 @@ export class T3McpClient {
       if (input.workspaceStrategy === "worktree") {
         args.workspaceStrategy = {
           type: "worktree",
-          baseRef: "HEAD",
+          baseRef: input.baseRef ?? "HEAD",
+          ...(input.branch ? { branch: input.branch } : {}),
+          ...(input.startFromOrigin !== undefined ? { startFromOrigin: input.startFromOrigin } : {}),
         };
       }
       if (input.model) {
@@ -1229,6 +1241,8 @@ export class T3McpClient {
         const currentBranch = parseWorktreeCurrentBranch(worktreeListPayload);
         if (currentBranch) {
           gitMetadata.branch = currentBranch;
+        } else if (input.branch) {
+          gitMetadata.branch = input.branch;
         }
       }
       return {

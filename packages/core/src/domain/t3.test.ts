@@ -867,5 +867,98 @@ describe("comment attachments and T3 prompt context (BIT-170)", () => {
   });
 });
 
+describe("child worktrees, branches, merge step, and out-of-bounds handback (BIT-190)", () => {
+  it("validates worktreePath, dirty/uncommittedChanges, changedPaths, and ReportChildMergeInputSchema", async () => {
+    const { ReportChildMergeInputSchema } = await import("./t3");
+
+    const parsedMeta = T3GitMetadataSchema.parse({
+      branch: "bitig/BIT-190",
+      headSha: "a".repeat(40),
+      worktreePath: " /tmp/worktrees/bit-190 ",
+      dirty: false,
+      uncommittedChanges: false,
+      changedPaths: [" packages/core/src/domain/t3.ts ", "apps/worker/src/t3/service.ts"],
+    });
+    expect(parsedMeta).toEqual({
+      branch: "bitig/BIT-190",
+      headSha: "a".repeat(40),
+      worktreePath: "/tmp/worktrees/bit-190",
+      dirty: false,
+      uncommittedChanges: false,
+      changedPaths: ["packages/core/src/domain/t3.ts", "apps/worker/src/t3/service.ts"],
+    });
+
+    const mergeInput = ReportChildMergeInputSchema.parse({
+      parentTaskId: " BIT-183 ",
+      childTaskId: " BIT-190 ",
+      mergedSha: "a".repeat(40),
+    });
+    expect(mergeInput).toEqual({
+      parentTaskId: "BIT-183",
+      childTaskId: "BIT-190",
+      mergedSha: "a".repeat(40),
+    });
+    expect(
+      ReportChildMergeInputSchema.safeParse({
+        parentTaskId: "BIT-183",
+        childTaskId: "BIT-190",
+        mergedSha: "short",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("includes child branch, declared paths, and umbrella merge instructions in prompts and flags out-of-bounds paths on handback", () => {
+    const baseTask: Task = {
+      id: "0196ed60-0000-7000-8000-000000000090",
+      projectId: "0196ed60-0000-7000-8000-000000000002",
+      title: "Child task",
+      description: "Implement child feature",
+      status: "in_progress",
+      isPublic: false,
+      createdAt: "2026-11-01T10:00:00.000Z",
+      updatedAt: "2026-11-01T10:00:00.000Z",
+    };
+
+    const standalone = buildT3LaunchPrompt({
+      task: baseTask,
+      taskCode: "BIT-183",
+    });
+    expect(standalone.prompt).toContain("integration branch `bitig/BIT-183`");
+    expect(standalone.prompt).toContain("commit your own work so the worktree has no uncommitted tracked changes and call `report_t3_git_metadata` with `branch`, `headSha`, `worktreePath`, and `dirty: false`");
+    expect(standalone.prompt).toContain("report_child_merge");
+
+    const childPrompt = buildT3LaunchPrompt({
+      task: baseTask,
+      taskCode: "BIT-190",
+      parentTaskCode: "BIT-183",
+      childBranch: "bitig/BIT-190",
+      declaredTouches: ["packages/core/src/**"],
+    });
+    expect(childPrompt.prompt).toContain("on your own branch (`bitig/BIT-190`");
+    expect(childPrompt.prompt).toContain("Stay inside your declared paths (`packages/core/src/**`)");
+    expect(childPrompt.prompt).toContain("Do not merge and do not open a pull request");
+
+    const handbackInput = {
+      parentLabel: "BIT-183",
+      childLabel: "BIT-190",
+      child: { ...baseTask, status: "done" as const },
+      gitMetadata: {
+        branch: "bitig/BIT-190",
+        headSha: "b".repeat(40),
+      },
+      declaredTouches: ["packages/core/src/**"],
+      outOfBoundsPaths: ["apps/worker/src/t3/service.ts"],
+    };
+    const comment = buildT3SubagentCompletedComment(handbackInput);
+    expect(comment).toContain("- Warning — left declared paths (declared touches: `packages/core/src/**`): `apps/worker/src/t3/service.ts` — merge with care");
+
+    const resumePrompt = buildT3SubagentCompletedPrompt(handbackInput);
+    expect(resumePrompt).toContain("merging with care if BIT-190 left its declared paths");
+    expect(resumePrompt).toContain('report_child_merge({ parentTaskId: "BIT-183", childTaskId: "BIT-190", mergedSha: "<sha>" })');
+    expect(resumePrompt).toContain("removing BIT-190's worktree and branch");
+  });
+});
+
+
 
 

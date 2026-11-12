@@ -320,16 +320,36 @@ describe("T3D1Store umbrella and child runs (BIT-141)", () => {
     const store = new T3D1Store(env.DB);
     const run = await store.saveAgentRun(runInput(PARENT_TASK_ID, "thread-parent"));
     expect(run.branch).toBeUndefined();
-    const metadata = { branch: "feature/bit-162", headSha: "a".repeat(40), diffStat: { filesChanged: 2, insertions: 8, deletions: 3 }, pullRequestUrls: ["https://github.com/example/repo/pull/1"] };
+    const metadata = {
+      branch: "feature/bit-162",
+      headSha: "a".repeat(40),
+      worktreePath: "/tmp/worktrees/bit-162",
+      dirty: false,
+      uncommittedChanges: false,
+      changedPaths: ["packages/core/src/domain/t3.ts"],
+      diffStat: { filesChanged: 2, insertions: 8, deletions: 3 },
+      pullRequestUrls: ["https://github.com/example/repo/pull/1"],
+    };
     await store.updateAgentRunGitMetadata(run.taskId, run.id, run.threadId, metadata, LATER);
     expect(await store.getAgentRunByTaskId(run.taskId)).toMatchObject(metadata);
     await store.updateAgentRunGitMetadata(run.taskId, run.id, run.threadId, { branch: "renamed" });
     expect(await store.getAgentRunByTaskId(run.taskId)).toMatchObject({ ...metadata, branch: "renamed" });
     expect(await store.updateAgentRunGitMetadata(run.taskId, run.id, "stale-thread", { branch: "wrong" })).toBeUndefined();
     expect(await store.updateAgentRunGitMetadata(run.taskId, defaultIdGenerator(), run.threadId, { branch: "wrong" })).toBeUndefined();
-    await store.updateAgentRunGitMetadata(run.taskId, run.id, run.threadId, { branch: null, headSha: null, diffStat: null, pullRequestUrls: [] });
+    await store.updateAgentRunGitMetadata(run.taskId, run.id, run.threadId, {
+      branch: null,
+      headSha: null,
+      worktreePath: null,
+      dirty: null,
+      uncommittedChanges: null,
+      changedPaths: null,
+      diffStat: null,
+      pullRequestUrls: [],
+    });
     expect(await store.getAgentRunByTaskId(run.taskId)).toMatchObject({ pullRequestUrls: [] });
     expect((await store.getAgentRunByTaskId(run.taskId))?.headSha).toBeUndefined();
+    expect((await store.getAgentRunByTaskId(run.taskId))?.worktreePath).toBeUndefined();
+    expect((await store.getAgentRunByTaskId(run.taskId))?.changedPaths).toBeUndefined();
     await store.updateAgentRunGitMetadata(run.taskId, run.id, run.threadId, metadata);
     const replacement = await store.saveAgentRun(runInput(PARENT_TASK_ID, "replacement"));
     expect(replacement.branch).toBeUndefined();

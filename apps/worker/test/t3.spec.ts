@@ -2484,6 +2484,18 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
       body: JSON.stringify({ workspaceStrategy: "worktree" }),
     });
     expect(startUmbrellaRes.status).toBe(201);
+    const startedUmbrella = await startUmbrellaRes.json<{ run: AgentRun }>();
+    await callMcpTool("report_t3_git_metadata", {
+      taskId: "BIT-1",
+      runId: startedUmbrella.run.id,
+      threadId: "thread-umbrella",
+      metadata: {
+        branch: "bitig/BIT-1",
+        headSha: "0000000000000000000000000000000000000001",
+        worktreePath: "/tmp/worktrees/bit-1",
+        dirty: false,
+      },
+    });
 
     // 2. Starting BIT-2 via MCP start_t3_thread({ taskId: "BIT-2", parentTaskId: "BIT-1" }) launches BIT-2
     //    and transitions BIT-1's run to waiting_subagent.
@@ -2848,6 +2860,18 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
       body: JSON.stringify({ workspaceStrategy: "worktree" }),
     });
     expect(startUmbrellaRes.status).toBe(201);
+    const startedUmbrella = await startUmbrellaRes.json<{ run: AgentRun }>();
+    await callMcpTool("report_t3_git_metadata", {
+      taskId: "BIT-1",
+      runId: startedUmbrella.run.id,
+      threadId: "thread-umbrella",
+      metadata: {
+        branch: "bitig/BIT-1",
+        headSha: "0000000000000000000000000000000000000001",
+        worktreePath: "/tmp/worktrees/bit-1",
+        dirty: false,
+      },
+    });
 
     // 2. Refusal gate on workspaceStrategy: "root" when parentTaskId is passed
     const rootRefusal = await callMcpTool("start_t3_thread", {
@@ -3048,6 +3072,310 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
         state: "failed",
       }),
     ]);
+  });
+
+  it("gates child launches on clean umbrella git metadata, branches child worktrees from the umbrella branch, flags out-of-bounds touched paths in task-order resume messages, and records child merges via report_child_merge (#BIT-190)", async () => {
+    await connectT3Host();
+    const project = await (
+      await request("/api/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Bitig", key: "BIT" }),
+      })
+    ).json<Project>();
+    await request(`/api/t3/mappings/${project.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ t3ProjectId: "t3-proj-bitig", t3ProjectTitle: "bitig" }),
+    });
+
+    const mcpApp = new Hono<AppEnv>();
+    const config = parseConfig(env);
+    mcpApp.use("*", async (c, next) => {
+      c.set("config", config);
+      c.set("orgId", DEFAULT_ORGANISATION_ID);
+      c.set("orgRole", "owner");
+      c.set("storage", new D1Storage({ db: env.DB, orgId: DEFAULT_ORGANISATION_ID }));
+      c.set("t3Fetch", createMockT3Fetch(mockState));
+      await next();
+    });
+    mcpApp.route("/mcp", mcpRouter);
+
+    async function callMcpTool(name: string, args: Record<string, unknown>): Promise<{ isError?: boolean; text: string }> {
+      const res = await mcpApp.request(
+        `${BASE_URL}/mcp`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json, text/event-stream",
+            "X-Bitig-Agent": "claude-umbrella",
+          },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "tools/call",
+            params: { name, arguments: args },
+          }),
+        },
+        env,
+      );
+      expect(res.status).toBe(200);
+      const raw = await res.text();
+      const dataLine = raw
+        .split("\n")
+        .find((line) => line.startsWith("data: "));
+      const payload = JSON.parse(dataLine ? dataLine.slice(6) : raw) as {
+        result?: { isError?: boolean; content?: { text?: string }[] };
+      };
+      return {
+        ...(payload.result?.isError ? { isError: true } : {}),
+        text: payload.result?.content?.[0]?.text ?? "",
+      };
+    }
+
+    // BIT-1: Umbrella task
+    const umbrella = await (
+      await request("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: project.id, title: "Umbrella Integration" }),
+      })
+    ).json<Task>();
+
+    // BIT-2: Created first, but given order: 20 so it sorts AFTER BIT-3 in task order
+    const childTwo = await (
+      await request("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: project.id,
+          title: "Child Two (order 20, leaves declared paths)",
+          dependsOn: [umbrella.id],
+          order: 20,
+        }),
+      })
+    ).json<Task>();
+    await request(`/api/tasks/${childTwo.id}/run-profile`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        touches: ["packages/core/src/**"],
+        parallelSafe: true,
+        reason: "Core domain only",
+      }),
+    });
+
+    // BIT-3: Created second, but given order: 10 so it sorts FIRST in task order
+    const childThree = await (
+      await request("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: project.id,
+          title: "Child Three (order 10, stays inside declared paths)",
+          dependsOn: [umbrella.id],
+          order: 10,
+        }),
+      })
+    ).json<Task>();
+    await request(`/api/tasks/${childThree.id}/run-profile`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        touches: ["apps/web/src/**"],
+        parallelSafe: true,
+        reason: "Web UI only",
+      }),
+    });
+
+    // 1. Start umbrella BIT-1
+    mockState.launchThreadIds = ["thread-umbrella"];
+    const startUmbrellaRes = await request(`/api/tasks/${umbrella.id}/t3-run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workspaceStrategy: "worktree" }),
+    });
+    expect(startUmbrellaRes.status).toBe(201);
+    const umbrellaLaunchBody = await startUmbrellaRes.json<{ run: AgentRun }>();
+    const umbrellaLaunchCall = mockState.toolCalls.findLast((c) => c.name === "t3_thread_launch");
+    expect(umbrellaLaunchCall?.arguments.workspaceStrategy).toEqual({
+      type: "worktree",
+      baseRef: "HEAD",
+    });
+    expect(String(umbrellaLaunchCall?.arguments.message)).toContain("integration branch `bitig/BIT-1`");
+    expect(String(umbrellaLaunchCall?.arguments.message)).toContain("report_child_merge");
+
+    // 2. Child launch is refused until umbrella reports branch, headSha, and worktreePath
+    const refusedBeforeMeta = await callMcpTool("start_t3_thread", {
+      taskId: "BIT-2",
+      parentTaskId: "BIT-1",
+    });
+    expect(refusedBeforeMeta.isError).toBe(true);
+    expect(refusedBeforeMeta.text).toContain("must report its git metadata");
+
+    const refusedBatchBeforeMeta = await callMcpTool("start_ready_children", {
+      parentTaskId: "BIT-1",
+    });
+    expect(refusedBatchBeforeMeta.isError).toBe(true);
+    expect(refusedBatchBeforeMeta.text).toContain("must report its git metadata");
+
+    // 3. Child launch is refused when umbrella reports uncommitted tracked changes (dirty: true)
+    const reportDirty = await callMcpTool("report_t3_git_metadata", {
+      taskId: "BIT-1",
+      runId: umbrellaLaunchBody.run.id,
+      threadId: "thread-umbrella",
+      metadata: {
+        branch: "bitig/BIT-1",
+        headSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        worktreePath: "/tmp/worktrees/bit-1",
+        dirty: true,
+      },
+    });
+    expect(reportDirty.isError).toBeUndefined();
+
+    const refusedWhenDirty = await callMcpTool("start_t3_thread", {
+      taskId: "BIT-2",
+      parentTaskId: "BIT-1",
+    });
+    expect(refusedWhenDirty.isError).toBe(true);
+    expect(refusedWhenDirty.text).toContain("uncommitted tracked changes");
+
+    // 4. Umbrella commits its work and reports clean git metadata (dirty: false)
+    const reportClean = await callMcpTool("report_t3_git_metadata", {
+      taskId: "BIT-1",
+      runId: umbrellaLaunchBody.run.id,
+      threadId: "thread-umbrella",
+      metadata: {
+        branch: "bitig/BIT-1",
+        headSha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        worktreePath: "/tmp/worktrees/bit-1",
+        dirty: false,
+      },
+    });
+    expect(reportClean.isError).toBeUndefined();
+
+    // 5. Launch batch via start_ready_children: verifies workspaceStrategy baseRef, branch, startFromOrigin, and child prompt
+    mockState.toolCalls.length = 0;
+    mockState.launchThreadIds = ["thread-child-3", "thread-child-2"];
+    const startBatchRes = await callMcpTool("start_ready_children", {
+      parentTaskId: "BIT-1",
+    });
+    expect(startBatchRes.isError, startBatchRes.text).toBeUndefined();
+
+    const childLaunchCalls = mockState.toolCalls.filter((c) => c.name === "t3_thread_launch");
+    expect(childLaunchCalls).toHaveLength(2);
+    // Because BIT-3 has order 10 and BIT-2 has order 20, BIT-3 is launched first
+    expect(childLaunchCalls[0]?.arguments).toMatchObject({
+      title: "BIT-3 Child Three (order 10, stays inside declared paths)",
+      workspaceStrategy: {
+        type: "worktree",
+        baseRef: "bitig/BIT-1",
+        branch: "bitig/BIT-3",
+        startFromOrigin: false,
+      },
+    });
+    expect(String(childLaunchCalls[0]?.arguments.message)).toContain("on your own branch (`bitig/BIT-3`");
+    expect(String(childLaunchCalls[0]?.arguments.message)).toContain("Stay inside your declared paths (`apps/web/src/**`)");
+    expect(String(childLaunchCalls[0]?.arguments.message)).toContain("Do not merge and do not open a pull request");
+
+    expect(childLaunchCalls[1]?.arguments).toMatchObject({
+      title: "BIT-2 Child Two (order 20, leaves declared paths)",
+      workspaceStrategy: {
+        type: "worktree",
+        baseRef: "bitig/BIT-1",
+        branch: "bitig/BIT-2",
+        startFromOrigin: false,
+      },
+    });
+    expect(String(childLaunchCalls[1]?.arguments.message)).toContain("on your own branch (`bitig/BIT-2`");
+    expect(String(childLaunchCalls[1]?.arguments.message)).toContain("Stay inside your declared paths (`packages/core/src/**`)");
+
+    // 6. Complete BIT-2 first (which touched an out-of-bounds path in apps/worker/src/index.ts), then BIT-3 (in-bounds)
+    const store = new T3D1Store(env.DB);
+    const runChildTwo = await store.getAgentRunByTaskId(childTwo.id);
+    const runChildThree = await store.getAgentRunByTaskId(childThree.id);
+
+    await callMcpTool("report_t3_git_metadata", {
+      taskId: "BIT-2",
+      runId: runChildTwo?.id,
+      threadId: "thread-child-2",
+      metadata: {
+        branch: "bitig/BIT-2",
+        headSha: "2222222222222222222222222222222222222222",
+        changedPaths: ["packages/core/src/domain/t3.ts", "apps/worker/src/index.ts"],
+        diffStat: { filesChanged: 2, insertions: 20, deletions: 2 },
+      },
+    });
+    await callMcpTool("complete_task", { id: "BIT-2" });
+
+    await callMcpTool("report_t3_git_metadata", {
+      taskId: "BIT-3",
+      runId: runChildThree?.id,
+      threadId: "thread-child-3",
+      metadata: {
+        branch: "bitig/BIT-3",
+        headSha: "3333333333333333333333333333333333333333",
+        changedPaths: ["apps/web/src/App.tsx"],
+        diffStat: { filesChanged: 1, insertions: 10, deletions: 1 },
+      },
+    });
+    await callMcpTool("complete_task", { id: "BIT-3" });
+
+    // 7. Verify the resume message lists children in task order (BIT-3 order 10 first, then BIT-2 order 20)
+    //    and flags BIT-2 for leaving its declared paths
+    const resumeSendCall = mockState.toolCalls.findLast((c) => c.name === "t3_thread_send");
+    const resumeMessage = String(resumeSendCall?.arguments.message);
+    expect(resumeMessage).toContain(
+      "All 2 child tasks in the batch you started from BIT-1 have ended: BIT-3 (done), BIT-2 (done).",
+    );
+    const idxBit3 = resumeMessage.indexOf("### #BIT-3:");
+    const idxBit2 = resumeMessage.indexOf("### #BIT-2:");
+    expect(idxBit3).toBeGreaterThan(-1);
+    expect(idxBit2).toBeGreaterThan(idxBit3);
+    expect(resumeMessage).toContain("- Warning — left declared paths (declared touches: `packages/core/src/**`): `apps/worker/src/index.ts` — merge with care");
+    expect(resumeMessage).toContain('report_child_merge({ parentTaskId: "BIT-1", childTaskId: "<child-code>", mergedSha: "<sha>" })');
+    expect(resumeMessage).toContain("removing that child's worktree and branch");
+
+    // 8. Umbrella merges BIT-3 and BIT-2 in order and calls report_child_merge
+    const mergeBit3Res = await callMcpTool("report_child_merge", {
+      parentTaskId: "BIT-1",
+      childTaskId: "BIT-3",
+      mergedSha: "cccccccccccccccccccccccccccccccccccccccc",
+    });
+    expect(mergeBit3Res.isError, mergeBit3Res.text).toBeUndefined();
+    const mergeBit3Payload = JSON.parse(mergeBit3Res.text) as {
+      parentTaskId: string;
+      childTaskId: string;
+      child: { mergedSha: string; mergedAt: string };
+    };
+    expect(mergeBit3Payload.child.mergedSha).toBe("cccccccccccccccccccccccccccccccccccccccc");
+    expect(mergeBit3Payload.child.mergedAt).toBeTruthy();
+
+    const mergeBit2Res = await callMcpTool("report_child_merge", {
+      parentTaskId: "BIT-1",
+      childTaskId: "BIT-2",
+      mergedSha: "dddddddddddddddddddddddddddddddddddddddd",
+    });
+    expect(mergeBit2Res.isError, mergeBit2Res.text).toBeUndefined();
+
+    const storedChildren = await store.listAgentRunChildren(umbrella.id);
+    expect(storedChildren).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          childTaskId: childThree.id,
+          state: "done",
+          branch: "bitig/BIT-3",
+          mergedSha: "cccccccccccccccccccccccccccccccccccccccc",
+        }),
+        expect.objectContaining({
+          childTaskId: childTwo.id,
+          state: "done",
+          branch: "bitig/BIT-2",
+          mergedSha: "dddddddddddddddddddddddddddddddddddddddd",
+        }),
+      ]),
+    );
   });
   describe("host folder registration (BIT-148)", () => {
     const FOLDER = "/var/www/acme";
@@ -5501,6 +5829,17 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
             body: JSON.stringify({ projectId: projA.id, title: "Child task" }),
           })
         ).json<Task>();
+        await multiMcpCall("report_t3_git_metadata", {
+          taskId: task1.id,
+          runId: launch1Body.run.id,
+          threadId: "thread-task-level",
+          metadata: {
+            branch: "bitig/T1",
+            headSha: "0000000000000000000000000000000000000001",
+            worktreePath: "/tmp/worktrees/t1",
+            dirty: false,
+          },
+        });
         hostAState.toolCalls.length = 0;
         hostAState.launchThreadId = "thread-child-level";
         const mcpStartChild = await multiMcpCall("start_t3_thread", {

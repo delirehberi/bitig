@@ -48,12 +48,18 @@ mentions) and 'mentionedIn' (the tasks that mention it).
 
 Umbrella tasks: a task's checklist items are steps of that task, not separate tasks; never start child sessions for
 them. When your T3 session works on an umbrella task over other Bitig tasks (tasks it mentions or that depend on it),
-you may start the next batch of approved, unblocked, parallel-safe related tasks with
-'start_ready_children({ parentTaskId: "<umbrella-code>" })', or start a single approved, unblocked related task in its
-own worktree T3 session with 'start_t3_thread({ taskId: "<child-code>", parentTaskId: "<umbrella-code>" })'. Start a
-batch, then end your turn without polling: the umbrella run waits as 'waiting_subagent', and Bitig resumes your session
-once when every running child in the batch has ended with each child's result (status, branch, head commit, diff stat,
-checklist, latest checkpoint and final comment), including any child that failed, stopped or set 'needsHuman'.
+work in your own worktree on one integration branch (e.g. 'bitig/<umbrella-code>'), commit your own work first, and
+report clean git metadata ('branch', 'headSha', 'worktreePath', 'dirty: false') via 'report_t3_git_metadata' before
+starting children (child launches are refused otherwise). Start the next batch of approved, unblocked, parallel-safe
+related tasks with 'start_ready_children({ parentTaskId: "<umbrella-code>" })', or start a single approved, unblocked
+related task in its own worktree T3 session with 'start_t3_thread({ taskId: "<child-code>", parentTaskId: "<umbrella-code>" })'.
+Start a batch, then end your turn without polling: the umbrella run waits as 'waiting_subagent', and Bitig resumes your
+session once when every running child in the batch has ended with each child's result (status, branch, head commit,
+diff stat, out-of-bounds touched-path warnings, checklist, latest checkpoint and final comment). When resumed, merge each
+finished child branch into your integration branch in task 'order', resolve conflicts, run 'make check', call
+'report_child_merge({ parentTaskId, childTaskId, mergedSha })', remove the child's worktree and branch, and report your
+updated git metadata before starting the next batch. When all children are merged, open one pull request from the
+integration branch.
 
 Attachments: 'get_task' and 'list_attachments' list a task's attached files. Call 'get_attachment' to read an attachment
 (returns UTF-8 'content' for Markdown/text files and base64 'data' + 'downloadUrl' for images/binaries). Use

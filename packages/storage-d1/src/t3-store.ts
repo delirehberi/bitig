@@ -175,6 +175,35 @@ function toAgentRun(row: AgentRunRecord): AgentRun {
     if (raw == null) continue;
     try {
       const value: unknown = key === "diffStat" || key === "pullRequestUrls" ? JSON.parse(raw) : raw;
+      if (key === "diffStat" && value !== null && typeof value === "object" && !Array.isArray(value)) {
+        const obj = value as Record<string, unknown>;
+        if (
+          typeof obj.filesChanged === "number" &&
+          typeof obj.insertions === "number" &&
+          typeof obj.deletions === "number"
+        ) {
+          const parsedDiff = T3GitMetadataSchema.safeParse({
+            diffStat: {
+              filesChanged: obj.filesChanged,
+              insertions: obj.insertions,
+              deletions: obj.deletions,
+            },
+          });
+          if (parsedDiff.success) Object.assign(metadata, parsedDiff.data);
+          else console.warn("ignoring invalid agent run Git metadata", "diffStat");
+        } else if (obj.diffStat !== undefined && obj.diffStat !== null) {
+          const parsedDiff = T3GitMetadataSchema.safeParse({ diffStat: obj.diffStat });
+          if (parsedDiff.success) Object.assign(metadata, parsedDiff.data);
+          else console.warn("ignoring invalid agent run Git metadata", "diffStat");
+        }
+        for (const extraKey of ["worktreePath", "dirty", "uncommittedChanges", "changedPaths"] as const) {
+          if (obj[extraKey] !== undefined && obj[extraKey] !== null) {
+            const parsedExtra = T3GitMetadataSchema.safeParse({ [extraKey]: obj[extraKey] });
+            if (parsedExtra.success) Object.assign(metadata, parsedExtra.data);
+          }
+        }
+        continue;
+      }
       const parsed = T3GitMetadataSchema.safeParse({ [key]: value });
       if (parsed.success) Object.assign(metadata, parsed.data);
       else console.warn("ignoring invalid agent run Git metadata", key);
@@ -742,15 +771,22 @@ export class T3D1Store {
     const whereClause = runId
       ? and(eq(agentRuns.taskId, taskId), eq(agentRuns.id, runId), eq(agentRuns.threadId, threadId))
       : and(eq(agentRuns.taskId, taskId), eq(agentRuns.threadId, threadId));
-    let nextDiffStat = parsed.diffStat;
-    if (
-      nextDiffStat?.filesChanged === 0 &&
-      nextDiffStat.insertions === 0 &&
-      nextDiffStat.deletions === 0
-    ) {
+    const hasEnvelopeUpdate =
+      parsed.diffStat !== undefined ||
+      parsed.worktreePath !== undefined ||
+      parsed.dirty !== undefined ||
+      parsed.uncommittedChanges !== undefined ||
+      parsed.changedPaths !== undefined;
+
+    let serializedDiffStat: string | null | undefined;
+    if (hasEnvelopeUpdate) {
       const existingRows = await this.db.select().from(agentRuns).where(whereClause).limit(1);
       const existingRun = existingRows[0] ? toAgentRun(existingRows[0]) : undefined;
+      let nextDiffStat = parsed.diffStat === undefined ? existingRun?.diffStat : parsed.diffStat;
       if (
+        nextDiffStat?.filesChanged === 0 &&
+        nextDiffStat.insertions === 0 &&
+        nextDiffStat.deletions === 0 &&
         existingRun?.diffStat &&
         (existingRun.diffStat.filesChanged > 0 ||
           existingRun.diffStat.insertions > 0 ||
@@ -758,11 +794,39 @@ export class T3D1Store {
       ) {
         nextDiffStat = existingRun.diffStat;
       }
+      const nextWorktreePath =
+        parsed.worktreePath === undefined ? existingRun?.worktreePath : parsed.worktreePath;
+      const nextDirty =
+        parsed.dirty !== undefined
+          ? parsed.dirty
+          : parsed.uncommittedChanges !== undefined
+            ? parsed.uncommittedChanges
+            : existingRun?.dirty;
+      const nextUncommittedChanges =
+        parsed.uncommittedChanges !== undefined
+          ? parsed.uncommittedChanges
+          : parsed.dirty !== undefined && existingRun?.uncommittedChanges !== undefined
+            ? parsed.dirty
+            : existingRun?.uncommittedChanges;
+      const nextChangedPaths =
+        parsed.changedPaths === undefined ? existingRun?.changedPaths : parsed.changedPaths;
+
+      const envelope: Record<string, unknown> = {
+        ...(nextDiffStat ?? {}),
+        ...(nextWorktreePath ? { worktreePath: nextWorktreePath } : {}),
+        ...(nextDirty !== undefined && nextDirty !== null ? { dirty: nextDirty } : {}),
+        ...(nextUncommittedChanges !== undefined && nextUncommittedChanges !== null
+          ? { uncommittedChanges: nextUncommittedChanges }
+          : {}),
+        ...(nextChangedPaths ? { changedPaths: nextChangedPaths } : {}),
+      };
+      serializedDiffStat = Object.keys(envelope).length > 0 ? JSON.stringify(envelope) : null;
     }
+
     const rows = await this.db.update(agentRuns).set({
       ...(parsed.branch !== undefined ? { branch: parsed.branch } : {}),
       ...(parsed.headSha !== undefined ? { headSha: parsed.headSha } : {}),
-      ...(nextDiffStat !== undefined ? { diffStat: nextDiffStat === null ? null : JSON.stringify(nextDiffStat) } : {}),
+      ...(serializedDiffStat !== undefined ? { diffStat: serializedDiffStat } : {}),
       ...(parsed.pullRequestUrls !== undefined ? { pullRequestUrls: JSON.stringify(parsed.pullRequestUrls) } : {}),
       updatedAt: now,
     }).where(whereClause).returning();

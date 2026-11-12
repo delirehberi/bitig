@@ -20,6 +20,8 @@ import {
   ProjectKindSchema,
   ProjectNameSchema,
   ProjectResourcesSchema,
+  ReportChildMergeInputSchema,
+  type ReportChildMergeInput,
   ReportT3GitMetadataInputSchema,
   type ReportT3GitMetadataInput,
   RunLevelKeySchema,
@@ -65,6 +67,7 @@ import {
   stripAttachmentData,
   withTaskCodes,
   type AgentRun,
+  type AgentRunChild,
   type OperationOptions,
   type ResolvedRunSelection,
   type RunLevel,
@@ -240,6 +243,10 @@ export interface SuggestMcpTaskRunProfileResult {
 
 export interface RegisterBitigToolsOptions {
   readonly reportT3GitMetadata?: ((input: ReportT3GitMetadataInput, signal: AbortSignal) => Promise<AgentRun>) | undefined;
+  /**
+   * Optional callback to record that an umbrella session merged a finished child task's branch (#BIT-190).
+   */
+  readonly reportChildMerge?: ((input: ReportChildMergeInput, signal: AbortSignal) => Promise<AgentRunChild>) | undefined;
   /**
    * Optional fallback actor name (or getter) when the MCP transport is stateless
    * and `server.server.getClientVersion()` is not populated on the per-request server instance.
@@ -1449,11 +1456,12 @@ export function registerBitigTools(
     },
   );
 
-  // 19. start_t3_thread
+  // 19. start_t3_thread & git orchestration tools
   server.registerTool(
     "report_t3_git_metadata",
     {
-      description: "Record Git metadata for the current task run. Pass your T3 thread ID (and the run ID from the launch instructions when known). Omitted fields preserve saved values; null clears a field and [] clears PR links. Diff counts are tracked changes in the working tree or latest task commit, excluding untracked files. Never guess metadata.",
+      description:
+        "Record Git metadata for the current task run (branch, headSha, worktreePath, dirty / uncommittedChanges, changedPaths, diffStat, pullRequestUrls). Pass your T3 thread ID (and the run ID from the launch instructions when known). Umbrella sessions must report clean git metadata (branch, headSha, worktreePath, dirty: false) before starting child tasks. Omitted fields preserve saved values; null clears a field and [] clears PR links or changedPaths. Never guess metadata.",
       inputSchema: ReportT3GitMetadataInputSchema.shape,
     },
     async (args, extra) => {
@@ -1470,17 +1478,61 @@ export function registerBitigTools(
   );
 
   server.registerTool(
+    "report_child_merge",
+    {
+      description:
+        "Record that an umbrella task's T3 session merged a finished child task's branch into the umbrella's integration branch (`merged_at` / `merged_sha`). Call this after merging each finished child branch in task order and running `make check`.",
+      inputSchema: {
+        parentTaskId: TASK_REF.describe(
+          "Umbrella task ID or ticket code (e.g. BIT-183) whose integration branch received the merge",
+        ),
+        childTaskId: TASK_REF.describe(
+          "Finished child task ID or ticket code (e.g. BIT-190) whose branch was merged",
+        ),
+        mergedSha: ReportChildMergeInputSchema.shape.mergedSha.describe(
+          "Full or short Git commit SHA on the umbrella integration branch after merging the child branch",
+        ),
+      },
+    },
+    async (args, extra) => {
+      try {
+        const opts = { signal: extra.signal };
+        const [parentTaskId, childTaskId] = await Promise.all([
+          resolveTaskRef(storage, args.parentTaskId, opts),
+          resolveTaskRef(storage, args.childTaskId, opts),
+        ]);
+        const [parentTask, childTask] = await Promise.all([
+          storage.getTask(parentTaskId, opts),
+          storage.getTask(childTaskId, opts),
+        ]);
+        if (!parentTask) throw new NotFoundError("task", args.parentTaskId);
+        if (!childTask) throw new NotFoundError("task", args.childTaskId);
+        if (!options?.reportChildMerge) {
+          throw new Error("T3 child merge reporting is not configured on this server");
+        }
+        const child = await options.reportChildMerge(
+          { parentTaskId, childTaskId, mergedSha: args.mergedSha },
+          extra.signal,
+        );
+        return formatSuccessResult({ child });
+      } catch (err) {
+        return formatErrorResult(err);
+      }
+    },
+  );
+
+  server.registerTool(
     "start_t3_thread",
     {
       description:
-        "Launch a T3 Code thread for a task on the connected T3 host. Refused if the task has pendingApproval: true, has unfinished dependencies in dependsOn, belongs to an unmapped project, or if no T3 host is connected. Moves the task to in_progress and records the T3 thread link. From an umbrella task's T3 session, pass parentTaskId to start one related task as a child session (must use workspaceStrategy 'worktree', stay under the project's max_parallel_children, and have no path overlap with running siblings): the umbrella session then waits (waiting_subagent), so end your turn; Bitig resumes it once every running child in the batch has ended. Checklist items are steps of a task, never child sessions.",
+        "Launch a T3 Code thread for a task on the connected T3 host. Refused if the task has pendingApproval: true, has unfinished dependencies in dependsOn, belongs to an unmapped project, or if no T3 host is connected. Moves the task to in_progress and records the T3 thread link. From an umbrella task's T3 session, pass parentTaskId to start one related task as a child session (must use workspaceStrategy 'worktree', branch from the umbrella's reported branch/head with no uncommitted changes, stay under the project's max_parallel_children, and have no path overlap with running siblings): the umbrella session then waits (waiting_subagent), so end your turn; Bitig resumes it once every running child in the batch has ended. Checklist items are steps of a task, never child sessions.",
       inputSchema: {
         taskId: TASK_REF,
         parentTaskId: TASK_REF.optional().describe(
           "Umbrella task whose T3 session starts this task as a child session, as a task ID or ticket code, e.g. TAS-1. It must have an active T3 session. A dependency of taskId on it does not block the launch.",
         ),
         workspaceStrategy: T3WorkspaceStrategySchema.optional().describe(
-          "Workspace strategy: 'worktree' (default, isolated git worktree on HEAD; required when parentTaskId is passed) or 'root'",
+          "Workspace strategy: 'worktree' (default, isolated git worktree; required when parentTaskId is passed) or 'root'",
         ),
         providerInstanceId: z
           .string()
@@ -1556,7 +1608,7 @@ export function registerBitigTools(
     "start_ready_children",
     {
       description:
-        "Pick the next parallel-safe batch of child tasks for an umbrella task (tasks the umbrella mentions or that depend on it), start them in T3 with worktree isolation and their resolved run profiles, and return what started and why the rest were skipped. After starting a batch, end your turn without polling: Bitig resumes the umbrella session once when every running child in the batch has ended.",
+        "Pick the next parallel-safe batch of child tasks for an umbrella task (tasks the umbrella mentions or that depend on it), start them in T3 with worktree isolation branching from the umbrella's reported branch/head and their resolved run profiles, and return what started and why the rest were skipped. Refused until the umbrella has reported clean git metadata (branch, headSha, worktreePath, dirty: false). After starting a batch, end your turn without polling: Bitig resumes the umbrella session once when every running child in the batch has ended.",
       inputSchema: {
         parentTaskId: TASK_REF.describe(
           "Umbrella task ID or ticket code (e.g. BIT-183) whose T3 session is starting the batch",

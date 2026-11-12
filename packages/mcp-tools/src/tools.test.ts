@@ -62,6 +62,7 @@ describe("MCP Tools integration", () => {
       "update_webhook",
       "delete_webhook",
       "report_t3_git_metadata",
+      "report_child_merge",
       "start_t3_thread",
       "start_ready_children",
       "list_run_levels",
@@ -1158,6 +1159,59 @@ describe("umbrella task child sessions (#BIT-141)", () => {
         arguments: { id: "BIT-2", needsHuman: null },
       });
       expect(onTaskNeedsHuman).toHaveBeenCalledTimes(1);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("resolves parentTaskId and childTaskId codes in report_child_merge and records mergedSha (#BIT-190)", async () => {
+    const storage = new InMemoryStorage();
+    const project = await storage.createProject({ name: "Bitig", key: "BIT" });
+    const umbrella = await storage.saveTask({ projectId: project.id, title: "Umbrella" });
+    const child = await storage.saveTask({ projectId: project.id, title: "Child" });
+
+    const reportChildMerge = vi.fn((input: { parentTaskId: string; childTaskId: string; mergedSha: string }) =>
+      Promise.resolve({
+        parentTaskId: input.parentTaskId,
+        childTaskId: input.childTaskId,
+        state: "done" as const,
+        branch: "bitig/BIT-2",
+        headSha: "1111111",
+        mergedSha: input.mergedSha,
+        startedAt: umbrella.createdAt,
+        finishedAt: child.updatedAt,
+        mergedAt: "2026-11-12T12:00:00.000Z",
+      }),
+    );
+    const { client, server } = await connect(storage, { reportChildMerge });
+
+    try {
+      const mergedRes = await client.callTool({
+        name: "report_child_merge",
+        arguments: {
+          parentTaskId: "BIT-1",
+          childTaskId: "BIT-2",
+          mergedSha: "abcdef1234567890abcdef1234567890abcdef12",
+        },
+      });
+      expect(mergedRes.isError).toBeFalsy();
+      expect(reportChildMerge).toHaveBeenCalledWith(
+        {
+          parentTaskId: umbrella.id,
+          childTaskId: child.id,
+          mergedSha: "abcdef1234567890abcdef1234567890abcdef12",
+        },
+        expect.anything(),
+      );
+      expect(JSON.parse((mergedRes.content as { text: string }[])[0]?.text ?? "{}")).toMatchObject({
+        child: {
+          parentTaskId: umbrella.id,
+          childTaskId: child.id,
+          mergedSha: "abcdef1234567890abcdef1234567890abcdef12",
+          mergedAt: "2026-11-12T12:00:00.000Z",
+        },
+      });
     } finally {
       await client.close();
       await server.close();
