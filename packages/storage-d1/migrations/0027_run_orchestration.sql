@@ -78,6 +78,12 @@ CREATE UNIQUE INDEX `agent_run_children_parent_child_unique` ON `agent_run_child
 --> statement-breakpoint
 CREATE INDEX `agent_run_children_parent_task_id_idx` ON `agent_run_children` (`parent_task_id`);
 --> statement-breakpoint
+ALTER TABLE `agent_runs` ADD `model_source` text;
+--> statement-breakpoint
+ALTER TABLE `agent_runs` ADD `level_key` text;
+--> statement-breakpoint
+ALTER TABLE `agent_runs` ADD `model_skip_reason` text;
+--> statement-breakpoint
 CREATE INDEX `agent_run_children_child_task_id_idx` ON `agent_run_children` (`child_task_id`);
 --> statement-breakpoint
 INSERT OR IGNORE INTO `agent_run_children` (`parent_task_id`, `child_task_id`, `state`, `branch`, `head_sha`, `started_at`, `finished_at`)

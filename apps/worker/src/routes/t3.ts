@@ -2,13 +2,20 @@ import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import {
   CheckHostFolderInputSchema,
+  MAX_PARALLEL_CHILDREN_MAX,
+  MAX_PARALLEL_CHILDREN_MIN,
   NotFoundError,
   RegisterHostFolderInputSchema,
   ReplyToT3RunInputSchema,
   RespondT3PendingRequestInputSchema,
+  RunLevelKeySchema,
+  RunProfileConfidenceSchema,
+  RunProfileReasonSchema,
+  RunProfileTouchesSchema,
   SendProjectT3MessageInputSchema,
   StartProjectT3ThreadInputSchema,
   StartT3ThreadInputSchema,
+  T3ModelSelectionSchema,
   T3StartOAuthInputSchema,
   T3WorkspaceBusyError,
   UpdateT3HostInputSchema,
@@ -20,6 +27,7 @@ import {
 } from "@bitig/core";
 import { D1Storage, T3D1Store } from "@bitig/storage-d1";
 import type { Context } from "hono";
+import { z } from "zod";
 import { ForbiddenRoleError } from "../auth";
 import type { AppEnv } from "../index";
 import { publishRealtimeEvent, withRealtimeBroadcast } from "../realtime";
@@ -45,6 +53,7 @@ import {
   listT3RunsLive,
   readProjectT3ThreadMessages,
   replyToTaskT3Run,
+  resolveTaskRunProfileWithSelection,
   respondToTaskT3Request,
   sendProjectT3Message,
   settleProjectT3Thread,
@@ -100,7 +109,7 @@ export function buildServiceDeps(c: Context<AppEnv>): T3ServiceDeps {
   };
 }
 
-function handleT3RouteError(err: unknown, c: Context<AppEnv>): Response {
+export function handleT3RouteError(err: unknown, c: Context<AppEnv>): Response {
   if (err instanceof T3ModelSwitchConflictError) {
     return c.json({ error: err.code, message: err.message, state: err.state }, HTTP_CONFLICT);
   }
@@ -118,6 +127,27 @@ function handleT3RouteError(err: unknown, c: Context<AppEnv>): Response {
   }
   throw err;
 }
+
+export const PutTaskRunProfileBodySchema = z.strictObject({
+  level: RunLevelKeySchema.nullable().exactOptional(),
+  selection: T3ModelSelectionSchema.nullable().exactOptional(),
+  touches: RunProfileTouchesSchema.nullable().exactOptional(),
+  parallelSafe: z.boolean().nullable().exactOptional(),
+  reason: RunProfileReasonSchema.nullable().exactOptional(),
+  confidence: RunProfileConfidenceSchema.nullable().exactOptional(),
+});
+
+export const PutProjectRunSettingsBodySchema = z.strictObject({
+  defaultRunLevel: RunLevelKeySchema.nullable().exactOptional(),
+  defaultLevel: RunLevelKeySchema.nullable().exactOptional(),
+  serialPaths: RunProfileTouchesSchema.exactOptional(),
+  maxParallelChildren: z
+    .number()
+    .int()
+    .min(MAX_PARALLEL_CHILDREN_MIN)
+    .max(MAX_PARALLEL_CHILDREN_MAX)
+    .exactOptional(),
+});
 
 /**
  * Unauthenticated OAuth callback router. Browser top-level redirects from the T3
@@ -624,9 +654,131 @@ export const t3ApiRouter = new Hono<AppEnv>()
         return handleT3RouteError(err, c);
       }
     },
+  )
+  .get("/projects/:projectId/run-settings", async (c) => {
+    const projectId = c.req.param("projectId");
+    const project = await c.get("storage").getProject(projectId);
+    if (!project) {
+      throw new NotFoundError("project", projectId);
+    }
+    const store = new T3D1Store(c.env.DB, c.get("orgId"));
+    const settings = await store.getProjectRunSettings(project.id);
+    if (!settings) {
+      throw new NotFoundError("project", projectId);
+    }
+    return c.json(settings);
+  })
+  .put(
+    "/projects/:projectId/run-settings",
+    zValidator("json", PutProjectRunSettingsBodySchema, (result, c) => {
+      if (!result.success) {
+        return c.json({ error: "validation_error", details: result.error.issues }, HTTP_BAD_REQUEST);
+      }
+      return undefined;
+    }),
+    async (c) => {
+      const projectId = c.req.param("projectId");
+      const project = await c.get("storage").getProject(projectId);
+      if (!project) {
+        throw new NotFoundError("project", projectId);
+      }
+      const body = c.req.valid("json");
+      const store = new T3D1Store(c.env.DB, c.get("orgId"));
+      const settings = await store.upsertProjectRunSettings(project.id, {
+        ...(body.defaultRunLevel !== undefined
+          ? { defaultRunLevel: body.defaultRunLevel }
+          : body.defaultLevel !== undefined
+            ? { defaultRunLevel: body.defaultLevel }
+            : {}),
+        ...(body.serialPaths !== undefined ? { serialPaths: body.serialPaths } : {}),
+        ...(body.maxParallelChildren !== undefined
+          ? { maxParallelChildren: body.maxParallelChildren }
+          : {}),
+      });
+      return c.json(settings);
+    },
   );
 
 export const t3TaskRunsRouter = new Hono<AppEnv>()
+  .get("/:id/run-profile", async (c) => {
+    const id = c.req.param("id");
+    try {
+      const result = await resolveTaskRunProfileWithSelection(buildServiceDeps(c), id, {
+        hostId: readHostIdQuery(c.req.query("hostId")),
+      });
+      return c.json({
+        profile: result.profile ?? null,
+        resolved: result.resolved,
+      });
+    } catch (err) {
+      return handleT3RouteError(err, c);
+    }
+  })
+  .put(
+    "/:id/run-profile",
+    zValidator("json", PutTaskRunProfileBodySchema, (result, c) => {
+      if (!result.success) {
+        return c.json({ error: "validation_error", details: result.error.issues }, HTTP_BAD_REQUEST);
+      }
+      return undefined;
+    }),
+    async (c) => {
+      const id = c.req.param("id");
+      const task = await c.get("storage").getTask(id);
+      if (!task) {
+        throw new NotFoundError("task", id);
+      }
+      const body = c.req.valid("json");
+      const deps = buildServiceDeps(c);
+      if (body.level !== undefined && body.level !== null) {
+        const levels = await deps.store.listRunLevels();
+        if (!levels.some((l) => l.key === body.level)) {
+          throw new ValidationError("taskRunProfile", [
+            {
+              code: "custom",
+              path: ["level"],
+              message: `Run level "${body.level}" does not exist in this organisation.`,
+              input: body.level,
+            },
+          ]);
+        }
+      }
+      const saved = await deps.store.saveTaskRunProfile({
+        taskId: task.id,
+        ...(body.level !== undefined ? { level: body.level } : {}),
+        ...(body.selection !== undefined ? { selection: body.selection } : {}),
+        ...(body.touches !== undefined ? { touches: body.touches } : {}),
+        ...(body.parallelSafe !== undefined ? { parallelSafe: body.parallelSafe } : {}),
+        source: "manual",
+        ...(body.reason !== undefined ? { reason: body.reason } : {}),
+        ...(body.confidence !== undefined ? { confidence: body.confidence } : {}),
+        updatedBy: c.get("user")?.id ?? c.req.header("X-Bitig-Actor") ?? "you",
+      });
+      const { resolved } = await resolveTaskRunProfileWithSelection(deps, task.id, {
+        hostId: readHostIdQuery(c.req.query("hostId")),
+      });
+      return c.json({
+        profile: saved,
+        resolved,
+      });
+    },
+  )
+  .delete("/:id/run-profile", async (c) => {
+    const id = c.req.param("id");
+    const task = await c.get("storage").getTask(id);
+    if (!task) {
+      throw new NotFoundError("task", id);
+    }
+    const deps = buildServiceDeps(c);
+    await deps.store.deleteTaskRunProfile(task.id);
+    const { resolved } = await resolveTaskRunProfileWithSelection(deps, task.id, {
+      hostId: readHostIdQuery(c.req.query("hostId")),
+    });
+    return c.json({
+      profile: null,
+      resolved,
+    });
+  })
   .get("/:id/t3-run", async (c) => {
     const id = c.req.param("id");
     const task = await c.get("storage").getTask(id);
@@ -669,8 +821,12 @@ export const t3TaskRunsRouter = new Hono<AppEnv>()
         const result = await launchTaskInT3(buildServiceDeps(c), {
           taskRef: id,
           workspaceStrategy: input.workspaceStrategy,
-          providerInstanceId: input.providerInstanceId,
-          model: input.model,
+          providerInstanceId:
+            input.providerInstanceId ?? input.modelSelection?.providerInstanceId,
+          model: input.model ?? input.modelSelection?.model,
+          options:
+            input.options ?? input.modelOptions ?? input.modelSelection?.options,
+          level: input.level,
           runtimeMode: input.runtimeMode,
           actor,
         });

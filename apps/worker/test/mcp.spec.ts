@@ -279,6 +279,7 @@ describe("Remote MCP Protocol & Tool Execution", () => {
       "list_attachments",
       "list_comments",
       "list_projects",
+      "list_run_levels",
       "list_tasks",
       "list_webhooks",
       "next_task",

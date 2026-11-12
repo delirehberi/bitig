@@ -166,8 +166,23 @@ export const AgentRunSchema = z.strictObject({
   model: z.string().trim().min(1).max(200).exactOptional(),
   /** The provider instance the thread runs on, when known (set at launch with a model, or on a switch). */
   providerInstanceId: z.string().trim().min(1).max(200).exactOptional(),
-  /** Model options chosen on the last switch (#BIT-119), e.g. the effort level. */
+  /** Model options chosen on the last switch (#BIT-119) or resolved at launch (#BIT-186), e.g. the effort level. */
   modelOptions: T3ModelSelectionOptionsSchema.exactOptional(),
+  /** Where the run's model selection came from (#BIT-186). */
+  modelSource: z
+    .enum([
+      "explicit",
+      "explicit_level",
+      "profile_override",
+      "profile_level",
+      "project_default_level",
+      "default",
+    ])
+    .exactOptional(),
+  /** The run level key that resolved the model selection, when resolved through a level (#BIT-186). */
+  levelKey: z.string().trim().min(1).max(64).exactOptional(),
+  /** Reason a higher-precedence run level rule was skipped at launch (#BIT-186). */
+  skippedReason: z.string().trim().min(1).max(500).exactOptional(),
   workspaceStrategy: T3WorkspaceStrategySchema.exactOptional(),
   /** On a child task's run: the umbrella task whose session started it (#BIT-141). */
   parentTaskId: IdSchema.exactOptional(),
@@ -413,6 +428,10 @@ export const StartT3ThreadInputSchema = z.strictObject({
   workspaceStrategy: T3WorkspaceStrategySchema.exactOptional(),
   providerInstanceId: z.string().trim().min(1).max(200).exactOptional(),
   model: z.string().trim().min(1).max(200).exactOptional(),
+  options: T3ModelSelectionOptionsSchema.exactOptional(),
+  modelOptions: T3ModelSelectionOptionsSchema.exactOptional(),
+  modelSelection: T3ModelSelectionSchema.exactOptional(),
+  level: z.string().trim().min(1).max(64).exactOptional(),
   runtimeMode: T3RuntimeModeSchema.exactOptional(),
 });
 
@@ -422,6 +441,7 @@ export interface ParsedT3RunCommand {
   readonly workspaceStrategy?: T3WorkspaceStrategy | undefined;
   readonly providerInstanceId?: string | undefined;
   readonly model?: string | undefined;
+  readonly level?: string | undefined;
   readonly runtimeMode?: T3RuntimeMode | undefined;
   readonly note?: string | undefined;
 }
@@ -432,6 +452,7 @@ const T3_RUN_COMMAND_MAX_FIELD = 200;
  * Parses an explicit `/t3 run` human comment command (#BIT-166), e.g.:
  * - `/t3 run`
  * - `/t3 run model=claude-opus-4-7 worktree`
+ * - `/t3 run level=cheap worktree`
  * - `/t3 run model=prov-claude::claude-opus-4-7 root scope=approval-required`
  * - `/t3 run provider=prov-codex model=gpt-6-sol mode=auto-accept-edits`
  *
@@ -453,6 +474,7 @@ export function parseT3RunCommentCommand(body: string): ParsedT3RunCommand | nul
   let workspaceStrategy: T3WorkspaceStrategy | undefined;
   let providerInstanceId: string | undefined;
   let model: string | undefined;
+  let level: string | undefined;
   let runtimeMode: T3RuntimeMode | undefined;
 
   for (const rawToken of tokens) {
@@ -502,6 +524,14 @@ export function parseT3RunCommentCommand(body: string): ParsedT3RunCommand | nul
         continue;
       }
 
+      if (key === "level") {
+        const lowerVal = val.toLowerCase();
+        if (lowerVal.length > 64) return null;
+        if (level && level !== lowerVal) return null;
+        level = lowerVal;
+        continue;
+      }
+
       if (key === "scope" || key === "mode" || key === "runtimemode" || key === "permissions") {
         const parsedMode = T3RuntimeModeSchema.safeParse(val.toLowerCase());
         if (!parsedMode.success) return null;
@@ -536,6 +566,7 @@ export function parseT3RunCommentCommand(body: string): ParsedT3RunCommand | nul
     ...(workspaceStrategy ? { workspaceStrategy } : {}),
     ...(providerInstanceId ? { providerInstanceId } : {}),
     ...(model ? { model } : {}),
+    ...(level ? { level } : {}),
     ...(runtimeMode ? { runtimeMode } : {}),
     ...(note ? { note } : {}),
   };

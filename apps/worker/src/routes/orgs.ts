@@ -4,8 +4,15 @@ import {
   NotFoundError,
   OrganisationRoleSchema,
   OrganisationSlugSchema,
+  RunLevelDescriptionSchema,
+  RunLevelKeySchema,
+  RunLevelLabelSchema,
+  RunLevelOrderSchema,
+  T3ModelSelectionOptionsSchema,
+  T3ModelSelectionSchema,
   ValidationError,
   hasMinimumOrgRole,
+  type T3ModelSelection,
 } from "@bitig/core";
 import {
   D1AccessTokenStore,
@@ -13,6 +20,7 @@ import {
   D1OrganisationStore,
   D1Storage,
   D1UserStore,
+  T3D1Store,
 } from "@bitig/storage-d1";
 import { z } from "zod";
 import type { AppEnv } from "../index";
@@ -20,6 +28,8 @@ import { ForbiddenRoleError } from "../auth";
 import { generateOpaqueToken, sha256Hex } from "../auth-crypto";
 import { buildInvitationEmail } from "../mailer";
 import { disconnectRealtimeUser } from "../realtime";
+import { validateAndSaveOrgRunLevels } from "../t3/service";
+import { handleT3RouteError } from "./t3";
 
 const createOrgBodySchema = z.object({
   name: z.string().trim().min(1, "Name is required").max(120),
@@ -349,6 +359,199 @@ orgsRouter.delete("/:id/invitations/:invId", async (c) => {
     throw new NotFoundError("invitation", c.req.param("invId"));
   }
   return c.json({ ok: true });
+});
+
+const runLevelBindingInputSchema = z
+  .object({
+    levelKey: RunLevelKeySchema,
+    hostId: z.string().trim().min(1).max(200).nullable().optional(),
+    selection: T3ModelSelectionSchema.optional(),
+    providerInstanceId: z.string().trim().min(1).max(200).optional(),
+    model: z.string().trim().min(1).max(200).optional(),
+    options: T3ModelSelectionOptionsSchema.optional(),
+  })
+  .refine(
+    (item) =>
+      item.selection !== undefined ||
+      (Boolean(item.providerInstanceId) && Boolean(item.model)),
+    {
+      message: "Each model binding must specify selection or providerInstanceId and model",
+    },
+  );
+
+const perLevelHostBindingInputSchema = z
+  .object({
+    hostId: z.string().trim().min(1).max(200).nullable().optional(),
+    selection: T3ModelSelectionSchema.optional(),
+    providerInstanceId: z.string().trim().min(1).max(200).optional(),
+    model: z.string().trim().min(1).max(200).optional(),
+    options: T3ModelSelectionOptionsSchema.optional(),
+  })
+  .refine(
+    (item) =>
+      item.selection !== undefined ||
+      (Boolean(item.providerInstanceId) && Boolean(item.model)),
+    {
+      message: "Each host model binding must specify selection or providerInstanceId and model",
+    },
+  );
+
+const putRunLevelsBodySchema = z.object({
+  levels: z
+    .array(
+      z.object({
+        key: RunLevelKeySchema,
+        label: RunLevelLabelSchema,
+        description: RunLevelDescriptionSchema,
+        order: RunLevelOrderSchema.optional(),
+        selection: T3ModelSelectionSchema.nullable().optional(),
+        models: z
+          .union([
+            z.array(perLevelHostBindingInputSchema),
+            z.record(z.string(), T3ModelSelectionSchema),
+          ])
+          .optional(),
+      }),
+    )
+    .min(1, "An organisation must keep at least one run level"),
+  models: z.array(runLevelBindingInputSchema).optional(),
+  replacementKeys: z.record(z.string(), z.string()).optional(),
+  defaultReplacementKey: z.string().trim().min(1).optional(),
+  replacementKey: z.string().trim().min(1).optional(),
+});
+
+function toSelection(item: {
+  selection?: T3ModelSelection | undefined;
+  providerInstanceId?: string | undefined;
+  model?: string | undefined;
+  options?: T3ModelSelection["options"] | undefined;
+}): T3ModelSelection {
+  if (item.selection) {
+    return item.selection;
+  }
+  return {
+    providerInstanceId: item.providerInstanceId ?? "",
+    model: item.model ?? "",
+    ...(item.options ? { options: item.options } : {}),
+  };
+}
+
+orgsRouter.get("/:id/run-levels", async (c) => {
+  const user = c.get("user");
+  if (!user) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+  const idParam = c.req.param("id");
+  const { org } = await resolveOrgForMember(c.env.DB, idParam, user.id);
+  const isBearerOrHeaderScoped =
+    Boolean(c.req.header("Authorization")?.startsWith("Bearer ")) ||
+    Boolean(c.req.header("X-Bitig-Org")?.trim());
+  if (isBearerOrHeaderScoped && c.get("orgId") && c.get("orgId") !== org.id) {
+    throw new NotFoundError("organisation", idParam);
+  }
+
+  const rawHostIdQuery = c.req.query("hostId")?.trim();
+  const hostIdQuery = rawHostIdQuery && rawHostIdQuery.length > 0 ? rawHostIdQuery : undefined;
+  const store = new T3D1Store(c.env.DB, org.id);
+  const [levels, models] = await Promise.all([
+    store.listRunLevels(hostIdQuery ? { hostId: hostIdQuery } : undefined),
+    store.listRunLevelModels(),
+  ]);
+  return c.json({ levels, models });
+});
+
+orgsRouter.put("/:id/run-levels", async (c) => {
+  const user = c.get("user");
+  if (!user) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+  const idParam = c.req.param("id");
+  const { org, membership } = await resolveOrgForMember(c.env.DB, idParam, user.id);
+  const isBearerOrHeaderScoped =
+    Boolean(c.req.header("Authorization")?.startsWith("Bearer ")) ||
+    Boolean(c.req.header("X-Bitig-Org")?.trim());
+  if (isBearerOrHeaderScoped && c.get("orgId") && c.get("orgId") !== org.id) {
+    throw new NotFoundError("organisation", idParam);
+  }
+
+  const effectiveRole =
+    isBearerOrHeaderScoped && c.get("orgId") === org.id && c.get("orgRole")
+      ? (c.get("orgRole") ?? membership.role)
+      : membership.role;
+  if (!hasMinimumOrgRole(effectiveRole, "owner")) {
+    throw new ForbiddenRoleError("owner role required");
+  }
+
+  const rawBody: unknown = await c.req.json().catch(() => null);
+  const parsed = putRunLevelsBodySchema.safeParse(rawBody);
+  if (!parsed.success) {
+    return c.json({ error: "validation_error", details: parsed.error.issues }, 400);
+  }
+
+  const hasPerLevelModels = parsed.data.levels.some((l) => l.models !== undefined);
+  const hasExplicitModels = parsed.data.models !== undefined || hasPerLevelModels;
+  const normalizedModels: {
+    levelKey: string;
+    hostId?: string | null | undefined;
+    selection: T3ModelSelection;
+  }[] = [];
+
+  for (const level of parsed.data.levels) {
+    if (!level.models) continue;
+    if (Array.isArray(level.models)) {
+      for (const m of level.models) {
+        normalizedModels.push({
+          levelKey: level.key,
+          hostId: m.hostId ?? null,
+          selection: toSelection(m),
+        });
+      }
+    } else {
+      for (const [hostId, sel] of Object.entries(level.models)) {
+        normalizedModels.push({
+          levelKey: level.key,
+          hostId: hostId === "" || hostId === "default" ? null : hostId,
+          selection: sel,
+        });
+      }
+    }
+  }
+
+  for (const m of parsed.data.models ?? []) {
+    normalizedModels.push({
+      levelKey: m.levelKey,
+      hostId: m.hostId ?? null,
+      selection: toSelection(m),
+    });
+  }
+
+  const store = new T3D1Store(c.env.DB, org.id);
+  try {
+    const result = await validateAndSaveOrgRunLevels(
+      {
+        store,
+        encryptionKey: c.get("config").T3_ENCRYPTION_KEY,
+        fetchFn: c.get("t3Fetch"),
+      },
+      {
+        levels: parsed.data.levels.map((l, idx) => ({
+          key: l.key,
+          label: l.label,
+          description: l.description,
+          order: l.order ?? idx,
+          ...(l.selection !== undefined ? { selection: l.selection } : {}),
+        })),
+        ...(hasExplicitModels ? { models: normalizedModels } : {}),
+        ...(parsed.data.replacementKeys ? { replacementKeys: parsed.data.replacementKeys } : {}),
+        defaultReplacementKey:
+          parsed.data.defaultReplacementKey ?? parsed.data.replacementKey,
+      },
+      caches.default,
+    );
+    return c.json(result);
+  } catch (err) {
+    return handleT3RouteError(err, c);
+  }
 });
 
 export const invitationsPublicRouter = new Hono<AppEnv>();

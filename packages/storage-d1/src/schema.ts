@@ -395,8 +395,14 @@ export const agentRuns = sqliteTable(
     state: text("state").$type<AgentRunState>().notNull(),
     model: text("model"),
     providerInstanceId: text("provider_instance_id"),
-    /** JSON array of `{ id, value }` model options chosen on the last switch (#BIT-119). */
+    /** JSON array of `{ id, value }` model options chosen on the last switch (#BIT-119) or resolved at launch (#BIT-186). */
     modelOptions: text("model_options"),
+    /** Where the run's model selection came from (#BIT-186). */
+    modelSource: text("model_source"),
+    /** The run level key that resolved the model selection (#BIT-186). */
+    levelKey: text("level_key"),
+    /** Reason a higher-precedence run level rule was skipped at launch (#BIT-186). */
+    modelSkipReason: text("model_skip_reason"),
     workspaceStrategy: text("workspace_strategy").$type<T3WorkspaceStrategy>(),
     branch: text("branch"),
     headSha: text("head_sha"),

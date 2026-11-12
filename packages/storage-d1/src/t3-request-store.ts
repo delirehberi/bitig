@@ -41,20 +41,24 @@ export class T3RequestStore {
     const update = run
       ? this.d1.prepare(`INSERT INTO agent_runs
           (id, task_id, host_id, t3_project_id, thread_id, state, model, provider_instance_id,
-           model_options, workspace_strategy, parent_task_id, started_by, started_at, updated_at)
-          SELECT ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?
+           model_options, model_source, level_key, model_skip_reason, workspace_strategy,
+           parent_task_id, started_by, started_at, updated_at)
+          SELECT ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
           WHERE EXISTS (SELECT 1 FROM t3_run_requests WHERE id = ? AND org_id = ? AND state = 'queued')
           ON CONFLICT(task_id) DO UPDATE SET id = excluded.id, host_id = excluded.host_id,
             t3_project_id = excluded.t3_project_id,
             thread_id = excluded.thread_id, state = 'queued', model = excluded.model,
             provider_instance_id = excluded.provider_instance_id, model_options = excluded.model_options,
+            model_source = excluded.model_source, level_key = excluded.level_key,
+            model_skip_reason = excluded.model_skip_reason,
             workspace_strategy = excluded.workspace_strategy,
             parent_task_id = excluded.parent_task_id, started_by = excluded.started_by,
             started_at = excluded.started_at, updated_at = excluded.updated_at,
             link = NULL, waiting_for_task_id = NULL,
             branch = NULL, head_sha = NULL, diff_stat = NULL, pull_request_urls = NULL`).bind(
           run.id, run.taskId, run.hostId ?? resolvedHostId, run.t3ProjectId, run.threadId, run.model ?? null,
-          run.providerInstanceId ?? null, modelOptionsJson, run.workspaceStrategy ?? null, run.parentTaskId ?? null,
+          run.providerInstanceId ?? null, modelOptionsJson, run.modelSource ?? null, run.levelKey ?? null,
+          run.skippedReason ?? null, run.workspaceStrategy ?? null, run.parentTaskId ?? null,
           run.startedBy ?? null, run.startedAt, run.updatedAt, input.id, this.orgId,
         )
       : this.d1.prepare(`UPDATE agent_runs SET state = 'queued', updated_at = ? WHERE task_id = ?

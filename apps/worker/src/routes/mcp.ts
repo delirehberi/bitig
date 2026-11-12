@@ -2,11 +2,15 @@ import { Hono } from "hono";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { BITIG_SERVER_INSTRUCTIONS, registerBitigTools } from "@bitig/mcp-tools";
-import { hasMinimumOrgRole } from "@bitig/core";
+import { DEFAULT_RUN_LEVELS, ValidationError, hasMinimumOrgRole } from "@bitig/core";
 import { ForbiddenRoleError } from "../auth";
 import type { AppEnv } from "../index";
 import { registerHostFolder, unregisterHostFolder } from "../t3/host-folders";
-import { launchTaskInT3, reportTaskT3GitMetadata } from "../t3/service";
+import {
+  launchTaskInT3,
+  reportTaskT3GitMetadata,
+  resolveTaskRunProfileWithSelection,
+} from "../t3/service";
 import { buildHostFolderDeps, buildServiceDeps, requireOrgOwner } from "./t3";
 import { handBackFinishedTaskInBackground } from "./tasks";
 
@@ -28,6 +32,7 @@ export const mcpRouter = new Hono<AppEnv>().all("*", async (c) => {
   );
 
   const t3Deps = buildServiceDeps(c);
+  const useD1RunProfiles = !c.get("customStorageFactory");
   registerBitigTools(server, storage, {
     reportT3GitMetadata: (input, signal) => {
       const role = c.get("orgRole");
@@ -47,6 +52,8 @@ export const mcpRouter = new Hono<AppEnv>().all("*", async (c) => {
         workspaceStrategy: input.workspaceStrategy,
         providerInstanceId: input.providerInstanceId,
         model: input.model,
+        options: input.options,
+        level: input.level,
         actor: input.actor,
         parentTaskRef: input.parentTaskId,
       });
@@ -70,6 +77,56 @@ export const mcpRouter = new Hono<AppEnv>().all("*", async (c) => {
     onTaskFinished: (task) => handBackFinishedTaskInBackground(c, task.id),
     getUmbrellaParentTaskId: async (taskId) =>
       (await t3Deps.store.getAgentRunByTaskId(taskId).catch(() => null))?.parentTaskId,
+    listRunLevels: async () => {
+      const role = c.get("orgRole");
+      if (!role || !hasMinimumOrgRole(role, "viewer")) {
+        throw new ForbiddenRoleError("Forbidden: viewer role required to list run levels");
+      }
+      return await t3Deps.store.listRunLevels().catch(() => DEFAULT_RUN_LEVELS);
+    },
+    ...(useD1RunProfiles
+      ? {
+          getTaskRunProfileWithSelection: async (taskId) => {
+            try {
+              const { profile, resolved } = await resolveTaskRunProfileWithSelection(t3Deps, taskId);
+              return {
+                profile: profile ?? null,
+                resolved,
+              };
+            } catch {
+              return {
+                profile: null,
+                resolved: { source: "default" as const, skipped: [] },
+              };
+            }
+          },
+          saveTaskRunProfile: async (input) => {
+            if (input.level !== undefined && input.level !== null) {
+              const levels = await t3Deps.store.listRunLevels();
+              if (!levels.some((l) => l.key === input.level)) {
+                throw new ValidationError("taskRunProfile", [
+                  {
+                    code: "custom",
+                    path: ["runProfile", "level"],
+                    message: `Run level "${input.level}" does not exist in this organisation.`,
+                    input: input.level,
+                  },
+                ]);
+              }
+            }
+            return await t3Deps.store.saveTaskRunProfile({
+              taskId: input.taskId,
+              ...(input.level !== undefined ? { level: input.level } : {}),
+              ...(input.selection !== undefined ? { selection: input.selection } : {}),
+              ...(input.touches !== undefined ? { touches: input.touches } : {}),
+              ...(input.parallelSafe !== undefined ? { parallelSafe: input.parallelSafe } : {}),
+              ...(input.reason !== undefined ? { reason: input.reason } : {}),
+              source: input.source,
+              updatedBy: c.get("user")?.id ?? input.actor,
+            });
+          },
+        }
+      : {}),
   });
 
   // Stateless mode: session management is disabled when sessionIdGenerator is omitted

@@ -1,4 +1,10 @@
-import { InMemoryStorage, T3WorkspaceBusyError, type ProjectWorkContext, type ProjectWorkSummary } from "@bitig/core";
+import {
+  InMemoryStorage,
+  T3WorkspaceBusyError,
+  type ProjectWorkContext,
+  type ProjectWorkSummary,
+  type TaskRunProfile,
+} from "@bitig/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -57,6 +63,7 @@ describe("MCP Tools integration", () => {
       "delete_webhook",
       "report_t3_git_metadata",
       "start_t3_thread",
+      "list_run_levels",
     ]);
 
     // Create project
@@ -1096,3 +1103,212 @@ describe("umbrella task child sessions (#BIT-141)", () => {
     }
   });
 });
+
+describe("run orchestration MCP tools (#BIT-186)", () => {
+  it("lists run levels, saves agent run profiles without overwriting manual profiles, returns resolved model in get_task, and passes level/options to start_t3_thread", async () => {
+    const storage = new InMemoryStorage();
+    const project = await storage.createProject({ name: "Bitig", key: "BIT" });
+
+    const profiles = new Map<string, TaskRunProfile>();
+
+    const levels = [
+      { key: "low", label: "Low", description: "Typos, renames, small edits", order: 0 },
+      { key: "med", label: "Medium", description: "Single-module work", order: 1 },
+      { key: "high", label: "High", description: "Cross-cutting refactors", order: 2 },
+    ];
+
+    const saveTaskRunProfile = vi.fn(
+      (input: {
+        taskId: string;
+        level?: string | null | undefined;
+        touches?: readonly string[] | null | undefined;
+        parallelSafe?: boolean | null | undefined;
+        reason?: string | null | undefined;
+        source: "manual" | "agent" | "router";
+      }) => {
+        const existing = profiles.get(input.taskId);
+        if (existing?.source === "manual" && input.source !== "manual") {
+          return Promise.resolve(existing);
+        }
+        const saved: TaskRunProfile = {
+          ...(input.level ? { level: input.level } : {}),
+          touches: [...(input.touches ?? existing?.touches ?? [])],
+          ...(typeof input.parallelSafe === "boolean" ? { parallelSafe: input.parallelSafe } : {}),
+          ...(input.reason ? { reason: input.reason } : {}),
+          source: input.source,
+        };
+        profiles.set(input.taskId, saved);
+        return Promise.resolve(saved);
+      },
+    );
+
+    const resolveTaskRunProfile = vi.fn((taskId: string) => {
+      const profile = profiles.get(taskId) ?? null;
+      const levelKey = profile?.level ?? "med";
+      return Promise.resolve({
+        profile,
+        resolved: {
+          source: profile?.level ? ("profile_level" as const) : ("project_default_level" as const),
+          levelKey,
+          selection: {
+            providerInstanceId: "claude-main",
+            model: levelKey === "high" ? "claude-opus-4-6" : "claude-sonnet-4-6",
+            options: [{ id: "effort", value: levelKey === "high" ? "high" : "medium" }],
+          },
+          skipped: [],
+        },
+      });
+    });
+
+    const startT3Thread = vi.fn((input: { taskId: string; level?: string | undefined; model?: string | undefined }) =>
+      storage.getTask(input.taskId).then((task) => {
+        if (!task) throw new Error("missing task");
+        return {
+          run: {
+            id: "0196ed60-0000-7000-8000-000000000099",
+            taskId: task.id,
+            t3ProjectId: "t3",
+            threadId: "thread-level",
+            state: "working" as const,
+            ...(input.model ? { model: input.model } : { model: "claude-opus-4-6" }),
+            ...(input.level ? { levelKey: input.level, modelSource: "explicit_level" as const } : {}),
+            startedAt: task.createdAt,
+            updatedAt: task.createdAt,
+          },
+          task,
+        };
+      }),
+    );
+
+    const server = new McpServer({ name: "bitig-test", version: "1.0.0" });
+    registerBitigTools(server, storage, {
+      listRunLevels: () => Promise.resolve(levels),
+      saveTaskRunProfile,
+      resolveTaskRunProfile,
+      startT3Thread,
+    });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    const client = new Client({ name: "client-test", version: "1.0.0" }, { capabilities: {} });
+    await client.connect(clientTransport);
+
+    try {
+      // 1. list_run_levels returns levels with descriptions
+      const listedLevels = await client.callTool({ name: "list_run_levels", arguments: {} });
+      expect(listedLevels.isError).toBeFalsy();
+      expect(JSON.parse((listedLevels.content as { text: string }[])[0]?.text ?? "[]")).toEqual(levels);
+
+      // 2. add_task with runProfile saves with source: "agent"
+      const addedRes = await client.callTool({
+        name: "add_task",
+        arguments: {
+          projectId: project.id,
+          title: "Refactor auth",
+          runProfile: {
+            level: "high",
+            touches: ["apps/worker/src/auth/**"],
+            parallelSafe: false,
+            reason: "Touches shared auth middleware",
+          },
+        },
+      });
+      expect(addedRes.isError).toBeFalsy();
+      const addedTask = JSON.parse((addedRes.content as { text: string }[])[0]?.text ?? "{}") as {
+        id: string;
+        code: string;
+        runProfile: { level: string; source: string; touches: string[]; parallelSafe: boolean; reason: string };
+      };
+      expect(addedTask.runProfile).toMatchObject({
+        level: "high",
+        touches: ["apps/worker/src/auth/**"],
+        parallelSafe: false,
+        reason: "Touches shared auth middleware",
+        source: "agent",
+      });
+
+      // 3. Rejects unknown run level key
+      const badLevelRes = await client.callTool({
+        name: "update_task",
+        arguments: {
+          id: addedTask.code,
+          runProfile: { level: "ultra" },
+        },
+      });
+      expect(badLevelRes.isError).toBe(true);
+      expect((badLevelRes.content as { text: string }[])[0]?.text).toContain("Unknown run level");
+
+      // 4. get_task returns runProfile and resolvedModel
+      const gotRes = await client.callTool({
+        name: "get_task",
+        arguments: { id: addedTask.code },
+      });
+      expect(gotRes.isError).toBeFalsy();
+      const gotTask = JSON.parse((gotRes.content as { text: string }[])[0]?.text ?? "{}") as {
+        runProfile: { level: string; source: string };
+        resolvedModel: {
+          providerInstanceId: string;
+          model: string;
+          source: string;
+          levelKey: string;
+          options: { id: string; value: string }[];
+        };
+      };
+      expect(gotTask.runProfile).toMatchObject({ level: "high", source: "agent" });
+      expect(gotTask.resolvedModel).toEqual({
+        providerInstanceId: "claude-main",
+        model: "claude-opus-4-6",
+        options: [{ id: "effort", value: "high" }],
+        source: "profile_level",
+        levelKey: "high",
+      });
+
+      // 5. Manual profile is never overwritten by agent update_task
+      profiles.set(addedTask.id, {
+        level: "low",
+        touches: ["README.md"],
+        parallelSafe: true,
+        reason: "Human locked to low",
+        source: "manual",
+      });
+      const afterManualUpdate = await client.callTool({
+        name: "update_task",
+        arguments: {
+          id: addedTask.code,
+          runProfile: { level: "high", reason: "Agent wants high" },
+        },
+      });
+      expect(afterManualUpdate.isError).toBeFalsy();
+      const afterManualData = JSON.parse((afterManualUpdate.content as { text: string }[])[0]?.text ?? "{}") as {
+        runProfile: { level: string; source: string; reason: string };
+      };
+      expect(afterManualData.runProfile).toMatchObject({
+        level: "low",
+        source: "manual",
+        reason: "Human locked to low",
+      });
+
+      // 6. start_t3_thread accepts level and options alongside model
+      await storage.updateTask(addedTask.id, { pendingApproval: null });
+      const launched = await client.callTool({
+        name: "start_t3_thread",
+        arguments: {
+          taskId: addedTask.code,
+          level: "high",
+          options: [{ id: "effort", value: "max" }],
+        },
+      });
+      expect(launched.isError).toBeFalsy();
+      expect(startT3Thread).toHaveBeenCalledWith(
+        expect.objectContaining({
+          taskId: addedTask.id,
+          level: "high",
+          options: [{ id: "effort", value: "max" }],
+        }),
+      );
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+});
+

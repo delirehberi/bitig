@@ -6,13 +6,19 @@ import {
   ProjectBundleSchema,
   UpdateHostBoundProjectInputSchema,
 } from "@bitig/core";
+import { T3D1Store } from "@bitig/storage-d1";
 import type { AppEnv } from "../index";
 import {
   createProjectFromHostFolder,
   registerHostFolder,
   unregisterHostFolder,
 } from "../t3/host-folders";
-import { buildHostFolderDeps, hostFolderErrorResponse, requireOrgOwner } from "./t3";
+import {
+  PutProjectRunSettingsBodySchema,
+  buildHostFolderDeps,
+  hostFolderErrorResponse,
+  requireOrgOwner,
+} from "./t3";
 
 const HTTP_CREATED = 201;
 const HTTP_NO_CONTENT = 204;
@@ -149,4 +155,80 @@ export const projectsRouter = new Hono<AppEnv>()
     const id = c.req.param("id");
     await storage.deleteProject(id);
     return c.body(null, HTTP_NO_CONTENT);
-  });
+  })
+  .get("/:id/run-settings", async (c) => {
+    const storage = c.get("storage");
+    const id = c.req.param("id");
+    const project = await storage.getProject(id);
+    if (!project) {
+      throw new NotFoundError("project", id);
+    }
+    const store = new T3D1Store(c.env.DB, c.get("orgId"));
+    const settings = await store.getProjectRunSettings(project.id);
+    if (!settings) {
+      throw new NotFoundError("project", id);
+    }
+    return c.json(settings);
+  })
+  .put(
+    "/:id/run-settings",
+    zValidator("json", PutProjectRunSettingsBodySchema, (result, c) => {
+      if (!result.success) {
+        return c.json({ error: "validation_error", details: result.error.issues }, HTTP_BAD_REQUEST);
+      }
+      return undefined;
+    }),
+    async (c) => {
+      const storage = c.get("storage");
+      const id = c.req.param("id");
+      const project = await storage.getProject(id);
+      if (!project) {
+        throw new NotFoundError("project", id);
+      }
+      const body = c.req.valid("json");
+      const store = new T3D1Store(c.env.DB, c.get("orgId"));
+      const settings = await store.upsertProjectRunSettings(project.id, {
+        ...(body.defaultRunLevel !== undefined
+          ? { defaultRunLevel: body.defaultRunLevel }
+          : body.defaultLevel !== undefined
+            ? { defaultRunLevel: body.defaultLevel }
+            : {}),
+        ...(body.serialPaths !== undefined ? { serialPaths: body.serialPaths } : {}),
+        ...(body.maxParallelChildren !== undefined
+          ? { maxParallelChildren: body.maxParallelChildren }
+          : {}),
+      });
+      return c.json(settings);
+    },
+  )
+  .patch(
+    "/:id/run-settings",
+    zValidator("json", PutProjectRunSettingsBodySchema, (result, c) => {
+      if (!result.success) {
+        return c.json({ error: "validation_error", details: result.error.issues }, HTTP_BAD_REQUEST);
+      }
+      return undefined;
+    }),
+    async (c) => {
+      const storage = c.get("storage");
+      const id = c.req.param("id");
+      const project = await storage.getProject(id);
+      if (!project) {
+        throw new NotFoundError("project", id);
+      }
+      const body = c.req.valid("json");
+      const store = new T3D1Store(c.env.DB, c.get("orgId"));
+      const settings = await store.upsertProjectRunSettings(project.id, {
+        ...(body.defaultRunLevel !== undefined
+          ? { defaultRunLevel: body.defaultRunLevel }
+          : body.defaultLevel !== undefined
+            ? { defaultRunLevel: body.defaultLevel }
+            : {}),
+        ...(body.serialPaths !== undefined ? { serialPaths: body.serialPaths } : {}),
+        ...(body.maxParallelChildren !== undefined
+          ? { maxParallelChildren: body.maxParallelChildren }
+          : {}),
+      });
+      return c.json(settings);
+    },
+  );

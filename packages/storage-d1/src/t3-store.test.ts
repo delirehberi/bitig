@@ -290,6 +290,10 @@ describe("T3D1Store umbrella and child runs (BIT-141)", () => {
     for (const statement of workspaceRootMigration.split("--> statement-breakpoint")) {
       await env.DB.prepare(statement.trim()).run();
     }
+    for (const statement of runOrchestrationMigration.split("--> statement-breakpoint")) {
+      const trimmed = statement.trim();
+      if (trimmed) await env.DB.prepare(trimmed).run();
+    }
     await env.DB.prepare("INSERT INTO projects (id, name) VALUES (?, ?), (?, ?)")
       .bind(PROJECT_ID, "Bitig", OTHER_PROJECT_ID, "Other")
       .run();
@@ -568,6 +572,10 @@ describe("T3D1Store multi-host persistence and migration (BIT-147)", () => {
     for (const statement of workspaceRootMigration.split("--> statement-breakpoint")) {
       await env.DB.prepare(statement.trim()).run();
     }
+    for (const statement of runOrchestrationMigration.split("--> statement-breakpoint")) {
+      const trimmed = statement.trim();
+      if (trimmed) await env.DB.prepare(trimmed).run();
+    }
 
     const store = new T3D1Store(env.DB, DEFAULT_ORGANISATION_ID);
     const conn = await store.getConnection();
@@ -652,6 +660,10 @@ describe("T3D1Store multi-host persistence and migration (BIT-147)", () => {
     }
     for (const statement of workspaceRootMigration.split("--> statement-breakpoint")) {
       await env.DB.prepare(statement.trim()).run();
+    }
+    for (const statement of runOrchestrationMigration.split("--> statement-breakpoint")) {
+      const trimmed = statement.trim();
+      if (trimmed) await env.DB.prepare(trimmed).run();
     }
 
     const orgA = new T3D1Store(env.DB, "01a10000-0000-7000-8000-000000000011");

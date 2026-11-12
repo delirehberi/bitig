@@ -10,6 +10,7 @@ import {
   CreateHostBoundProjectInputSchema,
   CreateTaskInputSchema,
   CreateWebhookInputSchema,
+  DEFAULT_RUN_LEVELS,
   DueDateSchema,
   HostFolderPathSchema,
   IdSchema,
@@ -19,26 +20,34 @@ import {
   ProjectKindSchema,
   ProjectNameSchema,
   ProjectResourcesSchema,
-  SaveCheckpointInputSchema,
   ReportT3GitMetadataInputSchema,
   type ReportT3GitMetadataInput,
+  RunLevelKeySchema,
+  RunProfileReasonSchema,
+  RunProfileTouchesSchema,
+  SaveCheckpointInputSchema,
   StorageError,
   T3HostIdSchema,
+  T3ModelSelectionOptionsSchema,
+  T3ModelSelectionSchema,
+  T3WorkspaceStrategySchema,
+  TASK_ACTOR_MAX,
   TaskOrderSchema,
   TaskPrioritySchema,
+  TaskRunProfileSchema,
   TaskStatusSchema,
   TaskTitleSchema,
-  TASK_ACTOR_MAX,
   UpdateHostBoundProjectInputSchema,
   ValidationError,
   WebhookMappingSchema,
   WebhookNameSchema,
   WebhookProviderSchema,
   backfillTicketCodes,
-  buildExecutionContext,
-  buildProjectWorkContext,
-  buildMentionIndex,
   blockingTasks,
+  buildExecutionContext,
+  buildMentionIndex,
+  buildProjectWorkContext,
+  canOverwriteRunProfile,
   checkNewTaskStatus,
   checkStatusChange,
   decodeBase64,
@@ -48,18 +57,24 @@ import {
   findBlockingTasks,
   isTextAttachmentMimeType,
   resolveProjectRef,
+  resolveRunSelection,
   resolveTaskRef,
   resolveTaskRefs,
   selectProjectWork,
   stripAttachmentData,
-  T3WorkspaceStrategySchema,
   withTaskCodes,
   type AgentRun,
   type OperationOptions,
+  type ResolvedRunSelection,
+  type RunLevel,
+  type RunProfileSource,
   type StorageProvider,
+  type T3ModelSelection,
+  type T3ModelSelectionOption,
   type T3ProjectMapping,
   type T3WorkspaceStrategy,
   type Task,
+  type TaskRunProfile,
   type TaskWithCode,
 } from "@bitig/core";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -85,6 +100,32 @@ const KEY_DESCRIPTION =
 const WEBHOOK_MAPPING_DESCRIPTION =
   "Optional JSON dot-path mappings from incoming payload fields to task fields, e.g. { title: 'issue.fields.summary', description: 'issue.fields.description', priority: 'issue.fields.priority.name', labels: 'issue.fields.labels' }.";
 
+const RUN_PROFILE_DESCRIPTION =
+  "Optional run profile for the task: { level, touches, parallelSafe, reason }. Stored with source 'agent' and never overwrites a profile set manually by a person.";
+
+const AgentRunProfileInputSchema = z
+  .strictObject({
+    level: RunLevelKeySchema.optional().describe(
+      "Organisation run level key (call list_run_levels to inspect valid keys), e.g. 'cheap', 'standard', 'strong'",
+    ),
+    selection: T3ModelSelectionSchema.optional().describe(
+      "Optional explicit model selection override ({ providerInstanceId, model, options })",
+    ),
+    touches: RunProfileTouchesSchema.optional().describe(
+      "Relative repository path globs this task modifies, e.g. ['packages/core/**']",
+    ),
+    parallelSafe: z
+      .boolean()
+      .optional()
+      .describe(
+        "Whether this task is safe to run in parallel alongside sibling tasks when touched paths do not overlap",
+      ),
+    reason: RunProfileReasonSchema.optional().describe(
+      "Brief explanation for why this level and profile were chosen",
+    ),
+  })
+  .describe(RUN_PROFILE_DESCRIPTION);
+
 const GENERIC_USER_AGENTS =
   /^(?:node(?:-fetch)?|undici|mozilla|curl|fetch|okhttp|axios|python-requests|go-http-client)(?:\/|\s|$)/i;
 
@@ -93,6 +134,8 @@ export interface StartT3ThreadToolInput {
   readonly workspaceStrategy?: T3WorkspaceStrategy | undefined;
   readonly providerInstanceId?: string | undefined;
   readonly model?: string | undefined;
+  readonly options?: readonly T3ModelSelectionOption[] | undefined;
+  readonly level?: string | undefined;
   readonly actor?: string | undefined;
   /** Resolved ID of the umbrella task whose session starts this task as a child session (#BIT-141). */
   readonly parentTaskId?: string | undefined;
@@ -122,6 +165,17 @@ export interface UnregisterProjectHostFolderToolInput {
 
 export interface UnregisterProjectHostFolderToolResult {
   readonly unregistered: boolean;
+}
+
+export interface SaveMcpTaskRunProfileInput {
+  readonly taskId: string;
+  readonly level?: string | null | undefined;
+  readonly selection?: T3ModelSelection | null | undefined;
+  readonly touches?: readonly string[] | null | undefined;
+  readonly parallelSafe?: boolean | null | undefined;
+  readonly reason?: string | null | undefined;
+  readonly source: RunProfileSource;
+  readonly actor?: string | undefined;
 }
 
 export interface RegisterBitigToolsOptions {
@@ -160,6 +214,42 @@ export interface RegisterBitigToolsOptions {
    * while moving to `in_progress` or `done`.
    */
   readonly getUmbrellaParentTaskId?: ((taskId: string) => Promise<string | undefined>) | undefined;
+  /**
+   * Optional callback returning the organisation's ordered list of run levels (#BIT-186).
+   */
+  readonly listRunLevels?: (() => Promise<readonly RunLevel[]>) | undefined;
+  /**
+   * Optional callback returning a task's stored run profile and resolved model selection (#BIT-186).
+   */
+  readonly getTaskRunProfileWithSelection?:
+    | ((taskId: string) => Promise<{
+        readonly profile: TaskRunProfile | null;
+        readonly resolved: ResolvedRunSelection;
+      }>)
+    | undefined;
+  readonly resolveTaskRunProfile?:
+    | ((taskId: string) => Promise<{
+        readonly profile: TaskRunProfile | null;
+        readonly resolved: ResolvedRunSelection;
+      }>)
+    | undefined;
+  /**
+   * Optional callback persisting a task's run profile (#BIT-186).
+   */
+  readonly saveTaskRunProfile?:
+    | ((input: SaveMcpTaskRunProfileInput) => Promise<TaskRunProfile | null>)
+    | undefined;
+}
+
+const fallbackRunProfilesByStorage = new WeakMap<StorageProvider, Map<string, TaskRunProfile>>();
+
+function getFallbackRunProfileMap(storage: StorageProvider): Map<string, TaskRunProfile> {
+  let map = fallbackRunProfilesByStorage.get(storage);
+  if (!map) {
+    map = new Map<string, TaskRunProfile>();
+    fallbackRunProfilesByStorage.set(storage, map);
+  }
+  return map;
 }
 
 /** Statuses after which `onTaskFinished` runs. */
@@ -234,6 +324,102 @@ export function registerBitigTools(
   storage: StorageProvider,
   options?: RegisterBitigToolsOptions,
 ): void {
+  const fallbackProfiles = getFallbackRunProfileMap(storage);
+
+  async function getRunLevels(): Promise<readonly RunLevel[]> {
+    if (options?.listRunLevels) {
+      return await options.listRunLevels();
+    }
+    return DEFAULT_RUN_LEVELS;
+  }
+
+  async function assertValidRunLevelKey(levelKey: string | null | undefined, context: string): Promise<void> {
+    if (!levelKey) return;
+    const levels = await getRunLevels();
+    if (!levels.some((l) => l.key === levelKey)) {
+      throw new ValidationError(context, [
+        {
+          code: "custom",
+          path: ["level"],
+          message: `Unknown run level "${levelKey}". Valid keys: ${levels.map((l) => l.key).join(", ") || "none"}.`,
+          input: levelKey,
+        },
+      ]);
+    }
+  }
+
+  async function getRunProfileAndResolved(taskId: string): Promise<{
+    readonly profile: TaskRunProfile | null;
+    readonly resolved: ResolvedRunSelection;
+  }> {
+    const resolver = options?.getTaskRunProfileWithSelection ?? options?.resolveTaskRunProfile;
+    if (resolver) {
+      return await resolver(taskId);
+    }
+    const profile = fallbackProfiles.get(taskId) ?? null;
+    const levels = await getRunLevels();
+    const resolved = resolveRunSelection({
+      profile,
+      levels,
+    });
+    return { profile, resolved };
+  }
+
+  async function saveRunProfileForTask(
+    taskId: string,
+    input: z.output<typeof AgentRunProfileInputSchema>,
+    actor: string,
+    context: string,
+  ): Promise<TaskRunProfile | null> {
+    await assertValidRunLevelKey(input.level, context);
+    if (options?.saveTaskRunProfile) {
+      return await options.saveTaskRunProfile({
+        taskId,
+        level: input.level,
+        selection: input.selection,
+        touches: input.touches,
+        parallelSafe: input.parallelSafe,
+        reason: input.reason,
+        source: "agent",
+        actor,
+      });
+    }
+    const existing = fallbackProfiles.get(taskId);
+    if (existing && !canOverwriteRunProfile(existing, "agent")) {
+      return existing;
+    }
+    const next = TaskRunProfileSchema.parse({
+      ...(input.level !== undefined
+        ? { level: input.level }
+        : existing?.level !== undefined
+          ? { level: existing.level }
+          : {}),
+      ...(input.selection !== undefined
+        ? { selection: input.selection }
+        : existing?.selection !== undefined
+          ? { selection: existing.selection }
+          : {}),
+      ...(input.touches !== undefined
+        ? { touches: input.touches }
+        : existing?.touches !== undefined
+          ? { touches: existing.touches }
+          : {}),
+      ...(input.parallelSafe !== undefined
+        ? { parallelSafe: input.parallelSafe }
+        : existing?.parallelSafe !== undefined
+          ? { parallelSafe: existing.parallelSafe }
+          : {}),
+      source: "agent",
+      ...(input.reason !== undefined
+        ? { reason: input.reason }
+        : existing?.reason !== undefined
+          ? { reason: existing.reason }
+          : {}),
+    });
+    fallbackProfiles.set(taskId, next);
+    return next;
+  }
+
   /**
    * The task with its ticket code (`code`), which callers can pass wherever a task ID is accepted,
    * and the codes of the unfinished tasks it waits on (`blockedBy`) when there are any.
@@ -561,7 +747,7 @@ export function registerBitigTools(
     "get_task",
     {
       description:
-        "Get a task by its ID or ticket code (e.g. BIT-12), with its comments and attachments oldest first, the tasks it mentions (#BIT-12 in its description, subtasks or comments) as mentions, the tasks that mention it as mentionedIn, the tasks it depends on as dependsOn, the tasks that depend on it as dependents, and the unfinished ones it waits on as blockedBy",
+        "Get a task by its ID or ticket code (e.g. BIT-12), with its comments and attachments oldest first, its runProfile and resolved model selection, the tasks it mentions (#BIT-12 in its description, subtasks or comments) as mentions, the tasks that mention it as mentionedIn, the tasks it depends on as dependsOn, the tasks that depend on it as dependents, and the unfinished ones it waits on as blockedBy",
       annotations: { readOnlyHint: true },
       inputSchema: {
         id: TASK_REF,
@@ -573,7 +759,7 @@ export function registerBitigTools(
         const id = await resolveTaskRef(storage, args.id, opts);
         const task = await storage.getTask(id, opts);
         if (task === null) throw new NotFoundError("task", args.id);
-        const [comments, attachments, tasks, projects] = await Promise.all([
+        const [comments, attachments, tasks, projects, runSelection] = await Promise.all([
           storage.getComments(id, opts),
           storage.getAttachments(id, opts).catch((err: unknown) => {
             if (err instanceof StorageError && err.reason === "unsupported") return [];
@@ -581,6 +767,7 @@ export function registerBitigTools(
           }),
           storage.getTasks(undefined, opts),
           storage.getProjects(opts),
+          getRunProfileAndResolved(id),
         ]);
         const links = buildMentionIndex(tasks, projects).linksFor(task, comments);
         const dependencies = dependencyLinks(task, tasks, projects);
@@ -590,6 +777,18 @@ export function registerBitigTools(
           attachments,
           ...links,
           ...dependencies,
+          runProfile: runSelection.profile,
+          resolvedRunSelection: runSelection.resolved,
+          resolvedModel: runSelection.resolved.selection
+            ? {
+                ...runSelection.resolved.selection,
+                source: runSelection.resolved.source,
+                ...(runSelection.resolved.levelKey ? { levelKey: runSelection.resolved.levelKey } : {}),
+                ...(runSelection.resolved.skippedReason
+                  ? { skippedReason: runSelection.resolved.skippedReason }
+                  : {}),
+              }
+            : null,
         });
       } catch (err) {
         return formatErrorResult(err);
@@ -616,13 +815,17 @@ export function registerBitigTools(
         checklist: ChecklistSchema.optional().describe(CHECKLIST_DESCRIPTION),
         needsHuman: NeedsHumanSchema.optional().describe(NEEDS_HUMAN_DESCRIPTION),
         dependsOn: z.array(TASK_REF).optional().describe(DEPENDS_ON_DESCRIPTION),
+        runProfile: AgentRunProfileInputSchema.optional(),
       },
     },
     async (args, extra) => {
       try {
         const actor = resolveMcpActor(server, extra, options?.fallbackActor);
         const opts: OperationOptions = { signal: extra.signal, actor };
-        const { dependsOn: dependencyRefs, ...rest } = args;
+        const { dependsOn: dependencyRefs, runProfile, ...rest } = args;
+        if (runProfile?.level) {
+          await assertValidRunLevelKey(runProfile.level, "add_task");
+        }
         const projectId = await resolveProjectRef(storage, rest.projectId, opts);
         const dependsOn = dependencyRefs === undefined ? [] : await resolveTaskRefs(storage, dependencyRefs, opts);
         await checkNewTaskStatus(storage, { status: rest.status, dependsOn }, "add_task", opts);
@@ -635,7 +838,14 @@ export function registerBitigTools(
           ...(dependsOn.length > 0 ? { dependsOn } : {}),
         });
         const task = await storage.saveTask(parsed, opts);
-        return formatSuccessResult(await withCode(task, opts));
+        const savedProfile =
+          runProfile !== undefined
+            ? await saveRunProfileForTask(task.id, runProfile, actor, "add_task")
+            : undefined;
+        const coded = await withCode(task, opts);
+        return formatSuccessResult(
+          savedProfile !== undefined ? { ...coded, runProfile: savedProfile } : coded,
+        );
       } catch (err) {
         return formatErrorResult(err);
       }
@@ -672,14 +882,18 @@ export function registerBitigTools(
           .nullable()
           .optional()
           .describe(`${DEPENDS_ON_DESCRIPTION} Replaces the whole list; null or [] removes it.`),
+        runProfile: AgentRunProfileInputSchema.optional(),
       },
     },
     async (args, extra) => {
       try {
         const actor = resolveMcpActor(server, extra, options?.fallbackActor);
         const opts: OperationOptions = { signal: extra.signal, actor };
-        const { id: ref, projectId: projectRef, dependsOn: dependencyRefs, ...rest } = args;
+        const { id: ref, projectId: projectRef, dependsOn: dependencyRefs, runProfile, ...rest } = args;
         const id = await resolveTaskRef(storage, ref, opts);
+        if (runProfile?.level) {
+          await assertValidRunLevelKey(runProfile.level, "update_task");
+        }
         const resolved = dependencyRefs ? await resolveTaskRefs(storage, dependencyRefs, opts) : undefined;
         // An empty list clears dependencies, as null does.
         const dependsOn = dependencyRefs === null || resolved?.length === 0 ? null : resolved;
@@ -687,9 +901,26 @@ export function registerBitigTools(
         const fields = dependsOn === undefined ? rest : { ...rest, dependsOn };
         const patch =
           projectRef === undefined ? fields : { ...fields, projectId: await resolveProjectRef(storage, projectRef, opts) };
-        const task = await storage.updateTask(id, patch, opts);
+        const hasTaskPatch = Object.values(patch).some((value) => value !== undefined);
+        let task: Task;
+        if (hasTaskPatch || runProfile === undefined) {
+          task = await storage.updateTask(id, patch, opts);
+        } else {
+          const existing = await storage.getTask(id, opts);
+          if (!existing) {
+            throw new NotFoundError("task", ref);
+          }
+          task = existing;
+        }
+        const savedProfile =
+          runProfile !== undefined
+            ? await saveRunProfileForTask(task.id, runProfile, actor, "update_task")
+            : undefined;
         if (rest.status !== undefined && FINISHED_STATUSES.has(rest.status)) await options?.onTaskFinished?.(task);
-        return formatSuccessResult(await withCode(task, opts));
+        const coded = await withCode(task, opts);
+        return formatSuccessResult(
+          savedProfile !== undefined ? { ...coded, runProfile: savedProfile } : coded,
+        );
       } catch (err) {
         return formatErrorResult(err);
       }
@@ -1171,7 +1402,13 @@ export function registerBitigTools(
           .min(1)
           .max(200)
           .optional()
-          .describe("Optional model slug to run in T3"),
+          .describe("Optional explicit model slug override to run in T3"),
+        options: T3ModelSelectionOptionsSchema.optional().describe(
+          "Optional model options (e.g. [{ id: 'effort', value: 'high' }]) when overriding the model",
+        ),
+        level: RunLevelKeySchema.optional().describe(
+          "Optional run level key override (call list_run_levels to inspect valid keys), e.g. 'cheap', 'standard', 'strong'",
+        ),
       },
     },
     async (args, extra) => {
@@ -1179,6 +1416,9 @@ export function registerBitigTools(
         const actor = resolveMcpActor(server, extra, options?.fallbackActor);
         const opts: OperationOptions = { signal: extra.signal, actor };
         const taskId = await resolveTaskRef(storage, args.taskId, opts);
+        if (args.level) {
+          await assertValidRunLevelKey(args.level, "start_t3_thread");
+        }
         const parentTaskId =
           args.parentTaskId === undefined ? undefined : await resolveTaskRef(storage, args.parentTaskId, opts);
         // The umbrella task is in progress while it delegates, so a dependency on it does not block its child.
@@ -1203,6 +1443,8 @@ export function registerBitigTools(
           workspaceStrategy: args.workspaceStrategy,
           providerInstanceId: args.providerInstanceId,
           model: args.model,
+          options: args.options,
+          level: args.level,
           actor,
           ...(parentTaskId ? { parentTaskId } : {}),
         });
@@ -1210,6 +1452,25 @@ export function registerBitigTools(
           run: result.run,
           task: await withCode(result.task, opts),
         });
+      } catch (err) {
+        return formatErrorResult(err);
+      }
+    },
+  );
+
+  // 20. list_run_levels
+  server.registerTool(
+    "list_run_levels",
+    {
+      description:
+        "List the organisation's ordered run levels (key, label, description, order, and mapped model selection when configured) so agents can choose valid level keys for task runProfile and start_t3_thread.",
+      annotations: { readOnlyHint: true },
+      inputSchema: {},
+    },
+    async () => {
+      try {
+        const levels = await getRunLevels();
+        return formatSuccessResult(levels);
       } catch (err) {
         return formatErrorResult(err);
       }

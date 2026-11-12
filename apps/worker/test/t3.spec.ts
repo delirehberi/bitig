@@ -201,6 +201,9 @@ const STATEMENTS = [
     \`model\` text,
     \`provider_instance_id\` text,
     \`model_options\` text,
+    \`model_source\` text,
+    \`level_key\` text,
+    \`model_skip_reason\` text,
     \`branch\` text,
     \`head_sha\` text,
     \`diff_stat\` text,
@@ -4601,6 +4604,584 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
           projectId: project.id,
           hostId: hostA.id,
           workspaceRoot: "~/www/owner-bound",
+        });
+      });
+
+      it("manages org run levels with capability validation and replacement keys, protects manual run profiles, and resolves models and options across all T3 launch paths (#BIT-186)", async () => {
+        hostAState.remoteProjects = [{ id: "t3-proj-a", title: "AppA", workspaceRoot: "~/www/app-a" }];
+        hostBState.remoteProjects = [{ id: "t3-proj-b", title: "AppB", workspaceRoot: "/var/www/app-b" }];
+        await authorizeHost({ mcpUrl: HOST_A_MCP_URL, label: "Host A", kind: "user" });
+        await authorizeHost({ mcpUrl: HOST_B_MCP_URL, label: "Host B", kind: "container" });
+        const { hosts } = await (await multiRequest("/api/t3/hosts")).json<{ hosts: T3HostConnectionStatus[] }>();
+        const hostA = hosts.find((h) => h.mcpUrl === HOST_A_MCP_URL);
+        const hostB = hosts.find((h) => h.mcpUrl === HOST_B_MCP_URL);
+        if (!hostA || !hostB) {
+          throw new Error("Expected both Host A and Host B to be connected");
+        }
+
+        const viewerAuth = await createOrgMemberToken("viewer", false);
+        const editorAuth = await createOrgMemberToken("editor", false);
+        const outsiderAuth = await createOutsiderOwnerToken();
+
+        // 1. GET /api/orgs/:id/run-levels seeds default levels (cheap, standard, strong) and allows members to read
+        const getLevelsRes = await multiRequest(`/api/orgs/${DEFAULT_ORGANISATION_ID}/run-levels`, {
+          headers: { Authorization: viewerAuth },
+        });
+        expect(getLevelsRes.status).toBe(200);
+        const initialLevels = await getLevelsRes.json<{
+          levels: { key: string; label: string; description: string; order: number }[];
+          models: unknown[];
+        }>();
+        expect(initialLevels.levels.map((l) => l.key)).toEqual(["cheap", "standard", "strong"]);
+        expect(initialLevels.models).toEqual([]);
+
+        // Non-owners (viewer, editor) cannot PUT /api/orgs/:id/run-levels (403); outsiders get 404
+        for (const Authorization of [viewerAuth, editorAuth]) {
+          const putForbidden = await multiRequest(`/api/orgs/${DEFAULT_ORGANISATION_ID}/run-levels`, {
+            method: "PUT",
+            headers: { Authorization, "Content-Type": "application/json" },
+            body: JSON.stringify({ levels: initialLevels.levels, models: [] }),
+          });
+          expect(putForbidden.status).toBe(403);
+        }
+        const outsiderLevelsGet = await multiRequest(`/api/orgs/${DEFAULT_ORGANISATION_ID}/run-levels`, {
+          headers: { Authorization: outsiderAuth },
+        });
+        expect(outsiderLevelsGet.status).toBe(404);
+        const outsiderLevelsPut = await multiRequest(`/api/orgs/${DEFAULT_ORGANISATION_ID}/run-levels`, {
+          method: "PUT",
+          headers: { Authorization: outsiderAuth, "Content-Type": "application/json" },
+          body: JSON.stringify({ levels: initialLevels.levels, models: [] }),
+        });
+        expect(outsiderLevelsPut.status).toBe(404);
+
+        // 2. PUT /api/orgs/:id/run-levels validates models and options against orchestrator_capabilities
+        const invalidModelRes = await multiRequest(`/api/orgs/${DEFAULT_ORGANISATION_ID}/run-levels`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            levels: initialLevels.levels,
+            models: [
+              {
+                levelKey: "cheap",
+                hostId: hostA.id,
+                providerInstanceId: "prov-claude",
+                model: "non-existent-model",
+              },
+            ],
+          }),
+        });
+        expect(invalidModelRes.status).toBe(400);
+        expect((await invalidModelRes.json<{ message: string }>()).message).toContain(
+          "not available in orchestrator_capabilities",
+        );
+
+        const invalidOptionRes = await multiRequest(`/api/orgs/${DEFAULT_ORGANISATION_ID}/run-levels`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            levels: initialLevels.levels,
+            models: [
+              {
+                levelKey: "cheap",
+                hostId: hostA.id,
+                providerInstanceId: "prov-claude",
+                model: "claude-opus-4-7",
+                options: [{ id: "effort", value: "extreme" }],
+              },
+            ],
+          }),
+        });
+        expect(invalidOptionRes.status).toBe(400);
+        expect((await invalidOptionRes.json<{ message: string }>()).message).toContain(
+          "Option value \"effort=extreme\" is not supported",
+        );
+
+        // Save valid levels and model mappings (low mapped on Host A only; med mapped as org default; high mapped on Host A with effort=high)
+        const validLevelsPut = await multiRequest(`/api/orgs/${DEFAULT_ORGANISATION_ID}/run-levels`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            levels: [
+              { key: "low", label: "Low", description: "Small edits", order: 0 },
+              { key: "med", label: "Medium", description: "Standard features", order: 1 },
+              { key: "high", label: "High", description: "Complex architecture", order: 2 },
+            ],
+            models: [
+              {
+                levelKey: "low",
+                hostId: hostA.id,
+                providerInstanceId: "prov-codex",
+                model: "gpt-6-sol",
+                options: [{ id: "reasoningEffort", value: "low" }],
+              },
+              {
+                levelKey: "med",
+                providerInstanceId: "prov-claude",
+                model: "claude-opus-4-7",
+                options: [{ id: "effort", value: "medium" }],
+              },
+              {
+                levelKey: "high",
+                hostId: hostA.id,
+                providerInstanceId: "prov-claude",
+                model: "claude-opus-4-7",
+                options: [{ id: "effort", value: "high" }],
+              },
+            ],
+          }),
+        });
+        expect(validLevelsPut.status).toBe(200);
+        const savedLevelsBody = await validLevelsPut.json<{
+          levels: { key: string }[];
+          models: { levelKey: string; hostId?: string; model: string }[];
+        }>();
+        expect(savedLevelsBody.levels.map((l) => l.key)).toEqual(["low", "med", "high"]);
+        expect(savedLevelsBody.models).toHaveLength(3);
+
+        // MCP list_run_levels returns the organisation's levels and descriptions
+        const mcpLevels = await multiMcpCall("list_run_levels", {});
+        expect(mcpLevels.isError).toBeFalsy();
+        expect(JSON.parse(mcpLevels.text)).toEqual([
+          { key: "low", label: "Low", description: "Small edits", order: 0 },
+          {
+            key: "med",
+            label: "Medium",
+            description: "Standard features",
+            order: 1,
+            selection: {
+              providerInstanceId: "prov-claude",
+              model: "claude-opus-4-7",
+              options: [{ id: "effort", value: "medium" }],
+            },
+          },
+          { key: "high", label: "High", description: "Complex architecture", order: 2 },
+        ]);
+
+        // 3. Create projects on Host A and Host B and configure project run settings
+        const projA = await (
+          await multiRequest("/api/projects", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: "App A", key: "APA" }),
+          })
+        ).json<Project>();
+        await multiRequest(`/api/t3/mappings/${projA.id}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ hostId: hostA.id, t3ProjectId: "t3-proj-a", t3ProjectTitle: "AppA" }),
+        });
+
+        const projB = await (
+          await multiRequest("/api/projects", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: "App B", key: "APB" }),
+          })
+        ).json<Project>();
+        await multiRequest(`/api/t3/mappings/${projB.id}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ hostId: hostB.id, t3ProjectId: "t3-proj-b", t3ProjectTitle: "AppB" }),
+        });
+
+        // Project run settings: viewer cannot write (403), editor/owner can write, unknown level rejected (400)
+        expect(
+          (
+            await multiRequest(`/api/projects/${projA.id}/run-settings`, {
+              method: "PUT",
+              headers: { Authorization: viewerAuth, "Content-Type": "application/json" },
+              body: JSON.stringify({ defaultRunLevel: "med" }),
+            })
+          ).status,
+        ).toBe(403);
+        expect(
+          (
+            await multiRequest(`/api/projects/${projA.id}/run-settings`, {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ defaultRunLevel: "unknown-level" }),
+            })
+          ).status,
+        ).toBe(400);
+
+        const putProjSettings = await multiRequest(`/api/projects/${projA.id}/run-settings`, {
+          method: "PUT",
+          headers: { Authorization: editorAuth, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            defaultRunLevel: "med",
+            serialPaths: ["packages/storage-d1/migrations/**"],
+            maxParallelChildren: 4,
+          }),
+        });
+        expect(putProjSettings.status).toBe(200);
+        expect(await putProjSettings.json()).toMatchObject({
+          projectId: projA.id,
+          defaultRunLevel: "med",
+          serialPaths: ["packages/storage-d1/migrations/**"],
+          maxParallelChildren: 4,
+        });
+
+        // 4. Task run profiles: MCP add_task/update_task vs REST PUT /api/tasks/:id/run-profile (manual lock)
+        const mcpAdded = await multiMcpCall("add_task", {
+          projectId: projA.id,
+          title: "Agent profiled task",
+          runProfile: {
+            level: "low",
+            touches: ["src/index.ts"],
+            parallelSafe: true,
+            reason: "Agent initial estimate",
+          },
+        });
+        expect(mcpAdded.isError).toBeFalsy();
+        const task1 = JSON.parse(mcpAdded.text) as Task & {
+          runProfile: { level: string; source: string; touches: string[]; parallelSafe: boolean; reason: string };
+        };
+        expect(task1.runProfile).toMatchObject({
+          level: "low",
+          touches: ["src/index.ts"],
+          parallelSafe: true,
+          reason: "Agent initial estimate",
+          source: "agent",
+        });
+
+        // Approve task1 so it can be launched
+        await multiRequest(`/api/tasks/${task1.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pendingApproval: null }),
+        });
+
+        // Person sets run profile via PUT /api/tasks/:id/run-profile -> stored as source: "manual"
+        const manualPut = await multiRequest(`/api/tasks/${task1.id}/run-profile`, {
+          method: "PUT",
+          headers: { Authorization: editorAuth, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            level: "high",
+            touches: ["apps/worker/**"],
+            parallelSafe: false,
+            reason: "Human escalated to high",
+          }),
+        });
+        expect(manualPut.status).toBe(200);
+        const manualBody = await manualPut.json<{
+          profile: { level: string; source: string; reason: string };
+          resolved: {
+            source: string;
+            levelKey: string;
+            selection: { providerInstanceId: string; model: string; options: { id: string; value: string }[] };
+          };
+        }>();
+        expect(manualBody.profile).toMatchObject({
+          level: "high",
+          source: "manual",
+          reason: "Human escalated to high",
+        });
+        expect(manualBody.resolved).toMatchObject({
+          source: "profile_level",
+          levelKey: "high",
+          selection: {
+            providerInstanceId: "prov-claude",
+            model: "claude-opus-4-7",
+            options: [{ id: "effort", value: "high" }],
+          },
+        });
+
+        // Agent update_task with runProfile must NOT overwrite the manual profile
+        const agentAttempt = await multiMcpCall("update_task", {
+          id: task1.id,
+          runProfile: {
+            level: "low",
+            parallelSafe: true,
+            reason: "Agent tries to downgrade",
+          },
+        });
+        expect(agentAttempt.isError).toBeFalsy();
+        const mcpGot = await multiMcpCall("get_task", { id: task1.id });
+        expect(mcpGot.isError).toBeFalsy();
+        expect(JSON.parse(mcpGot.text)).toMatchObject({
+          runProfile: {
+            level: "high",
+            source: "manual",
+            reason: "Human escalated to high",
+          },
+          resolvedModel: {
+            providerInstanceId: "prov-claude",
+            model: "claude-opus-4-7",
+            options: [{ id: "effort", value: "high" }],
+            source: "profile_level",
+            levelKey: "high",
+          },
+        });
+
+        // Outsider cannot read or write task run profile or project run settings (404)
+        expect(
+          (
+            await multiRequest(`/api/tasks/${task1.id}/run-profile`, {
+              headers: { Authorization: outsiderAuth, "X-Bitig-Org": DEFAULT_ORGANISATION_ID },
+            })
+          ).status,
+        ).toBe(404);
+        expect(
+          (
+            await multiRequest(`/api/projects/${projA.id}/run-settings`, {
+              headers: { Authorization: outsiderAuth, "X-Bitig-Org": DEFAULT_ORGANISATION_ID },
+            })
+          ).status,
+        ).toBe(404);
+
+        // 5. Removing a level in use requires a replacement key
+        const removeWithoutReplacement = await multiRequest(`/api/orgs/${DEFAULT_ORGANISATION_ID}/run-levels`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            levels: [
+              { key: "low", label: "Low", description: "Small edits", order: 0 },
+              { key: "med", label: "Medium", description: "Standard features", order: 1 },
+            ],
+            models: [],
+          }),
+        });
+        expect(removeWithoutReplacement.status).toBe(400);
+
+        // Removing with replacementKey migrates references and succeeds, then restore "high" for launch tests
+        const removeWithReplacement = await multiRequest(`/api/orgs/${DEFAULT_ORGANISATION_ID}/run-levels`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            levels: [
+              { key: "low", label: "Low", description: "Small edits", order: 0 },
+              { key: "med", label: "Medium", description: "Standard features", order: 1 },
+            ],
+            models: [],
+            replacementKeys: { high: "med" },
+          }),
+        });
+        expect(removeWithReplacement.status).toBe(200);
+        const migratedProfile = await (
+          await multiRequest(`/api/tasks/${task1.id}/run-profile`)
+        ).json<{ profile: { level: string } }>();
+        expect(migratedProfile.profile.level).toBe("med");
+
+        // Restore low/med/high and set task1 back to high
+        await multiRequest(`/api/orgs/${DEFAULT_ORGANISATION_ID}/run-levels`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            levels: [
+              { key: "low", label: "Low", description: "Small edits", order: 0 },
+              { key: "med", label: "Medium", description: "Standard features", order: 1 },
+              { key: "high", label: "High", description: "Complex architecture", order: 2 },
+            ],
+            models: [
+              {
+                levelKey: "low",
+                hostId: hostA.id,
+                providerInstanceId: "prov-codex",
+                model: "gpt-6-sol",
+                options: [{ id: "reasoningEffort", value: "low" }],
+              },
+              {
+                levelKey: "med",
+                providerInstanceId: "prov-claude",
+                model: "claude-opus-4-7",
+                options: [{ id: "effort", value: "medium" }],
+              },
+              {
+                levelKey: "high",
+                hostId: hostA.id,
+                providerInstanceId: "prov-claude",
+                model: "claude-opus-4-7",
+                options: [{ id: "effort", value: "high" }],
+              },
+            ],
+          }),
+        });
+        await multiRequest(`/api/tasks/${task1.id}/run-profile`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ level: "high" }),
+        });
+
+        // 6. Launch path 1: Start in T3 button (POST /api/tasks/:id/t3-run) uses profile_level and passes options to t3_thread_launch
+        hostAState.toolCalls.length = 0;
+        hostAState.launchThreadId = "thread-task-level";
+        const launch1Res = await multiRequest(`/api/tasks/${task1.id}/t3-run`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ workspaceStrategy: "worktree" }),
+        });
+        expect(launch1Res.status).toBe(201);
+        const launch1Body = await launch1Res.json<{ run: AgentRun }>();
+        expect(launch1Body.run).toMatchObject({
+          taskId: task1.id,
+          model: "claude-opus-4-7",
+          providerInstanceId: "prov-claude",
+          modelOptions: [{ id: "effort", value: "high" }],
+          modelSource: "profile_level",
+          levelKey: "high",
+        });
+        expect(hostAState.toolCalls.find((c) => c.name === "t3_thread_launch")?.arguments).toMatchObject({
+          modelSelection: {
+            instanceId: "prov-claude",
+            model: "claude-opus-4-7",
+            options: [{ id: "effort", value: "high" }],
+          },
+        });
+
+        // 7. Launch path 2: Project default level when task has no profile
+        const taskProjDefault = await (
+          await multiRequest("/api/tasks", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ projectId: projA.id, title: "Uses project default" }),
+          })
+        ).json<Task>();
+        hostAState.toolCalls.length = 0;
+        hostAState.launchThreadId = "thread-proj-level";
+        const launch2Res = await multiRequest(`/api/tasks/${taskProjDefault.id}/t3-run`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ workspaceStrategy: "worktree" }),
+        });
+        expect(launch2Res.status).toBe(201);
+        expect((await launch2Res.json<{ run: AgentRun }>()).run).toMatchObject({
+          taskId: taskProjDefault.id,
+          model: "claude-opus-4-7",
+          providerInstanceId: "prov-claude",
+          modelOptions: [{ id: "effort", value: "medium" }],
+          modelSource: "project_default_level",
+          levelKey: "med",
+        });
+        expect(hostAState.toolCalls.find((c) => c.name === "t3_thread_launch")?.arguments).toMatchObject({
+          modelSelection: {
+            instanceId: "prov-claude",
+            model: "claude-opus-4-7",
+            options: [{ id: "effort", value: "medium" }],
+          },
+        });
+
+        // 8. Launch path 3: MCP start_t3_thread with explicit level override and child session parentTaskId
+        const childTask = await (
+          await multiRequest("/api/tasks", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ projectId: projA.id, title: "Child task" }),
+          })
+        ).json<Task>();
+        hostAState.toolCalls.length = 0;
+        hostAState.launchThreadId = "thread-child-level";
+        const mcpStartChild = await multiMcpCall("start_t3_thread", {
+          taskId: childTask.id,
+          parentTaskId: task1.id,
+          level: "low",
+        });
+        expect(mcpStartChild.isError).toBeFalsy();
+        const childRun = (JSON.parse(mcpStartChild.text) as { run: AgentRun }).run;
+        expect(childRun).toMatchObject({
+          taskId: childTask.id,
+          parentTaskId: task1.id,
+          model: "gpt-6-sol",
+          providerInstanceId: "prov-codex",
+          modelOptions: [{ id: "reasoningEffort", value: "low" }],
+          modelSource: "explicit_level",
+          levelKey: "low",
+        });
+        expect(hostAState.toolCalls.find((c) => c.name === "t3_thread_launch")?.arguments).toMatchObject({
+          modelSelection: {
+            instanceId: "prov-codex",
+            model: "gpt-6-sol",
+            options: [{ id: "reasoningEffort", value: "low" }],
+          },
+        });
+
+        // 9. Launch path 4: Unmapped level on target host falls back to next rule and records skippedReason
+        // On Host B (projB), "low" has no hostB or default mapping, while project default "med" has an org default mapping
+        await multiRequest(`/api/projects/${projB.id}/run-settings`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ defaultRunLevel: "med" }),
+        });
+        const taskUnmapped = await (
+          await multiRequest("/api/tasks", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ projectId: projB.id, title: "Low on Host B" }),
+          })
+        ).json<Task>();
+        await multiRequest(`/api/tasks/${taskUnmapped.id}/run-profile`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ level: "low" }),
+        });
+
+        hostBState.toolCalls.length = 0;
+        hostBState.launchThreadId = "thread-fallback-b";
+        const fallbackRes = await multiRequest(`/api/tasks/${taskUnmapped.id}/t3-run`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ workspaceStrategy: "worktree" }),
+        });
+        expect(fallbackRes.status).toBe(201);
+        const fallbackRun = (await fallbackRes.json<{ run: AgentRun }>()).run;
+        expect(fallbackRun).toMatchObject({
+          taskId: taskUnmapped.id,
+          hostId: hostB.id,
+          model: "claude-opus-4-7",
+          providerInstanceId: "prov-claude",
+          modelOptions: [{ id: "effort", value: "medium" }],
+          modelSource: "project_default_level",
+          levelKey: "med",
+        });
+        expect(fallbackRun.skippedReason).toContain('Level "low" (profile_level) has no model mapped');
+
+        // 10. Launch path 5: Queued launch (when host is offline) preserves resolved selection & options on replay
+        const taskQueued = await (
+          await multiRequest("/api/tasks", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ projectId: projA.id, title: "Queued launch with level" }),
+          })
+        ).json<Task>();
+        hostAState.failMcpConnection = true;
+        const queuedRes = await multiRequest(`/api/tasks/${taskQueued.id}/t3-run`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ level: "high", workspaceStrategy: "worktree" }),
+        });
+        expect(queuedRes.status).toBe(201);
+        const queuedRun = (await queuedRes.json<{ run: AgentRun; queued: boolean }>()).run;
+        expect(queuedRun).toMatchObject({
+          taskId: taskQueued.id,
+          state: "queued",
+          model: "claude-opus-4-7",
+          providerInstanceId: "prov-claude",
+          modelOptions: [{ id: "effort", value: "high" }],
+          modelSource: "explicit_level",
+          levelKey: "high",
+        });
+
+        // Reconnect Host A and trigger reconciliation via GET /api/t3/runs -> dispatches queued launch with options
+        hostAState.failMcpConnection = false;
+        hostAState.toolCalls.length = 0;
+        hostAState.launchThreadId = "thread-replayed-high";
+        const replayRes = await multiRequest("/api/t3/runs");
+        expect(replayRes.status).toBe(200);
+        expect(hostAState.toolCalls.find((c) => c.name === "t3_thread_launch")?.arguments).toMatchObject({
+          modelSelection: {
+            instanceId: "prov-claude",
+            model: "claude-opus-4-7",
+            options: [{ id: "effort", value: "high" }],
+          },
+        });
+        const replayedStored = await new T3D1Store(env.DB).getAgentRunByTaskId(taskQueued.id);
+        expect(replayedStored).toMatchObject({
+          threadId: "thread-replayed-high",
+          model: "claude-opus-4-7",
+          providerInstanceId: "prov-claude",
+          modelOptions: [{ id: "effort", value: "high" }],
+          modelSource: "explicit_level",
+          levelKey: "high",
         });
       });
     });

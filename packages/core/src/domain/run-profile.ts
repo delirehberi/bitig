@@ -264,9 +264,15 @@ export interface SkippedRunSelectionRule {
   readonly message: string;
 }
 
+export interface ExplicitRunModelInput {
+  readonly providerInstanceId?: string | undefined;
+  readonly model: string;
+  readonly options?: T3ModelSelection["options"] | undefined;
+}
+
 export interface ResolveRunSelectionInput {
   /** Explicit model selection passed in the launch call or picked in the Start dialog. */
-  readonly explicit?: T3ModelSelection | null | undefined;
+  readonly explicit?: T3ModelSelection | ExplicitRunModelInput | null | undefined;
   /** Optional explicit level key passed in the launch call (e.g. MCP `start_t3_thread({ level })`). */
   readonly explicitLevel?: string | null | undefined;
   /** The task's stored run profile, if any. */
@@ -378,9 +384,24 @@ export function resolveRunSelection(input: ResolveRunSelectionInput): ResolvedRu
   };
 
   // 1. Explicit model selection in the call
-  if (isValidSelection(input.explicit)) {
+  if (input.explicit && typeof input.explicit.model === "string" && input.explicit.model.trim().length > 0) {
+    const trimmedModel = input.explicit.model.trim();
+    let providerInstanceId =
+      typeof input.explicit.providerInstanceId === "string" ? input.explicit.providerInstanceId.trim() : "";
+    if (!providerInstanceId) {
+      for (const level of levelsByKey.values()) {
+        if (level.selection?.model.trim() === trimmedModel && level.selection.providerInstanceId.trim()) {
+          providerInstanceId = level.selection.providerInstanceId.trim();
+          break;
+        }
+      }
+    }
     return withSkipped({
-      selection: cloneSelection(input.explicit),
+      selection: cloneSelection({
+        providerInstanceId,
+        model: trimmedModel,
+        ...(input.explicit.options ? { options: input.explicit.options } : {}),
+      }),
       source: "explicit",
     });
   }

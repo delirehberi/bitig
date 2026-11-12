@@ -31,6 +31,7 @@ import {
   isActiveAgentRunState,
   isSameT3ModelSelection,
   parseT3RunCommentCommand,
+  resolveRunSelection,
   resolveTaskRef,
   taskCode,
   type ActiveAgentRunState,
@@ -43,6 +44,10 @@ import {
   type ProjectT3ThreadMessagesResponse,
   type ProjectT3ThreadsResponse,
   type RealtimeEvent,
+  type ResolvedRunSelection,
+  type RunLevel,
+  type RunLevelModelBinding,
+  type RunSelectionSource,
   type StorageProvider,
   type T3CommentAttachmentInfo,
   type T3ConnectionStatus,
@@ -59,8 +64,9 @@ import {
   type T3WorkspaceBusySession,
   type T3WorkspaceStrategy,
   type Task,
+  type TaskRunProfile,
 } from "@bitig/core";
-import type { T3ConnectionRecord, T3D1Store } from "@bitig/storage-d1";
+import type { SaveRunLevelsInput, T3ConnectionRecord, T3D1Store } from "@bitig/storage-d1";
 import { T3McpClient, T3McpError } from "./client";
 import { decryptT3Token } from "./crypto";
 
@@ -245,9 +251,16 @@ interface QueuedLaunchPayload {
   prompt: string;
   clientRequestId: string;
   workspaceStrategy: T3WorkspaceStrategy;
+  explicitProviderInstanceId?: string | undefined;
+  explicitModel?: string | undefined;
+  explicitOptions?: readonly T3ModelSelectionOption[] | undefined;
+  explicitLevel?: string | undefined;
   providerInstanceId?: string | undefined;
   model?: string | undefined;
   options?: readonly T3ModelSelectionOption[] | undefined;
+  modelSource?: RunSelectionSource | undefined;
+  levelKey?: string | undefined;
+  skippedReason?: string | undefined;
   runtimeMode?: T3RuntimeMode | undefined;
   settleThreadId?: string | undefined;
   parentTaskId?: string | undefined;
@@ -270,6 +283,8 @@ export interface LaunchTaskInT3Options {
   workspaceStrategy?: T3WorkspaceStrategy | undefined;
   providerInstanceId?: string | undefined;
   model?: string | undefined;
+  options?: readonly T3ModelSelectionOption[] | undefined;
+  level?: string | undefined;
   runtimeMode?: T3RuntimeMode | undefined;
   actor?: string | undefined;
   /**
@@ -288,6 +303,46 @@ export interface LaunchTaskInT3Result {
   run: AgentRun;
   task: Task;
   code?: string | undefined;
+}
+
+export async function resolveTaskLaunchRunSelection(
+  deps: Pick<T3ServiceDeps, "store">,
+  input: {
+    taskId: string;
+    projectId: string;
+    hostId?: string | undefined;
+    providerInstanceId?: string | undefined;
+    model?: string | undefined;
+    options?: readonly T3ModelSelectionOption[] | undefined;
+    level?: string | undefined;
+    now?: number | undefined;
+  },
+): Promise<ResolvedRunSelection> {
+  const [profile, projectSettings, levels] = await Promise.all([
+    deps.store.getTaskRunProfile(input.taskId),
+    deps.store.getProjectRunSettings(input.projectId),
+    deps.store.listRunLevels({
+      hostId: input.hostId,
+      ...(input.now !== undefined ? { now: input.now } : {}),
+    }),
+  ]);
+  const explicit =
+    input.model && input.model.trim().length > 0
+      ? {
+          ...(input.providerInstanceId ? { providerInstanceId: input.providerInstanceId } : {}),
+          model: input.model,
+          ...(input.options && input.options.length > 0
+            ? { options: input.options.map((opt) => ({ id: opt.id, value: opt.value })) }
+            : {}),
+        }
+      : undefined;
+  return resolveRunSelection({
+    explicit,
+    explicitLevel: input.level,
+    profile,
+    projectDefaultLevel: projectSettings?.defaultRunLevel,
+    levels,
+  });
 }
 
 async function resolveOriginatingTaskHostId(
@@ -423,6 +478,47 @@ export async function dispatchQueuedTaskT3Run(
           );
         }
 
+        let resolvedProviderInstanceId = payload.providerInstanceId;
+        let resolvedModel = payload.model;
+        let resolvedOptions = payload.options;
+        let resolvedModelSource = payload.modelSource;
+        let resolvedLevelKey = payload.levelKey;
+        let resolvedSkippedReason = payload.skippedReason;
+
+        if (!payload.settleThreadId) {
+          const task = await deps.storage.getTask(taskId);
+          if (task) {
+            const hasExplicitInPayload =
+              payload.explicitModel !== undefined ||
+              payload.modelSource === "explicit" ||
+              (payload.modelSource === undefined && payload.model !== undefined);
+            const resolvedSelection = await resolveTaskLaunchRunSelection(deps, {
+              taskId,
+              projectId: task.projectId,
+              hostId: launchHostId,
+              providerInstanceId: hasExplicitInPayload
+                ? (payload.explicitProviderInstanceId ?? payload.providerInstanceId)
+                : undefined,
+              model: hasExplicitInPayload ? (payload.explicitModel ?? payload.model) : undefined,
+              options: hasExplicitInPayload ? (payload.explicitOptions ?? payload.options) : undefined,
+              level: payload.explicitLevel,
+              now: stepNow,
+            });
+            const selProvider = resolvedSelection.selection?.providerInstanceId.trim();
+            resolvedProviderInstanceId =
+              selProvider && selProvider.length > 0 ? selProvider : undefined;
+            const selModel = resolvedSelection.selection?.model.trim();
+            resolvedModel = selModel && selModel.length > 0 ? selModel : undefined;
+            resolvedOptions =
+              resolvedSelection.selection?.options && resolvedSelection.selection.options.length > 0
+                ? [...resolvedSelection.selection.options]
+                : undefined;
+            resolvedModelSource = resolvedSelection.source;
+            resolvedLevelKey = resolvedSelection.levelKey;
+            resolvedSkippedReason = resolvedSelection.skippedReason;
+          }
+        }
+
         const claimToken = claimed.claim_token;
         if (!claimToken || !(await deps.store.requests.markAttempted(claimed.id, claimToken))) {
           break;
@@ -438,9 +534,9 @@ export async function dispatchQueuedTaskT3Run(
           prompt: payload.prompt,
           clientRequestId: payload.clientRequestId,
           workspaceStrategy: payload.workspaceStrategy,
-          providerInstanceId: payload.providerInstanceId,
-          model: payload.model,
-          options: payload.options,
+          providerInstanceId: resolvedProviderInstanceId,
+          model: resolvedModel,
+          options: resolvedOptions,
           runtimeMode: payload.runtimeMode,
         });
 
@@ -452,11 +548,14 @@ export async function dispatchQueuedTaskT3Run(
           threadId: launched.threadId,
           link: launched.link,
           state: "working",
-          model: payload.model,
-          ...(payload.model && payload.providerInstanceId
-            ? { providerInstanceId: payload.providerInstanceId }
+          model: resolvedModel,
+          ...(resolvedModel && resolvedProviderInstanceId
+            ? { providerInstanceId: resolvedProviderInstanceId }
             : {}),
-          ...(payload.options ? { modelOptions: payload.options } : {}),
+          ...(resolvedOptions ? { modelOptions: resolvedOptions } : {}),
+          ...(resolvedModelSource ? { modelSource: resolvedModelSource } : {}),
+          ...(resolvedLevelKey ? { levelKey: resolvedLevelKey } : {}),
+          ...(resolvedSkippedReason ? { skippedReason: resolvedSkippedReason } : {}),
           workspaceStrategy: payload.workspaceStrategy,
           ...(payload.parentTaskId ? { parentTaskId: payload.parentTaskId } : {}),
           startedBy: payload.actor,
@@ -707,6 +806,28 @@ export async function launchTaskInT3(
   });
 
   const actor = (options.actor?.trim() ?? "") || "t3";
+  const resolvedSelection = await resolveTaskLaunchRunSelection(deps, {
+    taskId: task.id,
+    projectId: task.projectId,
+    hostId: targetHostId,
+    providerInstanceId: options.providerInstanceId,
+    model: options.model,
+    options: options.options,
+    level: options.level,
+    now,
+  });
+  const selProvider = resolvedSelection.selection?.providerInstanceId.trim();
+  const resolvedProviderInstanceId =
+    selProvider && selProvider.length > 0 ? selProvider : undefined;
+  const selModel = resolvedSelection.selection?.model.trim();
+  const resolvedModel = selModel && selModel.length > 0 ? selModel : undefined;
+  const resolvedOptions =
+    resolvedSelection.selection?.options && resolvedSelection.selection.options.length > 0
+      ? [...resolvedSelection.selection.options]
+      : undefined;
+  const resolvedModelSource = resolvedSelection.source;
+  const resolvedLevelKey = resolvedSelection.levelKey;
+  const resolvedSkippedReason = resolvedSelection.skippedReason;
 
   if (options.requireActiveConnection && mcpClient) {
     const existingRun = await deps.store.getAgentRunByTaskId(task.id);
@@ -735,8 +856,9 @@ export async function launchTaskInT3(
         ? `${builtPrompt.clientRequestId}:${gitMetadataRunId}`
         : builtPrompt.clientRequestId,
       workspaceStrategy,
-      providerInstanceId: options.providerInstanceId,
-      model: options.model,
+      providerInstanceId: resolvedProviderInstanceId,
+      model: resolvedModel,
+      options: resolvedOptions,
       runtimeMode: options.runtimeMode,
     });
 
@@ -757,10 +879,14 @@ export async function launchTaskInT3(
       threadId: launched.threadId,
       link: launched.link,
       state: "working",
-      model: options.model,
-      ...(options.model && options.providerInstanceId
-        ? { providerInstanceId: options.providerInstanceId }
+      model: resolvedModel,
+      ...(resolvedModel && resolvedProviderInstanceId
+        ? { providerInstanceId: resolvedProviderInstanceId }
         : {}),
+      ...(resolvedOptions ? { modelOptions: resolvedOptions } : {}),
+      modelSource: resolvedModelSource,
+      ...(resolvedLevelKey ? { levelKey: resolvedLevelKey } : {}),
+      ...(resolvedSkippedReason ? { skippedReason: resolvedSkippedReason } : {}),
       workspaceStrategy,
       ...(parent ? { parentTaskId: parent.task.id } : {}),
       startedBy: actor,
@@ -794,8 +920,16 @@ export async function launchTaskInT3(
     prompt: builtPrompt.prompt,
     clientRequestId: builtPrompt.clientRequestId,
     workspaceStrategy,
-    ...(options.providerInstanceId ? { providerInstanceId: options.providerInstanceId } : {}),
-    ...(options.model ? { model: options.model } : {}),
+    ...(resolvedProviderInstanceId ? { providerInstanceId: resolvedProviderInstanceId } : {}),
+    ...(resolvedModel ? { model: resolvedModel } : {}),
+    ...(resolvedOptions ? { options: resolvedOptions } : {}),
+    modelSource: resolvedModelSource,
+    ...(resolvedLevelKey ? { levelKey: resolvedLevelKey } : {}),
+    ...(resolvedSkippedReason ? { skippedReason: resolvedSkippedReason } : {}),
+    ...(options.providerInstanceId ? { explicitProviderInstanceId: options.providerInstanceId } : {}),
+    ...(options.model ? { explicitModel: options.model } : {}),
+    ...(options.options ? { explicitOptions: options.options } : {}),
+    ...(options.level ? { explicitLevel: options.level } : {}),
     ...(options.runtimeMode ? { runtimeMode: options.runtimeMode } : {}),
     ...(parent
       ? {
@@ -821,8 +955,12 @@ export async function launchTaskInT3(
       t3ProjectId: mapping.t3ProjectId,
       threadId: `queued:${gitMetadataRunId}`,
       state: "queued",
-      model: options.model,
-      ...(options.model && options.providerInstanceId ? { providerInstanceId: options.providerInstanceId } : {}),
+      model: resolvedModel,
+      ...(resolvedModel && resolvedProviderInstanceId ? { providerInstanceId: resolvedProviderInstanceId } : {}),
+      ...(resolvedOptions ? { modelOptions: resolvedOptions } : {}),
+      modelSource: resolvedModelSource,
+      ...(resolvedLevelKey ? { levelKey: resolvedLevelKey } : {}),
+      ...(resolvedSkippedReason ? { skippedReason: resolvedSkippedReason } : {}),
       workspaceStrategy,
       ...(parent ? { parentTaskId: parent.task.id } : {}),
       startedBy: actor,
@@ -870,6 +1008,9 @@ export async function launchTaskInT3(
     ...(code ? { code } : {}),
   };
 }
+
+/** Alias for `launchTaskInT3` used by REST and MCP launch paths (#BIT-186). */
+export const startT3Thread = launchTaskInT3;
 
 /** Author of the comments Bitig itself records on tasks (model switches, child sessions). */
 export const T3_BITIG_COMMENT_AUTHOR = "bitig";
@@ -1737,6 +1878,7 @@ export async function forwardCommentToT3Run(
       workspaceStrategy: command.workspaceStrategy,
       providerInstanceId: command.providerInstanceId,
       model: command.model,
+      level: command.level,
       runtimeMode: command.runtimeMode,
       actor: options?.actor ?? comment.author ?? DEFAULT_COMMENT_AUTHOR_LABEL,
       requireActiveConnection: true,
@@ -2716,3 +2858,157 @@ export async function readProjectT3ThreadMessages(
     ...(readout.stopReason ? { stopReason: readout.stopReason } : {}),
   };
 }
+
+export async function resolveTaskRunProfileWithSelection(
+  deps: Pick<T3ServiceDeps, "store" | "storage" | "now">,
+  taskRef: string,
+  options?: { readonly hostId?: string | undefined },
+): Promise<{
+  readonly profile: TaskRunProfile | null;
+  readonly resolved: ResolvedRunSelection;
+}> {
+  const taskId = await resolveTaskRef(deps.storage, taskRef);
+  const task = await deps.storage.getTask(taskId);
+  if (!task) {
+    throw new NotFoundError("task", taskId);
+  }
+  const [profile, mapping] = await Promise.all([
+    deps.store.getTaskRunProfile(task.id),
+    deps.store.getProjectMapping(task.projectId),
+  ]);
+  const targetHostId = options?.hostId ?? mapping?.hostId;
+  const now = deps.now ? deps.now() : Date.now();
+  const resolved = await resolveTaskLaunchRunSelection(deps, {
+    taskId: task.id,
+    projectId: task.projectId,
+    hostId: targetHostId,
+    now,
+  });
+  return { profile: profile ?? null, resolved };
+}
+
+export interface ValidateAndSaveOrgRunLevelsInput {
+  readonly levels: SaveRunLevelsInput["levels"];
+  readonly models?: SaveRunLevelsInput["models"] | undefined;
+  readonly replacementKeys?: Readonly<Record<string, string>> | undefined;
+  readonly defaultReplacementKey?: string | undefined;
+}
+
+export async function validateAndSaveOrgRunLevels(
+  deps: Pick<T3ServiceDeps, "store" | "encryptionKey" | "fetchFn" | "now">,
+  input: ValidateAndSaveOrgRunLevelsInput,
+  cache?: Cache,
+): Promise<{
+  readonly levels: RunLevel[];
+  readonly models: RunLevelModelBinding[];
+}> {
+  const bindingsByHost = new Map<string, { levelKey: string; selection: T3ModelSelection }[]>();
+  const addBinding = (levelKey: string, hostId: string | null | undefined, selection: T3ModelSelection) => {
+    const hostKey = (hostId ?? "").trim();
+    const bucket = bindingsByHost.get(hostKey) ?? [];
+    bucket.push({ levelKey, selection });
+    bindingsByHost.set(hostKey, bucket);
+  };
+
+  for (const level of input.levels) {
+    if (level.selection) {
+      addBinding(level.key, null, level.selection);
+    }
+  }
+  for (const entry of input.models ?? []) {
+    addBinding(entry.levelKey, entry.hostId, entry.selection);
+  }
+
+  for (const [hostKey, bindings] of bindingsByHost.entries()) {
+    let capabilities: T3ModelCapability[];
+    if (hostKey) {
+      capabilities = await listT3ModelCapabilities(
+        {
+          store: deps.store,
+          encryptionKey: deps.encryptionKey,
+          fetchFn: deps.fetchFn,
+          hostId: hostKey,
+        },
+        cache,
+      );
+    } else {
+      const connections = await deps.store.listConnections();
+      if (connections.length === 0) {
+        capabilities = await listT3ModelCapabilities(
+          {
+            store: deps.store,
+            encryptionKey: deps.encryptionKey,
+            fetchFn: deps.fetchFn,
+          },
+          cache,
+        );
+      } else {
+        const allCaps = await Promise.all(
+          connections.map((conn) =>
+            listT3ModelCapabilities(
+              {
+                store: deps.store,
+                encryptionKey: deps.encryptionKey,
+                fetchFn: deps.fetchFn,
+                hostId: conn.id,
+              },
+              cache,
+            ),
+          ),
+        );
+        capabilities = allCaps.flat();
+      }
+    }
+
+    for (const binding of bindings) {
+      const providerInstanceId = binding.selection.providerInstanceId.trim();
+      const model = binding.selection.model.trim();
+      const cap = capabilities.find(
+        (c) => c.providerInstanceId === providerInstanceId && c.model === model,
+      );
+      if (!cap) {
+        makeValidationIssue(
+          "models",
+          `Model "${model}" on provider "${providerInstanceId}" is not available in orchestrator_capabilities for level "${binding.levelKey}".`,
+        );
+      }
+
+      if (binding.selection.options && binding.selection.options.length > 0) {
+        for (const opt of binding.selection.options) {
+          const optDescriptor = cap.options?.find((d) => d.id === opt.id);
+          if (!optDescriptor) {
+            makeValidationIssue(
+              "models",
+              `Option "${opt.id}" is not supported by model "${model}" for level "${binding.levelKey}".`,
+            );
+          }
+          if (
+            optDescriptor.values.length > 0 &&
+            !optDescriptor.values.includes(opt.value)
+          ) {
+            makeValidationIssue(
+              "models",
+              `Option value "${opt.id}=${String(opt.value)}" is not supported by model "${model}" for level "${binding.levelKey}".`,
+            );
+          }
+        }
+      }
+    }
+  }
+
+  const now = deps.now ? deps.now() : Date.now();
+  await deps.store.saveRunLevels({
+    levels: input.levels,
+    models: input.models,
+    replacementKeys: input.replacementKeys,
+    defaultReplacementKey: input.defaultReplacementKey,
+    now,
+  });
+
+  const [levels, models] = await Promise.all([
+    deps.store.listRunLevels({ now }),
+    deps.store.listRunLevelModels(),
+  ]);
+  return { levels, models };
+}
+

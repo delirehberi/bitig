@@ -45,6 +45,7 @@ import {
   type RunLevel,
   type RunLevelModelBinding,
   type RunProfileSource,
+  type RunSelectionSource,
   type T3GitMetadata,
   type T3HostKind,
   type T3ModelSelection,
@@ -138,6 +139,9 @@ export interface SaveAgentRunInput {
   model?: string | undefined;
   providerInstanceId?: string | undefined;
   modelOptions?: readonly T3ModelSelectionOption[] | undefined;
+  modelSource?: RunSelectionSource | undefined;
+  levelKey?: string | undefined;
+  skippedReason?: string | undefined;
   workspaceStrategy?: T3WorkspaceStrategy | undefined;
   /** The umbrella task whose session started this run (#BIT-141); cleared when absent. */
   parentTaskId?: string | undefined;
@@ -190,6 +194,9 @@ function toAgentRun(row: AgentRunRecord): AgentRun {
     ...(row.model !== null ? { model: row.model } : {}),
     ...(row.providerInstanceId !== null ? { providerInstanceId: row.providerInstanceId } : {}),
     ...(modelOptions ? { modelOptions } : {}),
+    ...(row.modelSource !== null ? { modelSource: row.modelSource } : {}),
+    ...(row.levelKey !== null ? { levelKey: row.levelKey } : {}),
+    ...(row.modelSkipReason !== null ? { skippedReason: row.modelSkipReason } : {}),
     ...(row.workspaceStrategy !== null ? { workspaceStrategy: row.workspaceStrategy } : {}),
     ...(row.parentTaskId !== null ? { parentTaskId: row.parentTaskId } : {}),
     ...(row.waitingForTaskId !== null ? { waitingForTaskId: row.waitingForTaskId } : {}),
@@ -677,6 +684,9 @@ export class T3D1Store {
       model: input.model ?? null,
       providerInstanceId: input.providerInstanceId ?? null,
       modelOptions: serializeModelOptions(input.modelOptions),
+      modelSource: input.modelSource ?? null,
+      levelKey: input.levelKey ?? null,
+      modelSkipReason: input.skippedReason ?? null,
       workspaceStrategy: input.workspaceStrategy ?? null,
       parentTaskId: input.parentTaskId ?? null,
       // A new launch never waits on a child yet; a relaunch drops any earlier wait.
@@ -705,6 +715,9 @@ export class T3D1Store {
           model: record.model,
           providerInstanceId: record.providerInstanceId,
           modelOptions: record.modelOptions,
+          modelSource: record.modelSource,
+          levelKey: record.levelKey,
+          modelSkipReason: record.modelSkipReason,
           workspaceStrategy: record.workspaceStrategy,
           parentTaskId: record.parentTaskId,
           waitingForTaskId: record.waitingForTaskId,
@@ -847,6 +860,9 @@ export class T3D1Store {
         model: patch.selection.model,
         providerInstanceId: patch.selection.providerInstanceId,
         modelOptions: options.length > 0 ? JSON.stringify(options) : null,
+        modelSource: "explicit",
+        levelKey: null,
+        modelSkipReason: null,
         updatedAt,
       })
       .where(eq(agentRuns.taskId, taskId));
@@ -854,8 +870,11 @@ export class T3D1Store {
       ...existing,
       model: patch.selection.model,
       providerInstanceId: patch.selection.providerInstanceId,
+      modelSource: "explicit",
       updatedAt: toTimestamp(new Date(updatedAt)),
     };
+    delete updated.levelKey;
+    delete updated.skippedReason;
     if (options.length > 0) {
       updated.modelOptions = options.map((opt) => ({ ...opt }));
     } else {
@@ -1557,6 +1576,10 @@ export class T3D1Store {
         .where(and(eq(runLevels.orgId, this.orgId), notInArray(runLevels.key, [...seenKeys])));
     }
 
+    if (input.models !== undefined) {
+      await this.db.delete(runLevelModels).where(eq(runLevelModels.orgId, this.orgId));
+    }
+
     for (const level of normalizedLevels) {
       const prev = existingByKey.get(level.key);
       if (prev) {
@@ -1596,7 +1619,6 @@ export class T3D1Store {
     }
 
     if (input.models !== undefined) {
-      await this.db.delete(runLevelModels).where(eq(runLevelModels.orgId, this.orgId));
       for (const binding of input.models) {
         if (!seenKeys.has(binding.levelKey.trim().toLowerCase())) {
           throw new NotFoundError("run_level", binding.levelKey);
