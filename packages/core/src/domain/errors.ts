@@ -35,7 +35,9 @@ export type EntityKind =
   | "membership"
   | "invitation"
   | "session"
-  | "access_token";
+  | "access_token"
+  | "feedback_form"
+  | "feedback_entry";
 
 export class NotFoundError extends BitigError {
   readonly entity: EntityKind;
