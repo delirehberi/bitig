@@ -2003,14 +2003,23 @@ async function publishRunChild(deps: T3ServiceDeps, child: AgentRunChild | undef
 
 function selectCurrentBatchChildren(allChildren: readonly AgentRunChild[]): AgentRunChild[] {
   if (allChildren.length <= 1) return [...allChildren];
-  const sorted = [...allChildren].sort((a, b) => Date.parse(a.startedAt) - Date.parse(b.startedAt));
+  const unmerged = allChildren.filter((child) => !child.mergedAt);
+  const candidates = unmerged.length > 0 ? unmerged : allChildren;
+  if (candidates.length <= 1) return [...candidates];
+  const sorted = [...candidates].sort((a, b) => Date.parse(a.startedAt) - Date.parse(b.startedAt));
   const batches: AgentRunChild[][] = [];
   let currentBatch: AgentRunChild[] = [];
   let maxFinishedMs = -Infinity;
 
   for (const child of sorted) {
     const startedMs = Date.parse(child.startedAt);
-    if (currentBatch.length > 0 && Number.isFinite(maxFinishedMs) && startedMs > maxFinishedMs) {
+    const currentBatchAllMerged =
+      currentBatch.length > 0 && currentBatch.every((existing) => Boolean(existing.mergedAt));
+    if (
+      currentBatch.length > 0 &&
+      ((currentBatchAllMerged && !child.mergedAt) ||
+        (Number.isFinite(maxFinishedMs) && startedMs > maxFinishedMs))
+    ) {
       batches.push(currentBatch);
       currentBatch = [];
       maxFinishedMs = -Infinity;
@@ -2028,7 +2037,7 @@ function selectCurrentBatchChildren(allChildren: readonly AgentRunChild[]): Agen
   if (currentBatch.length > 0) {
     batches.push(currentBatch);
   }
-  return batches.at(-1) ?? [...allChildren];
+  return batches.at(-1) ?? [...candidates];
 }
 
 type AgentRunChildEndState = Exclude<AgentRunChildState, "running">;

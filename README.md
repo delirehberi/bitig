@@ -273,6 +273,8 @@ Or run against an explicit data directory:
 23. `update_webhook` - Update a webhook's name, provider, enabled state, field mapping, defaults, or rotate its secret token.
 24. `delete_webhook` - Delete an incoming webhook.
 
+In Cloudflare mode with a connected T3 host, `/mcp` also exposes run-orchestration tools (`list_run_levels`, `start_t3_thread`, `start_ready_children`, `report_child_merge`, and `report_t3_git_metadata`); see [`docs/run-orchestration.md`](./docs/run-orchestration.md).
+
 ### Bundled Agent Skill (`bitig-planning`)
 
 Bitig ships with an agent skill at [`skills/bitig-planning/SKILL.md`](./skills/bitig-planning/SKILL.md) that teaches AI coding assistants to record plans, roadmaps, and code-review findings directly in Bitig via MCP instead of scattering `TODO.md` or `ROADMAP.md` files across repositories.

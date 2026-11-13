@@ -36,6 +36,14 @@ the tasks that must finish first (e.g. dependsOn: ['BIT-63']). A task that depen
 archived. Agents cannot override this; work on the blocking tasks first, or ask a person. 'get_task' lists 'dependsOn'
 and 'dependents'; 'list_tasks' with 'blocked: false' lists the tasks that are free to start.
 
+Run profiles: when breaking work into tasks or creating child tasks under an umbrella, call 'list_run_levels' once to
+inspect the organisation's configured run levels (key, label and description), then pass 'runProfile' on 'add_task' or
+'update_task' with 'level' (e.g. 'cheap', 'standard', 'strong'), 'touches' (tight repo-relative globs for the files the
+task will edit, e.g. ['packages/core/src/**'], never '**' unless the task genuinely edits repo-wide), 'parallelSafe'
+(false when the task modifies shared lockfiles, migrations, or global config), and 'reason'. Profiles set over MCP are
+stored with source 'agent' and never overwrite a person's 'manual' profile. Call 'suggest_run_profile' to request an AI
+router suggestion for an unprofiled task when the organisation's AI router is enabled.
+
 Checkpoints: on long or interruptible work, call 'save_checkpoint' after each meaningful step with the task, a
 stepIndex (0, 1, 2, ...), a status and a short stateSnapshot (summary, modifiedArtifacts, decisionsMade,
 nextStepInstructions). Saving a step again overwrites it. For a specific task's full execution context, call 'resume_from_checkpoint': it

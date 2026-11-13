@@ -5,7 +5,7 @@ description: Record plans and findings as Bitig tasks through the bitig MCP serv
 
 # Bitig planning
 
-Bitig is the single source of truth for planned work. Roadmaps, task lists and review findings go into Bitig as tasks through the `bitig` MCP server (tools: `list_projects`, `create_project`, `update_project`, `delete_project`, `next_task`, `list_tasks`, `get_task`, `add_task`, `update_task`, `complete_task`, `delete_task`, `backfill_ticket_codes`, `list_comments`, `add_comment`, `delete_comment`).
+Bitig is the single source of truth for planned work. Roadmaps, task lists and review findings go into Bitig as tasks through the `bitig` MCP server (tools: `list_projects`, `create_project`, `update_project`, `delete_project`, `next_task`, `list_tasks`, `get_task`, `add_task`, `update_task`, `complete_task`, `delete_task`, `backfill_ticket_codes`, `list_comments`, `add_comment`, `delete_comment`, `list_run_levels`, `suggest_run_profile`).
 
 Do not create `ROADMAP.md`, `TASKS.md`, `TODO.md` or similar files for tracking. If the user explicitly asks for such a file, write it **in addition to** the Bitig tasks, never instead of them.
 
@@ -47,6 +47,12 @@ Call `list_tasks` with the `projectId` (or project `key`) before adding anything
   - source: `roadmap`, `code-review`, `audit`, `tech-debt`.
 - **order**: for a roadmap, set `order` so tasks sort in execution order (10, 20, 30, … leaves room to insert).
 - **dependsOn**: when a task cannot start before others finish (an ordered breakdown such as schema → API → UI), pass `dependsOn` with their ticket codes or IDs on `add_task` or `update_task`, e.g. `dependsOn: ["BIT-63"]`. Add the tasks in order so earlier codes exist. The task is then blocked: `get_task` shows `blockedBy`, and it cannot be started or completed until those are done or archived. `update_task` replaces the whole list; `null` or `[]` removes it. `get_task` also lists `dependents`, the tasks waiting on it.
+- **runProfile** (`level` and `touches`): when breaking work into tasks, call `list_run_levels` once to inspect the organisation's configured run levels (`key`, `label`, `description`), then set `runProfile` on `add_task` or `update_task`:
+  - `level`: the matching run-level key (e.g. `"cheap"` for docs/copy/tests, `"standard"` for scoped features/bugfixes, `"strong"` for architecture/security/cross-package refactors).
+  - `touches`: tight repo-relative globs for the files the task will modify (e.g. `["packages/core/src/**"]`, `["apps/web/src/components/**"]`). Keep globs specific so independent sibling tasks can run in parallel under an umbrella without false overlap; never declare `"**"` unless the task genuinely touches the whole repository.
+  - `parallelSafe`: `true` by default when `touches` is non-empty; set `false` when the task modifies shared lockfiles, database migrations, or global configuration.
+  - `reason`: a concise one-line rationale for the chosen level and touched paths.
+  - Profiles set by agents are saved with `source: "agent"` and never overwrite a human's `manual` profile.
 - **Mentions**: write `#BIT-12` in a description, subtask or comment to link another task. `get_task` returns what a task mentions (`mentions`) and which tasks mention it (`mentionedIn`). Use mentions for "see also"; use `dependsOn` when one must finish first.
 - **status**: `todo` for new work. Use `done` only when importing work that is already finished.
 - **dueDate**: only when the user gives a date (`YYYY-MM-DD`).

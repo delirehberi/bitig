@@ -7237,6 +7237,735 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
         const stopAllBody = await stopAllRes.json<StopUmbrellaChildrenResponse>();
         expect(stopAllBody.stoppedTaskIds).toEqual([childB.id]);
       });
+
+      it("runs an umbrella with four children (two independent, one overlapping, one dependent) in parallel on different levels, resumes once with both results, records merges, then runs the rest one at a time (#BIT-192)", async () => {
+        hostAState.remoteProjects = [{ id: "t3-proj-e2e", title: "BitigE2E", workspaceRoot: "~/www/bitig-e2e" }];
+        await authorizeHost({ mcpUrl: HOST_A_MCP_URL, label: "Host A", kind: "user" });
+        const { hosts } = await (await multiRequest("/api/t3/hosts")).json<{ hosts: T3HostConnectionStatus[] }>();
+        const hostA = hosts[0];
+        if (!hostA) {
+          throw new Error("Expected connected host A");
+        }
+
+        // Configure default run levels (cheap, standard, strong) mapped to distinct models/efforts on Host A
+        const putLevelsRes = await multiRequest(`/api/orgs/${DEFAULT_ORGANISATION_ID}/run-levels`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            levels: [
+              { key: "cheap", label: "Cheap", description: "Fast isolated tasks", order: 0 },
+              { key: "standard", label: "Standard", description: "Scoped feature work", order: 1 },
+              { key: "strong", label: "Strong", description: "Complex architectural changes", order: 2 },
+            ],
+            models: [
+              {
+                levelKey: "cheap",
+                hostId: hostA.id,
+                providerInstanceId: "prov-codex",
+                model: "gpt-6-sol",
+                options: [{ id: "reasoningEffort", value: "low" }],
+              },
+              {
+                levelKey: "standard",
+                hostId: hostA.id,
+                providerInstanceId: "prov-claude",
+                model: "claude-opus-4-7",
+                options: [{ id: "effort", value: "medium" }],
+              },
+              {
+                levelKey: "strong",
+                hostId: hostA.id,
+                providerInstanceId: "prov-claude",
+                model: "claude-opus-4-7",
+                options: [{ id: "effort", value: "high" }],
+              },
+            ],
+          }),
+        });
+        expect(putLevelsRes.status).toBe(200);
+
+        const proj = await (
+          await multiRequest("/api/projects", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              name: "E2E Umbrella",
+              key: "E2E",
+              hostId: hostA.id,
+              workspaceRoot: "~/www/bitig-e2e",
+            }),
+          })
+        ).json<Project>();
+
+        await multiRequest(`/api/projects/${proj.id}/run-settings`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            maxParallelChildren: 3,
+            serialPaths: ["packages/storage-d1/migrations/**"],
+            defaultRunLevel: "standard",
+          }),
+        });
+
+        // E2E-1: Umbrella task
+        const umbrella = await (
+          await multiRequest("/api/tasks", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              projectId: proj.id,
+              title: "Orchestrate 4-child delivery (umbrella)",
+              order: 1,
+            }),
+          })
+        ).json<Task>();
+
+        // E2E-2: Child 1 (independent, cheap level, touches packages/core/src/**)
+        const child1 = await (
+          await multiRequest("/api/tasks", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              projectId: proj.id,
+              title: "Child 1: Core schema helpers",
+              order: 10,
+              dependsOn: [umbrella.id],
+            }),
+          })
+        ).json<Task>();
+        await multiRequest(`/api/tasks/${child1.id}/run-profile`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            level: "cheap",
+            effort: "low",
+            touches: ["packages/core/src/**"],
+            parallelSafe: true,
+            reason: "Isolated core helper",
+          }),
+        });
+
+        // E2E-3: Child 2 (independent, strong level, touches apps/web/src/**)
+        const child2 = await (
+          await multiRequest("/api/tasks", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              projectId: proj.id,
+              title: "Child 2: Dashboard orchestration card",
+              order: 20,
+              dependsOn: [umbrella.id],
+            }),
+          })
+        ).json<Task>();
+        await multiRequest(`/api/tasks/${child2.id}/run-profile`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            level: "strong",
+            effort: "high",
+            touches: ["apps/web/src/**"],
+            parallelSafe: true,
+            reason: "Complex UI orchestration state",
+          }),
+        });
+
+        // E2E-4: Child 3 (overlaps Child 1 on packages/core/**, standard level)
+        const child3 = await (
+          await multiRequest("/api/tasks", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              projectId: proj.id,
+              title: "Child 3: Core storage contract updates",
+              order: 30,
+              dependsOn: [umbrella.id],
+            }),
+          })
+        ).json<Task>();
+        await multiRequest(`/api/tasks/${child3.id}/run-profile`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            level: "standard",
+            effort: "medium",
+            touches: ["packages/core/**"],
+            parallelSafe: true,
+            reason: "Overlaps packages/core/src/** with Child 1",
+          }),
+        });
+
+        // E2E-5: Child 4 (dependent on Child 3, cheap level, touches apps/worker/src/**)
+        const child4 = await (
+          await multiRequest("/api/tasks", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              projectId: proj.id,
+              title: "Child 4: Worker route wiring",
+              order: 40,
+              dependsOn: [umbrella.id, child3.id],
+            }),
+          })
+        ).json<Task>();
+        await multiRequest(`/api/tasks/${child4.id}/run-profile`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            level: "cheap",
+            effort: "low",
+            touches: ["apps/worker/src/**"],
+            parallelSafe: true,
+            reason: "Depends on Child 3 contract updates",
+          }),
+        });
+
+        // 1. Launch the umbrella in worktree mode and report clean git metadata on branch bitig/E2E-1
+        hostAState.launchThreadIds = ["thread-e2e-umb"];
+        const startUmbRes = await multiRequest(`/api/tasks/${umbrella.id}/t3-run`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ workspaceStrategy: "worktree" }),
+        });
+        expect(startUmbRes.status).toBe(201);
+        const umbRun = (await startUmbRes.json<{ run: AgentRun }>()).run;
+
+        expect(
+          (
+            await multiMcpCall("report_t3_git_metadata", {
+              taskId: "E2E-1",
+              runId: umbRun.id,
+              threadId: "thread-e2e-umb",
+              metadata: {
+                branch: "bitig/E2E-1",
+                headSha: "1000000000000000000000000000000000000001",
+                worktreePath: "/tmp/worktrees/e2e-1",
+                dirty: false,
+              },
+            })
+          ).isError,
+        ).toBeFalsy();
+
+        // 2. Batch 1: start_ready_children launches E2E-2 (cheap) and E2E-3 (strong) in parallel,
+        // skipping E2E-4 (overlaps_picked with E2E-2) and E2E-5 (blocked by E2E-4)
+        hostAState.toolCalls.length = 0;
+        hostAState.launchThreadIds = ["thread-e2e-2", "thread-e2e-3"];
+        const batch1Res = await multiMcpCall("start_ready_children", {
+          parentTaskId: "E2E-1",
+        });
+        expect(batch1Res.isError).toBeFalsy();
+        const batch1Body = JSON.parse(batch1Res.text) as {
+          started: { code: string; threadId: string; level: string; model: string }[];
+          skipped: { code: string; reason: string; blockingTaskCode?: string }[];
+        };
+        expect(batch1Body.started).toEqual([
+          expect.objectContaining({
+            code: "E2E-2",
+            threadId: "thread-e2e-2",
+            level: "cheap",
+            model: "gpt-6-sol",
+          }),
+          expect.objectContaining({
+            code: "E2E-3",
+            threadId: "thread-e2e-3",
+            level: "strong",
+            model: "claude-opus-4-7",
+          }),
+        ]);
+        expect(batch1Body.skipped).toEqual([
+          expect.objectContaining({
+            code: "E2E-4",
+            reason: "overlaps_picked",
+            blockingTaskCode: "E2E-2",
+          }),
+          expect.objectContaining({
+            code: "E2E-5",
+            reason: "blocked",
+            blockingTaskCode: "E2E-4",
+          }),
+        ]);
+
+        // Verify the two T3 launches used their respective models, effort options, and baseRef = umbrella integration branch
+        const batch1Launches = hostAState.toolCalls.filter((c) => c.name === "t3_thread_launch");
+        expect(batch1Launches).toHaveLength(2);
+        expect(batch1Launches[0]?.arguments).toMatchObject({
+          clientRequestId: "E2E-2",
+          workspaceStrategy: { type: "worktree", baseRef: "bitig/E2E-1" },
+          modelSelection: {
+            instanceId: "prov-codex",
+            model: "gpt-6-sol",
+            options: [{ id: "reasoningEffort", value: "low" }],
+          },
+        });
+        expect(batch1Launches[1]?.arguments).toMatchObject({
+          clientRequestId: "E2E-3",
+          workspaceStrategy: { type: "worktree", baseRef: "bitig/E2E-1" },
+          modelSelection: {
+            instanceId: "prov-claude",
+            model: "claude-opus-4-7",
+            options: [{ id: "effort", value: "high" }],
+          },
+        });
+
+        const store = new T3D1Store(env.DB, DEFAULT_ORGANISATION_ID);
+        expect((await store.getAgentRunByTaskId(umbrella.id))?.state).toBe("waiting_subagent");
+
+        // 3. E2E-2 finishes first: reports git metadata, posts comment, and completes task.
+        // Umbrella must stay in waiting_subagent without any t3_thread_send yet.
+        const child1Run = await store.getAgentRunByTaskId(child1.id);
+        const child2Run = await store.getAgentRunByTaskId(child2.id);
+        if (!child1Run || !child2Run) {
+          throw new Error("Expected AgentRuns for E2E-2 and E2E-3");
+        }
+        await multiMcpCall("report_t3_git_metadata", {
+          taskId: "E2E-2",
+          runId: child1Run.id,
+          threadId: "thread-e2e-2",
+          metadata: {
+            branch: "bitig/E2E-2",
+            headSha: "2000000000000000000000000000000000000002",
+            changedPaths: ["packages/core/src/helpers.ts"],
+            diffStat: { filesChanged: 1, insertions: 25, deletions: 0 },
+          },
+        });
+        await multiMcpCall("add_comment", {
+          taskId: "E2E-2",
+          body: "Added core schema helpers.",
+          author: "codex",
+        });
+        expect((await multiMcpCall("complete_task", { id: "E2E-2" })).isError).toBeFalsy();
+
+        expect((await store.getAgentRunByTaskId(umbrella.id))?.state).toBe("waiting_subagent");
+        expect(hostAState.toolCalls.filter((c) => c.name === "t3_thread_send")).toHaveLength(0);
+
+        // 4. E2E-3 finishes second: reports git metadata, posts comment, and completes task.
+        // Umbrella resumes ONCE with a single batch message containing both E2E-2 and E2E-3 in order.
+        await multiMcpCall("report_t3_git_metadata", {
+          taskId: "E2E-3",
+          runId: child2Run.id,
+          threadId: "thread-e2e-3",
+          metadata: {
+            branch: "bitig/E2E-3",
+            headSha: "3000000000000000000000000000000000000003",
+            changedPaths: ["apps/web/src/Card.tsx"],
+            diffStat: { filesChanged: 1, insertions: 60, deletions: 4 },
+          },
+        });
+        await multiMcpCall("add_comment", {
+          taskId: "E2E-3",
+          body: "Built dashboard orchestration card.",
+          author: "claude",
+        });
+        expect((await multiMcpCall("complete_task", { id: "E2E-3" })).isError).toBeFalsy();
+
+        expect((await store.getAgentRunByTaskId(umbrella.id))?.state).toBe("working");
+        const sendCallsAfterBatch1 = hostAState.toolCalls.filter((c) => c.name === "t3_thread_send");
+        expect(sendCallsAfterBatch1).toHaveLength(1);
+        const batch1ResumePrompt = String(sendCallsAfterBatch1[0]?.arguments.message);
+        expect(batch1ResumePrompt).toContain(
+          "All 2 child tasks in the batch you started from E2E-1 have ended: E2E-2 (done), E2E-3 (done).",
+        );
+        expect(batch1ResumePrompt.indexOf("E2E-2")).toBeLessThan(batch1ResumePrompt.indexOf("E2E-3"));
+        expect(batch1ResumePrompt).toContain("bitig/E2E-2");
+        expect(batch1ResumePrompt).toContain("bitig/E2E-3");
+        expect(batch1ResumePrompt).toContain("Added core schema helpers.");
+        expect(batch1ResumePrompt).toContain("Built dashboard orchestration card.");
+
+        // 5. Umbrella records merges for E2E-2 and E2E-3 and updates its clean git metadata
+        expect(
+          (
+            await multiMcpCall("report_child_merge", {
+              parentTaskId: "E2E-1",
+              childTaskId: "E2E-2",
+              mergedSha: "1000000000000000000000000000000000000012",
+            })
+          ).isError,
+        ).toBeFalsy();
+        expect(
+          (
+            await multiMcpCall("report_child_merge", {
+              parentTaskId: "E2E-1",
+              childTaskId: "E2E-3",
+              mergedSha: "1000000000000000000000000000000000000023",
+            })
+          ).isError,
+        ).toBeFalsy();
+        expect(
+          (
+            await multiMcpCall("report_t3_git_metadata", {
+              taskId: "E2E-1",
+              runId: umbRun.id,
+              threadId: "thread-e2e-umb",
+              metadata: {
+                branch: "bitig/E2E-1",
+                headSha: "1000000000000000000000000000000000000023",
+                worktreePath: "/tmp/worktrees/e2e-1",
+                dirty: false,
+              },
+            })
+          ).isError,
+        ).toBeFalsy();
+
+        const afterMerge1Status = await (
+          await multiRequest(`/api/tasks/${umbrella.id}/children`)
+        ).json<UmbrellaChildrenStatusResponse>();
+        expect(afterMerge1Status.progress).toEqual({ total: 4, running: 0, merged: 2, done: 2 });
+
+        // 6. Batch 2: start_ready_children starts E2E-4 alone (now that E2E-2 is finished & merged),
+        // while E2E-5 is still skipped as blocked by E2E-4
+        hostAState.launchThreadIds = ["thread-e2e-4"];
+        const batch2Res = await multiMcpCall("start_ready_children", {
+          parentTaskId: "E2E-1",
+        });
+        expect(batch2Res.isError).toBeFalsy();
+        const batch2Body = JSON.parse(batch2Res.text) as {
+          started: { code: string; threadId: string; level: string; model: string }[];
+          skipped: { code: string; reason: string; blockingTaskCode?: string }[];
+        };
+        expect(batch2Body.started).toEqual([
+          expect.objectContaining({
+            code: "E2E-4",
+            threadId: "thread-e2e-4",
+            level: "standard",
+            model: "claude-opus-4-7",
+          }),
+        ]);
+        expect(batch2Body.skipped).toEqual([
+          expect.objectContaining({
+            code: "E2E-5",
+            reason: "blocked",
+            blockingTaskCode: "E2E-4",
+          }),
+        ]);
+
+        // Complete E2E-4 -> resumes umbrella once with E2E-4's result, then record merge
+        const child3Run = await store.getAgentRunByTaskId(child3.id);
+        if (!child3Run) {
+          throw new Error("Expected AgentRun for E2E-4");
+        }
+        await multiMcpCall("report_t3_git_metadata", {
+          taskId: "E2E-4",
+          runId: child3Run.id,
+          threadId: "thread-e2e-4",
+          metadata: {
+            branch: "bitig/E2E-4",
+            headSha: "4000000000000000000000000000000000000004",
+            changedPaths: ["packages/core/src/contract.ts"],
+            diffStat: { filesChanged: 1, insertions: 30, deletions: 2 },
+          },
+        });
+        await multiMcpCall("add_comment", {
+          taskId: "E2E-4",
+          body: "Updated core storage contract.",
+          author: "claude",
+        });
+        expect((await multiMcpCall("complete_task", { id: "E2E-4" })).isError).toBeFalsy();
+
+        const sendCallsAfterBatch2 = hostAState.toolCalls.filter((c) => c.name === "t3_thread_send");
+        expect(sendCallsAfterBatch2).toHaveLength(2);
+        const batch2ResumePrompt = String(sendCallsAfterBatch2[1]?.arguments.message);
+        expect(batch2ResumePrompt).toContain("Child task E2E-4 that you started from E2E-1 is done.");
+        expect(batch2ResumePrompt).toContain("bitig/E2E-4");
+        expect(batch2ResumePrompt).not.toContain("bitig/E2E-2");
+
+        expect(
+          (
+            await multiMcpCall("report_child_merge", {
+              parentTaskId: "E2E-1",
+              childTaskId: "E2E-4",
+              mergedSha: "1000000000000000000000000000000000000034",
+            })
+          ).isError,
+        ).toBeFalsy();
+        expect(
+          (
+            await multiMcpCall("report_t3_git_metadata", {
+              taskId: "E2E-1",
+              runId: umbRun.id,
+              threadId: "thread-e2e-umb",
+              metadata: {
+                branch: "bitig/E2E-1",
+                headSha: "1000000000000000000000000000000000000034",
+                worktreePath: "/tmp/worktrees/e2e-1",
+                dirty: false,
+              },
+            })
+          ).isError,
+        ).toBeFalsy();
+
+        // 7. Batch 3: start_ready_children starts E2E-5 (now unblocked by E2E-4), completes it, resumes umbrella, and records merge
+        hostAState.launchThreadIds = ["thread-e2e-5"];
+        const batch3Res = await multiMcpCall("start_ready_children", {
+          parentTaskId: "E2E-1",
+        });
+        expect(batch3Res.isError).toBeFalsy();
+        const batch3Body = JSON.parse(batch3Res.text) as {
+          started: { code: string; threadId: string; level: string; model: string }[];
+          skipped: unknown[];
+        };
+        expect(batch3Body.started).toEqual([
+          expect.objectContaining({
+            code: "E2E-5",
+            threadId: "thread-e2e-5",
+            level: "cheap",
+            model: "gpt-6-sol",
+          }),
+        ]);
+        expect(batch3Body.skipped).toEqual([]);
+
+        const child4Run = await store.getAgentRunByTaskId(child4.id);
+        if (!child4Run) {
+          throw new Error("Expected AgentRun for E2E-5");
+        }
+        await multiMcpCall("report_t3_git_metadata", {
+          taskId: "E2E-5",
+          runId: child4Run.id,
+          threadId: "thread-e2e-5",
+          metadata: {
+            branch: "bitig/E2E-5",
+            headSha: "5000000000000000000000000000000000000005",
+            changedPaths: ["apps/worker/src/index.ts"],
+            diffStat: { filesChanged: 1, insertions: 18, deletions: 1 },
+          },
+        });
+        await multiMcpCall("add_comment", {
+          taskId: "E2E-5",
+          body: "Wired worker routes.",
+          author: "codex",
+        });
+        expect((await multiMcpCall("complete_task", { id: "E2E-5" })).isError).toBeFalsy();
+
+        const sendCallsAfterBatch3 = hostAState.toolCalls.filter((c) => c.name === "t3_thread_send");
+        expect(sendCallsAfterBatch3).toHaveLength(3);
+        const batch3ResumePrompt = String(sendCallsAfterBatch3[2]?.arguments.message);
+        expect(batch3ResumePrompt).toContain("Child task E2E-5 that you started from E2E-1 is done.");
+        expect(batch3ResumePrompt).toContain("bitig/E2E-5");
+        expect(batch3ResumePrompt).not.toContain("bitig/E2E-4");
+
+        expect(
+          (
+            await multiMcpCall("report_child_merge", {
+              parentTaskId: "E2E-1",
+              childTaskId: "E2E-5",
+              mergedSha: "1000000000000000000000000000000000000045",
+            })
+          ).isError,
+        ).toBeFalsy();
+
+        const finalChildrenStatus = await (
+          await multiRequest(`/api/tasks/${umbrella.id}/children`)
+        ).json<UmbrellaChildrenStatusResponse>();
+        expect(finalChildrenStatus.progress).toEqual({ total: 4, running: 0, merged: 4, done: 4 });
+        expect(finalChildrenStatus.children.every((c) => c.merged && c.childState === "done")).toBe(true);
+      });
+
+      it("stores a router profile when approving an unprofiled task and ensures a manual profile wins over the router on approval and re-suggestion (#BIT-192)", async () => {
+        const ROUTER_BASE =
+          "https://api.cloudflare.com/client/v4/accounts/8423a8bddcba5f61bc5f599e64bbdd62/ai/run";
+        let routerHitCount = 0;
+
+        hostAState.remoteProjects = [{ id: "t3-proj-rtr", title: "RouterSpec", workspaceRoot: "~/www/rtr" }];
+        const fetchA = createMockT3Fetch(hostAState);
+        multiApp = createApp({
+          t3Fetch: async (input, init) => {
+            const req = input instanceof Request ? input : new Request(input, init);
+            const url = new URL(req.url);
+            if (url.origin === HOST_A_ORIGIN) return fetchA(input, init);
+            if (req.url.startsWith(ROUTER_BASE)) {
+              routerHitCount += 1;
+              return new Response(
+                JSON.stringify({
+                  success: true,
+                  result: {
+                    response: {
+                      level: "cheap",
+                      effort: "low",
+                      touches: ["docs/**"],
+                      parallelSafe: true,
+                      reason: "Router classified task as cheap docs update",
+                      confidence: 0.93,
+                    },
+                  },
+                }),
+                { status: 200, headers: { "Content-Type": "application/json" } },
+              );
+            }
+            return new Response("Unknown origin", { status: 404 });
+          },
+        });
+
+        await authorizeHost({ mcpUrl: HOST_A_MCP_URL, label: "Host A", kind: "user" });
+        const { hosts } = await (await multiRequest("/api/t3/hosts")).json<{ hosts: T3HostConnectionStatus[] }>();
+        const hostA = hosts[0];
+        if (!hostA) {
+          throw new Error("Expected connected host A");
+        }
+
+        await multiRequest(`/api/orgs/${DEFAULT_ORGANISATION_ID}/run-levels`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            levels: [
+              { key: "cheap", label: "Cheap", description: "Docs and copy", order: 0 },
+              { key: "standard", label: "Standard", description: "Feature work", order: 1 },
+              { key: "strong", label: "Strong", description: "Architecture", order: 2 },
+            ],
+            models: [
+              {
+                levelKey: "cheap",
+                hostId: hostA.id,
+                providerInstanceId: "prov-codex",
+                model: "gpt-6-sol",
+                options: [{ id: "reasoningEffort", value: "low" }],
+              },
+              {
+                levelKey: "strong",
+                hostId: hostA.id,
+                providerInstanceId: "prov-claude",
+                model: "claude-opus-4-7",
+                options: [{ id: "effort", value: "high" }],
+              },
+            ],
+          }),
+        });
+
+        await multiRequest(`/api/orgs/${DEFAULT_ORGANISATION_ID}/ai-router`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            baseUrl: ROUTER_BASE,
+            model: "@cf/cloudflare/clef",
+            apiToken: "cf-router-token-spec",
+            apiStyle: "cloudflare-run",
+            enabled: true,
+          }),
+        });
+
+        const proj = await (
+          await multiRequest("/api/projects", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              name: "Router Precedence",
+              key: "RPR",
+              hostId: hostA.id,
+              workspaceRoot: "~/www/rtr",
+            }),
+          })
+        ).json<Project>();
+
+        // Case A: Approving an unprofiled task calls the router and stores source: "router",
+        // then setting a manual profile overrides the router profile and wins on launch & re-suggestion.
+        const taskA = await (
+          await multiRequest("/api/tasks", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              projectId: proj.id,
+              title: "Update docs page",
+              pendingApproval: true,
+            }),
+          })
+        ).json<Task>();
+
+        const approveARes = await multiRequest(`/api/tasks/${taskA.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pendingApproval: null }),
+        });
+        expect(approveARes.status).toBe(200);
+        expect(routerHitCount).toBe(1);
+
+        const routerProfileRes = await (
+          await multiRequest(`/api/tasks/${taskA.id}/run-profile`)
+        ).json<{
+          profile: { level: string; source: string; touches: string[]; confidence: number };
+          resolved: { levelKey: string; profileSource: string; selection: { model: string } };
+        }>();
+        expect(routerProfileRes.profile).toMatchObject({
+          level: "cheap",
+          touches: ["docs/**"],
+          source: "router",
+          confidence: 0.93,
+        });
+        expect(routerProfileRes.resolved).toMatchObject({
+          levelKey: "cheap",
+          profileSource: "router",
+          selection: { model: "gpt-6-sol" },
+        });
+
+        // Human overrides with a manual profile -> manual profile wins over router
+        const manualOverrideRes = await multiRequest(`/api/tasks/${taskA.id}/run-profile`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            level: "strong",
+            effort: "high",
+            touches: ["apps/worker/**"],
+            parallelSafe: false,
+            reason: "Human escalated to strong",
+          }),
+        });
+        expect(manualOverrideRes.status).toBe(200);
+        expect(await manualOverrideRes.json()).toMatchObject({
+          profile: {
+            level: "strong",
+            effort: "high",
+            touches: ["apps/worker/**"],
+            parallelSafe: false,
+            source: "manual",
+          },
+          resolved: {
+            levelKey: "strong",
+            profileSource: "manual",
+            selection: {
+              providerInstanceId: "prov-claude",
+              model: "claude-opus-4-7",
+              options: [{ id: "effort", value: "high" }],
+            },
+          },
+        });
+
+        // Case B: A task that already has a manual profile before approval is never overwritten when approved
+        const taskB = await (
+          await multiRequest("/api/tasks", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              projectId: proj.id,
+              title: "Pre-profiled manual task",
+              pendingApproval: true,
+            }),
+          })
+        ).json<Task>();
+        await multiRequest(`/api/tasks/${taskB.id}/run-profile`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            level: "strong",
+            touches: ["packages/core/**"],
+            parallelSafe: true,
+            reason: "Manual choice before approval",
+          }),
+        });
+
+        const approveBRes = await multiRequest(`/api/tasks/${taskB.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pendingApproval: null }),
+        });
+        expect(approveBRes.status).toBe(200);
+        expect(routerHitCount).toBe(1); // Router was not even called because manual profile already existed
+
+        const taskBProfile = await (
+          await multiRequest(`/api/tasks/${taskB.id}/run-profile`)
+        ).json<{ profile: { level: string; source: string; reason: string } }>();
+        expect(taskBProfile.profile).toMatchObject({
+          level: "strong",
+          source: "manual",
+          reason: "Manual choice before approval",
+        });
+      });
     });
   });
 });

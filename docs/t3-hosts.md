@@ -1,6 +1,6 @@
 # T3 hosts: prerequisites and folder registration
 
-Bitig runs coding sessions on one or more T3 Code hosts that the organisation owner connects in **Settings**. This page covers what each host needs, how Bitig persists multiple hosts and host-bound project mappings (#BIT-147), how Bitig registers project folders on a host (#BIT-148), and how owner-only administration and host-scoped execution are enforced (#BIT-149). For the security model, see [`security.md`](security.md#6b-t3-code-access-from-bitig-oauth-mcp-client).
+Bitig runs coding sessions on one or more T3 Code hosts that the organisation owner connects in **Settings**. This page covers what each host needs, how Bitig persists multiple hosts and host-bound project mappings (#BIT-147), how Bitig registers project folders on a host (#BIT-148), and how owner-only administration and host-scoped execution are enforced (#BIT-149). For task run levels, AI model routing, parallel umbrella orchestration, and worktree merge flow (#BIT-183), see [`run-orchestration.md`](run-orchestration.md). For the security model, see [`security.md`](security.md#6b-t3-code-access-from-bitig-oauth-mcp-client).
 
 ## Multiple hosts and host-bound mappings (#BIT-147, #BIT-149)
 

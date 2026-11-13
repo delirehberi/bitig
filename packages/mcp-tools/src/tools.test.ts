@@ -9,6 +9,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { BITIG_SERVER_INSTRUCTIONS } from "./instructions";
 import { registerBitigTools, resolveMcpActor } from "./register";
 
 describe("MCP Tools integration", () => {
@@ -1508,6 +1509,15 @@ describe("run orchestration MCP tools (#BIT-186)", () => {
       await client.close();
       await server.close();
     }
+  });
+
+  it("includes list_run_levels and runProfile guidance in BITIG_SERVER_INSTRUCTIONS", () => {
+    expect(BITIG_SERVER_INSTRUCTIONS).toContain("list_run_levels");
+    expect(BITIG_SERVER_INSTRUCTIONS).toContain("runProfile");
+    expect(BITIG_SERVER_INSTRUCTIONS).toContain("touches");
+    expect(BITIG_SERVER_INSTRUCTIONS).toContain("parallelSafe");
+    expect(BITIG_SERVER_INSTRUCTIONS).toContain("start_ready_children");
+    expect(BITIG_SERVER_INSTRUCTIONS).toContain("report_child_merge");
   });
 });
 
