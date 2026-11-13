@@ -325,7 +325,10 @@ function extractRequestSourceOrigin(c: Context<AppEnv>): string | null {
 
 /**
  * Verifies the request origin on `POST /f/:publicId`:
- * - Embeds (`embed === true`) must match one of the form's `allowedOrigins`.
+ * - Embeds (`embed === true`) come from the iframe, which runs on the Bitig host, so the Bitig origin is
+ *   accepted. Other origins must match one of the form's `allowedOrigins`. Which sites may frame the form is
+ *   enforced separately by `frame-ancestors`, so a forged cross-site POST (which carries the attacker's
+ *   `Origin`) is still refused.
  * - Direct posts (`embed === false`) must come from the Bitig host.
  */
 export function checkFeedbackOrigin(
@@ -334,10 +337,14 @@ export function checkFeedbackOrigin(
   embed: boolean,
 ): boolean {
   const sourceOrigin = extractRequestSourceOrigin(c);
+  const hostOrigin = normalizeAllowedOrigin(new URL(c.req.url).origin);
 
   if (embed) {
     if (sourceOrigin === null || sourceOrigin === "null" || sourceOrigin === "invalid") {
       return false;
+    }
+    if (hostOrigin !== null && sourceOrigin === hostOrigin) {
+      return true;
     }
     const allowedNormalized = new Set<string>();
     for (const raw of form.allowedOrigins) {
@@ -349,7 +356,6 @@ export function checkFeedbackOrigin(
     return allowedNormalized.has(sourceOrigin);
   }
 
-  const hostOrigin = normalizeAllowedOrigin(new URL(c.req.url).origin);
   if (sourceOrigin !== null) {
     return hostOrigin !== null && sourceOrigin === hostOrigin;
   }

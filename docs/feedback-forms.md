@@ -69,7 +69,8 @@ Allowed origins are the host sites that may show the form in an iframe.
   A form with no allowed origins cannot be embedded.
 - Enter origins as scheme plus host, for example `https://www.example.com`. Paths, user info and query strings are rejected.
 
-The direct link does not depend on allowed origins.
+The direct link does not depend on allowed origins. Submissions from the embedded form are accepted because the form
+runs on the Bitig host. Submissions from any other origin must come from one of the allowed origins.
 
 ## Turnstile
 

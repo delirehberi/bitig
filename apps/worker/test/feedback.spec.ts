@@ -1385,6 +1385,22 @@ describe("REST API: Feedback form management (BIT-176)", () => {
       env,
     );
     expect(goodEmbed.status).toBe(200);
+
+    // 6. Embed post from the Bitig origin succeeds even when it is not listed in allowed_origins: the iframe
+    //    runs on the Bitig host, and frame-ancestors (not this check) limits which sites can frame the form (#BIT-182)
+    const iframeEmbed = await app.fetch(
+      new Request(`${BASE_URL}/f/${form.publicId}?embed=1`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Origin: BASE_URL,
+          "cf-connecting-ip": uniqueIp(),
+        },
+        body: JSON.stringify({ title: "Iframe embed origin", body: "Works", ...ts }),
+      }),
+      env,
+    );
+    expect(iframeEmbed.status).toBe(200);
   });
 
   it("enforces HMAC-signed minimum and maximum fill time (3 s to 2 h)", async () => {
@@ -2241,12 +2257,17 @@ describe("REST API: Feedback form management (BIT-176)", () => {
     expect(frameRes.status).toBe(200);
     expect(await frameRes.text()).toContain(`value="${hostPageUrl}"`);
 
-    // 3. Submitting creates a pending feedback task, shown in Awaiting approval (pendingApproval: true).
+    // 3. Submitting from the iframe (embed=1, Origin is the Bitig host) creates a pending feedback task,
+    //    shown in Awaiting approval (pendingApproval: true).
     const ts = await buildValidTimestampFields(form.publicId);
     const submitRes = await app.fetch(
-      new Request(`${BASE_URL}/f/${form.publicId}`, {
+      new Request(`${BASE_URL}/f/${form.publicId}?embed=1`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", "cf-connecting-ip": uniqueIp() },
+        headers: {
+          "Content-Type": "application/json",
+          Origin: BASE_URL,
+          "cf-connecting-ip": uniqueIp(),
+        },
         body: JSON.stringify({
           title: "Export button is hard to find",
           body: "The export action sits under three menus; a top-level button would help.",
