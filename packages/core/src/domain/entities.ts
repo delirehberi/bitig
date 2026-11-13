@@ -758,6 +758,7 @@ export function buildWebhook(input: CreateWebhookInput, deps: RuntimeDeps): Webh
   if (mapping !== undefined) webhook.mapping = mapping;
   if (parsed.defaultPriority !== undefined) webhook.defaultPriority = parsed.defaultPriority;
   if (defaultLabels !== undefined) webhook.defaultLabels = defaultLabels;
+  if (parsed.skipPendingFeedback === true) webhook.skipPendingFeedback = true;
   return parseOrThrow(WebhookSchema, webhook, "createWebhook result");
 }
 
@@ -767,6 +768,12 @@ export function applyWebhookPatch(webhook: Webhook, patch: UpdateWebhookInput, d
   const mapping = normalizeWebhookMapping(resolveClearable(webhook.mapping, parsed.mapping));
   const defaultPriority = resolveClearable(webhook.defaultPriority, parsed.defaultPriority);
   const defaultLabels = normalizeWebhookLabels(resolveClearable(webhook.defaultLabels, parsed.defaultLabels));
+  const skipPendingFeedback =
+    parsed.skipPendingFeedback === undefined
+      ? webhook.skipPendingFeedback
+      : parsed.skipPendingFeedback === true
+        ? true
+        : undefined;
 
   const next: Webhook = {
     id: webhook.id,
@@ -782,6 +789,7 @@ export function applyWebhookPatch(webhook: Webhook, patch: UpdateWebhookInput, d
   if (mapping !== undefined) next.mapping = mapping;
   if (defaultPriority !== undefined) next.defaultPriority = defaultPriority;
   if (defaultLabels !== undefined) next.defaultLabels = defaultLabels;
+  if (skipPendingFeedback === true) next.skipPendingFeedback = true;
   if (webhook.lastTriggeredAt !== undefined) next.lastTriggeredAt = webhook.lastTriggeredAt;
   return parseOrThrow(WebhookSchema, next, "updateWebhook result");
 }

@@ -47,6 +47,22 @@ describe("NotificationTracker", () => {
     expect(tracker.handleEvent({ type: "task.updated", task: notifyTask(1, { needsHuman: "Again?" }) }, LABELS)).toHaveLength(1);
   });
 
+  it("announces a new feedback task with the feedback variant of the approval notification", () => {
+    const tracker = new NotificationTracker();
+    const feedback = notifyTask(4, { status: "todo", pendingApproval: true, labels: ["feedback"] });
+    expect(tracker.handleEvent({ type: "task.created", task: feedback }, LABELS)).toEqual([
+      {
+        tag: `bitig:task:${feedback.id}:approval`,
+        trigger: "awaitingApproval",
+        title: "ALP-4 · Task 4",
+        body: "New feedback is awaiting your review",
+        taskRef: "ALP-4",
+      },
+    ]);
+    // The same approval state arriving again through an update is not a second notification.
+    expect(tracker.handleEvent({ type: "task.updated", task: feedback }, LABELS)).toEqual([]);
+  });
+
   it("announces new tasks awaiting approval or a person, but not tasks created done", () => {
     const tracker = new NotificationTracker();
     const proposed = notifyTask(2, { status: "todo", pendingApproval: true });

@@ -2,6 +2,10 @@ import { sqliteTable, text, integer, real, index, uniqueIndex, check } from "dri
 import { sql } from "drizzle-orm";
 import {
   DEFAULT_DESCRIPTION,
+  DEFAULT_FEEDBACK_ENABLED,
+  DEFAULT_FEEDBACK_ENTRY_OUTCOME,
+  DEFAULT_FEEDBACK_THANK_YOU_TEXT,
+  DEFAULT_FEEDBACK_TURNSTILE,
   DEFAULT_IS_PUBLIC,
   DEFAULT_MAX_PARALLEL_CHILDREN,
   DEFAULT_ORGANISATION_ID,
@@ -20,6 +24,8 @@ import {
   type CheckpointStatus,
   type StateSnapshot,
   type CommentAuthorType,
+  type FeedbackEntryOutcome,
+  type FeedbackFields,
   type OrganisationRole,
   type PlatformRole,
   type ProjectKind,
@@ -282,6 +288,10 @@ export const checkpoints = sqliteTable(
   (table) => [uniqueIndex("checkpoints_task_step_idx").on(table.taskId, table.stepIndex)],
 );
 
+export type WebhookMappingRecord = WebhookMapping & {
+  skipPendingFeedback?: boolean | undefined;
+};
+
 export const webhooks = sqliteTable(
   "webhooks",
   {
@@ -295,7 +305,7 @@ export const webhooks = sqliteTable(
     enabled: integer("enabled", { mode: "boolean" })
       .notNull()
       .default(DEFAULT_WEBHOOK_ENABLED),
-    mapping: text("mapping", { mode: "json" }).$type<WebhookMapping>(),
+    mapping: text("mapping", { mode: "json" }).$type<WebhookMappingRecord>(),
     defaultPriority: text("default_priority").$type<TaskPriority>(),
     defaultLabels: text("default_labels", { mode: "json" }).$type<string[]>(),
     triggerCount: integer("trigger_count").notNull().default(0),
@@ -662,4 +672,96 @@ export type ProjectRunSettingsRecord = typeof projectRunSettings.$inferSelect;
 export type InsertProjectRunSettingsRecord = typeof projectRunSettings.$inferInsert;
 export type AgentRunChildRecord = typeof agentRunChildren.$inferSelect;
 export type InsertAgentRunChildRecord = typeof agentRunChildren.$inferInsert;
+
+export const feedbackForms = sqliteTable(
+  "feedback_forms",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id")
+      .notNull()
+      .default(DEFAULT_ORGANISATION_ID)
+      .references(() => organisations.id, { onDelete: "cascade" }),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    publicId: text("public_id").notNull(),
+    name: text("name").notNull(),
+    title: text("title").notNull(),
+    intro: text("intro").notNull().default(DEFAULT_DESCRIPTION),
+    enabled: integer("enabled", { mode: "boolean" })
+      .notNull()
+      .default(DEFAULT_FEEDBACK_ENABLED),
+    fields: text("fields", { mode: "json" }).$type<FeedbackFields>().notNull(),
+    allowedOrigins: text("allowed_origins", { mode: "json" }).$type<string[]>().notNull(),
+    turnstile: integer("turnstile", { mode: "boolean" })
+      .notNull()
+      .default(DEFAULT_FEEDBACK_TURNSTILE),
+    defaultLabels: text("default_labels", { mode: "json" }).$type<string[]>(),
+    defaultPriority: text("default_priority").$type<TaskPriority>(),
+    thankYouText: text("thank_you_text")
+      .notNull()
+      .default(DEFAULT_FEEDBACK_THANK_YOU_TEXT),
+    accentColor: text("accent_color"),
+    bannedWords: text("banned_words", { mode: "json" }).$type<string[]>(),
+    submissionCount: integer("submission_count").notNull().default(0),
+    lastSubmittedAt: integer("last_submitted_at"),
+    createdBy: text("created_by").$type<TaskActor>(),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("feedback_forms_public_id_unique").on(table.publicId),
+    index("feedback_forms_org_id_idx").on(table.orgId),
+    index("feedback_forms_project_id_idx").on(table.projectId),
+  ],
+);
+
+export const feedbackEntries = sqliteTable(
+  "feedback_entries",
+  {
+    id: text("id").primaryKey(),
+    taskId: text("task_id").references(() => tasks.id, { onDelete: "set null" }),
+    formId: text("form_id")
+      .notNull()
+      .references(() => feedbackForms.id, { onDelete: "cascade" }),
+    orgId: text("org_id")
+      .notNull()
+      .default(DEFAULT_ORGANISATION_ID)
+      .references(() => organisations.id, { onDelete: "cascade" }),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    outcome: text("outcome")
+      .$type<FeedbackEntryOutcome>()
+      .notNull()
+      .default(DEFAULT_FEEDBACK_ENTRY_OUTCOME),
+    category: text("category"),
+    submitterEmail: text("submitter_email"),
+    submitterName: text("submitter_name"),
+    pageUrl: text("page_url"),
+    ipHash: text("ip_hash"),
+    bodyHash: text("body_hash"),
+    userAgent: text("user_agent"),
+    spamScore: integer("spam_score").notNull().default(0),
+    reviewedBy: text("reviewed_by").$type<TaskActor>(),
+    reviewedAt: integer("reviewed_at"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [
+    index("feedback_entries_form_outcome_idx").on(table.formId, table.outcome),
+    index("feedback_entries_task_id_idx").on(table.taskId),
+    index("feedback_entries_duplicate_idx").on(
+      table.formId,
+      table.ipHash,
+      table.bodyHash,
+      table.createdAt,
+    ),
+  ],
+);
+
+export type FeedbackFormRecord = typeof feedbackForms.$inferSelect;
+export type InsertFeedbackFormRecord = typeof feedbackForms.$inferInsert;
+export type FeedbackEntryRecord = typeof feedbackEntries.$inferSelect;
+export type InsertFeedbackEntryRecord = typeof feedbackEntries.$inferInsert;
+
 

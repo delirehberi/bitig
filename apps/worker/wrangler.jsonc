@@ -50,11 +50,14 @@
     { "tag": "v2", "new_sqlite_classes": ["RealtimeHub"] },
     { "tag": "v3", "new_sqlite_classes": ["LoginChallenge"] }
   ],
+  "triggers": {
+    "crons": ["0 3 * * *"]
+  },
   "assets": {
     "directory": "../web/dist",
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/api/*", "/health", "/mcp", "/mcp/*", "/webhooks/*"]
+    "run_worker_first": ["/api/*", "/embed.js", "/f/*", "/health", "/mcp", "/mcp/*", "/webhooks/*"]
   },
   "vars": {
     // Comma-separated list of extra origins allowed to call /api/* cross-origin.
@@ -66,6 +69,8 @@
     "BOOTSTRAP_ADMIN_EMAIL": "",
     // Comma-separated lowercase hex public keys allowed to sign in via NIP-07.
     "NOSTR_AUTH_PUBKEYS": "46f3c7bb33cc3019049b76dc89dbb96e34c247bdda68b6ad8632682793ff8a1a",
+    // Cloudflare Turnstile site key for public feedback forms (empty disables Turnstile when TURNSTILE_SECRET_KEY is also unset).
+    "TURNSTILE_SITE_KEY": "",
     // Storage backend the dashboard uses: "cloudflare" (D1 via this Worker)
     // or "local" (in-memory placeholder).
     "STORAGE_MODE": "cloudflare"

@@ -29,6 +29,19 @@ import { invitationsAcceptRouter, invitationsPublicRouter, orgsRouter } from "./
 import { adminRouter } from "./routes/admin";
 import { t3ApiRouter, t3OauthCallbackRouter, t3TaskRunsRouter } from "./routes/t3";
 import { webhookReceiverRouter, webhooksApiRouter } from "./routes/webhooks";
+import {
+  applyPublicFeedbackSecurityHeaders,
+  feedbackFormsRouter,
+  projectFeedbackFormsRouter,
+  publicFeedbackRouter,
+  runScheduledFeedbackCleanup,
+  taskFeedbackRouter,
+} from "./routes/feedback";
+import {
+  EMBED_SCRIPT_PATH,
+  applyEmbedScriptResourcePolicy,
+  serveEmbedScript,
+} from "./routes/embed";
 import { API_POLICY, MCP_POLICY, WEBHOOK_POLICY, authFailureGuard, rateLimit } from "./rate-limit";
 import { csrfProtection } from "./csrf";
 import { publishRealtimeEvent, realtimeRouter, withRealtimeBroadcast } from "./realtime";
@@ -48,6 +61,7 @@ export interface AppEnv {
     sessionId: string | undefined;
     orgId: string | undefined;
     orgRole: OrganisationRole | undefined;
+    feedbackAllowedOrigins: string[] | undefined;
   };
 }
 
@@ -113,6 +127,16 @@ export function createApp(options?: CreateAppOptions): Hono<AppEnv> {
     await next();
   });
 
+  app.use("/f/*", async (c, next) => {
+    await next();
+    applyPublicFeedbackSecurityHeaders(c);
+  });
+
+  app.use(EMBED_SCRIPT_PATH, async (c, next) => {
+    await next();
+    applyEmbedScriptResourcePolicy(c);
+  });
+
   app.use(
     "*",
     secureHeaders({
@@ -149,6 +173,11 @@ export function createApp(options?: CreateAppOptions): Hono<AppEnv> {
     }),
   );
 
+  app.get(EMBED_SCRIPT_PATH, serveEmbedScript);
+
+  // Public feedback form page and submission endpoint (outside /api/*)
+  app.route("/f", publicFeedbackRouter);
+
   // Rate limiting and CSRF protection on /api/* routes
   app.use("/api/*", rateLimit(API_POLICY));
   app.use("/api/*", csrfProtection());
@@ -172,7 +201,10 @@ export function createApp(options?: CreateAppOptions): Hono<AppEnv> {
 
   // REST API routes
   app.route("/api/projects", projectsRouter);
+  app.route("/api/projects", projectFeedbackFormsRouter);
+  app.route("/api/feedback-forms", feedbackFormsRouter);
   app.route("/api/tasks", tasksRouter);
+  app.route("/api/tasks", taskFeedbackRouter);
   app.route("/api/tasks", t3TaskRunsRouter);
   app.route("/api/comments", commentsRouter);
   app.route("/api/attachments", attachmentsRouter);
@@ -239,6 +271,19 @@ export function createApp(options?: CreateAppOptions): Hono<AppEnv> {
 
 const app = createApp();
 
+export { runScheduledFeedbackCleanup } from "./routes/feedback";
+
+export async function scheduled(
+  controller: ScheduledController,
+  env: Env,
+  ctx: ExecutionContext,
+): Promise<void> {
+  const now = controller.scheduledTime ? new Date(controller.scheduledTime) : undefined;
+  const cleanupPromise = runScheduledFeedbackCleanup(env, { now });
+  ctx.waitUntil(cleanupPromise);
+  await cleanupPromise;
+}
+
 // Durable Object classes must be exported from the Worker's main module.
 export { RateLimiter } from "./rate-limiter-do";
 export { RealtimeHub } from "./realtime-do";
@@ -246,4 +291,5 @@ export { LoginChallenge } from "./login-challenge-do";
 
 export default {
   fetch: app.fetch,
+  scheduled,
 } satisfies ExportedHandler<Env>;

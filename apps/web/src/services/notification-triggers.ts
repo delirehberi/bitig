@@ -1,4 +1,4 @@
-import type { AgentRun, AgentRunChild, AgentRunState, RealtimeEvent, Task } from "@bitig/core";
+import { FEEDBACK_LABEL, type AgentRun, type AgentRunChild, type AgentRunState, type RealtimeEvent, type Task } from "@bitig/core";
 import type { NotificationIntent, NotificationTrigger } from "./notifications";
 
 /** How a notification names a task: its ticket code (or ID) and title. */
@@ -29,6 +29,7 @@ function isAttentionRunState(state: AgentRunState): state is AttentionRunState {
 const TAG_PREFIX = "bitig";
 const TASK_COMPLETED_REASON = "Task completed";
 const AWAITING_APPROVAL_REASON = "Task is awaiting your approval";
+const NEW_FEEDBACK_REASON = "New feedback is awaiting your review";
 const NEEDS_HUMAN_REASON = "Needs your input";
 const BATCH_FINISHED_REASON = "Child batch finished";
 const UNKNOWN_TASK_TITLE = "Task";
@@ -66,6 +67,11 @@ function batchFinishedSignal(parentTaskId: string): Signal {
     trigger: "agentRun",
     reason: BATCH_FINISHED_REASON,
   };
+}
+
+/** The "new feedback" variant of the approval signal: same tag and trigger, so it is announced once. */
+function feedbackVariant(signal: Signal): Signal {
+  return { tag: signal.tag, trigger: signal.trigger, reason: NEW_FEEDBACK_REASON };
 }
 
 function intentTitle(label: TaskLabel): string {
@@ -136,7 +142,10 @@ export class NotificationTracker {
         // A task created as done did not transition to done; only open requests announce.
         const fresh = this.reconcile(`task:${event.task.id}`, taskSignals(event.task));
         const label = labels.forTask(event.task);
-        return fresh.filter((signal) => signal.trigger !== "taskCompleted").map((signal) => toIntent(signal, label));
+        const isFeedback = event.task.labels?.includes(FEEDBACK_LABEL) === true;
+        return fresh
+          .filter((signal) => signal.trigger !== "taskCompleted")
+          .map((signal) => toIntent(isFeedback && signal.trigger === "awaitingApproval" ? feedbackVariant(signal) : signal, label));
       }
       case "task.updated": {
         const label = labels.forTask(event.task);

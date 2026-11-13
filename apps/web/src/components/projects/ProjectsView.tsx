@@ -45,6 +45,10 @@ interface ProjectsViewProps {
    * confirmed connected.
    */
   readonly hostFolderEnabled?: boolean;
+  /** Shows the project Feedback tab (cloudflare mode). */
+  readonly feedbackFormsEnabled?: boolean;
+  /** Lets editors and above manage feedback forms; viewers see the tab read-only. */
+  readonly canEditFeedbackForms?: boolean;
 }
 
 interface HostFolderNotice {
@@ -80,6 +84,8 @@ export function ProjectsView({
   agentRuns: agentRunsProp,
   activeSessions: activeSessionsProp,
   hostFolderEnabled = false,
+  feedbackFormsEnabled = false,
+  canEditFeedbackForms = false,
 }: ProjectsViewProps) {
   const [localArchivedView, setLocalArchivedView] = useState(false);
   const isArchivedView = archivedView ?? localArchivedView;
@@ -611,6 +617,8 @@ export function ProjectsView({
         activeSessions={viewProject ? (activeSessionsByProject.get(viewProject.id) ?? []) : []}
         focusT3Composer={focusT3Composer}
         canManageHostFolder={hostFolderEnabled}
+        feedbackFormsEnabled={feedbackFormsEnabled}
+        canEditFeedbackForms={canEditFeedbackForms}
         onMappingChange={(projectId, nextMapping) => {
           setMappings((prev) =>
             nextMapping

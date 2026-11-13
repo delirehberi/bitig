@@ -58,6 +58,7 @@ import {
   dependencyLinks,
   encodeBase64,
   findBlockingTasks,
+  isPendingFeedbackTask,
   isTextAttachmentMimeType,
   resolveProjectRef,
   resolveRunSelection,
@@ -798,6 +799,7 @@ export function registerBitigTools(
           });
         const matching = listed.filter(
           (task) =>
+            (args.pendingApproval === true || !isPendingFeedbackTask(task)) &&
             (args.needsHuman === undefined || (task.needsHuman !== undefined) === args.needsHuman) &&
             (args.pendingApproval === undefined || (task.pendingApproval === true) === args.pendingApproval) &&
             (args.blocked === undefined || ("blockedBy" in task) === args.blocked),
@@ -823,7 +825,9 @@ export function registerBitigTools(
         const projectId = await resolveProjectRef(storage, args.projectId, opts);
         const project = await storage.getProject(projectId, opts);
         if (project === null) throw new NotFoundError("project", args.projectId);
-        const tasks = await storage.getTasks(undefined, opts);
+        const tasks = (await storage.getTasks(undefined, opts)).filter(
+          (task) => !isPendingFeedbackTask(task),
+        );
         const summary = selectProjectWork(project, tasks);
         const primary = tasks.find((task) => task.id === summary.primary?.id);
         if (primary === undefined) return formatSuccessResult({ ...summary, context: null });
@@ -1389,6 +1393,10 @@ export function registerBitigTools(
         mapping: WebhookMappingSchema.optional().describe(WEBHOOK_MAPPING_DESCRIPTION),
         defaultPriority: TaskPrioritySchema.optional(),
         defaultLabels: z.array(z.string()).optional(),
+        skipPendingFeedback: z
+          .boolean()
+          .optional()
+          .describe("When true, skips pending feedback tasks for this webhook"),
       },
     },
     async (args, extra) => {
@@ -1419,6 +1427,11 @@ export function registerBitigTools(
         mapping: WebhookMappingSchema.nullable().optional().describe(WEBHOOK_MAPPING_DESCRIPTION),
         defaultPriority: TaskPrioritySchema.nullable().optional(),
         defaultLabels: z.array(z.string()).nullable().optional(),
+        skipPendingFeedback: z
+          .boolean()
+          .nullable()
+          .optional()
+          .describe("Set true to skip pending feedback tasks; false or null to clear"),
         regenerateToken: z.boolean().optional().describe("Set true to rotate the secret token"),
       },
     },

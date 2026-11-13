@@ -10,12 +10,15 @@ export interface FeatureFlags {
   readonly passwordLogin: boolean;
   /** Live WebSocket updates from the Worker's RealtimeHub Durable Object (/api/realtime). */
   readonly realtimeSync: boolean;
+  /** Project Feedback tab for managing public feedback forms (the Worker's /api/feedback-forms routes). */
+  readonly feedbackForms: boolean;
 }
 
 export function featuresFor(mode: StorageMode): FeatureFlags {
   return {
     passwordLogin: mode === "cloudflare",
     realtimeSync: mode === "cloudflare",
+    feedbackForms: mode === "cloudflare",
   };
 }
 

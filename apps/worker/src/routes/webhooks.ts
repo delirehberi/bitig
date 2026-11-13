@@ -7,6 +7,7 @@ import {
   classifyWebhookPayload,
   extractTaskFromWebhookPayload,
   resolveSentryTasks,
+  shouldSkipWebhookForTask,
   withTaskCodes,
 } from "@bitig/core";
 import { D1Storage } from "@bitig/storage-d1";
@@ -77,7 +78,34 @@ export const webhooksApiRouter = new Hono<AppEnv>()
   })
   .post("/:id/trigger", async (c) => {
     const storage = c.get("storage");
-    const updated = await storage.recordWebhookTrigger(c.req.param("id"));
+    const id = c.req.param("id");
+    let taskId: string | undefined;
+    try {
+      const body: unknown = await c.req.json();
+      if (
+        typeof body === "object" &&
+        body !== null &&
+        "taskId" in body &&
+        typeof (body as { taskId?: unknown }).taskId === "string"
+      ) {
+        taskId = (body as { taskId: string }).taskId;
+      }
+    } catch {
+      // Optional JSON body on /:id/trigger
+    }
+    if (taskId !== undefined) {
+      const [webhook, task] = await Promise.all([
+        storage.getWebhook(id),
+        storage.getTask(taskId),
+      ]);
+      if (!webhook) {
+        return c.json({ error: "not_found" }, HTTP_NOT_FOUND);
+      }
+      if (task && shouldSkipWebhookForTask(webhook, task)) {
+        return c.json(webhook);
+      }
+    }
+    const updated = await storage.recordWebhookTrigger(id);
     return c.json(updated);
   });
 
@@ -134,6 +162,9 @@ export const webhookReceiverRouter = new Hono<AppEnv>().post("/:token", async (c
   }
 
   const taskInput = extractTaskFromWebhookPayload(webhook, payload);
+  if (shouldSkipWebhookForTask(webhook, taskInput)) {
+    return c.json({ status: "ignored", reason: "pending_feedback_skipped" });
+  }
   const task = await storage.saveTask(taskInput);
   await storage.recordWebhookTrigger(webhook.id);
   const project = await storage.getProject(task.projectId);

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { TaskFeedbackClient } from "@bitig/api-client";
 import {
   Archive,
   Bot,
@@ -31,6 +32,7 @@ import {
 } from "@bitig/core";
 import { formatFullTimestamp, formatTimeAgo } from "../../domain/time-ago";
 import { taskRef } from "../../domain/task-ref";
+import { isFeedbackTask } from "../../domain/feedback-tasks";
 import { useFocusTrap } from "../../hooks/useFocusTrap";
 import { Link } from "../../routing/Link";
 import { taskPageHref } from "../../routing/router";
@@ -41,6 +43,7 @@ import { NeedsHumanNote } from "./NeedsHuman";
 import { TaskCode } from "./TaskCode";
 import { TaskCheckpoint } from "./TaskCheckpoint";
 import { TaskAttachments } from "./TaskAttachments";
+import { TaskFeedbackPanel } from "./TaskFeedbackPanel";
 import { TaskComments, type TaskCommentsT3Context } from "./TaskComments";
 import { TaskT3Section } from "./TaskT3Section";
 import { UmbrellaChildrenPanel } from "./UmbrellaChildrenPanel";
@@ -63,6 +66,8 @@ interface TaskDetailModalProps {
   readonly onApprove?: ((task: Task) => void) | undefined;
   /** Loads and saves the task's comments; omit to hide them. */
   readonly storage?: StorageProvider | undefined;
+  /** Loads the feedback behind a feedback task; omit to hide the Feedback panel (#BIT-181). */
+  readonly feedbackApi?: Pick<TaskFeedbackClient, "getTaskFeedback"> | undefined;
   /** The tasks this task mentions and the tasks that mention it; omit to hide them. */
   readonly links?: TaskLinks | undefined;
   /** The tasks this task depends on and the tasks waiting on it; omit to hide them. */
@@ -145,6 +150,7 @@ export function TaskDetailModal({
   onNeedsHumanResolve,
   onApprove,
   storage,
+  feedbackApi,
   links,
   dependencies,
   agentRun,
@@ -372,6 +378,9 @@ export function TaskDetailModal({
           </section>
         )}
 
+        {feedbackApi && isFeedbackTask(task) && (
+          <TaskFeedbackPanel key={`feedback-${task.id}`} task={task} feedbackApi={feedbackApi} />
+        )}
         {storage && <TaskAttachments key={`attachments-${task.id}`} storage={storage} taskId={task.id} />}
 
         {/* Prefixed: sibling keys must be unique, and TaskComments already uses the bare task ID (#BIT-120). */}

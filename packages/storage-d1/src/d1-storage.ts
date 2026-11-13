@@ -79,6 +79,8 @@ import {
   attachments,
   checkpoints,
   comments,
+  feedbackEntries,
+  feedbackForms,
   projectRunSettings,
   projects,
   projectT3Threads,
@@ -342,7 +344,13 @@ function recordToWebhook(row: WebhookRecord): Webhook {
     updatedAt: new Date(row.updatedAt).toISOString(),
   };
   if (row.mapping !== null) {
-    webhook.mapping = { ...row.mapping };
+    const { skipPendingFeedback, ...mappingFields } = row.mapping;
+    if (Object.keys(mappingFields).length > 0) {
+      webhook.mapping = { ...mappingFields };
+    }
+    if (skipPendingFeedback === true) {
+      webhook.skipPendingFeedback = true;
+    }
   }
   if (row.defaultPriority !== null) {
     webhook.defaultPriority = row.defaultPriority;
@@ -357,6 +365,10 @@ function recordToWebhook(row: WebhookRecord): Webhook {
 }
 
 function webhookToRecord(webhook: Webhook): InsertWebhookRecord {
+  const mappingRecord: schema.WebhookMappingRecord = {
+    ...(webhook.mapping ? { ...webhook.mapping } : {}),
+    ...(webhook.skipPendingFeedback === true ? { skipPendingFeedback: true } : {}),
+  };
   return {
     id: webhook.id,
     projectId: webhook.projectId,
@@ -364,7 +376,7 @@ function webhookToRecord(webhook: Webhook): InsertWebhookRecord {
     provider: webhook.provider,
     token: webhook.token,
     enabled: webhook.enabled,
-    mapping: webhook.mapping ? { ...webhook.mapping } : null,
+    mapping: Object.keys(mappingRecord).length > 0 ? mappingRecord : null,
     defaultPriority: webhook.defaultPriority ?? null,
     defaultLabels: webhook.defaultLabels ? [...webhook.defaultLabels] : null,
     triggerCount: webhook.triggerCount,
@@ -564,6 +576,8 @@ export class D1Storage implements StorageProvider {
     await ignoreMissingT3Table(this.#db.delete(projectT3Threads).where(eq(projectT3Threads.projectId, validId)));
     await ignoreMissingT3Table(this.#db.delete(t3ProjectMappings).where(eq(t3ProjectMappings.projectId, validId)));
     await ignoreMissingT3Table(this.#db.delete(projectRunSettings).where(eq(projectRunSettings.projectId, validId)));
+    await ignoreMissingT3Table(this.#db.delete(feedbackEntries).where(eq(feedbackEntries.projectId, validId)));
+    await ignoreMissingT3Table(this.#db.delete(feedbackForms).where(eq(feedbackForms.projectId, validId)));
     await this.#db.delete(comments).where(inArray(comments.taskId, projectTaskIds));
     await this.#db.delete(checkpoints).where(inArray(checkpoints.taskId, projectTaskIds));
     await this.#db.delete(tasks).where(eq(tasks.projectId, validId));
@@ -841,6 +855,9 @@ export class D1Storage implements StorageProvider {
       this.#db
         .delete(agentRunChildren)
         .where(or(eq(agentRunChildren.parentTaskId, validId), eq(agentRunChildren.childTaskId, validId))),
+    );
+    await ignoreMissingT3Table(
+      this.#db.update(feedbackEntries).set({ taskId: null }).where(eq(feedbackEntries.taskId, validId)),
     );
     await this.#db.delete(comments).where(eq(comments.taskId, validId));
     await this.#db.delete(checkpoints).where(eq(checkpoints.taskId, validId));

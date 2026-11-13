@@ -1307,6 +1307,7 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
           defaultPriority: "high",
           defaultLabels: ["sentry", "prod"],
           mapping: { title: "data.issue.title" },
+          skipPendingFeedback: true,
         });
         expect(created).toMatchObject({
           projectId: project.id,
@@ -1317,6 +1318,7 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
           defaultPriority: "high",
           defaultLabels: ["sentry", "prod"],
           mapping: { title: "data.issue.title" },
+          skipPendingFeedback: true,
         });
         expect(WebhookSchema.parse(created)).toEqual(created);
         expect(await storage.getWebhook(created.id)).toEqual(created);
@@ -1329,6 +1331,7 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
           enabled: false,
           mapping: null,
           defaultPriority: null,
+          skipPendingFeedback: false,
           regenerateToken: true,
         });
         expect(updated.name).toBe("Jira Sync");
@@ -1337,6 +1340,7 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
         expect(updated.token).not.toBe(created.token);
         expect(updated).not.toHaveProperty("mapping");
         expect(updated).not.toHaveProperty("defaultPriority");
+        expect(updated).not.toHaveProperty("skipPendingFeedback");
         expect(await storage.getWebhookByToken(created.token)).toBeNull();
         expect(await storage.getWebhookByToken(updated.token)).toEqual(updated);
 

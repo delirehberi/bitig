@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { ShieldCheck, ShieldQuestionMark, Trash2 } from "lucide-react";
 
 /*
@@ -28,10 +29,12 @@ interface ApprovalNoteProps {
   readonly onReject?: (() => void) | undefined;
   /** Shortens the explanation, for cards. */
   readonly compact?: boolean;
+  /** Extra buttons shown after Approve, such as the feedback review actions. */
+  readonly extraActions?: ReactNode;
 }
 
 /** The call to approve, on cards and in the detail view. */
-export function ApprovalNote({ pending, onApprove, onReject, compact = false }: ApprovalNoteProps) {
+export function ApprovalNote({ pending, onApprove, onReject, compact = false, extraActions }: ApprovalNoteProps) {
   if (!pending) return null;
   return (
     <div
@@ -49,7 +52,7 @@ export function ApprovalNote({ pending, onApprove, onReject, compact = false }: 
           </span>
         )}
       </div>
-      {(onApprove ?? onReject) && (
+      {(onApprove ?? onReject ?? extraActions) && (
         <div className="flex shrink-0 items-center gap-1">
           {onApprove && (
             <button
@@ -61,6 +64,7 @@ export function ApprovalNote({ pending, onApprove, onReject, compact = false }: 
               Approve
             </button>
           )}
+          {extraActions}
           {onReject && (
             <button
               type="button"

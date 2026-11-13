@@ -1,6 +1,7 @@
 import { compareCheckpoints } from "./checkpoints";
 import { isTaskBlocked } from "./dependencies";
 import { compareComments, compareTasks } from "./entities";
+import { isPendingFeedbackTask } from "./feedback";
 import { withTaskCodes, type TaskWithCode } from "./ticket-codes";
 import type { Checkpoint, Comment, Project, Task } from "./types";
 
@@ -23,7 +24,10 @@ function clip(text: string, limit: number): string {
 export function selectProjectWork(project: Project, tasks: readonly Task[]) {
   const byId = new Map(tasks.map((task) => [task.id, task]));
   const open = project.archived === true ? [] : tasks.filter(
-    (task) => task.projectId === project.id && (task.status === "todo" || task.status === "in_progress"),
+    (task) =>
+      task.projectId === project.id &&
+      (task.status === "todo" || task.status === "in_progress") &&
+      !isPendingFeedbackTask(task),
   );
   const gates = (task: Task) => ({
     pendingApproval: task.pendingApproval === true,
