@@ -29,6 +29,7 @@ import { invitationsAcceptRouter, invitationsPublicRouter, orgsRouter } from "./
 import { adminRouter } from "./routes/admin";
 import { t3ApiRouter, t3OauthCallbackRouter, t3TaskRunsRouter } from "./routes/t3";
 import { webhookReceiverRouter, webhooksApiRouter } from "./routes/webhooks";
+import { feedbackFormsRouter, projectFeedbackFormsRouter } from "./routes/feedback";
 import { API_POLICY, MCP_POLICY, WEBHOOK_POLICY, authFailureGuard, rateLimit } from "./rate-limit";
 import { csrfProtection } from "./csrf";
 import { publishRealtimeEvent, realtimeRouter, withRealtimeBroadcast } from "./realtime";
@@ -172,6 +173,8 @@ export function createApp(options?: CreateAppOptions): Hono<AppEnv> {
 
   // REST API routes
   app.route("/api/projects", projectsRouter);
+  app.route("/api/projects", projectFeedbackFormsRouter);
+  app.route("/api/feedback-forms", feedbackFormsRouter);
   app.route("/api/tasks", tasksRouter);
   app.route("/api/tasks", t3TaskRunsRouter);
   app.route("/api/comments", commentsRouter);
