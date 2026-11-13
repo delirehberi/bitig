@@ -1,7 +1,9 @@
 import type {
   AgentRun,
+  AgentRunState,
   Comment,
   HostFolderCheckResult,
+  ParallelSkipReason,
   ProjectT3Thread,
   ProjectT3ThreadMessagesResponse,
   ProjectT3ThreadsResponse,
@@ -9,6 +11,8 @@ import type {
   SendProjectT3MessageInput,
   StartProjectT3ThreadInput,
   StartT3ThreadInput,
+  StartUmbrellaReadyChildrenInput,
+  StopUmbrellaChildrenResponse,
   T3ConnectionStatus,
   T3HostConnectionStatus,
   T3ModelCapability,
@@ -18,7 +22,9 @@ import type {
   T3StartOAuthInput,
   T3TaskRunLiveResponse,
   T3WorkspaceBusySession,
+  T3WorkspaceStrategy,
   Task,
+  UmbrellaChildrenStatusResponse,
   UpdateT3HostInput,
 } from "@bitig/core";
 
@@ -398,6 +404,7 @@ export async function fetchT3Runs(signal?: AbortSignal): Promise<T3RunsLiveRespo
   return {
     runs: Array.isArray(body?.runs) ? body.runs : [],
     ...(Array.isArray(body?.activeSessions) ? { activeSessions: body.activeSessions } : {}),
+    ...(Array.isArray(body?.umbrellaChildren) ? { umbrellaChildren: body.umbrellaChildren } : {}),
   };
 }
 
@@ -620,4 +627,89 @@ export async function fetchProjectT3ThreadMessages(
     throw new T3ApiError(response.status, await parseErrorMessage(response, "Could not load T3 thread messages"));
   }
   return (await response.json()) as ProjectT3ThreadMessagesResponse;
+}
+
+export interface StartedReadyChildSummary {
+  readonly taskId: string;
+  readonly code?: string | undefined;
+  readonly title: string;
+  readonly threadId: string;
+  readonly link?: string | undefined;
+  readonly state: AgentRunState;
+  readonly queued: boolean;
+  readonly workspaceStrategy: T3WorkspaceStrategy;
+  readonly providerInstanceId?: string | undefined;
+  readonly model?: string | undefined;
+  readonly level?: string | undefined;
+}
+
+export interface SkippedReadyChildSummary {
+  readonly taskId: string;
+  readonly code?: string | undefined;
+  readonly title: string;
+  readonly reason: ParallelSkipReason;
+  readonly detail: string;
+  readonly blockingTaskId?: string | undefined;
+  readonly blockingTaskCode?: string | undefined;
+  readonly overlappingPath?: string | undefined;
+}
+
+export interface StartUmbrellaReadyChildrenResult {
+  readonly started: readonly StartedReadyChildSummary[];
+  readonly skipped: readonly SkippedReadyChildSummary[];
+}
+
+/** Reads the live child status, skip reasons, and next ready batch for an umbrella task (#BIT-191). */
+export async function fetchUmbrellaChildren(
+  taskId: string,
+  signal?: AbortSignal,
+): Promise<UmbrellaChildrenStatusResponse> {
+  const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/children`, {
+    headers: baseHeaders(),
+    credentials: "same-origin",
+    ...(signal ? { signal } : {}),
+  });
+  if (!response.ok) {
+    throw new T3ApiError(response.status, await parseErrorMessage(response, "Could not load umbrella children"));
+  }
+  return (await response.json()) as UmbrellaChildrenStatusResponse;
+}
+
+/** Starts the next parallel-safe batch of ready children under an umbrella task (#BIT-191). */
+export async function startUmbrellaReadyChildren(
+  taskId: string,
+  input: StartUmbrellaReadyChildrenInput = {},
+  signal?: AbortSignal,
+): Promise<StartUmbrellaReadyChildrenResult> {
+  const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/children/start-ready`, {
+    method: "POST",
+    headers: {
+      ...baseHeaders(),
+      "Content-Type": "application/json",
+    },
+    credentials: "same-origin",
+    body: JSON.stringify(input),
+    ...(signal ? { signal } : {}),
+  });
+  if (!response.ok) {
+    throw new T3ApiError(response.status, await parseErrorMessage(response, "Could not start ready children"));
+  }
+  return (await response.json()) as StartUmbrellaReadyChildrenResult;
+}
+
+/** Stops every active child T3 session running under an umbrella task (#BIT-191). */
+export async function stopAllUmbrellaChildren(
+  taskId: string,
+  signal?: AbortSignal,
+): Promise<StopUmbrellaChildrenResponse> {
+  const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/children/stop`, {
+    method: "POST",
+    headers: baseHeaders(),
+    credentials: "same-origin",
+    ...(signal ? { signal } : {}),
+  });
+  if (!response.ok) {
+    throw new T3ApiError(response.status, await parseErrorMessage(response, "Could not stop running children"));
+  }
+  return (await response.json()) as StopUmbrellaChildrenResponse;
 }

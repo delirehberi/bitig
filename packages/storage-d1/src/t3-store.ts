@@ -2174,6 +2174,44 @@ export class T3D1Store {
     return rows.map(toAgentRunChild);
   }
 
+  async listAllAgentRunChildren(): Promise<AgentRunChild[]> {
+    if (!this.explicitOrgScope) {
+      const rows = await T3D1Store.ignoreMissingTable(
+        this.db
+          .select()
+          .from(agentRunChildren)
+          .orderBy(
+            asc(agentRunChildren.startedAt),
+            asc(agentRunChildren.parentTaskId),
+            asc(agentRunChildren.childTaskId),
+          ),
+        [],
+      );
+      return rows.map(toAgentRunChild);
+    }
+    const orgProjectIds = this.db
+      .select({ id: projects.id })
+      .from(projects)
+      .where(eq(projects.orgId, this.orgId));
+    const orgTaskIds = this.db
+      .select({ id: tasks.id })
+      .from(tasks)
+      .where(inArray(tasks.projectId, orgProjectIds));
+    const rows = await T3D1Store.ignoreMissingTable(
+      this.db
+        .select()
+        .from(agentRunChildren)
+        .where(inArray(agentRunChildren.parentTaskId, orgTaskIds))
+        .orderBy(
+          asc(agentRunChildren.startedAt),
+          asc(agentRunChildren.parentTaskId),
+          asc(agentRunChildren.childTaskId),
+        ),
+      [],
+    );
+    return rows.map(toAgentRunChild);
+  }
+
   async listAgentRunParentsForChild(childTaskId: string): Promise<AgentRunChild[]> {
     if (!(await this.canAccessTask(childTaskId))) return [];
     const rows = await this.db

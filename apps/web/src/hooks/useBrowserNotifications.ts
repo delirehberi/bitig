@@ -1,4 +1,4 @@
-import type { AgentRun, Project, Task } from "@bitig/core";
+import type { AgentRun, AgentRunChild, Project, Task } from "@bitig/core";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { taskRef } from "../domain/task-ref";
 import { navigate, taskHref } from "../routing/router";
@@ -88,17 +88,23 @@ function isPageInactive(): boolean {
 export interface NotificationDispatcherInput {
   readonly projects: readonly Project[];
   readonly tasks: readonly Task[];
-  readonly agentRuns?: readonly AgentRun[];
+  readonly agentRuns?: readonly AgentRun[] | undefined;
+  readonly umbrellaChildren?: readonly AgentRunChild[] | undefined;
 }
 
 /**
- * Raises browser notifications for realtime task and agent run transitions (#BIT-169).
+ * Raises browser notifications for realtime task and agent run transitions (#BIT-169, #BIT-191).
  *
  * Only shown while Bitig is in the background, since the in-page dashboard already surfaces the
  * same attention items. Transitions are still recorded while the page is active or a trigger is
  * off, so they never fire late. Clicking a notification focuses the tab and opens the task.
  */
-export function useNotificationDispatcher({ projects, tasks, agentRuns }: NotificationDispatcherInput): void {
+export function useNotificationDispatcher({
+  projects,
+  tasks,
+  agentRuns,
+  umbrellaChildren,
+}: NotificationDispatcherInput): void {
   const { permission, preferences } = useNotificationSettings();
   const [tracker] = useState(() => new NotificationTracker());
 
@@ -115,6 +121,9 @@ export function useNotificationDispatcher({ projects, tasks, agentRuns }: Notifi
   useEffect(() => {
     if (agentRuns) tracker.observeRuns(agentRuns);
   }, [tracker, agentRuns]);
+  useEffect(() => {
+    if (umbrellaChildren) tracker.observeRunChildren(umbrellaChildren);
+  }, [tracker, umbrellaChildren]);
 
   useRealtimeEvent((event) => {
     const current = latest.current;

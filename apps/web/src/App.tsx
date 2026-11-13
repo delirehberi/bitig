@@ -1,6 +1,7 @@
 import {
   blockedByFromError,
   buildMentionIndex,
+  buildUmbrellaIndex,
   dependencyLinks,
   sortProjectsByActivity,
   type CreateTaskInput,
@@ -127,7 +128,7 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
     deleteWebhook,
   } = useWebhooks(storage);
 
-  const { runs: agentRuns } = useT3Runs({
+  const { runs: agentRuns, umbrellaChildren } = useT3Runs({
     enabled:
       mode === "cloudflare" &&
       (activeTab === "tasks" || activeTab === "task" || viewTaskRef !== undefined),
@@ -136,7 +137,7 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
   // Most recently worked on first, wherever projects are listed.
   const recentProjects = useMemo(() => sortProjectsByActivity(projects, tasks), [projects, tasks]);
 
-  useNotificationDispatcher({ projects, tasks, agentRuns });
+  useNotificationDispatcher({ projects, tasks, agentRuns, umbrellaChildren });
 
   const selectedProjectId = routeProjectId;
 
@@ -218,6 +219,18 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
   const mentionIndex = useMemo(
     () => (activeTab === "tasks" ? undefined : buildMentionIndex(tasks, recentProjects)),
     [activeTab, tasks, recentProjects],
+  );
+  const umbrellaIndex = useMemo(
+    () =>
+      activeTab === "tasks"
+        ? undefined
+        : buildUmbrellaIndex({
+            tasks,
+            projects: recentProjects,
+            runs: agentRuns,
+            runChildren: umbrellaChildren,
+          }),
+    [activeTab, tasks, recentProjects, agentRuns, umbrellaChildren],
   );
 
   async function confirmIfBlocked(
@@ -366,6 +379,7 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
                 tasks={tasks}
                 projects={recentProjects}
                 agentRuns={agentRuns}
+                umbrellaChildren={umbrellaChildren}
                 isLoading={isTasksLoading}
                 error={tasksError}
                 selectedProjectId={selectedProjectId}
@@ -413,6 +427,7 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
                   task={pageTask}
                   projects={recentProjects}
                   agentRun={agentRuns.find((r) => r.taskId === pageTask.id)}
+                  isUmbrella={umbrellaIndex ? umbrellaIndex.isUmbrella(pageTask.id) : false}
                   onEdit={(t) => {
                     setEditModalState((prev) => ({
                       isOpen: true,
@@ -487,6 +502,7 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
                   task={viewTask}
                   projects={recentProjects}
                   agentRun={viewTask ? agentRuns.find((r) => r.taskId === viewTask.id) : undefined}
+                  isUmbrella={viewTask && umbrellaIndex ? umbrellaIndex.isUmbrella(viewTask.id) : false}
                   onClose={() => {
                     handleViewTask(undefined);
                   }}

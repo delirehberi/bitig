@@ -18,8 +18,10 @@ import {
 } from "lucide-react";
 import {
   checklistProgress,
+  extractTaskMentions,
   formatDuration,
   getTaskTiming,
+  hasExplicitUmbrellaMarker,
   taskCode,
   type AgentRun,
   type Checkpoint,
@@ -50,6 +52,7 @@ import {
   type TaskCommentsT3Context,
 } from "./TaskComments";
 import { TaskT3Section } from "./TaskT3Section";
+import { UmbrellaChildrenPanel } from "./UmbrellaChildrenPanel";
 import { agentNameForT3, STATE_LABELS } from "./t3-run-state";
 
 export interface TaskDetailPageProps {
@@ -69,6 +72,8 @@ export interface TaskDetailPageProps {
   readonly dependencies?: DependencyLinks | undefined;
   readonly agentRun?: AgentRun | null | undefined;
   readonly onTaskUpdated?: ((task: Task) => void) | undefined;
+  /** Whether the workspace umbrella index recognizes this task as an umbrella task (#BIT-191). */
+  readonly isUmbrella?: boolean | undefined;
 }
 
 const STATUS_LABELS: Record<TaskStatus, string> = {
@@ -180,6 +185,7 @@ export function TaskDetailPage({
   dependencies,
   agentRun,
   onTaskUpdated,
+  isUmbrella,
 }: TaskDetailPageProps) {
   const locationHref = useLocationHref();
   const [pendingChecklist, setPendingChecklist] = useState<{
@@ -254,6 +260,14 @@ export function TaskDetailPage({
       : activeRun
         ? { run: activeRun, capabilities: [] }
         : undefined;
+  const hasCandidateChildren =
+    isUmbrella === true ||
+    hasExplicitUmbrellaMarker(task) ||
+    Boolean(task.checklist?.some((item) => extractTaskMentions(item.text).length > 0)) ||
+    (dependencies?.dependents.length ?? 0) > 0 ||
+    (links?.mentions.length ?? 0) > 0 ||
+    activeRun?.state === "waiting_subagent" ||
+    activeRun?.waitingForTaskId !== undefined;
 
   function toggleChecklist(current: Task, next: ChecklistItem[]) {
     if (!onChecklistChange) return;
@@ -384,6 +398,15 @@ export function TaskDetailPage({
                       toggleChecklist(task, next);
                     }
                   : undefined
+              }
+              childrenPanel={
+                <UmbrellaChildrenPanel
+                  key={`children-${task.id}`}
+                  task={task}
+                  isUmbrella={isUmbrella}
+                  hasCandidateChildren={hasCandidateChildren}
+                  className="mb-0"
+                />
               }
               t3={effectiveT3Context}
               needsHumanClearedAt={needsHumanClearedAt}
@@ -1106,6 +1129,7 @@ function ThreadWithStorage({
   creatorName,
   checklist,
   onChecklistToggle,
+  childrenPanel,
   t3,
   needsHumanClearedAt,
   onNeedsHumanResolve,
@@ -1116,6 +1140,7 @@ function ThreadWithStorage({
   readonly creatorName: string;
   readonly checklist: readonly ChecklistItem[] | undefined;
   readonly onChecklistToggle?: ((next: ChecklistItem[]) => void) | undefined;
+  readonly childrenPanel?: React.ReactNode;
   readonly t3?: TaskCommentsT3Context | undefined;
   readonly needsHumanClearedAt: string | null;
   readonly onNeedsHumanResolve?: (() => void) | undefined;
@@ -1172,6 +1197,8 @@ function ThreadWithStorage({
           checklist={checklist}
           onChecklistToggle={onChecklistToggle}
         />
+
+        {childrenPanel}
 
         <TimelineList
           items={timelineItems}

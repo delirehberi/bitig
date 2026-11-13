@@ -20,6 +20,7 @@ import {
   type Task,
   type TaskPriority,
   type TaskStatus,
+  type UmbrellaProgressSummary,
 } from "@bitig/core";
 import { ChecklistProgressBadge } from "./Checklist";
 import { ApprovalNote } from "./Approval";
@@ -28,12 +29,14 @@ import { NeedsHumanNote } from "./NeedsHuman";
 import { TaskCode } from "./TaskCode";
 import { T3GitBadges } from "./T3GitBadges";
 import { RunLevelChip } from "./RunLevelChip";
+import { UmbrellaProgressBadge } from "./UmbrellaProgressBadge";
 import { useRunProfiles } from "../../domain/run-profiles";
 
 interface TaskCardProps {
   readonly task: Task;
   readonly projects: Project[];
   readonly agentRun?: AgentRun | undefined;
+  readonly umbrellaProgress?: UmbrellaProgressSummary | undefined;
   readonly onView: (task: Task) => void;
   readonly onEdit: (task: Task) => void;
   readonly onDelete: (task: Task) => void;
@@ -62,6 +65,7 @@ export function TaskCard({
   task,
   projects,
   agentRun,
+  umbrellaProgress,
   onView,
   onEdit,
   onDelete,
@@ -115,6 +119,7 @@ export function TaskCard({
               </span>
             )}
             <RunLevelChip profile={runProfiles.profileFor(task.id)} levels={runProfiles.levels} />
+            <UmbrellaProgressBadge progress={umbrellaProgress} />
           </div>
 
           <div className="flex items-center gap-1 opacity-80 group-hover:opacity-100">

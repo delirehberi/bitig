@@ -16,6 +16,7 @@ import {
   SendProjectT3MessageInputSchema,
   StartProjectT3ThreadInputSchema,
   StartT3ThreadInputSchema,
+  StartUmbrellaReadyChildrenInputSchema,
   T3ModelSelectionSchema,
   T3StartOAuthInputSchema,
   T3WorkspaceBusyError,
@@ -46,6 +47,7 @@ import {
   drainAllQueuedT3Runs,
   getT3ConnectionStatus,
   getTaskT3RunLiveStatus,
+  getUmbrellaChildrenStatus,
   launchProjectThreadInT3,
   launchTaskInT3,
   listProjectT3ThreadsLive,
@@ -58,6 +60,8 @@ import {
   respondToTaskT3Request,
   sendProjectT3Message,
   settleProjectT3Thread,
+  startReadyChildrenInT3,
+  stopAllUmbrellaChildren,
   stopTaskT3Run,
   suggestTaskRunProfile,
   T3ModelSwitchConflictError,
@@ -928,4 +932,51 @@ export const t3TaskRunsRouter = new Hono<AppEnv>()
         return handleT3RouteError(err, c);
       }
     },
-  );
+  )
+  .get("/:id/children", async (c) => {
+    const id = c.req.param("id");
+    try {
+      const status = await getUmbrellaChildrenStatus(buildServiceDeps(c), id, {
+        hostId: readHostIdQuery(c.req.query("hostId")),
+      });
+      return c.json(status);
+    } catch (err) {
+      return handleT3RouteError(err, c);
+    }
+  })
+  .post("/:id/children/start-ready", async (c) => {
+    const id = c.req.param("id");
+    let rawBody: unknown = {};
+    const rawText = await c.req.text();
+    if (rawText.trim() !== "") {
+      try {
+        rawBody = JSON.parse(rawText);
+      } catch {
+        return c.json({ error: "validation_error", message: "Invalid JSON body" }, HTTP_BAD_REQUEST);
+      }
+    }
+    const parsed = StartUmbrellaReadyChildrenInputSchema.safeParse(rawBody);
+    if (!parsed.success) {
+      return c.json({ error: "validation_error", details: parsed.error.issues }, HTTP_BAD_REQUEST);
+    }
+    const actor = c.req.header("X-Bitig-Actor") ?? c.req.header("X-Bitig-Agent") ?? "you";
+    try {
+      const result = await startReadyChildrenInT3(buildServiceDeps(c), {
+        parentTaskRef: id,
+        max: parsed.data.max,
+        actor,
+      });
+      return c.json(result, HTTP_CREATED);
+    } catch (err) {
+      return handleT3RouteError(err, c);
+    }
+  })
+  .post("/:id/children/stop", async (c) => {
+    const id = c.req.param("id");
+    try {
+      const result = await stopAllUmbrellaChildren(buildServiceDeps(c), id);
+      return c.json(result);
+    } catch (err) {
+      return handleT3RouteError(err, c);
+    }
+  });

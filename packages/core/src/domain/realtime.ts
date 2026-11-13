@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { AttachmentSchema, CommentSchema, IdSchema, ProjectSchema, TaskSchema, WebhookSchema } from "./schemas";
+import { AgentRunChildSchema } from "./run-profile";
 import { AgentRunSchema } from "./t3";
 
 /**
@@ -64,6 +65,10 @@ export const RealtimeEventSchema = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("agent_run.updated"),
     run: AgentRunSchema,
+  }),
+  z.strictObject({
+    type: z.literal("agent_run_child.updated"),
+    child: AgentRunChildSchema,
   }),
   z.strictObject({
     type: z.literal("sync"),

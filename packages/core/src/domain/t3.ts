@@ -2,6 +2,7 @@ import { z } from "zod";
 import { formatT3CommentAttachmentContext, type T3CommentAttachmentInfo } from "./attachments";
 import { CommentAuthorSchema, CommentBodySchema, IdSchema, TaskActorSchema, TimestampSchema } from "./schemas";
 import type { Checkpoint, Comment, Task } from "./types";
+import type { AgentRunChild } from "./run-profile";
 import { COMMENT_BODY_MAX } from "./constants";
 import { BitigError, ERROR_CODES, ValidationError } from "./errors";
 import { HOST_PROJECTS_ROOT_CONTAINER, HOST_PROJECTS_ROOT_USER, HostFolderPathSchema } from "./host-folder";
@@ -425,6 +426,7 @@ export class T3WorkspaceBusyError extends BitigError {
 export interface T3RunsLiveResponse {
   readonly runs: AgentRun[];
   readonly activeSessions?: T3ProjectActiveSession[] | undefined;
+  readonly umbrellaChildren?: AgentRunChild[] | undefined;
 }
 
 export const T3PendingQuestionRequestSchema = z.strictObject({

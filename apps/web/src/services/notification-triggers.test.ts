@@ -98,4 +98,146 @@ describe("NotificationTracker", () => {
     const tracker = new NotificationTracker();
     expect(tracker.handleEvent({ type: "sync" }, LABELS)).toEqual([]);
   });
+
+  it("announces when all running children in an umbrella batch finish, deduplicates with umbrella resume, and resets on the next batch (#BIT-191)", () => {
+    const tracker = new NotificationTracker();
+    const umbrella = notifyTask(1, { title: "Umbrella rollout" });
+    const childA = notifyTask(2, { title: "Child A" });
+    const childB = notifyTask(3, { title: "Child B" });
+    const startedAt = "2026-03-10T10:00:00.000Z";
+
+    tracker.observeTasks([umbrella, childA, childB]);
+    tracker.observeRuns([notifyRun(umbrella, "waiting_subagent")]);
+    tracker.observeRunChildren([
+      { parentTaskId: umbrella.id, childTaskId: childA.id, state: "running", startedAt },
+      { parentTaskId: umbrella.id, childTaskId: childB.id, state: "running", startedAt },
+    ]);
+
+    // First child finishing leaves Child B running -> no batch notification yet
+    expect(
+      tracker.handleEvent(
+        {
+          type: "agent_run_child.updated",
+          child: {
+            parentTaskId: umbrella.id,
+            childTaskId: childA.id,
+            state: "done",
+            startedAt,
+            finishedAt: "2026-03-10T10:15:00.000Z",
+          },
+        },
+        LABELS,
+      ),
+    ).toEqual([]);
+
+    // Last child in the batch finishing announces "Child batch finished" once
+    expect(
+      tracker.handleEvent(
+        {
+          type: "agent_run_child.updated",
+          child: {
+            parentTaskId: umbrella.id,
+            childTaskId: childB.id,
+            state: "done",
+            startedAt,
+            finishedAt: "2026-03-10T10:18:00.000Z",
+          },
+        },
+        LABELS,
+      ),
+    ).toEqual([
+      {
+        tag: `bitig:batch:${umbrella.id}:finished`,
+        trigger: "agentRun",
+        title: "ALP-1 \u00b7 Task 1",
+        body: "Child batch finished",
+        taskRef: "ALP-1",
+      },
+    ]);
+
+    // Umbrella resuming from waiting_subagent -> working right afterward stays deduplicated
+    expect(
+      tracker.handleEvent(
+        { type: "agent_run.updated", run: notifyRun(umbrella, "working") },
+        LABELS,
+      ),
+    ).toEqual([]);
+
+    // Merge conflict setting needsHuman on the umbrella notifies via existing needsHuman trigger
+    expect(
+      tracker.handleEvent(
+        {
+          type: "task.updated",
+          task: notifyTask(1, { needsHuman: "Merge conflict in packages/core/src/index.ts" }),
+        },
+        LABELS,
+      ),
+    ).toEqual([
+      {
+        tag: `bitig:task:${umbrella.id}:needs-human`,
+        trigger: "needsHuman",
+        title: "ALP-1 \u00b7 Task 1",
+        body: "Needs your input: Merge conflict in packages/core/src/index.ts",
+        taskRef: "ALP-1",
+      },
+    ]);
+
+    // Starting a second child batch clears the batch signal so its completion notifies again
+    const childC = notifyTask(4, { title: "Child C" });
+    expect(
+      tracker.handleEvent(
+        {
+          type: "agent_run_child.updated",
+          child: { parentTaskId: umbrella.id, childTaskId: childC.id, state: "running", startedAt },
+        },
+        LABELS,
+      ),
+    ).toEqual([]);
+    expect(
+      tracker.handleEvent(
+        {
+          type: "agent_run_child.updated",
+          child: {
+            parentTaskId: umbrella.id,
+            childTaskId: childC.id,
+            state: "done",
+            startedAt,
+            finishedAt: "2026-03-10T10:40:00.000Z",
+          },
+        },
+        LABELS,
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("stays silent for already-completed child batches recorded via observeRunChildren (#BIT-191)", () => {
+    const tracker = new NotificationTracker();
+    const umbrella = notifyTask(1);
+    const childA = notifyTask(2);
+    const startedAt = "2026-03-10T10:00:00.000Z";
+    tracker.observeRunChildren([
+      {
+        parentTaskId: umbrella.id,
+        childTaskId: childA.id,
+        state: "done",
+        startedAt,
+        finishedAt: "2026-03-10T10:10:00.000Z",
+      },
+    ]);
+    expect(
+      tracker.handleEvent(
+        {
+          type: "agent_run_child.updated",
+          child: {
+            parentTaskId: umbrella.id,
+            childTaskId: childA.id,
+            state: "done",
+            startedAt,
+            finishedAt: "2026-03-10T10:10:00.000Z",
+          },
+        },
+        LABELS,
+      ),
+    ).toEqual([]);
+  });
 });

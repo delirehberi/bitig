@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -16,14 +16,17 @@ import {
 import {
   TASK_PRIORITIES,
   TASK_STATUSES,
+  buildUmbrellaIndex,
   compareTasks,
   formatDuration,
   getTaskTiming,
   type AgentRun,
+  type AgentRunChild,
   type Project,
   type Task,
   type TaskPriority,
   type TaskStatus,
+  type UmbrellaIndex,
 } from "@bitig/core";
 import { ChecklistProgressBadge } from "./Checklist";
 import { ApprovalBadge } from "./Approval";
@@ -31,6 +34,7 @@ import { NeedsHumanBadge } from "./NeedsHuman";
 import { BlockedBadge } from "./Blocked";
 import { TaskCode } from "./TaskCode";
 import { T3GitBadges } from "./T3GitBadges";
+import { UmbrellaProgressBadge } from "./UmbrellaProgressBadge";
 
 export type SortColumn = "title" | "project" | "status" | "priority" | "dueDate";
 export type SortDirection = "asc" | "desc";
@@ -44,6 +48,8 @@ interface TaskListProps {
   readonly tasks: Task[];
   readonly projects: Project[];
   readonly agentRuns?: readonly AgentRun[] | undefined;
+  readonly umbrellaChildren?: readonly AgentRunChild[] | undefined;
+  readonly umbrellaIndex?: UmbrellaIndex | undefined;
   readonly onView: (task: Task) => void;
   readonly onEdit: (task: Task) => void;
   readonly onDelete: (task: Task) => void;
@@ -140,6 +146,8 @@ export function TaskList({
   tasks,
   projects,
   agentRuns,
+  umbrellaChildren,
+  umbrellaIndex,
   onView,
   onEdit,
   onDelete,
@@ -150,6 +158,17 @@ export function TaskList({
   showProject = true,
 }: TaskListProps) {
   const [sort, setSort] = useState<SortState | null>(null);
+  const resolvedUmbrellaIndex = useMemo(
+    () =>
+      umbrellaIndex ??
+      buildUmbrellaIndex({
+        tasks,
+        projects,
+        runs: agentRuns,
+        runChildren: umbrellaChildren,
+      }),
+    [umbrellaIndex, tasks, projects, agentRuns, umbrellaChildren],
+  );
   const activeTasks = tasks.filter((task) => task.status !== "archived");
 
   if (activeTasks.length === 0) {
@@ -278,6 +297,7 @@ export function TaskList({
                       >
                         {task.title}
                       </button>
+                      <UmbrellaProgressBadge progress={resolvedUmbrellaIndex.progressFor(task.id)} />
                       <ChecklistProgressBadge checklist={task.checklist} />
                       {task.commentCount !== undefined && task.commentCount > 0 && (
                         <span

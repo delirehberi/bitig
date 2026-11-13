@@ -3,9 +3,11 @@ import { Ban, Hand, Kanban, List, Plus, ShieldQuestionMark, X } from "lucide-rea
 import {
   blockedByFromError,
   buildMentionIndex,
+  buildUmbrellaIndex,
   dependencyLinks,
   compareTasks,
   type AgentRun,
+  type AgentRunChild,
   type CreateTaskInput,
   type Project,
   type StorageProvider,
@@ -31,6 +33,7 @@ interface TasksViewProps {
   readonly tasks: Task[];
   readonly projects: Project[];
   readonly agentRuns?: readonly AgentRun[] | undefined;
+  readonly umbrellaChildren?: readonly AgentRunChild[] | undefined;
   readonly isLoading: boolean;
   readonly error: string | null;
   readonly selectedProjectId?: string | undefined;
@@ -64,6 +67,7 @@ export function TasksView({
   tasks,
   projects,
   agentRuns,
+  umbrellaChildren,
   isLoading,
   error,
   selectedProjectId,
@@ -117,6 +121,10 @@ export function TasksView({
   // Resolved on every render so the detail modal follows updates and closes when the task is deleted.
   const viewTask = viewTaskRef === undefined ? null : (findTaskByRef(viewTaskRef, projects, tasks) ?? null);
   const mentionIndex = useMemo(() => buildMentionIndex(tasks, projects), [tasks, projects]);
+  const umbrellaIndex = useMemo(
+    () => buildUmbrellaIndex({ tasks, projects, runs: agentRuns, runChildren: umbrellaChildren }),
+    [tasks, projects, agentRuns, umbrellaChildren],
+  );
   const blockersOf = useMemo(() => buildBlockersResolver(projects, tasks), [projects, tasks]);
   // Finished tasks wait on nothing, whatever their dependencies.
   const isBlocked = (task: Task) =>
@@ -441,6 +449,8 @@ export function TasksView({
           tasks={filteredTasks}
           projects={projects}
           agentRuns={agentRuns}
+          umbrellaChildren={umbrellaChildren}
+          umbrellaIndex={umbrellaIndex}
           showProject={!selectedProjectId}
           onView={openTask}
           onEdit={(t) => {
@@ -464,6 +474,8 @@ export function TasksView({
           tasks={filteredTasks}
           projects={projects}
           agentRuns={agentRuns}
+          umbrellaChildren={umbrellaChildren}
+          umbrellaIndex={umbrellaIndex}
           showProject={!selectedProjectId}
           onView={openTask}
           onEdit={(t) => {
@@ -485,6 +497,7 @@ export function TasksView({
         task={viewTask}
         projects={projects}
         agentRun={viewTask ? agentRuns?.find((r) => r.taskId === viewTask.id) : undefined}
+        isUmbrella={viewTask ? umbrellaIndex.isUmbrella(viewTask.id) : false}
         onClose={closeTask}
         onEdit={(t) => {
           closeTask();

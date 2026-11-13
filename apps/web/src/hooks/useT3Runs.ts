@@ -1,6 +1,7 @@
 import {
   isActiveAgentRunState,
   type AgentRun,
+  type AgentRunChild,
   type T3ProjectActiveSession,
   type T3RunsLiveResponse,
 } from "@bitig/core";
@@ -22,6 +23,7 @@ export interface UseT3RunsOptions {
 export interface T3RunsState {
   readonly runs: readonly AgentRun[];
   readonly activeSessions: readonly T3ProjectActiveSession[];
+  readonly umbrellaChildren: readonly AgentRunChild[];
   /** True until the first load settles. */
   readonly isLoading: boolean;
   /** True while a manual refresh is in flight. */
@@ -48,13 +50,25 @@ function upsertRun(runs: readonly AgentRun[], run: AgentRun): AgentRun[] {
   return next;
 }
 
+function upsertRunChild(children: readonly AgentRunChild[], child: AgentRunChild): AgentRunChild[] {
+  const index = children.findIndex(
+    (existing) =>
+      existing.parentTaskId === child.parentTaskId && existing.childTaskId === child.childTaskId,
+  );
+  if (index === -1) return [...children, child];
+  const next = [...children];
+  next[index] = child;
+  return next;
+}
+
 /**
- * Live T3 runs and active project sessions from `/api/t3/runs`, kept current by
- * `agent_run.updated` realtime events and, optionally, by polling.
+ * Live T3 runs, active project sessions, and umbrella child rows from `/api/t3/runs`, kept current by
+ * `agent_run.updated` and `agent_run_child.updated` realtime events and, optionally, by polling.
  */
 export function useT3Runs({ enabled = true, pollIntervalMs }: UseT3RunsOptions = {}): T3RunsState {
   const [runs, setRuns] = useState<readonly AgentRun[]>([]);
   const [activeSessions, setActiveSessions] = useState<readonly T3ProjectActiveSession[]>([]);
+  const [umbrellaChildren, setUmbrellaChildren] = useState<readonly AgentRunChild[]>([]);
   const [isLoading, setIsLoading] = useState(enabled);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -71,6 +85,7 @@ export function useT3Runs({ enabled = true, pollIntervalMs }: UseT3RunsOptions =
         if (controller.signal.aborted) return;
         setRuns(response.runs);
         setActiveSessions(response.activeSessions ?? []);
+        setUmbrellaChildren(response.umbrellaChildren ?? []);
         setError(null);
         setIsLoading(false);
       },
@@ -111,14 +126,18 @@ export function useT3Runs({ enabled = true, pollIntervalMs }: UseT3RunsOptions =
   }, [enabled, pollIntervalMs, load]);
 
   useRealtimeEvent((event) => {
-    if (!enabled || event.type !== "agent_run.updated") return;
-    setRuns((prev) => upsertRun(prev, event.run));
-    if (!isActiveAgentRunState(event.run.state)) {
-      setActiveSessions((prev) =>
-        prev.filter((session) => session.threadId !== event.run.threadId && session.taskId !== event.run.taskId),
-      );
+    if (!enabled) return;
+    if (event.type === "agent_run.updated") {
+      setRuns((prev) => upsertRun(prev, event.run));
+      if (!isActiveAgentRunState(event.run.state)) {
+        setActiveSessions((prev) =>
+          prev.filter((session) => session.threadId !== event.run.threadId && session.taskId !== event.run.taskId),
+        );
+      }
+    } else if (event.type === "agent_run_child.updated") {
+      setUmbrellaChildren((prev) => upsertRunChild(prev, event.child));
     }
   });
 
-  return { runs, activeSessions, isLoading, isRefreshing, error, refresh };
+  return { runs, activeSessions, umbrellaChildren, isLoading, isRefreshing, error, refresh };
 }

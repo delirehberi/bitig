@@ -1,4 +1,4 @@
-import type { AgentRun, AgentRunState, RealtimeEvent, Task } from "@bitig/core";
+import type { AgentRun, AgentRunChild, AgentRunState, RealtimeEvent, Task } from "@bitig/core";
 import type { NotificationIntent, NotificationTrigger } from "./notifications";
 
 /** How a notification names a task: its ticket code (or ID) and title. */
@@ -30,6 +30,7 @@ const TAG_PREFIX = "bitig";
 const TASK_COMPLETED_REASON = "Task completed";
 const AWAITING_APPROVAL_REASON = "Task is awaiting your approval";
 const NEEDS_HUMAN_REASON = "Needs your input";
+const BATCH_FINISHED_REASON = "Child batch finished";
 const UNKNOWN_TASK_TITLE = "Task";
 
 interface Signal {
@@ -59,22 +60,32 @@ function runSignals(run: AgentRun): Signal[] {
   return [{ tag: `${TAG_PREFIX}:run:${run.id}:${run.state}`, trigger: "agentRun", reason: RUN_REASONS[run.state] }];
 }
 
+function batchFinishedSignal(parentTaskId: string): Signal {
+  return {
+    tag: `${TAG_PREFIX}:batch:${parentTaskId}:finished`,
+    trigger: "agentRun",
+    reason: BATCH_FINISHED_REASON,
+  };
+}
+
 function intentTitle(label: TaskLabel): string {
   return `${label.ref} · ${label.title}`;
 }
 
 /**
- * Turns realtime events into notifications only on meaningful transitions (#BIT-169).
+ * Turns realtime events into notifications only on meaningful transitions (#BIT-169, #BIT-191).
  *
- * Each task or run is an entity whose currently active signals (done, needs a human, awaiting
- * approval, run waiting/ended) are remembered by tag. A signal is announced once when it becomes
- * active and forgotten when it clears, so a task reopened and completed again notifies again,
- * while repeated deliveries of the same state (a local dispatch echoed by the server, unrelated
- * edits to a done task) stay quiet. `observeTasks`/`observeRuns` record loaded state silently, so
- * existing state and this tab's own mutations never notify.
+ * Each task, run, or umbrella batch is an entity whose currently active signals (done, needs a
+ * human, awaiting approval, run waiting/ended, child batch finished) are remembered by tag. A
+ * signal is announced once when it becomes active and forgotten when it clears, so a task reopened
+ * and completed again (or a second child batch launched and finished) notifies again, while
+ * repeated deliveries of the same state stay quiet. `observeTasks`/`observeRuns`/`observeRunChildren`
+ * record loaded state silently, so existing state and this tab's own mutations never notify.
  */
 export class NotificationTracker {
   private readonly active = new Map<string, ReadonlySet<string>>();
+  private readonly runStates = new Map<string, AgentRunState>();
+  private readonly runningChildrenByParent = new Map<string, Set<string>>();
 
   /** Records loaded tasks as the baseline without announcing anything. */
   observeTasks(tasks: readonly Task[]): void {
@@ -83,7 +94,39 @@ export class NotificationTracker {
 
   /** Records loaded agent runs as the baseline without announcing anything. */
   observeRuns(runs: readonly AgentRun[]): void {
-    for (const run of runs) this.reconcile(`run:${run.id}`, runSignals(run));
+    for (const run of runs) {
+      this.runStates.set(run.id, run.state);
+      if (run.state === "waiting_subagent") {
+        this.active.delete(`batch:${run.taskId}`);
+      }
+      this.reconcile(`run:${run.id}`, runSignals(run));
+    }
+  }
+
+  /** Records loaded umbrella child rows as the baseline without announcing anything (#BIT-191). */
+  observeRunChildren(children: readonly AgentRunChild[]): void {
+    const grouped = new Map<string, Set<string>>();
+    const parents = new Set<string>();
+    for (const child of children) {
+      parents.add(child.parentTaskId);
+      if (child.state === "running") {
+        let running = grouped.get(child.parentTaskId);
+        if (!running) {
+          running = new Set<string>();
+          grouped.set(child.parentTaskId, running);
+        }
+        running.add(child.childTaskId);
+      }
+    }
+    for (const parentTaskId of parents) {
+      const running = grouped.get(parentTaskId) ?? new Set<string>();
+      this.runningChildrenByParent.set(parentTaskId, running);
+      if (running.size > 0) {
+        this.active.delete(`batch:${parentTaskId}`);
+      } else {
+        this.reconcile(`batch:${parentTaskId}`, [batchFinishedSignal(parentTaskId)]);
+      }
+    }
   }
 
   /** Returns the notifications an event should raise; empty when it is not a new transition. */
@@ -101,10 +144,44 @@ export class NotificationTracker {
       }
       case "task.deleted":
         this.active.delete(`task:${event.id}`);
+        this.active.delete(`batch:${event.id}`);
+        this.runningChildrenByParent.delete(event.id);
         return [];
       case "agent_run.updated": {
         const label = labels.forTaskId(event.run.taskId) ?? { ref: event.run.taskId, title: UNKNOWN_TASK_TITLE };
-        return this.reconcile(`run:${event.run.id}`, runSignals(event.run)).map((signal) => toIntent(signal, label));
+        const previousState = this.runStates.get(event.run.id);
+        this.runStates.set(event.run.id, event.run.state);
+        if (event.run.state === "waiting_subagent") {
+          this.active.delete(`batch:${event.run.taskId}`);
+        }
+        const signals = [...this.reconcile(`run:${event.run.id}`, runSignals(event.run))];
+        const stillRunningChildren = this.runningChildrenByParent.get(event.run.taskId)?.size ?? 0;
+        if (previousState === "waiting_subagent" && event.run.state === "working" && stillRunningChildren === 0) {
+          signals.push(...this.reconcile(`batch:${event.run.taskId}`, [batchFinishedSignal(event.run.taskId)]));
+        }
+        return signals.map((signal) => toIntent(signal, label));
+      }
+      case "agent_run_child.updated": {
+        const { parentTaskId, childTaskId, state } = event.child;
+        let running = this.runningChildrenByParent.get(parentTaskId);
+        if (state === "running") {
+          if (!running) {
+            running = new Set<string>();
+            this.runningChildrenByParent.set(parentTaskId, running);
+          }
+          running.add(childTaskId);
+          this.active.delete(`batch:${parentTaskId}`);
+          return [];
+        }
+        const hadRunning = (running?.size ?? 0) > 0;
+        running?.delete(childTaskId);
+        if (!hadRunning || (running?.size ?? 0) > 0) {
+          return [];
+        }
+        const label = labels.forTaskId(parentTaskId) ?? { ref: parentTaskId, title: UNKNOWN_TASK_TITLE };
+        return this.reconcile(`batch:${parentTaskId}`, [batchFinishedSignal(parentTaskId)]).map((signal) =>
+          toIntent(signal, label),
+        );
       }
       default:
         return [];

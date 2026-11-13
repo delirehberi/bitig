@@ -21,6 +21,7 @@ import {
   buildT3SubagentBatchHandbackComment,
   buildT3SubagentBatchHandbackPrompt,
   buildT3SubagentStartedComment,
+  buildUmbrellaIndex,
   canOverwriteRunProfile,
   canSwitchT3Model,
   checkStatusChange,
@@ -61,6 +62,7 @@ import {
   type RunSelectionSource,
   type RunningParallelTask,
   type StorageProvider,
+  type StopUmbrellaChildrenResponse,
   type T3CommentAttachmentInfo,
   type T3ConnectionStatus,
   type T3HostConnectionStatus,
@@ -77,6 +79,10 @@ import {
   type T3WorkspaceStrategy,
   type Task,
   type TaskRunProfile,
+  type UmbrellaChildItem,
+  type UmbrellaChildrenStatusResponse,
+  type UmbrellaLaunchReadiness,
+  type UmbrellaReadyBatchItem,
 } from "@bitig/core";
 import type { SaveRunLevelsInput, T3ConnectionRecord, T3D1Store } from "@bitig/storage-d1";
 import { T3McpClient, T3McpError } from "./client";
@@ -599,8 +605,9 @@ export async function dispatchQueuedTaskT3Run(
         if (payload.parentTaskId) {
           const childBranch = currentRun.branch ?? payload.branch;
           const existingChildRecord = await deps.store.getAgentRunChild(payload.parentTaskId, taskId);
+          let updatedChildRecord: AgentRunChild | undefined;
           if (existingChildRecord?.state !== "running") {
-            await deps.store.addAgentRunChild({
+            updatedChildRecord = await deps.store.addAgentRunChild({
               parentTaskId: payload.parentTaskId,
               childTaskId: taskId,
               state: "running",
@@ -609,12 +616,13 @@ export async function dispatchQueuedTaskT3Run(
               startedAt: stepNow,
             });
           } else if (childBranch || currentRun.headSha) {
-            await deps.store.updateAgentRunChild(payload.parentTaskId, taskId, {
+            updatedChildRecord = await deps.store.updateAgentRunChild(payload.parentTaskId, taskId, {
               ...(childBranch ? { branch: childBranch } : {}),
               ...(currentRun.headSha ? { headSha: currentRun.headSha } : {}),
               now: stepNow,
             });
           }
+          await publishRunChild(deps, updatedChildRecord);
           await syncParentWaitingSubagentState(deps, payload.parentTaskId, stepNow);
           await deps.storage.addComment(
             {
@@ -1032,13 +1040,16 @@ export async function launchTaskInT3(
   });
 
   if (parent) {
-    await deps.store.addAgentRunChild({
+    const addedChild = await deps.store.addAgentRunChild({
       parentTaskId: parent.task.id,
       childTaskId: task.id,
       state: "running",
       ...(childBranch ? { branch: childBranch } : {}),
       startedAt: now,
     });
+    if (!mcpClient) {
+      await publishRunChild(deps, addedChild);
+    }
   }
 
   if (mcpClient) {
@@ -1162,30 +1173,33 @@ async function listActiveRunningChildren(
       continue;
     }
     if (FINISHED_TASK_STATUSES.has(childTask.status)) {
-      await deps.store.claimAgentRunChild(parentTaskId, row.childTaskId, {
+      const claimed = await deps.store.claimAgentRunChild(parentTaskId, row.childTaskId, {
         state: "done",
         branch: childRun?.branch ?? row.branch ?? null,
         headSha: childRun?.headSha ?? row.headSha ?? null,
         now,
       });
+      await publishRunChild(deps, claimed);
       continue;
     }
     if (childTask.needsHuman) {
-      await deps.store.claimAgentRunChild(parentTaskId, row.childTaskId, {
+      const claimed = await deps.store.claimAgentRunChild(parentTaskId, row.childTaskId, {
         state: "needs_human",
         branch: childRun?.branch ?? row.branch ?? null,
         headSha: childRun?.headSha ?? row.headSha ?? null,
         now,
       });
+      await publishRunChild(deps, claimed);
       continue;
     }
     if (!childRun || ENDED_CHILD_RUN_STATES.has(childRun.state)) {
-      await deps.store.claimAgentRunChild(parentTaskId, row.childTaskId, {
+      const claimed = await deps.store.claimAgentRunChild(parentTaskId, row.childTaskId, {
         state: childRun?.state === "failed" ? "failed" : "stopped",
         branch: childRun?.branch ?? row.branch ?? null,
         headSha: childRun?.headSha ?? row.headSha ?? null,
         now,
       });
+      await publishRunChild(deps, claimed);
       continue;
     }
     if (!isActiveAgentRunState(childRun.state)) {
@@ -1245,11 +1259,7 @@ async function assertChildLaunchParallelGate(
   }
 }
 
-/**
- * Verifies that an umbrella task's T3 session has reported its integration branch, head commit,
- * and worktree path, and that it has no uncommitted tracked changes (#BIT-190).
- */
-function assertUmbrellaParentGitReady(run: AgentRun, label: string): void {
+function getUmbrellaParentGitReadinessIssue(run: AgentRun, label: string): string | undefined {
   const hasBranch = typeof run.branch === "string" && run.branch.trim().length > 0;
   const hasHeadSha = typeof run.headSha === "string" && run.headSha.trim().length > 0;
   const hasWorktreePath = typeof run.worktreePath === "string" && run.worktreePath.trim().length > 0;
@@ -1258,16 +1268,22 @@ function assertUmbrellaParentGitReady(run: AgentRun, label: string): void {
     if (!hasBranch) missing.push("branch");
     if (!hasHeadSha) missing.push("headSha");
     if (!hasWorktreePath) missing.push("worktreePath");
-    makeValidationIssue(
-      "parentTaskId",
-      `Umbrella task ${label} must report its git metadata (${missing.join(", ")}) via report_t3_git_metadata before starting child tasks, so each child worktree can branch from the umbrella's worktree.`,
-    );
+    return `Umbrella task ${label} must report its git metadata (${missing.join(", ")}) via report_t3_git_metadata before starting child tasks, so each child worktree can branch from the umbrella's worktree.`;
   }
   if (run.dirty === true || run.uncommittedChanges === true) {
-    makeValidationIssue(
-      "parentTaskId",
-      `Umbrella task ${label} has uncommitted tracked changes in its worktree. Commit your work and report clean git metadata (dirty: false) via report_t3_git_metadata before starting child tasks.`,
-    );
+    return `Umbrella task ${label} has uncommitted tracked changes in its worktree. Commit your work and report clean git metadata (dirty: false) via report_t3_git_metadata before starting child tasks.`;
+  }
+  return undefined;
+}
+
+/**
+ * Verifies that an umbrella task's T3 session has reported its integration branch, head commit,
+ * and worktree path, and that it has no uncommitted tracked changes (#BIT-190).
+ */
+function assertUmbrellaParentGitReady(run: AgentRun, label: string): void {
+  const issue = getUmbrellaParentGitReadinessIssue(run, label);
+  if (issue) {
+    makeValidationIssue("parentTaskId", issue);
   }
 }
 
@@ -1418,19 +1434,22 @@ async function describeBusyRun(
 }
 
 async function syncAgentRunChildGitMetadata(
-  deps: Pick<T3ServiceDeps, "store">,
+  deps: Pick<T3ServiceDeps, "store" | "publishRealtime">,
   run: AgentRun,
   now: number,
 ): Promise<void> {
   if (!run.parentTaskId) return;
   if (run.branch === undefined && run.headSha === undefined) return;
-  await deps.store
+  const updatedChild = await deps.store
     .updateAgentRunChild(run.parentTaskId, run.taskId, {
       ...(run.branch !== undefined ? { branch: run.branch } : {}),
       ...(run.headSha !== undefined ? { headSha: run.headSha } : {}),
       now,
     })
     .catch(() => undefined);
+  if (updatedChild && deps.publishRealtime) {
+    await deps.publishRealtime({ type: "agent_run_child.updated", child: updatedChild }).catch(() => undefined);
+  }
 }
 
 /** Records agent-reported Git data after organisation and run identity validation. */
@@ -1496,6 +1515,7 @@ export async function reportChildMerge(
       `Task ${childLabel} has no recorded child T3 run under umbrella task ${parentLabel}.`,
     );
   }
+  await publishRunChild(deps, updated);
   return updated;
 }
 
@@ -1955,9 +1975,12 @@ export async function listT3RunsLive(deps: T3ServiceDeps): Promise<T3RunsLiveRes
     });
   }
 
+  const umbrellaChildren = await deps.store.listAllAgentRunChildren();
+
   return {
     runs,
     activeSessions,
+    umbrellaChildren,
   };
 }
 
@@ -1969,6 +1992,12 @@ async function latestCheckpoint(storage: StorageProvider, taskId: string): Promi
 async function publishRun(deps: T3ServiceDeps, run: AgentRun | undefined): Promise<void> {
   if (run && deps.publishRealtime) {
     await deps.publishRealtime({ type: "agent_run.updated", run }).catch(() => undefined);
+  }
+}
+
+async function publishRunChild(deps: T3ServiceDeps, child: AgentRunChild | undefined): Promise<void> {
+  if (child && deps.publishRealtime) {
+    await deps.publishRealtime({ type: "agent_run_child.updated", child }).catch(() => undefined);
   }
 }
 
@@ -2135,12 +2164,13 @@ async function transitionChildAndMaybeResumeUmbrella(
   if (!targetRow) return false;
   const childRunForGit = await deps.store.getAgentRunByTaskId(input.childTaskId);
   if (targetRow.state === "running") {
-    await deps.store.claimAgentRunChild(input.parentTaskId, input.childTaskId, {
+    const claimedTarget = await deps.store.claimAgentRunChild(input.parentTaskId, input.childTaskId, {
       state: input.endState,
       ...(childRunForGit?.branch !== undefined ? { branch: childRunForGit.branch } : {}),
       ...(childRunForGit?.headSha !== undefined ? { headSha: childRunForGit.headSha } : {}),
       now,
     });
+    await publishRunChild(deps, claimedTarget);
   }
 
   // Reconcile any other running children that have also finished or ended concurrently.
@@ -2159,12 +2189,13 @@ async function transitionChildAndMaybeResumeUmbrella(
       sibEndState = sibRun.state === "failed" ? "failed" : "stopped";
     }
     if (sibEndState) {
-      await deps.store.claimAgentRunChild(input.parentTaskId, sibling.childTaskId, {
+      const claimedSibling = await deps.store.claimAgentRunChild(input.parentTaskId, sibling.childTaskId, {
         state: sibEndState,
         ...(sibRun?.branch !== undefined ? { branch: sibRun.branch } : {}),
         ...(sibRun?.headSha !== undefined ? { headSha: sibRun.headSha } : {}),
         now,
       });
+      await publishRunChild(deps, claimedSibling);
     }
   }
 
@@ -2689,7 +2720,8 @@ export async function stopTaskT3Run(
   const parentChildren = await deps.store.listAgentRunChildren(taskId);
   for (const child of parentChildren) {
     if (child.state === "running") {
-      await deps.store.claimAgentRunChild(taskId, child.childTaskId, { state: "stopped", now });
+      const claimed = await deps.store.claimAgentRunChild(taskId, child.childTaskId, { state: "stopped", now });
+      await publishRunChild(deps, claimed);
     }
   }
 
@@ -2745,76 +2777,161 @@ export interface StartReadyChildrenResult {
   skipped: SkippedReadyChildSummary[];
 }
 
-/**
- * Picks the next parallel-safe batch of child tasks for an umbrella task (tasks the umbrella
- * mentions or that depend on it), starts them in T3 with `workspaceStrategy: "worktree"` and their
- * resolved run profiles, and returns what started and why the rest were skipped (#BIT-189, #BIT-190).
- */
-export async function startReadyChildrenInT3(
+function extractEffortFromOptions(
+  options: readonly T3ModelSelectionOption[] | undefined,
+): string | undefined {
+  if (!options) return undefined;
+  const opt = options.find(
+    (item) => item.id === "effort" || item.id === "reasoningEffort" || item.id === "thinkingEffort",
+  );
+  return typeof opt?.value === "string" ? opt.value : undefined;
+}
+
+interface EvaluatedUmbrellaChildren {
+  readonly parentTask: Task;
+  readonly projectById: ReadonlyMap<string, Project>;
+  readonly picked: readonly ParallelBatchCandidate[];
+  readonly skipped: SkippedReadyChildSummary[];
+  readonly status: UmbrellaChildrenStatusResponse;
+}
+
+async function evaluateUmbrellaChildren(
   deps: T3ServiceDeps,
-  input: StartReadyChildrenInput,
-): Promise<StartReadyChildrenResult> {
+  parentTaskRef: string,
+  options?: { max?: number | undefined; hostId?: string | undefined },
+): Promise<EvaluatedUmbrellaChildren> {
   const now = deps.now ? deps.now() : Date.now();
-  const parentTaskId = await resolveTaskRef(deps.storage, input.parentTaskRef);
+  const parentTaskId = await resolveTaskRef(deps.storage, parentTaskRef);
   const parentTask = await deps.storage.getTask(parentTaskId);
   if (!parentTask) {
     throw new NotFoundError("task", parentTaskId);
   }
-  const parentLabel = await labelTask(deps.storage, parentTask);
-  if (FINISHED_TASK_STATUSES.has(parentTask.status)) {
-    makeValidationIssue(
-      "parentTaskId",
-      `Umbrella task ${parentLabel} is already ${parentTask.status} and cannot launch child sessions.`,
-    );
-  }
-  const parentRun = await deps.store.getAgentRunByTaskId(parentTask.id);
-  if (!parentRun) {
-    makeValidationIssue("parentTaskId", `Umbrella task ${parentLabel} has no T3 session.`);
-  }
-  if (ENDED_CHILD_RUN_STATES.has(parentRun.state)) {
-    makeValidationIssue(
-      "parentTaskId",
-      `Umbrella task ${parentLabel}'s T3 session is ${parentRun.state}; only an active umbrella session can start child tasks.`,
-    );
-  }
-  assertUmbrellaParentGitReady(parentRun, parentLabel);
+  const [parentLabel, parentRun, mapping, activeRunning] = await Promise.all([
+    labelTask(deps.storage, parentTask),
+    deps.store.getAgentRunByTaskId(parentTask.id),
+    deps.store.getProjectMapping(parentTask.projectId),
+    listActiveRunningChildren(deps, parentTask.id, now),
+  ]);
 
-  const [allTasks, allProjects, parentComments, projectSettings, activeRunning] = await Promise.all([
+  let launchReadiness: UmbrellaLaunchReadiness;
+  if (FINISHED_TASK_STATUSES.has(parentTask.status)) {
+    launchReadiness = {
+      ready: false,
+      reason: `Umbrella task ${parentLabel} is already ${parentTask.status} and cannot launch child sessions.`,
+    };
+  } else if (!parentRun) {
+    launchReadiness = {
+      ready: false,
+      reason: `Umbrella task ${parentLabel} has no T3 session.`,
+    };
+  } else if (ENDED_CHILD_RUN_STATES.has(parentRun.state)) {
+    launchReadiness = {
+      ready: false,
+      reason: `Umbrella task ${parentLabel}'s T3 session is ${parentRun.state}; only an active umbrella session can start child tasks.`,
+    };
+  } else {
+    const gitIssue = getUmbrellaParentGitReadinessIssue(parentRun, parentLabel);
+    launchReadiness = gitIssue ? { ready: false, reason: gitIssue } : { ready: true };
+  }
+
+  const targetHostId = options?.hostId ?? parentRun?.hostId ?? mapping?.hostId;
+  const [
+    allTasks,
+    allProjects,
+    parentComments,
+    projectSettings,
+    childRows,
+    parentRowsForSelf,
+    allRuns,
+    allRunChildren,
+    allProfiles,
+    levels,
+  ] = await Promise.all([
     deps.storage.getTasks(),
     deps.storage.getProjects(),
     deps.storage.getComments(parentTask.id),
     deps.store.getProjectRunSettings(parentTask.projectId),
-    listActiveRunningChildren(deps, parentTask.id, now),
+    deps.store.listAgentRunChildren(parentTask.id),
+    deps.store.listAgentRunParentsForChild(parentTask.id),
+    deps.store.listAgentRuns(),
+    deps.store.listAllAgentRunChildren(),
+    deps.store.listTaskRunProfiles(),
+    deps.store.listRunLevels({ ...(targetHostId ? { hostId: targetHostId } : {}), now }),
   ]);
 
   const projectById = new Map(allProjects.map((p) => [p.id, p]));
   const taskById = new Map(allTasks.map((t) => [t.id, t]));
+  const childRowById = new Map(childRows.map((row) => [row.childTaskId, row]));
+  const runByTaskId = new Map(allRuns.map((r) => [r.taskId, r]));
+  const profileByTaskId = new Map(allProfiles.map((p) => [p.taskId, p]));
+  const levelsByKey = new Map(levels.map((l) => [l.key, l]));
+
+  const umbrellaIndex = buildUmbrellaIndex({
+    tasks: allTasks,
+    projects: allProjects,
+    runs: allRuns,
+    runChildren: allRunChildren,
+  });
+
+  const parentsOfSelf = new Set<string>(parentRowsForSelf.map((row) => row.parentTaskId));
+  if (parentRun?.parentTaskId) {
+    parentsOfSelf.add(parentRun.parentTaskId);
+  }
+  const siblingsUnderSharedParent = new Set<string>();
+  for (const candidateParent of allTasks) {
+    if (candidateParent.id === parentTask.id) continue;
+    const candidateChildren = umbrellaIndex.childrenFor(candidateParent.id);
+    if (candidateChildren.some((c) => c.id === parentTask.id)) {
+      parentsOfSelf.add(candidateParent.id);
+      for (const sibling of candidateChildren) {
+        if (sibling.id !== parentTask.id) {
+          siblingsUnderSharedParent.add(sibling.id);
+        }
+      }
+    }
+  }
+  const ownDependencies = new Set(parentTask.dependsOn ?? []);
+
   const mentionIndex = buildMentionIndex(allTasks, allProjects);
   const mentionedIds = new Set(
-    mentionIndex.linksFor(parentTask, parentComments).mentions.map((m) => m.id),
+    mentionIndex
+      .linksFor(parentTask, parentComments)
+      .mentions.map((m) => m.id)
+      .filter(
+        (id) =>
+          !ownDependencies.has(id) &&
+          !parentsOfSelf.has(id) &&
+          !siblingsUnderSharedParent.has(id),
+      ),
   );
 
-  // Related child tasks: tasks mentioned by the umbrella or tasks that declare `parentTask.id` in `dependsOn`.
-  const relatedTasks = allTasks
-    .filter(
-      (t) =>
-        t.id !== parentTask.id &&
-        !FINISHED_TASK_STATUSES.has(t.status) &&
-        (mentionedIds.has(t.id) || (t.dependsOn ?? []).includes(parentTask.id)),
-    )
+  // All child tasks under this umbrella (finished, active, or waiting), sorted in task order.
+  const allChildTasks = allTasks
+    .filter((t) => {
+      if (t.id === parentTask.id) return false;
+      if (childRowById.has(t.id) || runByTaskId.get(t.id)?.parentTaskId === parentTask.id) {
+        return true;
+      }
+      if (parentsOfSelf.has(t.id) || siblingsUnderSharedParent.has(t.id)) return false;
+      if (mentionedIds.has(t.id)) return true;
+      if ((t.dependsOn ?? []).includes(parentTask.id)) {
+        const candidateRunParent = runByTaskId.get(t.id)?.parentTaskId;
+        if (candidateRunParent && candidateRunParent !== parentTask.id && parentsOfSelf.has(candidateRunParent)) {
+          return false;
+        }
+        return true;
+      }
+      return false;
+    })
     .sort(compareTasks);
 
+  const openChildTasks = allChildTasks.filter((t) => !FINISHED_TASK_STATUSES.has(t.status));
   const runningSet = new Set(activeRunning.map((r) => r.id));
-  const candidateTasks = relatedTasks.filter((t) => !runningSet.has(t.id));
+  const candidateTasks = openChildTasks.filter((t) => !runningSet.has(t.id));
 
-  const candidateProfiles = new Map<string, TaskRunProfile | undefined>();
-  await Promise.all(
-    candidateTasks.map(async (t) => {
-      candidateProfiles.set(t.id, await deps.store.getTaskRunProfile(t.id));
-    }),
-  );
-
-  const codeOrTitle = (idOrCode: string): { id?: string | undefined; code?: string | undefined; title: string; label: string } => {
+  const codeOrTitle = (
+    idOrCode: string,
+  ): { id?: string | undefined; code?: string | undefined; title: string; label: string } => {
     const direct = taskById.get(idOrCode);
     if (direct) {
       const code = taskCode(direct, projectById.get(direct.projectId));
@@ -2834,7 +2951,7 @@ export async function startReadyChildrenInT3(
 
   for (const candidateTask of candidateTasks) {
     const code = taskCode(candidateTask, projectById.get(candidateTask.projectId));
-    const existingChildRun = await deps.store.getAgentRunByTaskId(candidateTask.id);
+    const existingChildRun = runByTaskId.get(candidateTask.id);
     if (existingChildRun && isActiveAgentRunState(existingChildRun.state)) {
       alreadyActiveSkips.push({
         taskId: candidateTask.id,
@@ -2861,14 +2978,14 @@ export async function startReadyChildrenInT3(
       ...(code ? { code } : {}),
       pendingApproval: Boolean(candidateTask.pendingApproval),
       blockedBy,
-      profile: candidateProfiles.get(candidateTask.id),
+      profile: profileByTaskId.get(candidateTask.id),
     });
   }
 
   const projectCap = projectSettings?.maxParallelChildren ?? DEFAULT_MAX_PARALLEL_CHILDREN;
   const requestedMax =
-    typeof input.max === "number" && Number.isFinite(input.max) && input.max >= 1
-      ? Math.floor(input.max)
+    typeof options?.max === "number" && Number.isFinite(options.max) && options.max >= 1
+      ? Math.floor(options.max)
       : undefined;
   const effectiveCap =
     requestedMax !== undefined ? Math.min(projectCap, activeRunning.length + requestedMax) : projectCap;
@@ -2891,21 +3008,184 @@ export async function startReadyChildrenInT3(
         reason: skip.reason,
         detail: skip.message,
         ...(blocker?.id ? { blockingTaskId: blocker.id } : {}),
-        ...(blocker?.code ? { blockingTaskCode: blocker.code } : skip.blockingTask ? { blockingTaskCode: skip.blockingTask } : {}),
+        ...(blocker?.code
+          ? { blockingTaskCode: blocker.code }
+          : skip.blockingTask
+            ? { blockingTaskCode: skip.blockingTask }
+            : {}),
         ...(skip.blockingPath ? { overlappingPath: skip.blockingPath } : {}),
       };
     }),
   ];
-  const started: StartedReadyChildSummary[] = [];
 
-  for (const picked of batchSelection.picked) {
+  const pickedSet = new Set(batchSelection.picked.map((p) => p.id));
+  const skippedByTaskId = new Map(skipped.map((s) => [s.taskId, s]));
+
+  let runningCount = 0;
+  let mergedCount = 0;
+  let doneCount = 0;
+  const children: UmbrellaChildItem[] = [];
+  const readyBatchByTaskId = new Map<string, UmbrellaReadyBatchItem>();
+
+  for (const childTask of allChildTasks) {
+    const code = taskCode(childTask, projectById.get(childTask.projectId));
+    const childRow = childRowById.get(childTask.id);
+    const childRun = runByTaskId.get(childTask.id);
+    const profile = profileByTaskId.get(childTask.id);
+    const resolved = resolveRunSelection({
+      profile,
+      projectDefaultLevel: projectSettings?.defaultRunLevel,
+      levels,
+    });
+
+    const levelKey = childRun?.levelKey ?? resolved.levelKey ?? profile?.level;
+    const levelLabel = levelKey ? (levelsByKey.get(levelKey)?.label ?? levelKey) : undefined;
+    const providerInstanceId = childRun?.providerInstanceId ?? resolved.selection?.providerInstanceId;
+    const model = childRun?.model ?? resolved.selection?.model;
+    const effort =
+      extractEffortFromOptions(childRun?.modelOptions) ??
+      extractEffortFromOptions(resolved.selection?.options) ??
+      profile?.effort;
+    const profileSource = childRun?.modelSource ?? resolved.source;
+
+    const branch = childRow?.branch ?? childRun?.branch ?? undefined;
+    const headSha = childRow?.headSha ?? childRun?.headSha ?? undefined;
+    const diffStat = childRun?.diffStat ?? undefined;
+    const merged = Boolean(childRow?.mergedAt ?? childRow?.mergedSha);
+    const finishedTask = FINISHED_TASK_STATUSES.has(childTask.status);
+    const isRunning =
+      !finishedTask &&
+      (runningSet.has(childTask.id) || Boolean(childRun && isActiveAgentRunState(childRun.state)));
+    const isDone = finishedTask || childRow?.state === "done" || merged;
+
+    if (isRunning) runningCount += 1;
+    if (merged) mergedCount += 1;
+    if (isDone) doneCount += 1;
+
+    const inReadyBatch = pickedSet.has(childTask.id);
+    const skipItem = skippedByTaskId.get(childTask.id);
+    const waitingReason =
+      !finishedTask && !isRunning && skipItem && skipItem.reason !== "already_running"
+        ? {
+            reason: skipItem.reason,
+            detail: skipItem.detail,
+            ...(skipItem.blockingTaskId ? { blockingTaskId: skipItem.blockingTaskId } : {}),
+            ...(skipItem.blockingTaskCode ? { blockingTaskCode: skipItem.blockingTaskCode } : {}),
+            ...(skipItem.overlappingPath ? { overlappingPath: skipItem.overlappingPath } : {}),
+          }
+        : undefined;
+
+    children.push({
+      taskId: childTask.id,
+      ...(code ? { code } : {}),
+      title: childTask.title,
+      taskStatus: childTask.status,
+      ...(childTask.pendingApproval !== undefined ? { pendingApproval: childTask.pendingApproval } : {}),
+      ...(childTask.needsHuman !== undefined ? { needsHuman: childTask.needsHuman } : {}),
+      ...(childRow?.state !== undefined ? { childState: childRow.state } : {}),
+      ...(childRun?.state !== undefined ? { runState: childRun.state } : {}),
+      isRunning,
+      ...(childRun?.threadId !== undefined ? { threadId: childRun.threadId } : {}),
+      ...(childRun?.link !== undefined ? { link: childRun.link } : {}),
+      ...(levelKey !== undefined ? { levelKey } : {}),
+      ...(levelLabel !== undefined ? { levelLabel } : {}),
+      ...(providerInstanceId !== undefined ? { providerInstanceId } : {}),
+      ...(model !== undefined ? { model } : {}),
+      ...(effort !== undefined ? { effort } : {}),
+      profileSource,
+      ...(profile?.touches !== undefined ? { touches: profile.touches } : {}),
+      ...(profile?.parallelSafe !== undefined ? { parallelSafe: profile.parallelSafe } : {}),
+      ...(branch !== undefined ? { branch } : {}),
+      ...(headSha !== undefined ? { headSha } : {}),
+      ...(diffStat !== undefined ? { diffStat } : {}),
+      ...(childRun?.pullRequestUrls !== undefined ? { pullRequestUrls: childRun.pullRequestUrls } : {}),
+      merged,
+      ...(childRow?.mergedAt !== undefined ? { mergedAt: childRow.mergedAt } : {}),
+      ...(childRow?.mergedSha !== undefined ? { mergedSha: childRow.mergedSha } : {}),
+      ...(waitingReason !== undefined ? { waitingReason } : {}),
+      inReadyBatch,
+    });
+
+    if (inReadyBatch) {
+      readyBatchByTaskId.set(childTask.id, {
+        taskId: childTask.id,
+        ...(code ? { code } : {}),
+        title: childTask.title,
+        ...(levelKey !== undefined ? { levelKey } : {}),
+        ...(levelLabel !== undefined ? { levelLabel } : {}),
+        ...(providerInstanceId !== undefined ? { providerInstanceId } : {}),
+        ...(model !== undefined ? { model } : {}),
+        ...(effort !== undefined ? { effort } : {}),
+        ...(profile?.touches !== undefined ? { touches: profile.touches } : {}),
+      });
+    }
+  }
+
+  const readyBatch = batchSelection.picked
+    .map((p) => readyBatchByTaskId.get(p.id))
+    .filter((item): item is UmbrellaReadyBatchItem => item !== undefined);
+
+  return {
+    parentTask,
+    projectById,
+    picked: batchSelection.picked,
+    skipped,
+    status: {
+      parentTaskId: parentTask.id,
+      children,
+      progress: {
+        total: children.length,
+        running: runningCount,
+        merged: mergedCount,
+        done: doneCount,
+      },
+      readyBatch,
+      maxParallelChildren: projectCap,
+      launchReadiness,
+    },
+  };
+}
+
+/**
+ * Returns the live status of all child tasks under an umbrella task, including resolved tier/model,
+ * git metadata, merge state, skip reasons for waiting children, and the ready batch that
+ * `startReadyChildrenInT3` would pick next (#BIT-191).
+ */
+export async function getUmbrellaChildrenStatus(
+  deps: T3ServiceDeps,
+  parentTaskRef: string,
+  options?: { max?: number | undefined; hostId?: string | undefined },
+): Promise<UmbrellaChildrenStatusResponse> {
+  const evaluated = await evaluateUmbrellaChildren(deps, parentTaskRef, options);
+  return evaluated.status;
+}
+
+/**
+ * Picks the next parallel-safe batch of child tasks for an umbrella task (tasks the umbrella
+ * mentions or that depend on it), starts them in T3 with `workspaceStrategy: "worktree"` and their
+ * resolved run profiles, and returns what started and why the rest were skipped (#BIT-189, #BIT-190).
+ */
+export async function startReadyChildrenInT3(
+  deps: T3ServiceDeps,
+  input: StartReadyChildrenInput,
+): Promise<StartReadyChildrenResult> {
+  const evaluated = await evaluateUmbrellaChildren(deps, input.parentTaskRef, { max: input.max });
+  if (!evaluated.status.launchReadiness.ready) {
+    makeValidationIssue(
+      "parentTaskId",
+      evaluated.status.launchReadiness.reason ?? "Umbrella task is not ready to launch child sessions.",
+    );
+  }
+
+  const started: StartedReadyChildSummary[] = [];
+  for (const picked of evaluated.picked) {
     const launched = await launchTaskInT3(deps, {
       taskRef: picked.id,
-      parentTaskRef: parentTask.id,
+      parentTaskRef: evaluated.parentTask.id,
       workspaceStrategy: "worktree",
       actor: input.actor,
     });
-    const code = taskCode(launched.task, projectById.get(launched.task.projectId));
+    const code = taskCode(launched.task, evaluated.projectById.get(launched.task.projectId));
     started.push({
       taskId: launched.task.id,
       ...(code ? { code } : {}),
@@ -2921,7 +3201,127 @@ export async function startReadyChildrenInT3(
     });
   }
 
-  return { started, skipped };
+  return { started, skipped: evaluated.skipped };
+}
+
+/**
+ * Stops every active child T3 session running under `parentTaskRef` in a single coordinated
+ * batch transition (#BIT-191).
+ */
+export async function stopAllUmbrellaChildren(
+  deps: T3ServiceDeps,
+  parentTaskRef: string,
+): Promise<StopUmbrellaChildrenResponse> {
+  const now = deps.now ? deps.now() : Date.now();
+  const parentTaskId = await resolveTaskRef(deps.storage, parentTaskRef);
+  const parentTask = await deps.storage.getTask(parentTaskId);
+  if (!parentTask) {
+    throw new NotFoundError("task", parentTaskId);
+  }
+
+  const [childRows, allRuns] = await Promise.all([
+    deps.store.listAgentRunChildren(parentTask.id),
+    deps.store.listAgentRuns(),
+  ]);
+
+  const candidateChildIds = new Set<string>();
+  for (const row of childRows) {
+    if (row.state === "running") {
+      candidateChildIds.add(row.childTaskId);
+    }
+  }
+  for (const run of allRuns) {
+    if (run.parentTaskId === parentTask.id && isActiveAgentRunState(run.state)) {
+      candidateChildIds.add(run.taskId);
+    }
+  }
+
+  const activeChildRuns: AgentRun[] = [];
+  for (const childId of candidateChildIds) {
+    const run = await deps.store.getAgentRunByTaskId(childId);
+    if (run && isActiveAgentRunState(run.state)) {
+      activeChildRuns.push(run);
+    }
+  }
+
+  if (activeChildRuns.length === 0) {
+    return { stoppedTaskIds: [] };
+  }
+
+  const stoppedPairs: { existing: AgentRun; updated: AgentRun }[] = [];
+
+  for (const existingRun of activeChildRuns) {
+    const hasQueuedLaunchOnly = existingRun.threadId.startsWith("queued:");
+    await deps.store.requests.cancel(existingRun.taskId, now);
+    if (!hasQueuedLaunchOnly && existingRun.state !== "offline") {
+      const targetHostId = await resolveOriginatingTaskHostId(deps, existingRun.taskId, existingRun);
+      let mcpClient: T3McpClient | undefined;
+      try {
+        mcpClient = await createActiveT3McpClient({
+          store: deps.store,
+          encryptionKey: deps.encryptionKey,
+          hostId: targetHostId,
+          fetchFn: deps.fetchFn,
+          now,
+        });
+      } catch (err) {
+        if (existingRun.state !== "queued" || !isQueueableT3Error(err)) {
+          throw err;
+        }
+        mcpClient = undefined;
+      }
+
+      if (mcpClient) {
+        try {
+          await mcpClient.interruptThread(existingRun.threadId);
+        } catch (err) {
+          if (existingRun.state !== "queued" || !isQueueableT3Error(err)) {
+            throw err;
+          }
+        }
+      }
+    }
+
+    const updatedRun =
+      (await deps.store.updateAgentRunState(existingRun.taskId, { state: "stopped", now })) ?? existingRun;
+    if (deps.publishRealtime) {
+      await deps.publishRealtime({ type: "agent_run.updated", run: updatedRun }).catch(() => undefined);
+    }
+    stoppedPairs.push({ existing: existingRun, updated: updatedRun });
+  }
+
+  // Claim all except the final child row first so the final `afterRunStateChange` sees the full
+  // batch ended and hands back once.
+  for (let i = 0; i < stoppedPairs.length - 1; i++) {
+    const pair = stoppedPairs[i];
+    if (!pair) continue;
+    const claimed = await deps.store.claimAgentRunChild(parentTask.id, pair.existing.taskId, {
+      state: "stopped",
+      ...(pair.updated.branch !== undefined ? { branch: pair.updated.branch } : {}),
+      ...(pair.updated.headSha !== undefined ? { headSha: pair.updated.headSha } : {}),
+      now,
+    });
+    await publishRunChild(deps, claimed);
+  }
+
+  const lastPair = stoppedPairs.at(-1);
+  if (lastPair) {
+    await afterRunStateChange(deps, lastPair.existing, lastPair.updated);
+    const remainingRow = await deps.store.getAgentRunChild(parentTask.id, lastPair.existing.taskId);
+    if (remainingRow?.state === "running") {
+      const claimed = await deps.store.claimAgentRunChild(parentTask.id, lastPair.existing.taskId, {
+        state: "stopped",
+        ...(lastPair.updated.branch !== undefined ? { branch: lastPair.updated.branch } : {}),
+        ...(lastPair.updated.headSha !== undefined ? { headSha: lastPair.updated.headSha } : {}),
+        now,
+      });
+      await publishRunChild(deps, claimed);
+    }
+  }
+
+  return {
+    stoppedTaskIds: stoppedPairs.map((pair) => pair.existing.taskId),
+  };
 }
 
 export async function respondToTaskT3Request(

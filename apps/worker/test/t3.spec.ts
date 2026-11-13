@@ -7,6 +7,7 @@ import type {
   ProjectT3Thread,
   ProjectT3ThreadMessagesResponse,
   ProjectT3ThreadsResponse,
+  StopUmbrellaChildrenResponse,
   T3ConnectionStatus,
   T3HostConnectionStatus,
   T3ModelCapability,
@@ -15,6 +16,7 @@ import type {
   T3RunsLiveResponse,
   T3TaskRunLiveResponse,
   Task,
+  UmbrellaChildrenStatusResponse,
 } from "@bitig/core";
 import { createApp, type AppEnv } from "../src/index";
 import { mcpRouter } from "../src/routes/mcp";
@@ -6853,6 +6855,387 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
           enabled: false,
           configured: false,
         });
+      });
+
+      it("exposes umbrella children status, batch confirmation preview, start-ready, stop-all, and live umbrellaChildren with RBAC (#BIT-191)", async () => {
+        hostAState.remoteProjects = [{ id: "t3-proj-umb", title: "BitigUmb", workspaceRoot: "~/www/bitig-umb" }];
+        await authorizeHost({ mcpUrl: HOST_A_MCP_URL, label: "Host A", kind: "user" });
+        const { hosts } = await (await multiRequest("/api/t3/hosts")).json<{ hosts: T3HostConnectionStatus[] }>();
+        const hostA = hosts[0];
+        if (!hostA) {
+          throw new Error("Expected connected host A");
+        }
+
+        const viewerAuth = await createOrgMemberToken("viewer", false);
+        const editorAuth = await createOrgMemberToken("editor", false);
+        const outsiderAuth = await createOutsiderOwnerToken();
+
+        // Configure custom org run levels and model mappings
+        const putLevelsRes = await multiRequest(`/api/orgs/${DEFAULT_ORGANISATION_ID}/run-levels`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            levels: [
+              { key: "fast", label: "Fast", description: "Quick isolated edits", order: 0 },
+              { key: "balanced", label: "Balanced", description: "Standard feature work", order: 1 },
+              { key: "deep", label: "Deep", description: "Architectural work", order: 2 },
+            ],
+            models: [
+              {
+                levelKey: "fast",
+                providerInstanceId: "prov-codex",
+                model: "gpt-6-sol",
+                options: [{ id: "reasoningEffort", value: "low" }],
+              },
+              {
+                levelKey: "balanced",
+                providerInstanceId: "prov-claude",
+                model: "claude-opus-4-7",
+                options: [{ id: "effort", value: "medium" }],
+              },
+              {
+                levelKey: "deep",
+                providerInstanceId: "prov-claude",
+                model: "claude-opus-4-7",
+                options: [{ id: "effort", value: "high" }],
+              },
+            ],
+            replacementKeys: {
+              cheap: "fast",
+              standard: "balanced",
+              strong: "deep",
+            },
+          }),
+        });
+        expect(putLevelsRes.status).toBe(200);
+
+        const proj = await (
+          await multiRequest("/api/projects", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              name: "Umbrella Web",
+              key: "UMB",
+              hostId: hostA.id,
+              workspaceRoot: "~/www/bitig-umb",
+            }),
+          })
+        ).json<Project>();
+
+        const putSettingsRes = await multiRequest(`/api/projects/${proj.id}/run-settings`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            maxParallelChildren: 2,
+            serialPaths: ["packages/storage-d1/migrations/**"],
+            defaultRunLevel: "balanced",
+          }),
+        });
+        expect(putSettingsRes.status).toBe(200);
+
+        // UMB-1: Umbrella task
+        const umbrella = await (
+          await multiRequest("/api/tasks", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              projectId: proj.id,
+              title: "Umbrella Orchestration (umbrella)",
+            }),
+          })
+        ).json<Task>();
+
+        // UMB-2: Ready disjoint child A (fast / gpt-6-sol / low)
+        const childA = await (
+          await multiRequest("/api/tasks", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              projectId: proj.id,
+              title: "Child A (core)",
+              dependsOn: [umbrella.id],
+            }),
+          })
+        ).json<Task>();
+        await multiRequest(`/api/tasks/${childA.id}/run-profile`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            level: "fast",
+            effort: "low",
+            touches: ["packages/core/**"],
+            parallelSafe: true,
+            reason: "Core domain changes",
+          }),
+        });
+
+        // UMB-3: Overlaps UMB-2 (packages/core/src/**)
+        const childOverlap = await (
+          await multiRequest("/api/tasks", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              projectId: proj.id,
+              title: "Child Overlap (core/src)",
+              dependsOn: [umbrella.id],
+            }),
+          })
+        ).json<Task>();
+        await multiRequest(`/api/tasks/${childOverlap.id}/run-profile`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            level: "balanced",
+            touches: ["packages/core/src/**"],
+            parallelSafe: true,
+            reason: "Overlaps Child A",
+          }),
+        });
+
+        // UMB-4: Ready disjoint child B (deep / claude-opus-4-7 / high)
+        const childB = await (
+          await multiRequest("/api/tasks", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              projectId: proj.id,
+              title: "Child B (web)",
+              dependsOn: [umbrella.id],
+            }),
+          })
+        ).json<Task>();
+        await multiRequest(`/api/tasks/${childB.id}/run-profile`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            level: "deep",
+            effort: "high",
+            touches: ["apps/web/**"],
+            parallelSafe: true,
+            reason: "Web UI changes",
+          }),
+        });
+
+        // UMB-5: Disjoint child C — hits cap (maxParallelChildren = 2)
+        const childCap = await (
+          await multiRequest("/api/tasks", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              projectId: proj.id,
+              title: "Child Cap (mcp-tools)",
+              dependsOn: [umbrella.id],
+            }),
+          })
+        ).json<Task>();
+        await multiRequest(`/api/tasks/${childCap.id}/run-profile`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            level: "balanced",
+            touches: ["packages/mcp-tools/**"],
+            parallelSafe: true,
+            reason: "MCP tools",
+          }),
+        });
+
+        // UMB-6: Blocked by UMB-2
+        const childBlocked = await (
+          await multiRequest("/api/tasks", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              projectId: proj.id,
+              title: "Child Blocked (cli)",
+              dependsOn: [umbrella.id, childA.id],
+            }),
+          })
+        ).json<Task>();
+        await multiRequest(`/api/tasks/${childBlocked.id}/run-profile`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            level: "fast",
+            touches: ["apps/cli/**"],
+            parallelSafe: true,
+            reason: "CLI changes",
+          }),
+        });
+
+        // 1. RBAC: viewer can GET /:id/children (200), gets 403 on POST start-ready and stop; outsider gets 404
+        const viewerGetRes = await multiRequest(`/api/tasks/${umbrella.id}/children`, {
+          headers: { Authorization: viewerAuth },
+        });
+        expect(viewerGetRes.status).toBe(200);
+        const preLaunchStatus = await viewerGetRes.json<UmbrellaChildrenStatusResponse>();
+        expect(preLaunchStatus.launchReadiness.ready).toBe(false);
+        expect(preLaunchStatus.maxParallelChildren).toBe(2);
+        expect(preLaunchStatus.progress).toEqual({ total: 5, running: 0, merged: 0, done: 0 });
+        expect(preLaunchStatus.readyBatch.map((b) => b.code)).toEqual(["UMB-2", "UMB-4"]);
+        expect(preLaunchStatus.children.find((c) => c.taskId === childA.id)).toMatchObject({
+          code: "UMB-2",
+          levelKey: "fast",
+          levelLabel: "Fast",
+          model: "gpt-6-sol",
+          effort: "low",
+          inReadyBatch: true,
+        });
+        expect(preLaunchStatus.children.find((c) => c.taskId === childOverlap.id)?.waitingReason).toMatchObject({
+          reason: "overlaps_picked",
+          blockingTaskCode: "UMB-2",
+          overlappingPath: "packages/core/src/**",
+        });
+        expect(preLaunchStatus.children.find((c) => c.taskId === childCap.id)?.waitingReason).toMatchObject({
+          reason: "cap_reached",
+        });
+        expect(preLaunchStatus.children.find((c) => c.taskId === childBlocked.id)?.waitingReason).toMatchObject({
+          reason: "blocked",
+          blockingTaskCode: "UMB-2",
+        });
+
+        expect(
+          (
+            await multiRequest(`/api/tasks/${umbrella.id}/children/start-ready`, {
+              method: "POST",
+              headers: { Authorization: viewerAuth, "Content-Type": "application/json" },
+              body: JSON.stringify({}),
+            })
+          ).status,
+        ).toBe(403);
+        expect(
+          (
+            await multiRequest(`/api/tasks/${umbrella.id}/children/stop`, {
+              method: "POST",
+              headers: { Authorization: viewerAuth },
+            })
+          ).status,
+        ).toBe(403);
+
+        for (const reqInit of [
+          { path: `/api/tasks/${umbrella.id}/children`, method: "GET" },
+          { path: `/api/tasks/${umbrella.id}/children/start-ready`, method: "POST" },
+          { path: `/api/tasks/${umbrella.id}/children/stop`, method: "POST" },
+        ]) {
+          expect(
+            (
+              await multiRequest(reqInit.path, {
+                method: reqInit.method,
+                headers: {
+                  Authorization: outsiderAuth,
+                  "X-Bitig-Org": DEFAULT_ORGANISATION_ID,
+                },
+              })
+            ).status,
+          ).toBe(404);
+        }
+
+        // 2. Start umbrella in worktree mode and report clean git metadata so launchReadiness.ready becomes true
+        hostAState.launchThreadIds = ["thread-umb-1"];
+        const startUmbRes = await multiRequest(`/api/tasks/${umbrella.id}/t3-run`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ workspaceStrategy: "worktree" }),
+        });
+        expect(startUmbRes.status).toBe(201);
+        const startedUmb = await startUmbRes.json<{ run: AgentRun }>();
+        const reportUmbMeta = await multiMcpCall("report_t3_git_metadata", {
+          taskId: "UMB-1",
+          runId: startedUmb.run.id,
+          threadId: "thread-umb-1",
+          metadata: {
+            branch: "bitig/UMB-1",
+            headSha: "1111111111111111111111111111111111111111",
+            worktreePath: "/tmp/worktrees/umb-1",
+            dirty: false,
+          },
+        });
+        expect(reportUmbMeta.isError).toBeFalsy();
+
+        const readyPreviewRes = await multiRequest(`/api/tasks/${umbrella.id}/children`);
+        expect(readyPreviewRes.status).toBe(200);
+        const readyPreview = await readyPreviewRes.json<UmbrellaChildrenStatusResponse>();
+        expect(readyPreview.launchReadiness.ready).toBe(true);
+        expect(readyPreview.readyBatch.map((b) => b.code)).toEqual(["UMB-2", "UMB-4"]);
+
+        // 3. POST /:id/children/start-ready launches the exact previewed batch (UMB-2 and UMB-4)
+        hostAState.launchThreadIds = ["thread-umb-2", "thread-umb-4"];
+        const startBatchRes = await multiRequest(`/api/tasks/${umbrella.id}/children/start-ready`, {
+          method: "POST",
+          headers: { Authorization: editorAuth, "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        });
+        expect(startBatchRes.status).toBe(201);
+        const startBatchBody = await startBatchRes.json<{
+          started: { code: string; threadId: string }[];
+          skipped: { code: string; reason: string }[];
+        }>();
+        expect(startBatchBody.started.map((s) => ({ code: s.code, threadId: s.threadId }))).toEqual([
+          { code: "UMB-2", threadId: "thread-umb-2" },
+          { code: "UMB-4", threadId: "thread-umb-4" },
+        ]);
+
+        // Report git metadata for UMB-2 and verify branch, diffStat, merged=false, and live umbrellaChildren
+        const childARun = await new T3D1Store(env.DB, DEFAULT_ORGANISATION_ID).getAgentRunByTaskId(childA.id);
+        if (!childARun) {
+          throw new Error("Expected AgentRun for UMB-2");
+        }
+        await multiMcpCall("report_t3_git_metadata", {
+          taskId: "UMB-2",
+          runId: childARun.id,
+          threadId: "thread-umb-2",
+          metadata: {
+            branch: "bitig/UMB-2",
+            headSha: "2222222222222222222222222222222222222222",
+            diffStat: { filesChanged: 3, insertions: 42, deletions: 5 },
+          },
+        });
+
+        const runningStatusRes = await multiRequest(`/api/tasks/${umbrella.id}/children`);
+        expect(runningStatusRes.status).toBe(200);
+        const runningStatus = await runningStatusRes.json<UmbrellaChildrenStatusResponse>();
+        expect(runningStatus.progress).toEqual({ total: 5, running: 2, merged: 0, done: 0 });
+        expect(runningStatus.children.find((c) => c.taskId === childA.id)).toMatchObject({
+          code: "UMB-2",
+          isRunning: true,
+          childState: "running",
+          branch: "bitig/UMB-2",
+          headSha: "2222222222222222222222222222222222222222",
+          diffStat: { filesChanged: 3, insertions: 42, deletions: 5 },
+          merged: false,
+        });
+
+        // GET /api/t3/runs exposes umbrellaChildren for board/list progress badges
+        hostAState.threadList = [
+          { id: "thread-umb-1", status: "idle", pendingRequestCount: 0 },
+          { id: "thread-umb-2", status: "running", pendingRequestCount: 0 },
+          { id: "thread-umb-4", status: "running", pendingRequestCount: 0 },
+        ];
+        const liveRunsRes = await multiRequest("/api/t3/runs");
+        expect(liveRunsRes.status).toBe(200);
+        const liveRunsBody = await liveRunsRes.json<T3RunsLiveResponse>();
+        expect(
+          liveRunsBody.umbrellaChildren
+            ?.filter((c) => c.parentTaskId === umbrella.id)
+            .map((c) => ({ childTaskId: c.childTaskId, state: c.state })),
+        ).toEqual([
+          { childTaskId: childA.id, state: "running" },
+          { childTaskId: childB.id, state: "running" },
+        ]);
+
+        // 4. Stop one child (UMB-2), then stop all remaining running children (UMB-4) via POST /:id/children/stop
+        const stopOneRes = await multiRequest(`/api/tasks/${childA.id}/t3-run/stop`, {
+          method: "POST",
+          headers: { Authorization: editorAuth },
+        });
+        expect(stopOneRes.status).toBe(200);
+
+        const stopAllRes = await multiRequest(`/api/tasks/${umbrella.id}/children/stop`, {
+          method: "POST",
+          headers: { Authorization: editorAuth },
+        });
+        expect(stopAllRes.status).toBe(200);
+        const stopAllBody = await stopAllRes.json<StopUmbrellaChildrenResponse>();
+        expect(stopAllBody.stoppedTaskIds).toEqual([childB.id]);
       });
     });
   });

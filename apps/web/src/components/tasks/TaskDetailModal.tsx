@@ -13,8 +13,10 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import {
+  extractTaskMentions,
   formatDuration,
   getTaskTiming,
+  hasExplicitUmbrellaMarker,
   type AgentRun,
   type ChecklistItem,
   type Project,
@@ -41,6 +43,7 @@ import { TaskCheckpoint } from "./TaskCheckpoint";
 import { TaskAttachments } from "./TaskAttachments";
 import { TaskComments, type TaskCommentsT3Context } from "./TaskComments";
 import { TaskT3Section } from "./TaskT3Section";
+import { UmbrellaChildrenPanel } from "./UmbrellaChildrenPanel";
 import { LinkedTasks, TaskDependencies } from "./LinkedTasks";
 
 interface TaskDetailModalProps {
@@ -66,6 +69,8 @@ interface TaskDetailModalProps {
   readonly dependencies?: DependencyLinks | undefined;
   /** Cached T3 agent run for immediate display before live status settles. */
   readonly agentRun?: AgentRun | null | undefined;
+  /** Whether the workspace umbrella index recognizes this task as an umbrella task (#BIT-191). */
+  readonly isUmbrella?: boolean | undefined;
 }
 
 const ICON_SIZE = 16;
@@ -143,6 +148,7 @@ export function TaskDetailModal({
   links,
   dependencies,
   agentRun,
+  isUmbrella,
 }: TaskDetailModalProps) {
   const isOpen = task !== null;
   // A toggled checklist shows at once and gives way to the saved task once the save settles
@@ -185,6 +191,16 @@ export function TaskDetailModal({
   const timing = getTaskTiming(task);
   const spentMs =
     task.startedAt !== undefined || task.completedAt !== undefined ? timing.spentMs : undefined;
+  const activeRunForChildren =
+    t3Context?.taskId === task.id ? t3Context.run : agentRun?.taskId === task.id ? agentRun : null;
+  const hasCandidateChildren =
+    isUmbrella === true ||
+    hasExplicitUmbrellaMarker(task) ||
+    Boolean(task.checklist?.some((item) => extractTaskMentions(item.text).length > 0)) ||
+    (dependencies?.dependents.length ?? 0) > 0 ||
+    (links?.mentions.length ?? 0) > 0 ||
+    activeRunForChildren?.state === "waiting_subagent" ||
+    activeRunForChildren?.waitingForTaskId !== undefined;
 
   function toggleChecklist(current: Task, next: ChecklistItem[]) {
     if (!onChecklistChange) return;
@@ -302,20 +318,28 @@ export function TaskDetailModal({
         )}
 
         {storage && (
-          <TaskT3Section
-            key={`t3-${task.id}`}
-            task={task}
-            project={project}
-            projects={projects}
-            storage={storage}
-            initialRun={agentRun}
-            hasUnfinishedDependencies={Boolean(
-              dependencies?.dependsOn.some(
-                (dep) => dep.status !== "done" && dep.status !== "archived",
-              ),
-            )}
-            onT3ContextChange={handleT3ContextChange}
-          />
+          <>
+            <TaskT3Section
+              key={`t3-${task.id}`}
+              task={task}
+              project={project}
+              projects={projects}
+              storage={storage}
+              initialRun={agentRun}
+              hasUnfinishedDependencies={Boolean(
+                dependencies?.dependsOn.some(
+                  (dep) => dep.status !== "done" && dep.status !== "archived",
+                ),
+              )}
+              onT3ContextChange={handleT3ContextChange}
+            />
+            <UmbrellaChildrenPanel
+              key={`children-${task.id}`}
+              task={task}
+              isUmbrella={isUmbrella}
+              hasCandidateChildren={hasCandidateChildren}
+            />
+          </>
         )}
 
         <div className="mb-5">

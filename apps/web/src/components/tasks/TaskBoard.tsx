@@ -1,11 +1,14 @@
-import { useEffect, useRef, useState, type DragEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import { Archive, Inbox, X } from "lucide-react";
 import {
   TASK_STATUSES,
+  buildUmbrellaIndex,
   type AgentRun,
+  type AgentRunChild,
   type Project,
   type Task,
   type TaskStatus,
+  type UmbrellaIndex,
   type UpdateTaskInput,
 } from "@bitig/core";
 import { TaskCard } from "./TaskCard";
@@ -21,6 +24,8 @@ interface TaskBoardProps {
   readonly tasks: Task[];
   readonly projects: Project[];
   readonly agentRuns?: readonly AgentRun[] | undefined;
+  readonly umbrellaChildren?: readonly AgentRunChild[] | undefined;
+  readonly umbrellaIndex?: UmbrellaIndex | undefined;
   readonly onView: (task: Task) => void;
   readonly onEdit: (task: Task) => void;
   readonly onDelete: (task: Task) => void;
@@ -59,6 +64,8 @@ export function TaskBoard({
   tasks,
   projects,
   agentRuns,
+  umbrellaChildren,
+  umbrellaIndex,
   onView,
   onEdit,
   onDelete,
@@ -76,6 +83,17 @@ export function TaskBoard({
   const refocusId = useRef<string | null>(null);
   const boardRef = useRef<HTMLDivElement>(null);
   const runsByTaskId = new Map((agentRuns ?? []).map((r) => [r.taskId, r]));
+  const resolvedUmbrellaIndex = useMemo(
+    () =>
+      umbrellaIndex ??
+      buildUmbrellaIndex({
+        tasks,
+        projects,
+        runs: agentRuns,
+        runChildren: umbrellaChildren,
+      }),
+    [umbrellaIndex, tasks, projects, agentRuns, umbrellaChildren],
+  );
 
   const columns = new Map(
     TASK_STATUSES.map((status) => [
@@ -198,6 +216,7 @@ export function TaskBoard({
                   task={task}
                   projects={projects}
                   agentRun={runsByTaskId.get(task.id)}
+                  umbrellaProgress={resolvedUmbrellaIndex.progressFor(task.id)}
                   showProject={showProject}
                   onView={onView}
                   onEdit={onEdit}
@@ -356,6 +375,7 @@ export function TaskBoard({
                           task={task}
                           projects={projects}
                           agentRun={runsByTaskId.get(task.id)}
+                          umbrellaProgress={resolvedUmbrellaIndex.progressFor(task.id)}
                           showProject={showProject}
                           onView={onView}
                           onEdit={onEdit}
@@ -435,6 +455,7 @@ export function TaskBoard({
                   <TaskCard
                     task={task}
                     projects={projects}
+                    umbrellaProgress={resolvedUmbrellaIndex.progressFor(task.id)}
                     showProject={showProject}
                     onView={onView}
                     onEdit={onEdit}
