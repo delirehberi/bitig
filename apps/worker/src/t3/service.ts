@@ -971,6 +971,7 @@ export async function launchTaskInT3(
     };
   }
 
+  const existingRunForLaunch = await deps.store.getAgentRunByTaskId(task.id);
   const updatedTask =
     task.status === "in_progress"
       ? task
@@ -985,8 +986,13 @@ export async function launchTaskInT3(
     t3ProjectId: mapping.t3ProjectId,
     title: builtPrompt.title,
     prompt: builtPrompt.prompt,
-    clientRequestId: builtPrompt.clientRequestId,
+    clientRequestId: existingRunForLaunch
+      ? `${builtPrompt.clientRequestId}:${gitMetadataRunId}`
+      : builtPrompt.clientRequestId,
     workspaceStrategy,
+    ...(existingRunForLaunch && !existingRunForLaunch.threadId.startsWith("queued:")
+      ? { settleThreadId: existingRunForLaunch.threadId }
+      : {}),
     ...(childBaseRef ? { baseRef: childBaseRef } : {}),
     ...(childBranch ? { branch: childBranch } : {}),
     ...(parent ? { startFromOrigin: false } : {}),
