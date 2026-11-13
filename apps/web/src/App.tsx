@@ -95,7 +95,7 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
   const blockedOnly = route.name === "tasks" && route.blocked === true;
   const archivedProjectsOnly = route.name === "projects" && route.archived === true;
 
-  const { realtimeSync } = useFeatureFlags();
+  const { realtimeSync, feedbackForms } = useFeatureFlags();
   useRealtime(realtimeSync && health.kind === "online");
 
   const storage = useStorage(mode);
@@ -360,6 +360,8 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
                 onDeleteProject={deleteProject}
                 onSelectProject={handleSelectProject}
                 hostFolderEnabled={mode === "cloudflare" && currentRole === "owner"}
+                feedbackFormsEnabled={feedbackForms}
+                canEditFeedbackForms={currentRole !== "viewer"}
                 searchQuery={searchQuery}
                 archivedView={archivedProjectsOnly}
                 onArchivedViewChange={(archived) => {

@@ -5,11 +5,13 @@ import {
   CommentSchema,
   CreateAttachmentInputSchema,
   CreateCommentInputSchema,
+  CreateFeedbackFormInputSchema,
   SaveCheckpointInputSchema,
   CreateProjectInputSchema,
   CreateTaskInputSchema,
   CreateWebhookInputSchema,
   IdSchema,
+  UpdateFeedbackFormInputSchema,
   NotFoundError,
   ProjectBundleSchema,
   ProjectSchema,
@@ -35,15 +37,18 @@ import {
   type CreateAttachmentInput,
   type SaveCheckpointInput,
   type CreateCommentInput,
+  type CreateFeedbackFormInput,
   type CreateProjectInput,
   type CreateTaskInput,
   type CreateWebhookInput,
+  type FeedbackForm,
   type OperationOptions,
   type Project,
   type ProjectBundle,
   type StorageProvider,
   type Task,
   type TaskFilter,
+  type UpdateFeedbackFormInput,
   type UpdateProjectInput,
   type UpdateTaskInput,
   type UpdateWebhookInput,
@@ -63,6 +68,17 @@ export type AuthConfig =
   | (() => string | null | undefined | Promise<string | null | undefined>);
 
 export type OrgConfig = string | (() => string | null | undefined);
+
+/** A feedback form as the management routes return it: the stored form plus its public link and pending count. */
+export interface FeedbackFormSummary extends FeedbackForm {
+  readonly publicPath: string;
+  readonly publicUrl: string;
+  readonly publicLink: string;
+  readonly pendingCount: number;
+}
+
+/** Create body for `POST /api/projects/:id/feedback-forms`; the project comes from the path. */
+export type CreateFeedbackFormBody = Omit<CreateFeedbackFormInput, "projectId" | "orgId">;
 
 export interface ApiStorageOptions {
   readonly baseUrl?: string;
@@ -185,6 +201,118 @@ export class ApiStorage implements StorageProvider {
     } catch (error) {
       throw new StorageError("corrupt", "Failed to parse API response as JSON", { cause: error });
     }
+  }
+
+  /** Lists a project's feedback forms with their pending counts (viewers and above). */
+  async listFeedbackForms(projectId: string, opts?: OperationOptions): Promise<FeedbackFormSummary[]> {
+    throwIfAborted(opts?.signal);
+    const validId = parseOrThrow(IdSchema, projectId, "listFeedbackForms projectId");
+
+    const res = await this.request(
+      `/api/projects/${encodeURIComponent(validId)}/feedback-forms`,
+      { method: "GET" },
+      opts,
+    );
+    await this.assertFeedbackFormResponse(res, "list feedback forms", validId, HTTP_OK);
+    return this.parseJsonResponse<FeedbackFormSummary[]>(res);
+  }
+
+  /** Creates a feedback form in a project (editors and above). */
+  async createFeedbackForm(
+    projectId: string,
+    input: CreateFeedbackFormBody,
+    opts?: OperationOptions,
+  ): Promise<FeedbackFormSummary> {
+    throwIfAborted(opts?.signal);
+    const validId = parseOrThrow(IdSchema, projectId, "createFeedbackForm projectId");
+    const validated = parseOrThrow(
+      CreateFeedbackFormInputSchema.omit({ projectId: true, orgId: true }),
+      input,
+      "createFeedbackForm",
+    );
+
+    const res = await this.request(
+      `/api/projects/${encodeURIComponent(validId)}/feedback-forms`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(validated),
+      },
+      opts,
+    );
+    await this.assertFeedbackFormResponse(res, "create feedback form", validId, HTTP_CREATED);
+    return this.parseJsonResponse<FeedbackFormSummary>(res);
+  }
+
+  /** Applies a partial update to a feedback form (editors and above). */
+  async updateFeedbackForm(
+    formId: string,
+    patch: UpdateFeedbackFormInput,
+    opts?: OperationOptions,
+  ): Promise<FeedbackFormSummary> {
+    throwIfAborted(opts?.signal);
+    const validId = parseOrThrow(IdSchema, formId, "updateFeedbackForm id");
+    const validated = parseOrThrow(UpdateFeedbackFormInputSchema, patch, "updateFeedbackForm");
+
+    const res = await this.request(
+      `/api/feedback-forms/${encodeURIComponent(validId)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(validated),
+      },
+      opts,
+    );
+    await this.assertFeedbackFormResponse(res, "update feedback form", validId, HTTP_OK);
+    return this.parseJsonResponse<FeedbackFormSummary>(res);
+  }
+
+  /** Deletes a feedback form and its entries (editors and above). */
+  async deleteFeedbackForm(formId: string, opts?: OperationOptions): Promise<void> {
+    throwIfAborted(opts?.signal);
+    const validId = parseOrThrow(IdSchema, formId, "deleteFeedbackForm id");
+
+    const res = await this.request(
+      `/api/feedback-forms/${encodeURIComponent(validId)}`,
+      { method: "DELETE" },
+      opts,
+    );
+    await this.assertFeedbackFormResponse(res, "delete feedback form", validId, HTTP_NO_CONTENT);
+  }
+
+  /** Replaces a form's public id, which invalidates the old link and embeds (editors and above). */
+  async rotateFeedbackFormPublicId(formId: string, opts?: OperationOptions): Promise<FeedbackFormSummary> {
+    throwIfAborted(opts?.signal);
+    const validId = parseOrThrow(IdSchema, formId, "rotateFeedbackFormPublicId id");
+
+    const res = await this.request(
+      `/api/feedback-forms/${encodeURIComponent(validId)}/rotate`,
+      { method: "POST" },
+      opts,
+    );
+    await this.assertFeedbackFormResponse(res, "rotate feedback form link", validId, HTTP_OK);
+    return this.parseJsonResponse<FeedbackFormSummary>(res);
+  }
+
+  /** Maps a feedback form response to the matching error; resolves when the status is the expected one. */
+  private async assertFeedbackFormResponse(
+    res: Response,
+    action: string,
+    id: string,
+    expectedStatus: number,
+  ): Promise<void> {
+    if (res.status === expectedStatus) return;
+    if (res.status === HTTP_UNAUTHORIZED) {
+      throw new AuthError();
+    }
+    if (res.status === HTTP_NOT_FOUND) {
+      throw new NotFoundError("feedback_form", id);
+    }
+    if (res.status === HTTP_BAD_REQUEST) {
+      const err = await this.parseJsonResponse<{ details?: readonly [] }>(res);
+      throw new ValidationError(action, err.details ?? []);
+    }
+    throw new StorageError("io", `Failed to ${action} ${id}: HTTP ${res.status.toString()}`);
   }
 
   async getProjects(opts?: OperationOptions): Promise<Project[]> {

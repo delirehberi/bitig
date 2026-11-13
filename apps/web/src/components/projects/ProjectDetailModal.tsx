@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Archive,
   ArchiveRestore,
@@ -21,8 +21,15 @@ import { ProjectT3Panel } from "./ProjectT3Panel";
 import { ProjectRunSettingsPanel } from "./ProjectRunSettingsPanel";
 import { useRunProfiles } from "../../domain/run-profiles";
 import { ResourceLinks } from "./Resources";
+import { ProjectFeedbackPanel } from "./ProjectFeedbackPanel";
+
+type ProjectDetailTab = "details" | "feedback";
 
 interface ProjectDetailModalProps {
+  /** Shows the Feedback tab (cloudflare mode only, the Worker's feedback form routes). */
+  readonly feedbackFormsEnabled?: boolean | undefined;
+  /** Lets editors and above manage feedback forms; viewers see the tab read-only. */
+  readonly canEditFeedbackForms?: boolean | undefined;
   readonly project: Project | null;
   readonly tasks: readonly Task[];
   readonly activeSessions?: readonly ResolvedProjectActiveSession[];
@@ -76,6 +83,8 @@ export function ProjectDetailModal({
   activeSessions = [],
   focusT3Composer = false,
   canManageHostFolder = false,
+  feedbackFormsEnabled = false,
+  canEditFeedbackForms = false,
   onMappingChange,
   onClose,
   onEdit,
@@ -88,6 +97,12 @@ export function ProjectDetailModal({
   const panelRef = useRef<HTMLDivElement>(null);
   useFocusTrap(panelRef, isOpen);
   const { levels: runLevels } = useRunProfiles();
+  // The tab is remembered per project, so opening another project starts on Details.
+  const [tabState, setTabState] = useState<{ readonly projectId: string; readonly tab: ProjectDetailTab }>({
+    projectId: "",
+    tab: "details",
+  });
+  const activeTab: ProjectDetailTab = tabState.projectId === project?.id ? tabState.tab : "details";
 
   useEffect(() => {
     if (!isOpen) return;
@@ -152,6 +167,36 @@ export function ProjectDetailModal({
           </h2>
         </div>
 
+        {feedbackFormsEnabled && (
+          <div role="tablist" aria-label="Project sections" className="mb-4 flex gap-1 border-b border-rule">
+            {(
+              [
+                ["details", "Details"],
+                ["feedback", "Feedback"],
+              ] as const
+            ).map(([tab, label]) => (
+              <button
+                key={tab}
+                type="button"
+                role="tab"
+                aria-selected={activeTab === tab}
+                onClick={() => {
+                  setTabState({ projectId: project.id, tab });
+                }}
+                className={`-mb-px border-b-2 px-3 py-1.5 text-xs font-semibold ${
+                  activeTab === tab ? "border-accent text-accent-ink" : "border-transparent text-ink-3 hover:text-ink"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {activeTab === "feedback" ? (
+          <ProjectFeedbackPanel key={`feedback-${project.id}`} projectId={project.id} canEdit={canEditFeedbackForms} />
+        ) : (
+        <>
         <div className="mb-5">
           {project.description ? (
             <Markdown content={project.description} />
@@ -235,6 +280,8 @@ export function ProjectDetailModal({
             </time>
           </Field>
         </dl>
+        </>
+        )}
 
         <div className="flex flex-wrap items-center justify-end gap-2 border-t border-rule pt-4">
           <button
