@@ -1,10 +1,10 @@
 import { env } from "cloudflare:workers";
-import { beforeEach, describe, expect, it } from "vitest";
-import type { Organisation, Project, User } from "@bitig/core";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { Organisation, Project, Task, User } from "@bitig/core";
 import { D1FeedbackStore } from "@bitig/storage-d1";
 import { createApp } from "../src/index";
 import { FakeMailer } from "../src/mailer";
-import type { FeedbackFormResponse } from "../src/routes/feedback";
+import { setFeedbackAbuseCheckHook, type FeedbackFormResponse } from "../src/routes/feedback";
 import { TEST_AUTH_HEADER } from "./constants";
 
 const BASE_URL = "https://bitig.test";
@@ -783,5 +783,406 @@ describe("REST API: Feedback form management (BIT-176)", () => {
     });
     expect(aliceCheckRes.status).toBe(200);
     expect((await aliceCheckRes.json<FeedbackFormResponse>()).name).toBe("Alice Feedback");
+  });
+
+  afterEach(() => {
+    setFeedbackAbuseCheckHook(undefined);
+  });
+
+  it("renders GET /f/:publicId with Hallmark tokens, light/dark modes, accent colour, embed postMessage mode, and privacy note link", async () => {
+    const projectRes = await req("/api/projects", {
+      method: "POST",
+      authHeader: TEST_AUTH_HEADER,
+      bodyJson: { name: "Widget Project", key: "WDG" },
+    });
+    const project = await projectRes.json<Project>();
+
+    const createRes = await req(`/api/projects/${project.id}/feedback-forms`, {
+      method: "POST",
+      authHeader: TEST_AUTH_HEADER,
+      bodyJson: {
+        name: "Widget Feedback",
+        title: "Share Feedback <Beta>",
+        intro: "Tell us what you think & what we can improve.",
+        fields: {
+          email: "required",
+          name: true,
+          categories: ["Bug", "Feature Request"],
+        },
+        turnstile: true,
+        accentColor: "#e11d48",
+        thankYouText: "We appreciate your input!",
+      },
+    });
+    expect(createRes.status).toBe(201);
+    const form = await createRes.json<FeedbackFormResponse>();
+
+    // Unauthenticated GET /f/:publicId (no auth headers, no CSRF header)
+    const pageRes = await app.fetch(
+      new Request(`${BASE_URL}/f/${form.publicId}`),
+      env,
+    );
+    expect(pageRes.status).toBe(200);
+    expect(pageRes.headers.get("content-type")).toContain("text/html");
+    const html = await pageRes.text();
+
+    // Escapes title and intro, includes Hallmark tokens, light/dark mode, and accent colour
+    expect(html).toContain("Share Feedback &lt;Beta&gt;");
+    expect(html).not.toContain("Share Feedback <Beta>");
+    expect(html).toContain("Tell us what you think &amp; what we can improve.");
+    expect(html).toContain("--color-paper:");
+    expect(html).toContain("--color-ink:");
+    expect(html).toContain("--color-accent:");
+    expect(html).toContain("--font-display:");
+    expect(html).toContain("--font-body:");
+    expect(html).toContain("prefers-color-scheme: dark");
+    expect(html).toContain("color-scheme: light dark");
+    expect(html).toContain("--form-accent: #e11d48");
+    expect(html).toContain('data-accent-color="#e11d48"');
+
+    // Includes configured fields, Turnstile, and page chrome
+    expect(html).toContain('class="feedback-chrome-header"');
+    expect(html).toContain('data-embed="false"');
+    expect(html).toContain('name="title"');
+    expect(html).toContain('name="body"');
+    expect(html).toContain('name="category"');
+    expect(html).toContain("Feature Request");
+    expect(html).toContain('name="submitterName"');
+    expect(html).toContain('name="submitterEmail"');
+    expect(html).toContain("https://challenges.cloudflare.com/turnstile/v0/api.js");
+    expect(html).not.toContain("bitig:feedback:resize");
+
+    // Links to the privacy note and serves the privacy note page
+    expect(html).toContain(`/f/${form.publicId}/privacy`);
+    expect(html).toContain("Privacy note");
+    const privacyRes = await app.fetch(
+      new Request(`${BASE_URL}/f/${form.publicId}/privacy`),
+      env,
+    );
+    expect(privacyRes.status).toBe(200);
+    const privacyHtml = await privacyRes.text();
+    expect(privacyHtml).toContain("raw IP address is never stored");
+    expect(privacyHtml).toContain("30 days");
+
+    // ?embed=1 drops outer page chrome and reports height via postMessage
+    const embedRes = await app.fetch(
+      new Request(
+        `${BASE_URL}/f/${form.publicId}?embed=1&pageUrl=${encodeURIComponent("https://docs.example.com/guide")}`,
+      ),
+      env,
+    );
+    expect(embedRes.status).toBe(200);
+    const embedHtml = await embedRes.text();
+    expect(embedHtml).toContain('data-embed="true"');
+    expect(embedHtml).toContain("is-embed");
+    expect(embedHtml).not.toContain('class="feedback-chrome-header"');
+    expect(embedHtml).toContain("window.parent.postMessage");
+    expect(embedHtml).toContain("bitig:feedback:resize");
+    expect(embedHtml).toContain('name="pageUrl" value="https://docs.example.com/guide"');
+  });
+
+  it("POST /f/:publicId accepts form post and JSON, resolves org, creates pending task, writes feedback_entries, bumps counters, and shows thank-you text", async () => {
+    // Create a form inside a non-default organisation to verify org resolution from publicId
+    const owner = await registerAndVerify({
+      email: "maintainer@bitig.test",
+      username: "maintainer",
+      displayName: "Maintainer",
+      organisationName: "Acme Feedback Org",
+    });
+    const org = owner.memberships[0]?.organisation;
+    expect(org).toBeDefined();
+    if (!org) throw new Error("missing org");
+
+    const projRes = await req("/api/projects", {
+      method: "POST",
+      cookie: owner.cookie,
+      org: org.slug,
+      bodyJson: { name: "Acme Cloud", key: "ACM" },
+    });
+    expect(projRes.status).toBe(201);
+    const project = await projRes.json<Project>();
+
+    const createFormRes = await req(`/api/projects/${project.id}/feedback-forms`, {
+      method: "POST",
+      cookie: owner.cookie,
+      org: org.slug,
+      bodyJson: {
+        name: "Docs Widget",
+        title: "Docs Feedback",
+        fields: {
+          email: "optional",
+          name: true,
+          categories: ["Bug", "Docs", "Idea"],
+        },
+        turnstile: false,
+        defaultLabels: ["docs-portal"],
+        defaultPriority: "high",
+        thankYouText: "Thank you for helping improve Acme Docs!",
+      },
+    });
+    expect(createFormRes.status).toBe(201);
+    const form = await createFormRes.json<FeedbackFormResponse>();
+
+    // 1. Submit via URL-encoded HTML form post (unauthenticated, no CSRF headers needed)
+    const formData = new URLSearchParams({
+      title: "Broken code snippet on quickstart",
+      body: "Step 3 throws a syntax error when copied.\nSee https://docs.acme.test/quickstart",
+      category: "Docs",
+      submitterName: "Jane Visitor",
+      submitterEmail: "jane@visitor.test",
+      pageUrl: "https://docs.acme.test/quickstart",
+    });
+    const postFormRes = await app.fetch(
+      new Request(`${BASE_URL}/f/${form.publicId}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "User-Agent": "Mozilla/5.0 TestBrowser/1.0",
+        },
+        body: formData.toString(),
+      }),
+      env,
+    );
+    expect(postFormRes.status).toBe(200);
+    expect(postFormRes.headers.get("content-type")).toContain("text/html");
+    const thankYouHtml = await postFormRes.text();
+    expect(thankYouHtml).toContain("Thank you for helping improve Acme Docs!");
+
+    // 2. Submit via JSON POST
+    const postJsonRes = await app.fetch(
+      new Request(`${BASE_URL}/f/${form.publicId}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "User-Agent": "FeedbackWidget/2.0",
+        },
+        body: JSON.stringify({
+          title: "Add dark mode toggle shortcut",
+          body: "A keyboard shortcut for dark mode would be handy.",
+          category: "Idea",
+        }),
+      }),
+      env,
+    );
+    expect(postJsonRes.status).toBe(200);
+    const jsonResult = await postJsonRes.json<{
+      ok: boolean;
+      thankYouText: string;
+      taskId: string;
+      entryId: string;
+    }>();
+    expect(jsonResult.ok).toBe(true);
+    expect(jsonResult.thankYouText).toBe("Thank you for helping improve Acme Docs!");
+    expect(jsonResult.taskId).toBeTruthy();
+    expect(jsonResult.entryId).toBeTruthy();
+
+    // Verify pending tasks were created in the form's organisation & project
+    const tasksRes = await req(`/api/tasks?projectId=${project.id}`, {
+      cookie: owner.cookie,
+      org: org.slug,
+    });
+    expect(tasksRes.status).toBe(200);
+    const tasks = await tasksRes.json<Task[]>();
+    expect(tasks).toHaveLength(2);
+
+    const firstTask = tasks.find((t) => t.title === "Broken code snippet on quickstart");
+    expect(firstTask).toBeDefined();
+    expect(firstTask?.pendingApproval).toBe(true);
+    expect(firstTask?.status).toBe("todo");
+    expect(firstTask?.createdBy).toBe("feedback:Docs Widget");
+    expect(firstTask?.priority).toBe("high");
+    expect(firstTask?.labels).toEqual(["feedback", "docs-portal"]);
+    expect(firstTask?.number).toBe(1);
+    expect(firstTask?.description).toContain("> Step 3 throws a syntax error when copied.");
+    expect(firstTask?.description).toContain("- **Form:** Docs Widget");
+    expect(firstTask?.description).toContain("- **Category:** Docs");
+    expect(firstTask?.description).toContain("- **Page URL:** https://docs.acme.test/quickstart");
+    // Submitter email and name must never be placed in the task description
+    expect(firstTask?.description).not.toContain("jane@visitor.test");
+    expect(firstTask?.description).not.toContain("Jane Visitor");
+
+    // Default organisation must not see Acme's feedback tasks
+    const defaultOrgTasksRes = await req("/api/tasks", {
+      authHeader: TEST_AUTH_HEADER,
+    });
+    expect(await defaultOrgTasksRes.json<Task[]>()).toEqual([]);
+
+    // Verify feedback_entries rows in D1FeedbackStore
+    const store = new D1FeedbackStore({ db: env.DB, orgId: org.id });
+    const entries = await store.listEntries({ formId: form.id });
+    expect(entries).toHaveLength(2);
+
+    const firstEntry = entries.find((e) => e.taskId === firstTask?.id);
+    expect(firstEntry).toBeDefined();
+    expect(firstEntry?.outcome).toBe("pending");
+    expect(firstEntry?.category).toBe("Docs");
+    expect(firstEntry?.submitterName).toBe("Jane Visitor");
+    expect(firstEntry?.submitterEmail).toBe("jane@visitor.test");
+    expect(firstEntry?.pageUrl).toBe("https://docs.acme.test/quickstart");
+    expect(firstEntry?.userAgent).toBe("Mozilla/5.0 TestBrowser/1.0");
+    expect(firstEntry?.spamScore).toBe(15); // 1 link in body
+
+    // Verify form counters (submissionCount, lastSubmittedAt, pendingCount) were bumped
+    const updatedFormRes = await req(`/api/feedback-forms/${form.id}`, {
+      cookie: owner.cookie,
+      org: org.slug,
+    });
+    expect(updatedFormRes.status).toBe(200);
+    const updatedForm = await updatedFormRes.json<FeedbackFormResponse>();
+    expect(updatedForm.submissionCount).toBe(2);
+    expect(updatedForm.pendingCount).toBe(2);
+    expect(updatedForm.lastSubmittedAt).toBeDefined();
+
+    // Verify abuse-check hook runs before task creation
+    setFeedbackAbuseCheckHook(() => ({ status: "drop" }));
+    const droppedRes = await app.fetch(
+      new Request(`${BASE_URL}/f/${form.publicId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: "Silently dropped bot submission",
+          body: "Should not create a task",
+        }),
+      }),
+      env,
+    );
+    expect(droppedRes.status).toBe(200);
+    expect(await store.listEntries({ formId: form.id })).toHaveLength(2);
+  });
+
+  it("returns 404 for unknown or disabled feedback forms on GET and POST /f/:publicId", async () => {
+    const projectRes = await req("/api/projects", {
+      method: "POST",
+      authHeader: TEST_AUTH_HEADER,
+      bodyJson: { name: "Disabled Form Project", key: "DIS" },
+    });
+    const project = await projectRes.json<Project>();
+
+    const createRes = await req(`/api/projects/${project.id}/feedback-forms`, {
+      method: "POST",
+      authHeader: TEST_AUTH_HEADER,
+      bodyJson: {
+        name: "Disabled Form",
+        enabled: false,
+      },
+    });
+    expect(createRes.status).toBe(201);
+    const disabledForm = await createRes.json<FeedbackFormResponse>();
+
+    // Unknown publicId (valid format and invalid short format)
+    const unknownGet = await app.fetch(
+      new Request(`${BASE_URL}/f/unknown_public_id_123456`),
+      env,
+    );
+    expect(unknownGet.status).toBe(404);
+
+    const shortGet = await app.fetch(new Request(`${BASE_URL}/f/short`), env);
+    expect(shortGet.status).toBe(404);
+
+    const unknownPost = await app.fetch(
+      new Request(`${BASE_URL}/f/unknown_public_id_123456`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: "Hi", body: "There" }),
+      }),
+      env,
+    );
+    expect(unknownPost.status).toBe(404);
+
+    // Disabled form returns 404 on both GET and POST and creates no task
+    const disabledGet = await app.fetch(
+      new Request(`${BASE_URL}/f/${disabledForm.publicId}`),
+      env,
+    );
+    expect(disabledGet.status).toBe(404);
+
+    const disabledPostForm = await app.fetch(
+      new Request(`${BASE_URL}/f/${disabledForm.publicId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ title: "Attempt", body: "Should fail" }).toString(),
+      }),
+      env,
+    );
+    expect(disabledPostForm.status).toBe(404);
+
+    const disabledPostJson = await app.fetch(
+      new Request(`${BASE_URL}/f/${disabledForm.publicId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: "Attempt", body: "Should fail" }),
+      }),
+      env,
+    );
+    expect(disabledPostJson.status).toBe(404);
+
+    const tasksRes = await req(`/api/tasks?projectId=${project.id}`, {
+      authHeader: TEST_AUTH_HEADER,
+    });
+    expect(await tasksRes.json<Task[]>()).toEqual([]);
+  });
+
+  it("replaces X-Frame-Options: DENY and frame-ancestors 'none' with allowed_origins and challenges.cloudflare.com on /f/* only", async () => {
+    const projectRes = await req("/api/projects", {
+      method: "POST",
+      authHeader: TEST_AUTH_HEADER,
+      bodyJson: { name: "CSP Project", key: "CSP" },
+    });
+    const project = await projectRes.json<Project>();
+
+    // Form with allowed_origins configured
+    const embeddableRes = await req(`/api/projects/${project.id}/feedback-forms`, {
+      method: "POST",
+      authHeader: TEST_AUTH_HEADER,
+      bodyJson: {
+        name: "Embeddable Form",
+        allowedOrigins: ["https://app.example.com/", "https://docs.example.com"],
+      },
+    });
+    const embeddableForm = await embeddableRes.json<FeedbackFormResponse>();
+
+    // Form with empty allowed_origins (link-only)
+    const linkOnlyRes = await req(`/api/projects/${project.id}/feedback-forms`, {
+      method: "POST",
+      authHeader: TEST_AUTH_HEADER,
+      bodyJson: {
+        name: "Link Only Form",
+        allowedOrigins: [],
+      },
+    });
+    const linkOnlyForm = await linkOnlyRes.json<FeedbackFormResponse>();
+
+    // 1. /f/:publicId with allowed_origins
+    const framedRes = await app.fetch(
+      new Request(`${BASE_URL}/f/${embeddableForm.publicId}`),
+      env,
+    );
+    expect(framedRes.status).toBe(200);
+    expect(framedRes.headers.get("x-frame-options")).toBeNull();
+    const framedCsp = framedRes.headers.get("content-security-policy") ?? "";
+    expect(framedCsp).toContain(
+      "frame-ancestors https://app.example.com https://docs.example.com",
+    );
+    expect(framedCsp).not.toContain("frame-ancestors 'none'");
+    expect(framedCsp).toContain("challenges.cloudflare.com");
+
+    // 2. /f/:publicId with empty allowed_origins keeps frame-ancestors 'none' and removes X-Frame-Options
+    const unframedRes = await app.fetch(
+      new Request(`${BASE_URL}/f/${linkOnlyForm.publicId}`),
+      env,
+    );
+    expect(unframedRes.status).toBe(200);
+    expect(unframedRes.headers.get("x-frame-options")).toBeNull();
+    const unframedCsp = unframedRes.headers.get("content-security-policy") ?? "";
+    expect(unframedCsp).toContain("frame-ancestors 'none'");
+    expect(unframedCsp).toContain("challenges.cloudflare.com");
+
+    // 3. Non-/f/* routes keep global X-Frame-Options: DENY and frame-ancestors 'none'
+    const healthRes = await app.fetch(new Request(`${BASE_URL}/health`), env);
+    expect(healthRes.status).toBe(200);
+    expect(healthRes.headers.get("x-frame-options")).toBe("DENY");
+    const healthCsp = healthRes.headers.get("content-security-policy") ?? "";
+    expect(healthCsp).toContain("frame-ancestors 'none'");
+    expect(healthCsp).not.toContain("challenges.cloudflare.com");
   });
 });

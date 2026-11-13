@@ -29,7 +29,12 @@ import { invitationsAcceptRouter, invitationsPublicRouter, orgsRouter } from "./
 import { adminRouter } from "./routes/admin";
 import { t3ApiRouter, t3OauthCallbackRouter, t3TaskRunsRouter } from "./routes/t3";
 import { webhookReceiverRouter, webhooksApiRouter } from "./routes/webhooks";
-import { feedbackFormsRouter, projectFeedbackFormsRouter } from "./routes/feedback";
+import {
+  applyPublicFeedbackSecurityHeaders,
+  feedbackFormsRouter,
+  projectFeedbackFormsRouter,
+  publicFeedbackRouter,
+} from "./routes/feedback";
 import { API_POLICY, MCP_POLICY, WEBHOOK_POLICY, authFailureGuard, rateLimit } from "./rate-limit";
 import { csrfProtection } from "./csrf";
 import { publishRealtimeEvent, realtimeRouter, withRealtimeBroadcast } from "./realtime";
@@ -49,6 +54,7 @@ export interface AppEnv {
     sessionId: string | undefined;
     orgId: string | undefined;
     orgRole: OrganisationRole | undefined;
+    feedbackAllowedOrigins: string[] | undefined;
   };
 }
 
@@ -114,6 +120,11 @@ export function createApp(options?: CreateAppOptions): Hono<AppEnv> {
     await next();
   });
 
+  app.use("/f/*", async (c, next) => {
+    await next();
+    applyPublicFeedbackSecurityHeaders(c);
+  });
+
   app.use(
     "*",
     secureHeaders({
@@ -149,6 +160,9 @@ export function createApp(options?: CreateAppOptions): Hono<AppEnv> {
       storageMode: c.get("config").STORAGE_MODE,
     }),
   );
+
+  // Public feedback form page and submission endpoint (outside /api/*)
+  app.route("/f", publicFeedbackRouter);
 
   // Rate limiting and CSRF protection on /api/* routes
   app.use("/api/*", rateLimit(API_POLICY));
