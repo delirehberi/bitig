@@ -6,6 +6,7 @@
  */
 import { z } from "zod";
 import {
+  COMMENT_BODY_MAX,
   DESCRIPTION_MAX,
   LABELS_MAX_COUNT,
   LABEL_MAX,
@@ -1118,3 +1119,55 @@ export function buildFeedbackEntry(
 
   return parseOrThrow(FeedbackEntrySchema, entry, "createFeedbackEntry result");
 }
+
+// ---------------------------------------------------------------------------
+// Task Feedback Triage & Filtering Helpers (#BIT-179)
+// ---------------------------------------------------------------------------
+
+export const MergeTaskFeedbackInputSchema = z.strictObject({
+  taskId: IdSchema,
+});
+
+export type MergeTaskFeedbackInput = z.input<typeof MergeTaskFeedbackInputSchema>;
+
+/**
+ * Whether a task is an unapproved feedback submission (`pendingApproval === true`
+ * and carries the `"feedback"` label).
+ */
+export function isPendingFeedbackTask(task: {
+  readonly pendingApproval?: boolean | undefined;
+  readonly labels?: readonly string[] | undefined;
+}): boolean {
+  return task.pendingApproval === true && (task.labels?.includes(FEEDBACK_LABEL) ?? false);
+}
+
+/**
+ * Whether a webhook configured with `skipPendingFeedback: true` should skip
+ * processing or notifying for the given task.
+ */
+export function shouldSkipWebhookForTask(
+  webhook: { readonly skipPendingFeedback?: boolean | undefined },
+  task: {
+    readonly pendingApproval?: boolean | undefined;
+    readonly labels?: readonly string[] | undefined;
+  },
+): boolean {
+  return webhook.skipPendingFeedback === true && isPendingFeedbackTask(task);
+}
+
+/**
+ * Formats the comment body added to a target task when a feedback task is merged into it.
+ */
+export function formatMergedFeedbackCommentBody(task: {
+  readonly title: string;
+  readonly description: string;
+}): string {
+  const trimmedTitle = task.title.trim();
+  const trimmedDesc = task.description.trim();
+  if (trimmedDesc.length === 0) {
+    return trimmedTitle;
+  }
+  const combined = `**${trimmedTitle}**\n\n${trimmedDesc}`;
+  return combined.length <= COMMENT_BODY_MAX ? combined : trimmedDesc.slice(0, COMMENT_BODY_MAX);
+}
+

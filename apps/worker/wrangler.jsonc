@@ -50,6 +50,9 @@
     { "tag": "v2", "new_sqlite_classes": ["RealtimeHub"] },
     { "tag": "v3", "new_sqlite_classes": ["LoginChallenge"] }
   ],
+  "triggers": {
+    "crons": ["0 3 * * *"]
+  },
   "assets": {
     "directory": "../web/dist",
     "binding": "ASSETS",

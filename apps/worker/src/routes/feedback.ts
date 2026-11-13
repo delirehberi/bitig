@@ -14,10 +14,13 @@ import {
   FeedbackPageUrlSchema,
   FeedbackPublicIdSchema,
   IdSchema,
+  MergeTaskFeedbackInputSchema,
   NotFoundError,
   UpdateFeedbackFormInputSchema,
   ValidationError,
+  defaultRuntimeDeps,
   feedbackTaskActor,
+  formatMergedFeedbackCommentBody,
   hasMinimumOrgRole,
   isFeedbackIpHashBlocked,
   isHighSpamScore,
@@ -25,6 +28,7 @@ import {
   spamScore,
   taskFromFeedbackSubmission,
   validateFeedbackSubmissionForForm,
+  type FeedbackEntry,
   type FeedbackForm,
   type FeedbackSubmission,
   type OrganisationRole,
@@ -1950,8 +1954,311 @@ export const feedbackFormsRouter = new Hono<AppEnv>()
     },
   );
 
+// ---------------------------------------------------------------------------
+// Task Feedback Triage Routes & Scheduled Cleanup (#BIT-179)
+// ---------------------------------------------------------------------------
+
+export interface TaskFeedbackFormSummary {
+  readonly id: string;
+  readonly name: string;
+  readonly title: string;
+  readonly publicId: string;
+}
+
+export interface TaskFeedbackEntryResponse extends FeedbackEntry {
+  readonly formName?: string | undefined;
+  readonly form: TaskFeedbackFormSummary | null;
+  readonly submitter: {
+    readonly name?: string | undefined;
+    readonly email?: string | undefined;
+  };
+}
+
+export function formatTaskFeedbackEntryResponse(
+  entry: FeedbackEntry,
+  form: FeedbackForm | null,
+): TaskFeedbackEntryResponse {
+  return {
+    ...entry,
+    ...(form ? { formName: form.name } : {}),
+    form: form
+      ? {
+          id: form.id,
+          name: form.name,
+          title: form.title,
+          publicId: form.publicId,
+        }
+      : null,
+    submitter: {
+      ...(entry.submitterName !== undefined ? { name: entry.submitterName } : {}),
+      ...(entry.submitterEmail !== undefined ? { email: entry.submitterEmail } : {}),
+    },
+  };
+}
+
+/**
+ * Marks any `feedback_entries` row linked to `taskId` as `"approved"` when a person
+ * approves the task (`pendingApproval: null`). Silently no-ops when the task has no
+ * feedback entry or when a custom test storage factory without D1 tables is active.
+ */
+export async function markTaskFeedbackApproved(
+  c: Context<AppEnv>,
+  taskId: string,
+): Promise<void> {
+  if (c.get("customStorageFactory")) {
+    return;
+  }
+  try {
+    const store = createScopedFeedbackStore(c);
+    const entry = await store.getEntryByTaskId(taskId, {
+      signal: c.req.raw.signal,
+    });
+    if (!entry) {
+      return;
+    }
+    const actor = resolveFeedbackActor(c);
+    await store.setEntryOutcome(entry.id, "approved", {
+      ...(actor !== undefined ? { reviewedBy: actor } : {}),
+      signal: c.req.raw.signal,
+    });
+  } catch (err) {
+    if (err instanceof NotFoundError) {
+      return;
+    }
+    // Non-feedback test databases without feedback_entries should not fail task approval
+    console.warn("markTaskFeedbackApproved skipped", { taskId, error: err });
+  }
+}
+
+export const taskFeedbackRouter = new Hono<AppEnv>()
+  .get("/:id/feedback", async (c) => {
+    assertFeedbackRole(c, "viewer");
+    const id = c.req.param("id");
+    if (!IdSchema.safeParse(id).success) {
+      return c.json({ error: "not_found" }, HTTP_NOT_FOUND);
+    }
+    const task = await c.get("storage").getTask(id);
+    if (!task) {
+      return c.json({ error: "not_found" }, HTTP_NOT_FOUND);
+    }
+    const store = createScopedFeedbackStore(c);
+    const entry = await store.getEntryByTaskId(task.id, {
+      signal: c.req.raw.signal,
+    });
+    if (!entry) {
+      return c.json({ error: "not_found" }, HTTP_NOT_FOUND);
+    }
+    const form = await store.getForm(entry.formId, {
+      signal: c.req.raw.signal,
+    });
+    return c.json(formatTaskFeedbackEntryResponse(entry, form));
+  })
+  .post(
+    "/:id/feedback/merge",
+    zValidator("json", MergeTaskFeedbackInputSchema, (result, c) => {
+      if (!result.success) {
+        return c.json(
+          { error: "validation_error", details: result.error.issues },
+          HTTP_BAD_REQUEST,
+        );
+      }
+      return undefined;
+    }),
+    async (c) => {
+      assertFeedbackRole(c, "editor");
+      const id = c.req.param("id");
+      if (!IdSchema.safeParse(id).success) {
+        throw new NotFoundError("task", id);
+      }
+      const { taskId: targetTaskId } = c.req.valid("json");
+      if (targetTaskId === id) {
+        return c.json(
+          {
+            error: "validation_error",
+            message: "Cannot merge a feedback task into itself",
+          },
+          HTTP_BAD_REQUEST,
+        );
+      }
+
+      const storage = c.get("storage");
+      const [feedbackTask, targetTask] = await Promise.all([
+        storage.getTask(id),
+        storage.getTask(targetTaskId),
+      ]);
+      if (!feedbackTask) {
+        throw new NotFoundError("task", id);
+      }
+      if (!targetTask) {
+        throw new NotFoundError("task", targetTaskId);
+      }
+
+      const store = createScopedFeedbackStore(c);
+      const entry = await store.getEntryByTaskId(feedbackTask.id, {
+        signal: c.req.raw.signal,
+      });
+      if (!entry) {
+        throw new NotFoundError("feedback_entry", feedbackTask.id);
+      }
+
+      const actor = resolveFeedbackActor(c);
+      const user = c.get("user");
+      const commentBody = formatMergedFeedbackCommentBody(feedbackTask);
+      const comment = await storage.addComment(
+        {
+          taskId: targetTask.id,
+          body: commentBody,
+          authorType: "human",
+          ...(actor !== undefined ? { author: actor } : {}),
+          ...(user?.id !== undefined ? { authorId: user.id } : {}),
+          ...(user?.avatarUrl !== undefined ? { authorAvatarUrl: user.avatarUrl } : {}),
+        },
+        {
+          signal: c.req.raw.signal,
+          ...(actor !== undefined ? { actor } : {}),
+        },
+      );
+
+      const updatedEntry = await store.setEntryOutcome(entry.id, "merged", {
+        ...(actor !== undefined ? { reviewedBy: actor } : {}),
+        clearTaskId: true,
+        signal: c.req.raw.signal,
+      });
+
+      await storage.deleteTask(feedbackTask.id, {
+        signal: c.req.raw.signal,
+        ...(actor !== undefined ? { actor } : {}),
+      });
+
+      return c.json({
+        ...updatedEntry,
+        entry: updatedEntry,
+        comment,
+        targetTaskId: targetTask.id,
+        mergedIntoTaskId: targetTask.id,
+        deletedTaskId: feedbackTask.id,
+      });
+    },
+  )
+  .post("/:id/feedback/reject", async (c) => {
+    assertFeedbackRole(c, "editor");
+    const id = c.req.param("id");
+    if (!IdSchema.safeParse(id).success) {
+      throw new NotFoundError("task", id);
+    }
+
+    const storage = c.get("storage");
+    const feedbackTask = await storage.getTask(id);
+    if (!feedbackTask) {
+      throw new NotFoundError("task", id);
+    }
+
+    const store = createScopedFeedbackStore(c);
+    const entry = await store.getEntryByTaskId(feedbackTask.id, {
+      signal: c.req.raw.signal,
+    });
+    if (!entry) {
+      throw new NotFoundError("feedback_entry", feedbackTask.id);
+    }
+
+    const actor = resolveFeedbackActor(c);
+    const updatedEntry = await store.setEntryOutcome(entry.id, "rejected", {
+      ...(actor !== undefined ? { reviewedBy: actor } : {}),
+      clearTaskId: true,
+      signal: c.req.raw.signal,
+    });
+
+    await storage.deleteTask(feedbackTask.id, {
+      signal: c.req.raw.signal,
+      ...(actor !== undefined ? { actor } : {}),
+    });
+
+    return c.json({
+      ...updatedEntry,
+      entry: updatedEntry,
+      deletedTaskId: feedbackTask.id,
+    });
+  })
+  .post("/:id/feedback/spam", async (c) => {
+    assertFeedbackRole(c, "editor");
+    const id = c.req.param("id");
+    if (!IdSchema.safeParse(id).success) {
+      throw new NotFoundError("task", id);
+    }
+
+    const storage = c.get("storage");
+    const feedbackTask = await storage.getTask(id);
+    if (!feedbackTask) {
+      throw new NotFoundError("task", id);
+    }
+
+    const store = createScopedFeedbackStore(c);
+    const entry = await store.getEntryByTaskId(feedbackTask.id, {
+      signal: c.req.raw.signal,
+    });
+    if (!entry) {
+      throw new NotFoundError("feedback_entry", feedbackTask.id);
+    }
+
+    const actor = resolveFeedbackActor(c);
+    const updatedEntry = await store.setEntryOutcome(entry.id, "spam", {
+      ...(actor !== undefined ? { reviewedBy: actor } : {}),
+      clearTaskId: true,
+      signal: c.req.raw.signal,
+    });
+
+    let blockedIp = false;
+    if (entry.ipHash !== undefined) {
+      await store.blockIpHash(entry.formId, entry.ipHash, {
+        signal: c.req.raw.signal,
+      });
+      blockedIp = true;
+    }
+
+    await storage.deleteTask(feedbackTask.id, {
+      signal: c.req.raw.signal,
+      ...(actor !== undefined ? { actor } : {}),
+    });
+
+    return c.json({
+      ...updatedEntry,
+      entry: updatedEntry,
+      deletedTaskId: feedbackTask.id,
+      blockedIp,
+    });
+  });
+
+export interface FeedbackCleanupOptions {
+  readonly now?: Date | undefined;
+  readonly retentionMs?: number | undefined;
+  readonly signal?: AbortSignal | undefined;
+}
+
+/**
+ * Purges `rejected` and `spam` rows in `feedback_entries` older than 30 days
+ * (`FEEDBACK_PURGE_RETENTION_MS`) across all organisations (#BIT-179).
+ */
+export async function runScheduledFeedbackCleanup(
+  env: Pick<Env, "DB">,
+  options?: FeedbackCleanupOptions,
+): Promise<number> {
+  const nowDate = options?.now;
+  const store = new D1FeedbackStore({
+    db: env.DB,
+    ...(nowDate !== undefined ? { deps: { ...defaultRuntimeDeps, clock: () => nowDate } } : {}),
+  });
+  return store.purgeExpiredEntries({
+    allOrganisations: true,
+    ...(nowDate !== undefined ? { now: nowDate } : {}),
+    ...(options?.retentionMs !== undefined ? { retentionMs: options.retentionMs } : {}),
+    ...(options?.signal !== undefined ? { signal: options.signal } : {}),
+  });
+}
+
 export const feedbackRouter = new Hono<AppEnv>()
   .route("/projects", projectFeedbackFormsRouter)
-  .route("/feedback-forms", feedbackFormsRouter);
+  .route("/feedback-forms", feedbackFormsRouter)
+  .route("/tasks", taskFeedbackRouter);
+
 
 

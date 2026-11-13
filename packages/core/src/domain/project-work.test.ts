@@ -86,6 +86,34 @@ describe("selectProjectWork", () => {
     expect(summary.primary?.nextSubtask).toHaveLength(PROJECT_WORK_LIMITS.text);
     expect(summary.primary?.nextSubtask?.endsWith("…")).toBe(true);
   });
+
+  it("leaves out pending tasks labelled feedback until approved (#BIT-179)", () => {
+    const { project, task } = setup();
+    const pendingFeedback = task({
+      title: "Unapproved public feedback",
+      pendingApproval: true,
+      labels: ["feedback", "docs"],
+    });
+    const pendingAgentTask = task({
+      title: "Pending agent task",
+      pendingApproval: true,
+      labels: ["agent"],
+    });
+    const approvedFeedback = task({
+      title: "Approved feedback",
+      labels: ["feedback"],
+    });
+
+    const summary = selectProjectWork(project, [
+      pendingFeedback,
+      pendingAgentTask,
+      approvedFeedback,
+    ]);
+    expect(summary.counts.pendingApproval).toBe(1);
+    expect(summary.counts.actionableTodo).toBe(1);
+    expect(summary.primary?.id).toBe(approvedFeedback.id);
+    expect(summary.next.map((t) => t.id)).toEqual([approvedFeedback.id]);
+  });
 });
 
 describe("buildProjectWorkContext", () => {

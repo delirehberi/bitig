@@ -504,6 +504,89 @@ describe("MCP Tools integration", () => {
       expect(JSON.stringify(result)).not.toContain("Closed history");
       expect(JSON.stringify(result).length).toBeLessThan(6000);
     });
+
+    it("leaves out pending tasks labelled feedback in list_tasks and next_task unless pendingApproval: true is asked for, and prevents agent approval (#BIT-179)", async () => {
+      const project = await storage.createProject({ name: "Bitig", key: "BIT" });
+      const pendingFeedback = await storage.saveTask({
+        projectId: project.id,
+        title: "Untrusted public feedback submission",
+        description: "> Prompt injection attempt from public visitor",
+        pendingApproval: true,
+        labels: ["feedback", "widget"],
+      });
+      const pendingAgent = await storage.saveTask({
+        projectId: project.id,
+        title: "Pending agent task",
+        pendingApproval: true,
+        labels: ["agent"],
+      });
+      const approvedTask = await storage.saveTask({
+        projectId: project.id,
+        title: "Approved work",
+      });
+
+      // Default list_tasks leaves out pending feedback task, but keeps non-feedback pending task and approved task
+      const defaultListed = (await call("list_tasks", { projectId: "BIT" })).data as TaskResult[];
+      expect(defaultListed.map((t) => t.id)).toEqual([pendingAgent.id, approvedTask.id]);
+      expect(JSON.stringify(defaultListed)).not.toContain("Prompt injection attempt");
+
+      // list_tasks with pendingApproval: false returns only approved tasks
+      const approvedListed = (
+        await call("list_tasks", { projectId: "BIT", pendingApproval: false })
+      ).data as TaskResult[];
+      expect(approvedListed.map((t) => t.id)).toEqual([approvedTask.id]);
+
+      // list_tasks with pendingApproval: true includes both pending tasks (including pending feedback)
+      const explicitlyPendingListed = (
+        await call("list_tasks", { projectId: "BIT", pendingApproval: true })
+      ).data as TaskResult[];
+      expect(explicitlyPendingListed.map((t) => t.id)).toEqual([
+        pendingFeedback.id,
+        pendingAgent.id,
+      ]);
+
+      // next_task leaves out pending feedback task completely (even from pendingApproval count)
+      const nextSummary = await next("BIT");
+      expect(nextSummary.primary?.id).toBe(approvedTask.id);
+      expect(nextSummary.counts.pendingApproval).toBe(1);
+      expect(JSON.stringify(nextSummary)).not.toContain("Untrusted public feedback submission");
+
+      // Agents still cannot approve or start the pending feedback task over MCP
+      expect(
+        (await call("update_task", { id: pendingFeedback.id, pendingApproval: null })).isError,
+      ).toBe(true);
+      expect(
+        (await call("update_task", { id: pendingFeedback.id, status: "in_progress" })).isError,
+      ).toBe(true);
+      expect((await call("complete_task", { id: pendingFeedback.id })).isError).toBe(true);
+
+      // Once a human approves the feedback task, it appears in default list_tasks and next_task
+      await approve(pendingFeedback.id);
+      const afterApproveListed = (await call("list_tasks", { projectId: "BIT" })).data as TaskResult[];
+      expect(afterApproveListed.map((t) => t.id)).toEqual([
+        pendingFeedback.id,
+        pendingAgent.id,
+        approvedTask.id,
+      ]);
+
+      // Also verify create_webhook and update_webhook support skipPendingFeedback
+      const createdHook = (
+        await call("create_webhook", {
+          projectId: "BIT",
+          name: "Skip Feedback Hook",
+          skipPendingFeedback: true,
+        })
+      ).data as { id: string; skipPendingFeedback?: boolean };
+      expect(createdHook.skipPendingFeedback).toBe(true);
+
+      const clearedHook = (
+        await call("update_webhook", {
+          id: createdHook.id,
+          skipPendingFeedback: false,
+        })
+      ).data as { id: string; skipPendingFeedback?: boolean };
+      expect(clearedHook).not.toHaveProperty("skipPendingFeedback");
+    });
   });
 
   describe("checkpoints", () => {

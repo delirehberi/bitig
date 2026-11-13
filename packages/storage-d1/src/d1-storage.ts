@@ -344,7 +344,13 @@ function recordToWebhook(row: WebhookRecord): Webhook {
     updatedAt: new Date(row.updatedAt).toISOString(),
   };
   if (row.mapping !== null) {
-    webhook.mapping = { ...row.mapping };
+    const { skipPendingFeedback, ...mappingFields } = row.mapping;
+    if (Object.keys(mappingFields).length > 0) {
+      webhook.mapping = { ...mappingFields };
+    }
+    if (skipPendingFeedback === true) {
+      webhook.skipPendingFeedback = true;
+    }
   }
   if (row.defaultPriority !== null) {
     webhook.defaultPriority = row.defaultPriority;
@@ -359,6 +365,10 @@ function recordToWebhook(row: WebhookRecord): Webhook {
 }
 
 function webhookToRecord(webhook: Webhook): InsertWebhookRecord {
+  const mappingRecord: schema.WebhookMappingRecord = {
+    ...(webhook.mapping ? { ...webhook.mapping } : {}),
+    ...(webhook.skipPendingFeedback === true ? { skipPendingFeedback: true } : {}),
+  };
   return {
     id: webhook.id,
     projectId: webhook.projectId,
@@ -366,7 +376,7 @@ function webhookToRecord(webhook: Webhook): InsertWebhookRecord {
     provider: webhook.provider,
     token: webhook.token,
     enabled: webhook.enabled,
-    mapping: webhook.mapping ? { ...webhook.mapping } : null,
+    mapping: Object.keys(mappingRecord).length > 0 ? mappingRecord : null,
     defaultPriority: webhook.defaultPriority ?? null,
     defaultLabels: webhook.defaultLabels ? [...webhook.defaultLabels] : null,
     triggerCount: webhook.triggerCount,

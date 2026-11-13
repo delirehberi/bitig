@@ -307,7 +307,7 @@ export const AttachmentSchema = z.strictObject({
   createdBy: TaskActorSchema.exactOptional(),
 });
 
-/** An incoming webhook endpoint bound to a project. */
+/** An incoming or project webhook endpoint bound to a project. */
 export const WebhookSchema = z.strictObject({
   id: IdSchema,
   projectId: IdSchema,
@@ -321,6 +321,8 @@ export const WebhookSchema = z.strictObject({
   mapping: WebhookMappingSchema.exactOptional(),
   defaultPriority: TaskPrioritySchema.exactOptional(),
   defaultLabels: LabelsSchema.exactOptional(),
+  /** When true, pending feedback tasks are skipped for this webhook; omitted when false. */
+  skipPendingFeedback: z.boolean().exactOptional(),
   lastTriggeredAt: TimestampSchema.exactOptional(),
 });
 
@@ -437,6 +439,8 @@ export const CreateWebhookInputSchema = z.strictObject({
   mapping: WebhookMappingSchema.optional(),
   defaultPriority: TaskPrioritySchema.optional(),
   defaultLabels: LabelsSchema.optional(),
+  /** When true, skips pending feedback tasks for this webhook. */
+  skipPendingFeedback: z.boolean().optional(),
 });
 
 export const UpdateWebhookInputSchema = z
@@ -448,6 +452,8 @@ export const UpdateWebhookInputSchema = z
     mapping: WebhookMappingSchema.nullable().optional(),
     defaultPriority: TaskPrioritySchema.nullable().optional(),
     defaultLabels: LabelsSchema.nullable().optional(),
+    /** `true` skips pending feedback tasks; `false` or `null` clears the setting. */
+    skipPendingFeedback: z.boolean().nullable().optional(),
     /** When true, generates a fresh secret token for this webhook. */
     regenerateToken: z.boolean().optional(),
   })

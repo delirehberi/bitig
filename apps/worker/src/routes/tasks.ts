@@ -23,6 +23,7 @@ import {
   settleTaskT3Run,
   suggestTaskRunProfile,
 } from "../t3/service";
+import { markTaskFeedbackApproved } from "./feedback";
 import { buildServiceDeps } from "./t3";
 
 const HTTP_CREATED = 201;
@@ -215,6 +216,7 @@ export const tasksRouter = new Hono<AppEnv>()
       const previous = finishing || approving ? await storage.getTask(id) : null;
       const updated = await storage.updateTask(id, patch, await statusChangeOptions(c, id, patch.status, "updateTask"));
       if (approving && previous?.pendingApproval === true && !updated.pendingApproval) {
+        await markTaskFeedbackApproved(c, updated.id);
         await suggestApprovedTaskProfileInBackground(c, updated.id);
       }
       if (patch.status === "archived" && previous?.status !== "archived") {

@@ -91,6 +91,7 @@ const WEBHOOK_KEY_ORDER = [
   "mapping",
   "defaultPriority",
   "defaultLabels",
+  "skipPendingFeedback",
   "triggerCount",
   "lastTriggeredAt",
   "createdAt",

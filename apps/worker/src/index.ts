@@ -34,6 +34,8 @@ import {
   feedbackFormsRouter,
   projectFeedbackFormsRouter,
   publicFeedbackRouter,
+  runScheduledFeedbackCleanup,
+  taskFeedbackRouter,
 } from "./routes/feedback";
 import { API_POLICY, MCP_POLICY, WEBHOOK_POLICY, authFailureGuard, rateLimit } from "./rate-limit";
 import { csrfProtection } from "./csrf";
@@ -190,6 +192,7 @@ export function createApp(options?: CreateAppOptions): Hono<AppEnv> {
   app.route("/api/projects", projectFeedbackFormsRouter);
   app.route("/api/feedback-forms", feedbackFormsRouter);
   app.route("/api/tasks", tasksRouter);
+  app.route("/api/tasks", taskFeedbackRouter);
   app.route("/api/tasks", t3TaskRunsRouter);
   app.route("/api/comments", commentsRouter);
   app.route("/api/attachments", attachmentsRouter);
@@ -256,6 +259,19 @@ export function createApp(options?: CreateAppOptions): Hono<AppEnv> {
 
 const app = createApp();
 
+export { runScheduledFeedbackCleanup } from "./routes/feedback";
+
+export async function scheduled(
+  controller: ScheduledController,
+  env: Env,
+  ctx: ExecutionContext,
+): Promise<void> {
+  const now = controller.scheduledTime ? new Date(controller.scheduledTime) : undefined;
+  const cleanupPromise = runScheduledFeedbackCleanup(env, { now });
+  ctx.waitUntil(cleanupPromise);
+  await cleanupPromise;
+}
+
 // Durable Object classes must be exported from the Worker's main module.
 export { RateLimiter } from "./rate-limiter-do";
 export { RealtimeHub } from "./realtime-do";
@@ -263,4 +279,5 @@ export { LoginChallenge } from "./login-challenge-do";
 
 export default {
   fetch: app.fetch,
+  scheduled,
 } satisfies ExportedHandler<Env>;

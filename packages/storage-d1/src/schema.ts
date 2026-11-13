@@ -288,6 +288,10 @@ export const checkpoints = sqliteTable(
   (table) => [uniqueIndex("checkpoints_task_step_idx").on(table.taskId, table.stepIndex)],
 );
 
+export type WebhookMappingRecord = WebhookMapping & {
+  skipPendingFeedback?: boolean | undefined;
+};
+
 export const webhooks = sqliteTable(
   "webhooks",
   {
@@ -301,7 +305,7 @@ export const webhooks = sqliteTable(
     enabled: integer("enabled", { mode: "boolean" })
       .notNull()
       .default(DEFAULT_WEBHOOK_ENABLED),
-    mapping: text("mapping", { mode: "json" }).$type<WebhookMapping>(),
+    mapping: text("mapping", { mode: "json" }).$type<WebhookMappingRecord>(),
     defaultPriority: text("default_priority").$type<TaskPriority>(),
     defaultLabels: text("default_labels", { mode: "json" }).$type<string[]>(),
     triggerCount: integer("trigger_count").notNull().default(0),
