@@ -79,6 +79,8 @@ import {
   attachments,
   checkpoints,
   comments,
+  feedbackEntries,
+  feedbackForms,
   projectRunSettings,
   projects,
   projectT3Threads,
@@ -564,6 +566,8 @@ export class D1Storage implements StorageProvider {
     await ignoreMissingT3Table(this.#db.delete(projectT3Threads).where(eq(projectT3Threads.projectId, validId)));
     await ignoreMissingT3Table(this.#db.delete(t3ProjectMappings).where(eq(t3ProjectMappings.projectId, validId)));
     await ignoreMissingT3Table(this.#db.delete(projectRunSettings).where(eq(projectRunSettings.projectId, validId)));
+    await ignoreMissingT3Table(this.#db.delete(feedbackEntries).where(eq(feedbackEntries.projectId, validId)));
+    await ignoreMissingT3Table(this.#db.delete(feedbackForms).where(eq(feedbackForms.projectId, validId)));
     await this.#db.delete(comments).where(inArray(comments.taskId, projectTaskIds));
     await this.#db.delete(checkpoints).where(inArray(checkpoints.taskId, projectTaskIds));
     await this.#db.delete(tasks).where(eq(tasks.projectId, validId));
@@ -841,6 +845,9 @@ export class D1Storage implements StorageProvider {
       this.#db
         .delete(agentRunChildren)
         .where(or(eq(agentRunChildren.parentTaskId, validId), eq(agentRunChildren.childTaskId, validId))),
+    );
+    await ignoreMissingT3Table(
+      this.#db.update(feedbackEntries).set({ taskId: null }).where(eq(feedbackEntries.taskId, validId)),
     );
     await this.#db.delete(comments).where(eq(comments.taskId, validId));
     await this.#db.delete(checkpoints).where(eq(checkpoints.taskId, validId));

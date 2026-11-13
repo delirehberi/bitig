@@ -57,3 +57,11 @@ export {
   type InvitationInfo,
   type InvitationWithOrg,
 } from "./invitation-store";
+export {
+  D1FeedbackStore,
+  findFeedbackFormOrgId,
+  findFormByPublicId,
+  type D1FeedbackStoreOptions,
+  type SetFeedbackEntryOutcomeOptions,
+} from "./feedback-store";
+

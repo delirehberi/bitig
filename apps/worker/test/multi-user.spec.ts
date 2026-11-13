@@ -8,6 +8,8 @@ import { TEST_AUTH_HEADER, TEST_BOOTSTRAP_EMAIL } from "./constants";
 const BASE_URL = "https://bitig.test";
 
 const STATEMENTS = [
+  "DROP TABLE IF EXISTS `feedback_entries`",
+  "DROP TABLE IF EXISTS `feedback_forms`",
   "DROP TABLE IF EXISTS `webhooks`",
   "DROP TABLE IF EXISTS `attachments`",
   "DROP TABLE IF EXISTS `checkpoints`",
@@ -107,6 +109,58 @@ const STATEMENTS = [
     \`updated_at\` integer NOT NULL,
     FOREIGN KEY (\`project_id\`) REFERENCES \`projects\`(\`id\`) ON UPDATE no action ON DELETE cascade
   )`,
+  `CREATE TABLE \`feedback_forms\` (
+    \`id\` text PRIMARY KEY NOT NULL,
+    \`org_id\` text DEFAULT '01a10000-0000-7000-8000-000000000001' NOT NULL,
+    \`project_id\` text NOT NULL,
+    \`public_id\` text NOT NULL,
+    \`name\` text NOT NULL,
+    \`title\` text NOT NULL,
+    \`intro\` text DEFAULT '' NOT NULL,
+    \`enabled\` integer DEFAULT 1 NOT NULL,
+    \`fields\` text NOT NULL,
+    \`allowed_origins\` text NOT NULL,
+    \`turnstile\` integer DEFAULT 1 NOT NULL,
+    \`default_labels\` text,
+    \`default_priority\` text,
+    \`thank_you_text\` text DEFAULT 'Thank you for your feedback.' NOT NULL,
+    \`accent_color\` text,
+    \`banned_words\` text,
+    \`submission_count\` integer DEFAULT 0 NOT NULL,
+    \`last_submitted_at\` integer,
+    \`created_by\` text,
+    \`created_at\` integer NOT NULL,
+    \`updated_at\` integer NOT NULL,
+    FOREIGN KEY (\`project_id\`) REFERENCES \`projects\`(\`id\`) ON UPDATE no action ON DELETE cascade
+  )`,
+  "CREATE UNIQUE INDEX `feedback_forms_public_id_unique` ON `feedback_forms` (`public_id`)",
+  "CREATE INDEX `feedback_forms_org_id_idx` ON `feedback_forms` (`org_id`)",
+  "CREATE INDEX `feedback_forms_project_id_idx` ON `feedback_forms` (`project_id`)",
+  `CREATE TABLE \`feedback_entries\` (
+    \`id\` text PRIMARY KEY NOT NULL,
+    \`task_id\` text,
+    \`form_id\` text NOT NULL,
+    \`org_id\` text DEFAULT '01a10000-0000-7000-8000-000000000001' NOT NULL,
+    \`project_id\` text NOT NULL,
+    \`outcome\` text DEFAULT 'pending' NOT NULL,
+    \`category\` text,
+    \`submitter_email\` text,
+    \`submitter_name\` text,
+    \`page_url\` text,
+    \`ip_hash\` text,
+    \`body_hash\` text,
+    \`user_agent\` text,
+    \`spam_score\` integer DEFAULT 0 NOT NULL,
+    \`reviewed_by\` text,
+    \`reviewed_at\` integer,
+    \`created_at\` integer NOT NULL,
+    FOREIGN KEY (\`task_id\`) REFERENCES \`tasks\`(\`id\`) ON UPDATE no action ON DELETE set null,
+    FOREIGN KEY (\`form_id\`) REFERENCES \`feedback_forms\`(\`id\`) ON UPDATE no action ON DELETE cascade,
+    FOREIGN KEY (\`project_id\`) REFERENCES \`projects\`(\`id\`) ON UPDATE no action ON DELETE cascade
+  )`,
+  "CREATE INDEX `feedback_entries_form_outcome_idx` ON `feedback_entries` (`form_id`, `outcome`)",
+  "CREATE INDEX `feedback_entries_task_id_idx` ON `feedback_entries` (`task_id`)",
+  "CREATE INDEX `feedback_entries_duplicate_idx` ON `feedback_entries` (`form_id`, `ip_hash`, `body_hash`, `created_at`)",
 ];
 
 let ipCounter = 0;
@@ -542,6 +596,8 @@ describe("multi-user organisations, permissions, tokens, invitations, profile an
   it("migrates an existing single-user D1 schema in-place into Default Organisation without losing any data", async () => {
     // 1. Simulate the pre-0020 single-user schema (no org_id on projects, no author_id on comments)
     await env.DB.batch([
+      env.DB.prepare("DROP TABLE IF EXISTS `feedback_entries`"),
+      env.DB.prepare("DROP TABLE IF EXISTS `feedback_forms`"),
       env.DB.prepare("DROP TABLE IF EXISTS `t3_oauth_states`"),
       env.DB.prepare("DROP TABLE IF EXISTS `t3_connections`"),
       env.DB.prepare("DROP TABLE IF EXISTS `mcp_tokens`"),
