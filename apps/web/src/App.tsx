@@ -44,7 +44,7 @@ import { useFeatureFlags } from "./hooks/useFeatureFlags";
 import { useHealth, type HealthState } from "./hooks/useHealth";
 import { useProjects } from "./hooks/useProjects";
 import { dispatchRealtimeEvent, useRealtime } from "./hooks/useRealtime";
-import { useStorage } from "./hooks/useStorage";
+import { useApiStorage, useStorage } from "./hooks/useStorage";
 import { useT3Runs } from "./hooks/useT3Runs";
 import { useTasks, type StatusChangeChoice } from "./hooks/useTasks";
 import { useWebhooks } from "./hooks/useWebhooks";
@@ -99,6 +99,9 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
   useRealtime(realtimeSync && health.kind === "online");
 
   const storage = useStorage(mode);
+  const apiStorage = useApiStorage();
+  // Feedback task actions call the Cloudflare API directly; local mode has none (#BIT-181).
+  const feedbackApi = mode === "cloudflare" ? apiStorage : undefined;
 
   const {
     projects,
@@ -400,6 +403,7 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
                 onDeleteTask={deleteTask}
                 searchQuery={searchQuery}
                 storage={storage}
+                feedbackApi={feedbackApi}
               />
             )}
 
@@ -427,6 +431,7 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
               ) : pageTask ? (
                 <TaskDetailPage
                   task={pageTask}
+                  feedbackApi={feedbackApi}
                   projects={recentProjects}
                   agentRun={agentRuns.find((r) => r.taskId === pageTask.id)}
                   isUmbrella={umbrellaIndex ? umbrellaIndex.isUmbrella(pageTask.id) : false}

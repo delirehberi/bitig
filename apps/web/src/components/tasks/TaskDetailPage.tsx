@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { TaskFeedbackClient } from "@bitig/api-client";
 import {
   Archive,
   Check,
@@ -47,6 +48,8 @@ import { hrefFor, taskHref, taskPageHref, useLocationHref } from "../../routing/
 import { Markdown } from "../Markdown";
 import { ChecklistView } from "./Checklist";
 import { TaskAttachments } from "./TaskAttachments";
+import { TaskFeedbackPanel } from "./TaskFeedbackPanel";
+import { isFeedbackTask } from "../../domain/feedback-tasks";
 import {
   TaskComposer,
   type TaskCommentsT3Context,
@@ -68,6 +71,8 @@ export interface TaskDetailPageProps {
   readonly onNeedsHumanResolve?: ((task: Task) => void) | undefined;
   readonly onApprove?: ((task: Task) => void) | undefined;
   readonly storage?: StorageProvider | undefined;
+  /** Loads the feedback behind a feedback task; omit to hide the Feedback panel (#BIT-181). */
+  readonly feedbackApi?: Pick<TaskFeedbackClient, "getTaskFeedback"> | undefined;
   readonly links?: TaskLinks | undefined;
   readonly dependencies?: DependencyLinks | undefined;
   readonly agentRun?: AgentRun | null | undefined;
@@ -181,6 +186,7 @@ export function TaskDetailPage({
   onNeedsHumanResolve,
   onApprove,
   storage,
+  feedbackApi,
   links,
   dependencies,
   agentRun,
@@ -761,6 +767,10 @@ export function TaskDetailPage({
                 </dd>
               </div>
             </dl>
+
+            {feedbackApi && isFeedbackTask(task) && (
+              <TaskFeedbackPanel key={`feedback-${task.id}`} task={task} feedbackApi={feedbackApi} />
+            )}
 
             <div className="mt-4 border-t border-rule pt-3 text-2xs text-ink-3">
               <div>

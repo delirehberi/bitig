@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
-import { Ban, Hand, Kanban, List, Plus, ShieldQuestionMark, X } from "lucide-react";
+import { Ban, Hand, Kanban, List, MessageSquareText, Plus, ShieldQuestionMark, X } from "lucide-react";
+import type { TaskFeedbackActionResult, TaskFeedbackClient } from "@bitig/api-client";
 import {
   blockedByFromError,
   buildMentionIndex,
@@ -26,6 +27,9 @@ import type { AddAttachmentFileInput } from "../../hooks/useAttachments";
 import { dispatchRealtimeEvent } from "../../hooks/useRealtime";
 import type { StatusChangeChoice } from "../../hooks/useTasks";
 import { findTaskByRef, taskRef } from "../../domain/task-ref";
+import { isFeedbackTask } from "../../domain/feedback-tasks";
+import { FeedbackMergeDialog } from "./FeedbackMergeDialog";
+import { FeedbackTaskControlsContext, type FeedbackTaskControls } from "./feedback-task-controls";
 import { buildBlockersResolver } from "../../domain/task-mentions";
 import { navigate, taskPageHref } from "../../routing/router";
 
@@ -59,6 +63,16 @@ interface TasksViewProps {
   readonly searchQuery: string;
   /** Loads and saves comments in the task detail view; omit to hide them. */
   readonly storage?: StorageProvider | undefined;
+  /** Reviews feedback tasks (merge, reject, spam) and loads their details; omit to hide those actions (#BIT-181). */
+  readonly feedbackApi?: TaskFeedbackClient | undefined;
+}
+
+/** Returns `ids` without `id`, keeping the same set when `id` is absent. */
+function withoutId(ids: ReadonlySet<string>, id: string): ReadonlySet<string> {
+  if (!ids.has(id)) return ids;
+  const next = new Set(ids);
+  next.delete(id);
+  return next;
 }
 
 const ICON_SIZE = 16;
@@ -86,9 +100,14 @@ export function TasksView({
   onDeleteTask,
   searchQuery,
   storage,
+  feedbackApi,
 }: TasksViewProps) {
   const [viewMode, setViewMode] = useState<"board" | "list">("board");
   const [priorityFilter, setPriorityFilter] = useState<TaskPriority | "">("");
+  const [feedbackOnly, setFeedbackOnly] = useState(false);
+  const [selectedFeedbackIds, setSelectedFeedbackIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [mergeSource, setMergeSource] = useState<Task | null>(null);
+  const [feedbackError, setFeedbackError] = useState<string | null>(null);
 
   const [modalState, setModalState] = useState<{
     isOpen: boolean;
@@ -145,6 +164,12 @@ export function TasksView({
   const awaitingApprovalCount = tasks.filter(
     (task) => task.pendingApproval === true && (!selectedProjectId || task.projectId === selectedProjectId),
   ).length;
+  const feedbackCount = tasks.filter(
+    (task) =>
+      task.pendingApproval === true &&
+      isFeedbackTask(task) &&
+      (!selectedProjectId || task.projectId === selectedProjectId),
+  ).length;
   const blockedCount = tasks.filter(
     (task) => isBlocked(task) && (!selectedProjectId || task.projectId === selectedProjectId),
   ).length;
@@ -158,6 +183,9 @@ export function TasksView({
       return false;
     }
     if (awaitingApprovalOnly && task.pendingApproval !== true) {
+      return false;
+    }
+    if (awaitingApprovalOnly && feedbackOnly && !isFeedbackTask(task)) {
       return false;
     }
     if (blockedOnly && !isBlocked(task)) {
@@ -247,6 +275,75 @@ export function TasksView({
     await confirmIfBlocked(task, status, (choice) => onUpdateTask(task.id, { status }, choice));
   }
 
+  // Review actions and bulk selection exist only in the Awaiting approval view, on pending feedback cards.
+  const feedbackControls: FeedbackTaskControls | null =
+    feedbackApi && awaitingApprovalOnly
+      ? {
+          onMerge: (task) => {
+            setMergeSource(task);
+          },
+          onReject: (task) => {
+            rejectFeedbackTasks([task]);
+          },
+          onSpam: (task) => {
+            markFeedbackTasksAsSpam([task]);
+          },
+          selectedIds: selectedFeedbackIds,
+          onToggleSelect: (task) => {
+            setSelectedFeedbackIds((prev) => {
+              const next = new Set(prev);
+              if (next.has(task.id)) next.delete(task.id);
+              else next.add(task.id);
+              return next;
+            });
+          },
+        }
+      : null;
+  const selectedFeedback = feedbackControls
+    ? filteredTasks.filter((task) => selectedFeedbackIds.has(task.id) && task.pendingApproval === true && isFeedbackTask(task))
+    : [];
+
+  /** Removes feedback tasks one at a time, announcing each removal; stops at the first failure. */
+  async function removeFeedbackTasks(
+    targets: readonly Task[],
+    action: (task: Task) => Promise<TaskFeedbackActionResult>,
+  ): Promise<void> {
+    setFeedbackError(null);
+    for (const task of targets) {
+      try {
+        const result = await action(task);
+        dispatchRealtimeEvent({ type: "task.deleted", id: result.deletedTaskId });
+        setSelectedFeedbackIds((prev) => withoutId(prev, result.deletedTaskId));
+      } catch (err: unknown) {
+        setFeedbackError(err instanceof Error ? err.message : "The feedback action failed.");
+        return;
+      }
+    }
+  }
+
+  function rejectFeedbackTasks(targets: readonly Task[]): void {
+    if (!feedbackApi) return;
+    const api = feedbackApi;
+    void removeFeedbackTasks(targets, (task) => api.rejectTaskFeedback(task.id));
+  }
+
+  function markFeedbackTasksAsSpam(targets: readonly Task[]): void {
+    if (!feedbackApi) return;
+    const api = feedbackApi;
+    void removeFeedbackTasks(targets, (task) => api.markTaskFeedbackSpam(task.id));
+  }
+
+  async function mergeFeedback(target: Task): Promise<void> {
+    if (!feedbackApi || !mergeSource) {
+      throw new Error("Merging feedback is unavailable right now.");
+    }
+    const result = await feedbackApi.mergeTaskFeedback(mergeSource.id, target.id);
+    dispatchRealtimeEvent({ type: "task.deleted", id: result.deletedTaskId });
+    // The target gained a comment; a resync refreshes its counts.
+    dispatchRealtimeEvent({ type: "sync" });
+    setSelectedFeedbackIds((prev) => withoutId(prev, result.deletedTaskId));
+  }
+
   async function handleMove(moves: readonly TaskMove[]) {
     for (const { task, patch } of moves) {
       await confirmIfBlocked(task, patch.status ?? task.status, (choice) => onUpdateTask(task.id, patch, choice));
@@ -254,6 +351,7 @@ export function TasksView({
   }
 
   return (
+    <FeedbackTaskControlsContext.Provider value={feedbackControls}>
     <div className="flex flex-col gap-6">
       <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
         <div>
@@ -347,6 +445,25 @@ export function TasksView({
             Awaiting approval ({awaitingApprovalCount})
           </button>
 
+          {awaitingApprovalOnly && (
+            <button
+              type="button"
+              aria-pressed={feedbackOnly}
+              onClick={() => {
+                setFeedbackOnly(!feedbackOnly);
+              }}
+              title="Show only feedback submissions waiting for your review"
+              className={`inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-semibold transition-colors focus-visible:outline-focus ${
+                feedbackOnly
+                  ? "border-dashed border-rule-strong bg-paper-3 text-ink"
+                  : "border-rule bg-paper-2 text-ink-2 hover:text-ink"
+              }`}
+            >
+              <MessageSquareText size={14} aria-hidden="true" />
+              Feedback ({feedbackCount})
+            </button>
+          )}
+
           <button
             type="button"
             aria-pressed={blockedOnly}
@@ -405,6 +522,52 @@ export function TasksView({
           className="rounded-md border border-danger/30 bg-danger-soft p-4 text-sm font-medium text-danger"
         >
           {error}
+        </div>
+      )}
+
+      {feedbackError && (
+        <div
+          role="alert"
+          className="rounded-md border border-danger/30 bg-danger-soft p-4 text-sm font-medium text-danger"
+        >
+          {feedbackError}
+        </div>
+      )}
+
+      {selectedFeedback.length > 0 && (
+        <div
+          role="region"
+          aria-label="Bulk feedback actions"
+          className="flex flex-wrap items-center gap-3 rounded-lg border border-dashed border-rule-strong bg-paper-3 p-3 text-xs"
+        >
+          <span className="font-semibold text-ink">{selectedFeedback.length} selected</span>
+          <button
+            type="button"
+            onClick={() => {
+              rejectFeedbackTasks(selectedFeedback);
+            }}
+            className="rounded-md border border-danger/30 bg-danger-soft px-2.5 py-1 font-semibold text-danger focus-visible:outline-focus"
+          >
+            Reject selected
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              markFeedbackTasksAsSpam(selectedFeedback);
+            }}
+            className="rounded-md border border-danger/30 bg-paper px-2.5 py-1 font-semibold text-danger focus-visible:outline-focus"
+          >
+            Mark selected as spam
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setSelectedFeedbackIds(new Set());
+            }}
+            className="rounded-md border border-rule bg-paper px-2.5 py-1 font-semibold text-ink-2 hover:text-ink focus-visible:outline-focus"
+          >
+            Clear selection
+          </button>
         </div>
       )}
 
@@ -519,6 +682,7 @@ export function TasksView({
         onApprove={handleApprove}
         onMoveToBacklog={handleMoveToBacklog}
         storage={storage}
+        feedbackApi={feedbackApi}
         links={viewTask ? mentionIndex.linksFor(viewTask) : undefined}
         dependencies={viewTask ? dependencyLinks(viewTask, tasks, projects) : undefined}
       />
@@ -534,6 +698,16 @@ export function TasksView({
         storage={storage}
         onClose={closeTaskModal}
         onSubmit={handleModalSubmit}
+      />
+
+      <FeedbackMergeDialog
+        source={mergeSource}
+        tasks={tasks}
+        projects={projects}
+        onClose={() => {
+          setMergeSource(null);
+        }}
+        onConfirm={mergeFeedback}
       />
 
       <BlockedTaskDialog
@@ -552,5 +726,6 @@ export function TasksView({
         onConfirm={onDeleteTask}
       />
     </div>
+    </FeedbackTaskControlsContext.Provider>
   );
 }

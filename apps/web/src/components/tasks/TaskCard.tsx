@@ -1,3 +1,4 @@
+import { useContext } from "react";
 import {
   Bot,
   Calendar,
@@ -31,6 +32,9 @@ import { T3GitBadges } from "./T3GitBadges";
 import { RunLevelChip } from "./RunLevelChip";
 import { UmbrellaProgressBadge } from "./UmbrellaProgressBadge";
 import { useRunProfiles } from "../../domain/run-profiles";
+import { isFeedbackTask } from "../../domain/feedback-tasks";
+import { FeedbackTaskControlsContext } from "./feedback-task-controls";
+import { FeedbackReviewButtons } from "./FeedbackReviewButtons";
 
 interface TaskCardProps {
   readonly task: Task;
@@ -78,6 +82,10 @@ export function TaskCard({
 }: TaskCardProps) {
   const project = projects.find((p) => p.id === task.projectId);
   const runProfiles = useRunProfiles();
+  const feedbackControls = useContext(FeedbackTaskControlsContext);
+  const isFeedback = isFeedbackTask(task);
+  // Feedback review actions appear only on pending feedback cards in the Awaiting approval view.
+  const reviewControls = isFeedback && task.pendingApproval === true ? feedbackControls : null;
   const isDone = task.status === "done";
   const isArchived = task.status === "archived";
   const isCompleted = isDone || isArchived;
@@ -103,6 +111,17 @@ export function TaskCard({
       <div>
         <div className="flex items-start justify-between gap-2">
           <div className="flex flex-wrap items-center gap-1.5">
+            {reviewControls && (
+              <input
+                type="checkbox"
+                checked={reviewControls.selectedIds.has(task.id)}
+                onChange={() => {
+                  reviewControls.onToggleSelect(task);
+                }}
+                aria-label={`Select ${task.title} for a bulk action`}
+                className="size-4 accent-accent focus-visible:outline-focus"
+              />
+            )}
             <TaskCode task={task} project={project} />
             {showProject && project && (
               <span className="rounded-md bg-paper-2 px-2 py-0.5 text-2xs font-semibold text-ink-2">
@@ -116,6 +135,11 @@ export function TaskCard({
                 }`}
               >
                 {task.priority}
+              </span>
+            )}
+            {reviewControls && (
+              <span className="rounded-pill border border-dashed border-rule-strong bg-paper-3 px-2 py-0.5 text-2xs font-semibold text-ink">
+                Feedback
               </span>
             )}
             <RunLevelChip profile={runProfiles.profileFor(task.id)} levels={runProfiles.levels} />
@@ -220,9 +244,16 @@ export function TaskCard({
                     }
                   : undefined
               }
-              onReject={() => {
-                onDelete(task);
-              }}
+              onReject={
+                reviewControls
+                  ? undefined
+                  : () => {
+                      onDelete(task);
+                    }
+              }
+              extraActions={
+                reviewControls ? <FeedbackReviewButtons task={task} controls={reviewControls} /> : undefined
+              }
             />
           </div>
         )}

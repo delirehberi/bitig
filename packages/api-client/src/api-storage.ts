@@ -6,6 +6,7 @@ import {
   CreateAttachmentInputSchema,
   CreateCommentInputSchema,
   CreateFeedbackFormInputSchema,
+  MergeTaskFeedbackInputSchema,
   SaveCheckpointInputSchema,
   CreateProjectInputSchema,
   CreateTaskInputSchema,
@@ -41,6 +42,7 @@ import {
   type CreateProjectInput,
   type CreateTaskInput,
   type CreateWebhookInput,
+  type FeedbackEntry,
   type FeedbackForm,
   type OperationOptions,
   type Project,
@@ -76,6 +78,40 @@ export interface FeedbackFormSummary extends FeedbackForm {
   readonly publicLink: string;
   readonly pendingCount: number;
 }
+
+/** The form a feedback entry came from, as the task feedback route embeds it. */
+export interface TaskFeedbackFormSummary {
+  readonly id: string;
+  readonly name: string;
+  readonly title: string;
+  readonly publicId: string;
+}
+
+/** A feedback entry behind a feedback task, as `GET /api/tasks/:id/feedback` returns it. */
+export interface TaskFeedbackDetail extends FeedbackEntry {
+  readonly formName?: string | undefined;
+  readonly form: TaskFeedbackFormSummary | null;
+  readonly submitter: {
+    readonly name?: string | undefined;
+    readonly email?: string | undefined;
+  };
+}
+
+/** What a reject or spam action returns: the feedback task it removed. */
+export interface TaskFeedbackActionResult {
+  readonly deletedTaskId: string;
+}
+
+/** What a merge returns: the feedback task it removed and the task the submission was merged into. */
+export interface TaskFeedbackMergeResult extends TaskFeedbackActionResult {
+  readonly mergedIntoTaskId: string;
+}
+
+/** The feedback-task calls the dashboard makes outside the `StorageProvider` contract. */
+export type TaskFeedbackClient = Pick<
+  ApiStorage,
+  "getTaskFeedback" | "mergeTaskFeedback" | "rejectTaskFeedback" | "markTaskFeedbackSpam"
+>;
 
 /** Create body for `POST /api/projects/:id/feedback-forms`; the project comes from the path. */
 export type CreateFeedbackFormBody = Omit<CreateFeedbackFormInput, "projectId" | "orgId">;
@@ -292,6 +328,88 @@ export class ApiStorage implements StorageProvider {
     );
     await this.assertFeedbackFormResponse(res, "rotate feedback form link", validId, HTTP_OK);
     return this.parseJsonResponse<FeedbackFormSummary>(res);
+  }
+
+  /** Loads the feedback entry behind a feedback task, with its form and submitter (viewers and above). */
+  async getTaskFeedback(taskId: string, opts?: OperationOptions): Promise<TaskFeedbackDetail> {
+    throwIfAborted(opts?.signal);
+    const validId = parseOrThrow(IdSchema, taskId, "getTaskFeedback taskId");
+
+    const res = await this.request(`/api/tasks/${encodeURIComponent(validId)}/feedback`, { method: "GET" }, opts);
+    await this.assertTaskFeedbackResponse(res, "load task feedback", validId, HTTP_OK);
+    return this.parseJsonResponse<TaskFeedbackDetail>(res);
+  }
+
+  /** Appends a feedback task's submission to `targetTaskId` as a comment and removes the feedback task (editors and above). */
+  async mergeTaskFeedback(
+    taskId: string,
+    targetTaskId: string,
+    opts?: OperationOptions,
+  ): Promise<TaskFeedbackMergeResult> {
+    throwIfAborted(opts?.signal);
+    const validId = parseOrThrow(IdSchema, taskId, "mergeTaskFeedback taskId");
+    const body = parseOrThrow(MergeTaskFeedbackInputSchema, { taskId: targetTaskId }, "mergeTaskFeedback target");
+
+    const res = await this.request(
+      `/api/tasks/${encodeURIComponent(validId)}/feedback/merge`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+      opts,
+    );
+    await this.assertTaskFeedbackResponse(res, "merge task feedback", validId, HTTP_OK);
+    return this.parseJsonResponse<TaskFeedbackMergeResult>(res);
+  }
+
+  /** Rejects a feedback task: the entry is kept as rejected and the task is removed (editors and above). */
+  async rejectTaskFeedback(taskId: string, opts?: OperationOptions): Promise<TaskFeedbackActionResult> {
+    return this.postTaskFeedbackAction(taskId, "reject", "reject task feedback", opts);
+  }
+
+  /** Marks a feedback task as spam, blocks its submitter's IP hash, and removes the task (editors and above). */
+  async markTaskFeedbackSpam(taskId: string, opts?: OperationOptions): Promise<TaskFeedbackActionResult> {
+    return this.postTaskFeedbackAction(taskId, "spam", "mark task feedback as spam", opts);
+  }
+
+  private async postTaskFeedbackAction(
+    taskId: string,
+    action: "reject" | "spam",
+    description: string,
+    opts?: OperationOptions,
+  ): Promise<TaskFeedbackActionResult> {
+    throwIfAborted(opts?.signal);
+    const validId = parseOrThrow(IdSchema, taskId, `${description} taskId`);
+
+    const res = await this.request(
+      `/api/tasks/${encodeURIComponent(validId)}/feedback/${action}`,
+      { method: "POST" },
+      opts,
+    );
+    await this.assertTaskFeedbackResponse(res, description, validId, HTTP_OK);
+    return this.parseJsonResponse<TaskFeedbackActionResult>(res);
+  }
+
+  /** Maps a task feedback response to the matching error; resolves when the status is the expected one. */
+  private async assertTaskFeedbackResponse(
+    res: Response,
+    action: string,
+    id: string,
+    expectedStatus: number,
+  ): Promise<void> {
+    if (res.status === expectedStatus) return;
+    if (res.status === HTTP_UNAUTHORIZED) {
+      throw new AuthError();
+    }
+    if (res.status === HTTP_NOT_FOUND) {
+      throw new NotFoundError("feedback_entry", id);
+    }
+    if (res.status === HTTP_BAD_REQUEST) {
+      const err = await this.parseJsonResponse<{ details?: readonly [] }>(res);
+      throw new ValidationError(action, err.details ?? []);
+    }
+    throw new StorageError("io", `Failed to ${action} ${id}: HTTP ${res.status.toString()}`);
   }
 
   /** Maps a feedback form response to the matching error; resolves when the status is the expected one. */
