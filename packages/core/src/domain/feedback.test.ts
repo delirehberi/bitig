@@ -24,6 +24,7 @@ import {
   countFeedbackLinks,
   evaluateFeedbackSpam,
   feedbackTaskActor,
+  isFeedbackIpHashBlocked,
   isHighSpamScore,
   normalizeAllowedOrigin,
   spamScore,
@@ -86,6 +87,7 @@ describe("FeedbackForm schemas and builders", () => {
           name: true,
           categories: ["Bug", "Feature request", "Question"],
           bannedWords: ["Crypto", "CASINO"],
+          blockedIpHashes: ["ABCDEF0123456789"],
         },
         allowedOrigins: ["https://example.com/", "http://localhost:3000"],
         turnstile: false,
@@ -94,6 +96,7 @@ describe("FeedbackForm schemas and builders", () => {
         thankYouText: "Thanks! We read every submission.",
         accentColor: "#2563EB",
         bannedWords: ["Viagra"],
+        blockedIpHashes: ["FEDCBA9876543210"],
         createdBy: "Emre",
       },
       ORG_ID,
@@ -108,6 +111,7 @@ describe("FeedbackForm schemas and builders", () => {
       name: true,
       categories: ["Bug", "Feature request", "Question"],
       bannedWords: ["crypto", "casino"],
+      blockedIpHashes: ["abcdef0123456789", "fedcba9876543210"],
     });
     expect(form.allowedOrigins).toEqual(["https://example.com", "http://localhost:3000"]);
     expect(form.turnstile).toBe(false);
@@ -115,6 +119,10 @@ describe("FeedbackForm schemas and builders", () => {
     expect(form.defaultPriority).toBe("high");
     expect(form.accentColor).toBe("#2563eb");
     expect(form.bannedWords).toEqual(["viagra"]);
+    expect(form.blockedIpHashes).toEqual(["abcdef0123456789", "fedcba9876543210"]);
+    expect(isFeedbackIpHashBlocked(form, "FEDCBA9876543210")).toBe(true);
+    expect(isFeedbackIpHashBlocked(form, "abcdef0123456789")).toBe(true);
+    expect(isFeedbackIpHashBlocked(form, "0000111122223333")).toBe(false);
     expect(form.createdBy).toBe("Emre");
   });
 
@@ -183,6 +191,7 @@ describe("FeedbackForm schemas and builders", () => {
         defaultPriority: "low",
         accentColor: "#112233",
         bannedWords: ["spam"],
+        blockedIpHashes: ["0123456789abcdef"],
       },
       ORG_ID,
       runtime,
@@ -198,6 +207,7 @@ describe("FeedbackForm schemas and builders", () => {
         defaultPriority: null,
         accentColor: null,
         bannedWords: null,
+        blockedIpHashes: null,
       },
       runtime.clock(),
     );
@@ -209,6 +219,7 @@ describe("FeedbackForm schemas and builders", () => {
     expect("defaultPriority" in updated).toBe(false);
     expect("accentColor" in updated).toBe(false);
     expect("bannedWords" in updated).toBe(false);
+    expect("blockedIpHashes" in updated).toBe(false);
 
     const cloned = cloneFeedbackForm(form);
     expect(cloned).toEqual(form);

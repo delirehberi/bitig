@@ -78,6 +78,20 @@ describe("parseConfig", () => {
     expect(parsed.T3_CF_ACCESS_CLIENT_SECRET).toBe("cf-secret-val");
   });
 
+  it("defaults and trims TURNSTILE_SITE_KEY, TURNSTILE_SECRET_KEY, and FEEDBACK_IP_SECRET", () => {
+    expect(parseConfig({}).TURNSTILE_SITE_KEY).toBe("");
+    expect(parseConfig({}).TURNSTILE_SECRET_KEY).toBe("");
+    expect(parseConfig({}).FEEDBACK_IP_SECRET).toBe("");
+    const parsed = parseConfig({
+      TURNSTILE_SITE_KEY: "  0x4AAAAAA_site  ",
+      TURNSTILE_SECRET_KEY: "  0x4AAAAAA_secret  ",
+      FEEDBACK_IP_SECRET: "  feedback-ip-hmac-secret  ",
+    });
+    expect(parsed.TURNSTILE_SITE_KEY).toBe("0x4AAAAAA_site");
+    expect(parsed.TURNSTILE_SECRET_KEY).toBe("0x4AAAAAA_secret");
+    expect(parsed.FEEDBACK_IP_SECRET).toBe("feedback-ip-hmac-secret");
+  });
+
   it("normalizes and validates RESEND_API_KEY, MAIL_FROM, and BOOTSTRAP_ADMIN_EMAIL", () => {
     expect(parseConfig({}).RESEND_API_KEY).toBe("");
     expect(parseConfig({}).MAIL_FROM).toBe("");

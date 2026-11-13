@@ -472,4 +472,43 @@ describe("D1FeedbackStore (BIT-175)", () => {
     expect(await store.getForm(form.id)).toBeNull();
     expect(await store.getEntry(entry.id)).toBeNull();
   });
+
+  it("blocks and unblocks IP hashes per form", async () => {
+    const runtime = createTestRuntime();
+    const storage = new D1Storage({ db: env.DB, deps: runtime });
+    const project = await storage.createProject({ name: "IP Block Project" });
+    const store = new D1FeedbackStore({ db: env.DB, deps: runtime });
+
+    const form = await store.createForm({
+      projectId: project.id,
+      name: "Block Form",
+    });
+
+    const hashA = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    const hashB = "FEDCBA9876543210FEDCBA9876543210FEDCBA9876543210FEDCBA9876543210";
+
+    expect(await store.isIpHashBlocked(form.id, hashA)).toBe(false);
+
+    const afterBlockA = await store.blockIpHash(form.id, hashA);
+    expect(afterBlockA.blockedIpHashes).toEqual([hashA]);
+    expect(await store.isIpHashBlocked(form.id, hashA)).toBe(true);
+    expect(await store.isIpHashBlocked(form.id, hashB)).toBe(false);
+
+    // Idempotent when blocking an already-blocked hash (case-insensitive)
+    const afterBlockB = await store.blockIpHash(form.id, hashB);
+    expect(afterBlockB.blockedIpHashes).toEqual([hashA, hashB.toLowerCase()]);
+    const duplicateBlock = await store.blockIpHash(form.id, hashA.toUpperCase());
+    expect(duplicateBlock.blockedIpHashes).toEqual([hashA, hashB.toLowerCase()]);
+
+    // Unblock hashA
+    const afterUnblockA = await store.unblockIpHash(form.id, hashA);
+    expect(afterUnblockA.blockedIpHashes).toEqual([hashB.toLowerCase()]);
+    expect(await store.isIpHashBlocked(form.id, hashA)).toBe(false);
+    expect(await store.isIpHashBlocked(form.id, hashB)).toBe(true);
+
+    // Unblock remaining hash clears blockedIpHashes
+    const afterUnblockB = await store.unblockIpHash(form.id, hashB);
+    expect(afterUnblockB.blockedIpHashes).toBeUndefined();
+    expect(await store.isIpHashBlocked(form.id, hashB)).toBe(false);
+  });
 });

@@ -70,6 +70,8 @@ export const FEEDBACK_ALLOWED_ORIGINS_MAX_COUNT = 20;
 export const FEEDBACK_BANNED_WORD_MAX = 100;
 export const FEEDBACK_BANNED_WORDS_MAX_COUNT = 200;
 
+export const FEEDBACK_BLOCKED_IP_HASHES_MAX_COUNT = 1_000;
+
 export const FEEDBACK_ACCENT_COLOR_PATTERN = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 
 export const FEEDBACK_SUBMISSION_TITLE_MAX = 200;
@@ -217,11 +219,22 @@ export const FeedbackBannedWordsSchema = z
   .max(FEEDBACK_BANNED_WORDS_MAX_COUNT)
   .transform((words) => [...new Set(words)]);
 
+export const FeedbackBlockedIpHashSchema = PlainSingleLineSchema(
+  FEEDBACK_HASH_MAX,
+  "Blocked IP hash",
+).transform((h) => h.toLowerCase());
+
+export const FeedbackBlockedIpHashesSchema = z
+  .array(FeedbackBlockedIpHashSchema)
+  .max(FEEDBACK_BLOCKED_IP_HASHES_MAX_COUNT)
+  .transform((hashes) => [...new Set(hashes)]);
+
 export const FeedbackFieldsSchema = z.strictObject({
   email: FeedbackEmailModeSchema.default(DEFAULT_FEEDBACK_EMAIL_MODE),
   name: FeedbackNameToggleInputSchema.default(false),
   categories: FeedbackCategoriesSchema.default([]),
   bannedWords: FeedbackBannedWordsSchema.exactOptional(),
+  blockedIpHashes: FeedbackBlockedIpHashesSchema.exactOptional(),
 });
 
 export type FeedbackFields = z.output<typeof FeedbackFieldsSchema>;
@@ -308,6 +321,7 @@ export const FeedbackFormSchema = z.strictObject({
   thankYouText: FeedbackThankYouTextSchema,
   accentColor: FeedbackAccentColorSchema.exactOptional(),
   bannedWords: FeedbackBannedWordsSchema.exactOptional(),
+  blockedIpHashes: FeedbackBlockedIpHashesSchema.exactOptional(),
   submissionCount: z.number().int().nonnegative(),
   lastSubmittedAt: TimestampSchema.exactOptional(),
   createdBy: TaskActorSchema.exactOptional(),
@@ -334,6 +348,7 @@ export const CreateFeedbackFormInputSchema = z.strictObject({
   thankYouText: FeedbackThankYouTextSchema.default(DEFAULT_FEEDBACK_THANK_YOU_TEXT),
   accentColor: FeedbackAccentColorSchema.optional(),
   bannedWords: FeedbackBannedWordsSchema.optional(),
+  blockedIpHashes: FeedbackBlockedIpHashesSchema.optional(),
   createdBy: TaskActorSchema.optional(),
 });
 
@@ -354,6 +369,7 @@ export const UpdateFeedbackFormInputSchema = z
     thankYouText: FeedbackThankYouTextSchema.optional(),
     accentColor: FeedbackAccentColorSchema.nullable().optional(),
     bannedWords: FeedbackBannedWordsSchema.nullable().optional(),
+    blockedIpHashes: FeedbackBlockedIpHashesSchema.nullable().optional(),
   })
   .refine((patch) => Object.values(patch).some((value) => value !== undefined), {
     message: "Patch must contain at least one field",
@@ -853,6 +869,33 @@ export function generateFeedbackPublicId(deps: RuntimeDeps = defaultRuntimeDeps)
   return partA.slice(0, 24);
 }
 
+export interface FeedbackBlockedIpConfig {
+  readonly blockedIpHashes?: readonly string[] | undefined;
+  readonly fields?:
+    | {
+        readonly blockedIpHashes?: readonly string[] | undefined;
+      }
+    | undefined;
+}
+
+/**
+ * Returns true if the given `ipHash` is in the form's blocked IP hashes list.
+ */
+export function isFeedbackIpHashBlocked(
+  form: FeedbackBlockedIpConfig,
+  ipHash: string | undefined,
+): boolean {
+  if (!ipHash) return false;
+  const trimmed = ipHash.trim().toLowerCase();
+  if (trimmed.length === 0) return false;
+  const topLevel = form.blockedIpHashes ?? [];
+  const fieldLevel = form.fields?.blockedIpHashes ?? [];
+  return (
+    topLevel.some((h) => h.toLowerCase() === trimmed) ||
+    fieldLevel.some((h) => h.toLowerCase() === trimmed)
+  );
+}
+
 export function cloneFeedbackForm(form: FeedbackForm): FeedbackForm {
   const copy: FeedbackForm = {
     ...form,
@@ -863,11 +906,15 @@ export function cloneFeedbackForm(form: FeedbackForm): FeedbackForm {
       ...(form.fields.bannedWords !== undefined
         ? { bannedWords: [...form.fields.bannedWords] }
         : {}),
+      ...(form.fields.blockedIpHashes !== undefined
+        ? { blockedIpHashes: [...form.fields.blockedIpHashes] }
+        : {}),
     },
     allowedOrigins: [...form.allowedOrigins],
   };
   if (form.defaultLabels !== undefined) copy.defaultLabels = [...form.defaultLabels];
   if (form.bannedWords !== undefined) copy.bannedWords = [...form.bannedWords];
+  if (form.blockedIpHashes !== undefined) copy.blockedIpHashes = [...form.blockedIpHashes];
   return copy;
 }
 
@@ -884,6 +931,13 @@ export function buildFeedbackForm(
   const parsed = parseOrThrow(CreateFeedbackFormInputSchema, input, "createFeedbackForm");
   const now = toTimestamp(deps.clock());
 
+  const mergedBlockedIpHashes = [
+    ...(parsed.fields.blockedIpHashes ?? []),
+    ...(parsed.blockedIpHashes ?? []),
+  ];
+  const uniqueBlockedIpHashes =
+    mergedBlockedIpHashes.length > 0 ? [...new Set(mergedBlockedIpHashes)] : undefined;
+
   const form: FeedbackForm = {
     id: parsed.id ?? deps.generateId(),
     orgId: parsed.orgId ?? validOrgId,
@@ -899,6 +953,9 @@ export function buildFeedbackForm(
       categories: [...parsed.fields.categories],
       ...(parsed.fields.bannedWords !== undefined && parsed.fields.bannedWords.length > 0
         ? { bannedWords: [...parsed.fields.bannedWords] }
+        : {}),
+      ...(uniqueBlockedIpHashes !== undefined
+        ? { blockedIpHashes: [...uniqueBlockedIpHashes] }
         : {}),
     },
     allowedOrigins: [...parsed.allowedOrigins],
@@ -920,6 +977,9 @@ export function buildFeedbackForm(
   }
   if (parsed.bannedWords !== undefined && parsed.bannedWords.length > 0) {
     form.bannedWords = [...parsed.bannedWords];
+  }
+  if (uniqueBlockedIpHashes !== undefined) {
+    form.blockedIpHashes = [...uniqueBlockedIpHashes];
   }
   if (parsed.createdBy !== undefined) {
     form.createdBy = parsed.createdBy;
@@ -961,6 +1021,24 @@ export function applyFeedbackFormPatch(
         ? undefined
         : [...parsed.bannedWords];
 
+  let blockedIpHashes: string[] | undefined;
+  if (parsed.blockedIpHashes !== undefined) {
+    blockedIpHashes =
+      parsed.blockedIpHashes === null || parsed.blockedIpHashes.length === 0
+        ? undefined
+        : [...parsed.blockedIpHashes];
+  } else if (parsed.fields?.blockedIpHashes !== undefined) {
+    blockedIpHashes =
+      parsed.fields.blockedIpHashes.length === 0
+        ? undefined
+        : [...parsed.fields.blockedIpHashes];
+  } else {
+    blockedIpHashes =
+      form.blockedIpHashes ?? form.fields.blockedIpHashes
+        ? [...(form.blockedIpHashes ?? form.fields.blockedIpHashes ?? [])]
+        : undefined;
+  }
+
   const fields: FeedbackFields =
     parsed.fields !== undefined
       ? {
@@ -970,8 +1048,15 @@ export function applyFeedbackFormPatch(
           ...(parsed.fields.bannedWords !== undefined && parsed.fields.bannedWords.length > 0
             ? { bannedWords: [...parsed.fields.bannedWords] }
             : {}),
+          ...(blockedIpHashes !== undefined ? { blockedIpHashes: [...blockedIpHashes] } : {}),
         }
-      : cloneFeedbackForm(form).fields;
+      : {
+          ...cloneFeedbackForm(form).fields,
+          ...(blockedIpHashes !== undefined ? { blockedIpHashes: [...blockedIpHashes] } : {}),
+        };
+  if (blockedIpHashes === undefined) {
+    delete (fields as { blockedIpHashes?: string[] }).blockedIpHashes;
+  }
 
   const next: FeedbackForm = {
     id: form.id,
@@ -996,6 +1081,7 @@ export function applyFeedbackFormPatch(
   if (defaultPriority !== undefined) next.defaultPriority = defaultPriority;
   if (accentColor !== undefined) next.accentColor = accentColor;
   if (bannedWords !== undefined) next.bannedWords = bannedWords;
+  if (blockedIpHashes !== undefined) next.blockedIpHashes = [...blockedIpHashes];
   if (form.lastSubmittedAt !== undefined) next.lastSubmittedAt = form.lastSubmittedAt;
   if (form.createdBy !== undefined) next.createdBy = form.createdBy;
 

@@ -1,10 +1,25 @@
 import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { Organisation, Project, Task, User } from "@bitig/core";
+import {
+  FEEDBACK_MAX_FILL_MS,
+  FEEDBACK_MIN_FILL_MS,
+  FEEDBACK_PENDING_CAP,
+  type Organisation,
+  type Project,
+  type Task,
+  type User,
+} from "@bitig/core";
 import { D1FeedbackStore } from "@bitig/storage-d1";
 import { createApp } from "../src/index";
 import { FakeMailer } from "../src/mailer";
-import { setFeedbackAbuseCheckHook, type FeedbackFormResponse } from "../src/routes/feedback";
+import {
+  GENERIC_FEEDBACK_SUBMISSION_ERROR,
+  computeFeedbackIpHash,
+  setFeedbackAbuseCheckHook,
+  setTurnstileFetch,
+  signFeedbackTimestamp,
+  type FeedbackFormResponse,
+} from "../src/routes/feedback";
 import { TEST_AUTH_HEADER } from "./constants";
 
 const BASE_URL = "https://bitig.test";
@@ -787,7 +802,21 @@ describe("REST API: Feedback form management (BIT-176)", () => {
 
   afterEach(() => {
     setFeedbackAbuseCheckHook(undefined);
+    setTurnstileFetch(undefined);
   });
+
+  async function buildValidTimestampFields(
+    publicId: string,
+    elapsedMs = 5_000,
+    config?: { FEEDBACK_IP_SECRET?: string; SESSION_SECRET?: string },
+  ): Promise<{ _ts: string; _sig: string }> {
+    const tsMs = Date.now() - elapsedMs;
+    const sig = await signFeedbackTimestamp(publicId, tsMs, {
+      FEEDBACK_IP_SECRET: config?.FEEDBACK_IP_SECRET ?? "",
+      SESSION_SECRET: config?.SESSION_SECRET ?? env.SESSION_SECRET,
+    });
+    return { _ts: String(tsMs), _sig: sig };
+  }
 
   it("renders GET /f/:publicId with Hallmark tokens, light/dark modes, accent colour, embed postMessage mode, and privacy note link", async () => {
     const projectRes = await req("/api/projects", {
@@ -840,7 +869,7 @@ describe("REST API: Feedback form management (BIT-176)", () => {
     expect(html).toContain("--form-accent: #e11d48");
     expect(html).toContain('data-accent-color="#e11d48"');
 
-    // Includes configured fields, Turnstile, and page chrome
+    // Includes configured fields, honeypot, signed timestamp, Turnstile, and page chrome
     expect(html).toContain('class="feedback-chrome-header"');
     expect(html).toContain('data-embed="false"');
     expect(html).toContain('name="title"');
@@ -849,6 +878,9 @@ describe("REST API: Feedback form management (BIT-176)", () => {
     expect(html).toContain("Feature Request");
     expect(html).toContain('name="submitterName"');
     expect(html).toContain('name="submitterEmail"');
+    expect(html).toContain('name="website"');
+    expect(html).toContain('name="_ts"');
+    expect(html).toContain('name="_sig"');
     expect(html).toContain("https://challenges.cloudflare.com/turnstile/v0/api.js");
     expect(html).not.toContain("bitig:feedback:resize");
 
@@ -924,6 +956,7 @@ describe("REST API: Feedback form management (BIT-176)", () => {
     const form = await createFormRes.json<FeedbackFormResponse>();
 
     // 1. Submit via URL-encoded HTML form post (unauthenticated, no CSRF headers needed)
+    const ts1 = await buildValidTimestampFields(form.publicId);
     const formData = new URLSearchParams({
       title: "Broken code snippet on quickstart",
       body: "Step 3 throws a syntax error when copied.\nSee https://docs.acme.test/quickstart",
@@ -931,6 +964,7 @@ describe("REST API: Feedback form management (BIT-176)", () => {
       submitterName: "Jane Visitor",
       submitterEmail: "jane@visitor.test",
       pageUrl: "https://docs.acme.test/quickstart",
+      ...ts1,
     });
     const postFormRes = await app.fetch(
       new Request(`${BASE_URL}/f/${form.publicId}`, {
@@ -938,6 +972,7 @@ describe("REST API: Feedback form management (BIT-176)", () => {
         headers: {
           "Content-Type": "application/x-www-form-urlencoded",
           "User-Agent": "Mozilla/5.0 TestBrowser/1.0",
+          "cf-connecting-ip": uniqueIp(),
         },
         body: formData.toString(),
       }),
@@ -949,17 +984,20 @@ describe("REST API: Feedback form management (BIT-176)", () => {
     expect(thankYouHtml).toContain("Thank you for helping improve Acme Docs!");
 
     // 2. Submit via JSON POST
+    const ts2 = await buildValidTimestampFields(form.publicId);
     const postJsonRes = await app.fetch(
       new Request(`${BASE_URL}/f/${form.publicId}`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           "User-Agent": "FeedbackWidget/2.0",
+          "cf-connecting-ip": uniqueIp(),
         },
         body: JSON.stringify({
           title: "Add dark mode toggle shortcut",
           body: "A keyboard shortcut for dark mode would be handy.",
           category: "Idea",
+          ...ts2,
         }),
       }),
       env,
@@ -1020,6 +1058,8 @@ describe("REST API: Feedback form management (BIT-176)", () => {
     expect(firstEntry?.submitterEmail).toBe("jane@visitor.test");
     expect(firstEntry?.pageUrl).toBe("https://docs.acme.test/quickstart");
     expect(firstEntry?.userAgent).toBe("Mozilla/5.0 TestBrowser/1.0");
+    expect(firstEntry?.ipHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(firstEntry?.bodyHash).toMatch(/^[0-9a-f]{64}$/);
     expect(firstEntry?.spamScore).toBe(15); // 1 link in body
 
     // Verify form counters (submissionCount, lastSubmittedAt, pendingCount) were bumped
@@ -1035,13 +1075,18 @@ describe("REST API: Feedback form management (BIT-176)", () => {
 
     // Verify abuse-check hook runs before task creation
     setFeedbackAbuseCheckHook(() => ({ status: "drop" }));
+    const ts3 = await buildValidTimestampFields(form.publicId);
     const droppedRes = await app.fetch(
       new Request(`${BASE_URL}/f/${form.publicId}`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "cf-connecting-ip": uniqueIp(),
+        },
         body: JSON.stringify({
           title: "Silently dropped bot submission",
           body: "Should not create a task",
+          ...ts3,
         }),
       }),
       env,
@@ -1184,5 +1229,791 @@ describe("REST API: Feedback form management (BIT-176)", () => {
     const healthCsp = healthRes.headers.get("content-security-policy") ?? "";
     expect(healthCsp).toContain("frame-ancestors 'none'");
     expect(healthCsp).not.toContain("challenges.cloudflare.com");
+  });
+
+  it("silently drops honeypot submissions before running later checks or creating a task", async () => {
+    const projectRes = await req("/api/projects", {
+      method: "POST",
+      authHeader: TEST_AUTH_HEADER,
+      bodyJson: { name: "Honeypot Project", key: "HNY" },
+    });
+    const project = await projectRes.json<Project>();
+
+    const createRes = await req(`/api/projects/${project.id}/feedback-forms`, {
+      method: "POST",
+      authHeader: TEST_AUTH_HEADER,
+      bodyJson: {
+        name: "Honeypot Form",
+        turnstile: false,
+        thankYouText: "Received!",
+      },
+    });
+    const form = await createRes.json<FeedbackFormResponse>();
+
+    // Even without a valid timestamp, honeypot runs first and silently drops with 200
+    const res = await app.fetch(
+      new Request(`${BASE_URL}/f/${form.publicId}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "cf-connecting-ip": uniqueIp(),
+        },
+        body: JSON.stringify({
+          title: "Bot title",
+          body: "Bot body",
+          website: "https://spam-bot.example.com",
+        }),
+      }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const json = await res.json<{ ok: boolean; thankYouText: string; taskId?: string }>();
+    expect(json.ok).toBe(true);
+    expect(json.thankYouText).toBe("Received!");
+    expect(json.taskId).toBeUndefined();
+
+    const store = new D1FeedbackStore({ db: env.DB, orgId: form.orgId });
+    expect(await store.listEntries({ formId: form.id })).toEqual([]);
+    const tasksRes = await req(`/api/tasks?projectId=${project.id}`, {
+      authHeader: TEST_AUTH_HEADER,
+    });
+    expect(await tasksRes.json<Task[]>()).toEqual([]);
+  });
+
+  it("enforces origin checks: embeds must match allowed_origins and direct posts must come from the Bitig host", async () => {
+    const projectRes = await req("/api/projects", {
+      method: "POST",
+      authHeader: TEST_AUTH_HEADER,
+      bodyJson: { name: "Origin Project", key: "ORG" },
+    });
+    const project = await projectRes.json<Project>();
+
+    const createRes = await req(`/api/projects/${project.id}/feedback-forms`, {
+      method: "POST",
+      authHeader: TEST_AUTH_HEADER,
+      bodyJson: {
+        name: "Origin Form",
+        allowedOrigins: ["https://allowed.example.com"],
+        turnstile: false,
+      },
+    });
+    const form = await createRes.json<FeedbackFormResponse>();
+    const ts = await buildValidTimestampFields(form.publicId);
+
+    // 1. Direct post from foreign Origin is rejected with generic error
+    const badDirect = await app.fetch(
+      new Request(`${BASE_URL}/f/${form.publicId}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Origin: "https://allowed.example.com",
+          "cf-connecting-ip": uniqueIp(),
+        },
+        body: JSON.stringify({ title: "Cross origin direct", body: "Nope", ...ts }),
+      }),
+      env,
+    );
+    expect(badDirect.status).toBe(400);
+    expect(await badDirect.json()).toEqual({
+      error: "submission_rejected",
+      message: GENERIC_FEEDBACK_SUBMISSION_ERROR,
+    });
+
+    // 2. Direct post from Bitig host Origin succeeds
+    const goodDirect = await app.fetch(
+      new Request(`${BASE_URL}/f/${form.publicId}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Origin: BASE_URL,
+          "cf-connecting-ip": uniqueIp(),
+        },
+        body: JSON.stringify({ title: "Same host direct", body: "Works", ...ts }),
+      }),
+      env,
+    );
+    expect(goodDirect.status).toBe(200);
+
+    // 3. Embed post from unlisted Origin is rejected with generic error
+    const badEmbed = await app.fetch(
+      new Request(`${BASE_URL}/f/${form.publicId}?embed=1`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Origin: "https://evil.example.com",
+          "cf-connecting-ip": uniqueIp(),
+        },
+        body: JSON.stringify({ title: "Bad embed origin", body: "Nope", ...ts }),
+      }),
+      env,
+    );
+    expect(badEmbed.status).toBe(400);
+    expect(await badEmbed.json()).toEqual({
+      error: "submission_rejected",
+      message: GENERIC_FEEDBACK_SUBMISSION_ERROR,
+    });
+
+    // 4. Embed post without Origin or Referer is rejected
+    const missingOriginEmbed = await app.fetch(
+      new Request(`${BASE_URL}/f/${form.publicId}?embed=1`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "cf-connecting-ip": uniqueIp(),
+        },
+        body: JSON.stringify({ title: "Missing embed origin", body: "Nope", ...ts }),
+      }),
+      env,
+    );
+    expect(missingOriginEmbed.status).toBe(400);
+
+    // 5. Embed post from allowed Origin succeeds
+    const goodEmbed = await app.fetch(
+      new Request(`${BASE_URL}/f/${form.publicId}?embed=1`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Origin: "https://allowed.example.com",
+          "cf-connecting-ip": uniqueIp(),
+        },
+        body: JSON.stringify({ title: "Good embed origin", body: "Works", ...ts }),
+      }),
+      env,
+    );
+    expect(goodEmbed.status).toBe(200);
+  });
+
+  it("enforces HMAC-signed minimum and maximum fill time (3 s to 2 h)", async () => {
+    const projectRes = await req("/api/projects", {
+      method: "POST",
+      authHeader: TEST_AUTH_HEADER,
+      bodyJson: { name: "Timing Project", key: "TIM" },
+    });
+    const project = await projectRes.json<Project>();
+
+    const createRes = await req(`/api/projects/${project.id}/feedback-forms`, {
+      method: "POST",
+      authHeader: TEST_AUTH_HEADER,
+      bodyJson: {
+        name: "Timing Form",
+        turnstile: false,
+      },
+    });
+    const form = await createRes.json<FeedbackFormResponse>();
+
+    // 1. Missing timestamp/signature -> generic error
+    const missingRes = await app.fetch(
+      new Request(`${BASE_URL}/f/${form.publicId}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "cf-connecting-ip": uniqueIp(),
+        },
+        body: JSON.stringify({ title: "No timestamp", body: "Should fail" }),
+      }),
+      env,
+    );
+    expect(missingRes.status).toBe(400);
+    expect(await missingRes.json()).toEqual({
+      error: "submission_rejected",
+      message: GENERIC_FEEDBACK_SUBMISSION_ERROR,
+    });
+
+    // 2. Too fast (< 3 s) -> generic error
+    const fastTs = await buildValidTimestampFields(form.publicId, FEEDBACK_MIN_FILL_MS - 1_000);
+    const fastRes = await app.fetch(
+      new Request(`${BASE_URL}/f/${form.publicId}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "cf-connecting-ip": uniqueIp(),
+        },
+        body: JSON.stringify({ title: "Too fast", body: "Bot speed", ...fastTs }),
+      }),
+      env,
+    );
+    expect(fastRes.status).toBe(400);
+    expect(await fastRes.json()).toEqual({
+      error: "submission_rejected",
+      message: GENERIC_FEEDBACK_SUBMISSION_ERROR,
+    });
+
+    // 3. Expired (> 2 h) -> generic error
+    const expiredTs = await buildValidTimestampFields(
+      form.publicId,
+      FEEDBACK_MAX_FILL_MS + 5_000,
+    );
+    const expiredRes = await app.fetch(
+      new Request(`${BASE_URL}/f/${form.publicId}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "cf-connecting-ip": uniqueIp(),
+        },
+        body: JSON.stringify({ title: "Too old", body: "Replay attempt", ...expiredTs }),
+      }),
+      env,
+    );
+    expect(expiredRes.status).toBe(400);
+    expect(await expiredRes.json()).toEqual({
+      error: "submission_rejected",
+      message: GENERIC_FEEDBACK_SUBMISSION_ERROR,
+    });
+
+    // 4. Tampered signature -> generic error
+    const validTs = await buildValidTimestampFields(form.publicId, 10_000);
+    const tamperedRes = await app.fetch(
+      new Request(`${BASE_URL}/f/${form.publicId}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "cf-connecting-ip": uniqueIp(),
+        },
+        body: JSON.stringify({
+          title: "Tampered",
+          body: "Forged signature",
+          _ts: validTs._ts,
+          _sig: "0".repeat(64),
+        }),
+      }),
+      env,
+    );
+    expect(tamperedRes.status).toBe(400);
+
+    // 5. Extracting _ts and _sig from GET /f/:publicId page and submitting when valid succeeds
+    const validRes = await app.fetch(
+      new Request(`${BASE_URL}/f/${form.publicId}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "cf-connecting-ip": uniqueIp(),
+        },
+        body: JSON.stringify({ title: "Human timing", body: "Filled in 10s", ...validTs }),
+      }),
+      env,
+    );
+    expect(validRes.status).toBe(200);
+  });
+
+  it("enforces RateLimiter DO limits: 5 per 10 min per IP per form and 60 per hour per form (429 with generic error)", async () => {
+    const projectRes = await req("/api/projects", {
+      method: "POST",
+      authHeader: TEST_AUTH_HEADER,
+      bodyJson: { name: "Rate Limit Project", key: "RLM" },
+    });
+    const project = await projectRes.json<Project>();
+
+    const createRes = await req(`/api/projects/${project.id}/feedback-forms`, {
+      method: "POST",
+      authHeader: TEST_AUTH_HEADER,
+      bodyJson: {
+        name: "Rate Limited Form",
+        turnstile: false,
+      },
+    });
+    const form = await createRes.json<FeedbackFormResponse>();
+    const ts = await buildValidTimestampFields(form.publicId);
+
+    // 1. Per-IP per-form limit: 5 allowed within 10 minutes, 6th returns 429
+    const singleIp = uniqueIp();
+    for (let i = 1; i <= 5; i++) {
+      const res = await app.fetch(
+        new Request(`${BASE_URL}/f/${form.publicId}`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "cf-connecting-ip": singleIp,
+          },
+          body: JSON.stringify({
+            title: `IP Submission ${String(i)}`,
+            body: `Unique body ${String(i)}`,
+            ...ts,
+          }),
+        }),
+        env,
+      );
+      expect(res.status).toBe(200);
+    }
+
+    const sixthFromSameIp = await app.fetch(
+      new Request(`${BASE_URL}/f/${form.publicId}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "cf-connecting-ip": singleIp,
+        },
+        body: JSON.stringify({
+          title: "IP Submission 6",
+          body: "Should be rate limited",
+          ...ts,
+        }),
+      }),
+      env,
+    );
+    expect(sixthFromSameIp.status).toBe(429);
+    expect(Number(sixthFromSameIp.headers.get("retry-after"))).toBeGreaterThan(0);
+    expect(await sixthFromSameIp.json()).toEqual({
+      error: "submission_rejected",
+      message: GENERIC_FEEDBACK_SUBMISSION_ERROR,
+    });
+
+    // 2. Per-form limit: 60 per hour across distinct IPs (5 already consumed above, send 55 more)
+    for (let i = 6; i <= 60; i++) {
+      const res = await app.fetch(
+        new Request(`${BASE_URL}/f/${form.publicId}`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "cf-connecting-ip": uniqueIp(),
+          },
+          body: JSON.stringify({
+            title: `Form Submission ${String(i)}`,
+            body: `Distinct IP body ${String(i)}`,
+            ...ts,
+          }),
+        }),
+        env,
+      );
+      expect(res.status).toBe(200);
+    }
+
+    // 61st request on the form (even from a brand-new IP) returns 429
+    const sixtyFirst = await app.fetch(
+      new Request(`${BASE_URL}/f/${form.publicId}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "cf-connecting-ip": uniqueIp(),
+        },
+        body: JSON.stringify({
+          title: "Form Submission 61",
+          body: "Exceeds 60/hour form cap",
+          ...ts,
+        }),
+      }),
+      env,
+    );
+    expect(sixtyFirst.status).toBe(429);
+    expect(await sixtyFirst.json()).toEqual({
+      error: "submission_rejected",
+      message: GENERIC_FEEDBACK_SUBMISSION_ERROR,
+    });
+  });
+
+  it("refuses submissions when the form already has 500 pending entries", async () => {
+    const projectRes = await req("/api/projects", {
+      method: "POST",
+      authHeader: TEST_AUTH_HEADER,
+      bodyJson: { name: "Pending Cap Project", key: "CAP" },
+    });
+    const project = await projectRes.json<Project>();
+
+    const createRes = await req(`/api/projects/${project.id}/feedback-forms`, {
+      method: "POST",
+      authHeader: TEST_AUTH_HEADER,
+      bodyJson: {
+        name: "Capped Form",
+        turnstile: false,
+      },
+    });
+    const form = await createRes.json<FeedbackFormResponse>();
+
+    // Seed 500 pending entries in batches
+    const now = Date.now();
+    const statements = Array.from({ length: FEEDBACK_PENDING_CAP }, (_, i) =>
+      env.DB.prepare(
+        "INSERT INTO `feedback_entries` (`id`, `form_id`, `org_id`, `project_id`, `outcome`, `spam_score`, `created_at`) VALUES (?, ?, ?, ?, 'pending', 0, ?)",
+      ).bind(
+        `01950000-0000-7000-8000-${String(i).padStart(12, "0")}`,
+        form.id,
+        form.orgId,
+        form.projectId,
+        now,
+      ),
+    );
+    await env.DB.batch(statements);
+
+    const ts = await buildValidTimestampFields(form.publicId);
+    const res = await app.fetch(
+      new Request(`${BASE_URL}/f/${form.publicId}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "cf-connecting-ip": uniqueIp(),
+        },
+        body: JSON.stringify({
+          title: "Over the 500 pending cap",
+          body: "Should be refused with generic error",
+          ...ts,
+        }),
+      }),
+      env,
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: "submission_rejected",
+      message: GENERIC_FEEDBACK_SUBMISSION_ERROR,
+    });
+
+    const tasksRes = await req(`/api/tasks?projectId=${project.id}`, {
+      authHeader: TEST_AUTH_HEADER,
+    });
+    expect(await tasksRes.json<Task[]>()).toEqual([]);
+  });
+
+  it("verifies Turnstile tokens via siteverify when TURNSTILE_SECRET_KEY and form.turnstile are active, and skips when unconfigured or disabled", async () => {
+    const projectRes = await req("/api/projects", {
+      method: "POST",
+      authHeader: TEST_AUTH_HEADER,
+      bodyJson: { name: "Turnstile Project", key: "TRN" },
+    });
+    const project = await projectRes.json<Project>();
+
+    const createRes = await req(`/api/projects/${project.id}/feedback-forms`, {
+      method: "POST",
+      authHeader: TEST_AUTH_HEADER,
+      bodyJson: {
+        name: "Turnstile Form",
+        turnstile: true,
+      },
+    });
+    const form = await createRes.json<FeedbackFormResponse>();
+    const ts = await buildValidTimestampFields(form.publicId);
+
+    // 1. Default env has no TURNSTILE_SECRET_KEY -> Turnstile check is skipped even when form.turnstile = true
+    const skippedRes = await app.fetch(
+      new Request(`${BASE_URL}/f/${form.publicId}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "cf-connecting-ip": uniqueIp(),
+        },
+        body: JSON.stringify({
+          title: "No key configured",
+          body: "Turnstile skipped when TURNSTILE_SECRET_KEY is empty",
+          ...ts,
+        }),
+      }),
+      env,
+    );
+    expect(skippedRes.status).toBe(200);
+
+    // 2. With TURNSTILE_SECRET_KEY configured and form.turnstile = true:
+    const envWithTurnstile: Env = {
+      ...env,
+      TURNSTILE_SITE_KEY: "0x4AAAAAAATestSiteKey",
+      TURNSTILE_SECRET_KEY: "0x4AAAAAAATestSecretKey",
+    };
+
+    // GET /f/:publicId embeds data-sitekey when TURNSTILE_SITE_KEY is configured
+    const getPageRes = await app.fetch(
+      new Request(`${BASE_URL}/f/${form.publicId}`),
+      envWithTurnstile,
+    );
+    expect(await getPageRes.text()).toContain('data-sitekey="0x4AAAAAAATestSiteKey"');
+
+    // Missing token is rejected without calling siteverify
+    let siteverifyCalls = 0;
+    setTurnstileFetch((input, init) => {
+      siteverifyCalls += 1;
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      expect(url).toBe("https://challenges.cloudflare.com/turnstile/v0/siteverify");
+      const params = new URLSearchParams(typeof init?.body === "string" ? init.body : "");
+      expect(params.get("secret")).toBe("0x4AAAAAAATestSecretKey");
+      const token = params.get("response");
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({ success: token === "valid-turnstile-token" }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    });
+
+    const missingTokenRes = await app.fetch(
+      new Request(`${BASE_URL}/f/${form.publicId}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "cf-connecting-ip": uniqueIp(),
+        },
+        body: JSON.stringify({
+          title: "Missing token",
+          body: "Should fail",
+          ...ts,
+        }),
+      }),
+      envWithTurnstile,
+    );
+    expect(missingTokenRes.status).toBe(400);
+    expect(siteverifyCalls).toBe(0);
+
+    // Invalid token rejected after siteverify returns { success: false }
+    const invalidTokenRes = await app.fetch(
+      new Request(`${BASE_URL}/f/${form.publicId}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "cf-connecting-ip": uniqueIp(),
+        },
+        body: JSON.stringify({
+          title: "Invalid token",
+          body: "Should fail siteverify",
+          "cf-turnstile-response": "bad-token",
+          ...ts,
+        }),
+      }),
+      envWithTurnstile,
+    );
+    expect(invalidTokenRes.status).toBe(400);
+    expect(siteverifyCalls).toBe(1);
+    expect(await invalidTokenRes.json()).toEqual({
+      error: "submission_rejected",
+      message: GENERIC_FEEDBACK_SUBMISSION_ERROR,
+    });
+
+    // Valid token passes siteverify and creates task
+    const validTokenRes = await app.fetch(
+      new Request(`${BASE_URL}/f/${form.publicId}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "cf-connecting-ip": uniqueIp(),
+        },
+        body: JSON.stringify({
+          title: "Valid token",
+          body: "Passes siteverify",
+          "cf-turnstile-response": "valid-turnstile-token",
+          ...ts,
+        }),
+      }),
+      envWithTurnstile,
+    );
+    expect(validTokenRes.status).toBe(200);
+    expect(siteverifyCalls).toBe(2);
+  });
+
+  it("records high spam-score submissions with outcome 'spam' and creates no task, and drops 24h duplicates", async () => {
+    const projectRes = await req("/api/projects", {
+      method: "POST",
+      authHeader: TEST_AUTH_HEADER,
+      bodyJson: { name: "Spam & Dup Project", key: "SPM" },
+    });
+    const project = await projectRes.json<Project>();
+
+    const createRes = await req(`/api/projects/${project.id}/feedback-forms`, {
+      method: "POST",
+      authHeader: TEST_AUTH_HEADER,
+      bodyJson: {
+        name: "Spam Filter Form",
+        turnstile: false,
+        bannedWords: ["buy cheap casino"],
+      },
+    });
+    const form = await createRes.json<FeedbackFormResponse>();
+    const ts = await buildValidTimestampFields(form.publicId);
+
+    // 1. High spam score (3+ links / banned phrase) -> recorded with outcome "spam", taskId: null, no task created
+    const spammerIp = uniqueIp();
+    const spamRes = await app.fetch(
+      new Request(`${BASE_URL}/f/${form.publicId}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "cf-connecting-ip": spammerIp,
+        },
+        body: JSON.stringify({
+          title: "Special promo https://spam1.example.com",
+          body: "Buy cheap casino deals at https://spam2.example.com and https://spam3.example.com",
+          ...ts,
+        }),
+      }),
+      env,
+    );
+    expect(spamRes.status).toBe(200);
+    const spamJson = await spamRes.json<{ ok: boolean; taskId?: string }>();
+    expect(spamJson.ok).toBe(true);
+    expect(spamJson.taskId).toBeUndefined();
+
+    const tasksAfterSpam = await (
+      await req(`/api/tasks?projectId=${project.id}`, { authHeader: TEST_AUTH_HEADER })
+    ).json<Task[]>();
+    expect(tasksAfterSpam).toEqual([]);
+
+    const store = new D1FeedbackStore({ db: env.DB, orgId: form.orgId });
+    const entriesAfterSpam = await store.listEntries({ formId: form.id });
+    expect(entriesAfterSpam).toHaveLength(1);
+    expect(entriesAfterSpam[0]?.outcome).toBe("spam");
+    expect(entriesAfterSpam[0]?.taskId).toBeNull();
+    expect(entriesAfterSpam[0]?.spamScore).toBeGreaterThanOrEqual(100);
+
+    // 2. Duplicate guard: same ip_hash and body_hash within 24h is silently dropped
+    const visitorIp = uniqueIp();
+    const firstValidRes = await app.fetch(
+      new Request(`${BASE_URL}/f/${form.publicId}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "cf-connecting-ip": visitorIp,
+        },
+        body: JSON.stringify({
+          title: "Search bar loses focus",
+          body: "Typing in the search bar loses focus after the first character.",
+          ...ts,
+        }),
+      }),
+      env,
+    );
+    expect(firstValidRes.status).toBe(200);
+
+    const duplicateRes = await app.fetch(
+      new Request(`${BASE_URL}/f/${form.publicId}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "cf-connecting-ip": visitorIp,
+        },
+        body: JSON.stringify({
+          title: "  Search bar   loses focus ",
+          body: "Typing in the search bar loses focus after the first character.",
+          ...ts,
+        }),
+      }),
+      env,
+    );
+    expect(duplicateRes.status).toBe(200);
+    const dupJson = await duplicateRes.json<{ ok: boolean; taskId?: string }>();
+    expect(dupJson.ok).toBe(true);
+    expect(dupJson.taskId).toBeUndefined();
+
+    // Only 1 task was created from the two identical submissions
+    const tasksAfterDup = await (
+      await req(`/api/tasks?projectId=${project.id}`, { authHeader: TEST_AUTH_HEADER })
+    ).json<Task[]>();
+    expect(tasksAfterDup).toHaveLength(1);
+    expect(await store.listEntries({ formId: form.id })).toHaveLength(2); // 1 spam + 1 pending
+  });
+
+  it("stores IP only as an HMAC (FEEDBACK_IP_SECRET or derived from SESSION_SECRET) and supports blocking/unblocking an ip_hash per form", async () => {
+    const projectRes = await req("/api/projects", {
+      method: "POST",
+      authHeader: TEST_AUTH_HEADER,
+      bodyJson: { name: "IP HMAC Project", key: "IPM" },
+    });
+    const project = await projectRes.json<Project>();
+
+    const createRes = await req(`/api/projects/${project.id}/feedback-forms`, {
+      method: "POST",
+      authHeader: TEST_AUTH_HEADER,
+      bodyJson: {
+        name: "IP Block Form",
+        turnstile: false,
+      },
+    });
+    const form = await createRes.json<FeedbackFormResponse>();
+
+    const customEnv: Env = {
+      ...env,
+      FEEDBACK_IP_SECRET: "dedicated-feedback-ip-hmac-secret",
+    };
+
+    const rawClientIp = "203.0.113.77";
+    const expectedIpHash = await computeFeedbackIpHash(rawClientIp, {
+      FEEDBACK_IP_SECRET: "dedicated-feedback-ip-hmac-secret",
+      SESSION_SECRET: env.SESSION_SECRET,
+    });
+    const sessionDerivedHash = await computeFeedbackIpHash(rawClientIp, {
+      FEEDBACK_IP_SECRET: "",
+      SESSION_SECRET: env.SESSION_SECRET,
+    });
+    expect(expectedIpHash).not.toBe(sessionDerivedHash);
+    expect(expectedIpHash).not.toContain(rawClientIp);
+
+    const ts = await buildValidTimestampFields(form.publicId, 5_000, {
+      FEEDBACK_IP_SECRET: "dedicated-feedback-ip-hmac-secret",
+      SESSION_SECRET: env.SESSION_SECRET,
+    });
+
+    // Submit once from rawClientIp
+    const firstSubmit = await app.fetch(
+      new Request(`${BASE_URL}/f/${form.publicId}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "cf-connecting-ip": rawClientIp,
+        },
+        body: JSON.stringify({
+          title: "Initial submission from 203.0.113.77",
+          body: "Checking IP HMAC storage.",
+          ...ts,
+        }),
+      }),
+      customEnv,
+    );
+    expect(firstSubmit.status).toBe(200);
+
+    const store = new D1FeedbackStore({ db: env.DB, orgId: form.orgId });
+    const entries = await store.listEntries({ formId: form.id });
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.ipHash).toBe(expectedIpHash);
+
+    // Block this ip_hash on the form via POST /api/feedback-forms/:id/block-ip
+    const blockRes = await req(`/api/feedback-forms/${form.id}/block-ip`, {
+      method: "POST",
+      authHeader: TEST_AUTH_HEADER,
+      bodyJson: { ipHash: expectedIpHash },
+    });
+    expect(blockRes.status).toBe(200);
+    const blockedForm = await blockRes.json<FeedbackFormResponse>();
+    expect(blockedForm.blockedIpHashes).toEqual([expectedIpHash]);
+
+    // Subsequent submission from the blocked IP is rejected with generic error
+    const blockedSubmit = await app.fetch(
+      new Request(`${BASE_URL}/f/${form.publicId}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "cf-connecting-ip": rawClientIp,
+        },
+        body: JSON.stringify({
+          title: "Second submission from blocked IP",
+          body: "Should be refused before creating a task.",
+          ...ts,
+        }),
+      }),
+      customEnv,
+    );
+    expect(blockedSubmit.status).toBe(400);
+    expect(await blockedSubmit.json()).toEqual({
+      error: "submission_rejected",
+      message: GENERIC_FEEDBACK_SUBMISSION_ERROR,
+    });
+
+    // Unblock via POST /api/feedback-forms/:id/unblock-ip
+    const unblockRes = await req(`/api/feedback-forms/${form.id}/unblock-ip`, {
+      method: "POST",
+      authHeader: TEST_AUTH_HEADER,
+      bodyJson: { ipHash: expectedIpHash },
+    });
+    expect(unblockRes.status).toBe(200);
+    const unblockedForm = await unblockRes.json<FeedbackFormResponse>();
+    expect(unblockedForm.blockedIpHashes).toBeUndefined();
+
+    // Submission from the unblocked IP succeeds again
+    const afterUnblockSubmit = await app.fetch(
+      new Request(`${BASE_URL}/f/${form.publicId}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "cf-connecting-ip": rawClientIp,
+        },
+        body: JSON.stringify({
+          title: "Third submission after unblock",
+          body: "Works again now that IP hash is unblocked.",
+          ...ts,
+        }),
+      }),
+      customEnv,
+    );
+    expect(afterUnblockSubmit.status).toBe(200);
   });
 });

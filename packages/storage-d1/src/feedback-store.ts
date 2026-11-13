@@ -4,6 +4,7 @@ import {
   DEFAULT_ORGANISATION_ID,
   FEEDBACK_DUPLICATE_WINDOW_MS,
   FEEDBACK_PURGE_RETENTION_MS,
+  FeedbackBlockedIpHashSchema,
   FeedbackEntryOutcomeSchema,
   FeedbackEntrySchema,
   FeedbackFieldsSchema,
@@ -20,6 +21,7 @@ import {
   cloneFeedbackForm,
   defaultRuntimeDeps,
   generateFeedbackPublicId,
+  isFeedbackIpHashBlocked,
   parseOrThrow,
   throwIfAborted,
   toTimestamp,
@@ -126,6 +128,9 @@ function recordToFeedbackForm(row: FeedbackFormRecord): FeedbackForm {
   if (row.bannedWords !== null && row.bannedWords.length > 0) {
     form.bannedWords = [...row.bannedWords];
   }
+  if (fields.blockedIpHashes !== undefined && fields.blockedIpHashes.length > 0) {
+    form.blockedIpHashes = [...fields.blockedIpHashes];
+  }
   if (row.lastSubmittedAt !== null) {
     form.lastSubmittedAt = new Date(row.lastSubmittedAt).toISOString();
   }
@@ -136,6 +141,7 @@ function recordToFeedbackForm(row: FeedbackFormRecord): FeedbackForm {
 }
 
 function feedbackFormToRecord(form: FeedbackForm): InsertFeedbackFormRecord {
+  const blockedIpHashes = form.blockedIpHashes ?? form.fields.blockedIpHashes;
   return {
     id: form.id,
     orgId: form.orgId,
@@ -151,6 +157,9 @@ function feedbackFormToRecord(form: FeedbackForm): InsertFeedbackFormRecord {
       categories: [...form.fields.categories],
       ...(form.fields.bannedWords !== undefined && form.fields.bannedWords.length > 0
         ? { bannedWords: [...form.fields.bannedWords] }
+        : {}),
+      ...(blockedIpHashes !== undefined && blockedIpHashes.length > 0
+        ? { blockedIpHashes: [...blockedIpHashes] }
         : {}),
     },
     allowedOrigins: [...form.allowedOrigins],
@@ -808,6 +817,79 @@ export class D1FeedbackStore {
     opts?: OperationOptions,
   ): Promise<FeedbackForm> {
     return this.recordFormSubmission(id, opts);
+  }
+
+  /**
+   * Blocks an `ipHash` on the given form (idempotent).
+   */
+  async blockIpHash(
+    formId: string,
+    ipHash: string,
+    opts?: OperationOptions,
+  ): Promise<FeedbackForm> {
+    throwIfAborted(opts?.signal);
+    const validFormId = parseOrThrow(IdSchema, formId, "blockFeedbackIpHash formId");
+    const validIpHash = parseOrThrow(
+      FeedbackBlockedIpHashSchema,
+      ipHash,
+      "blockFeedbackIpHash ipHash",
+    );
+    const form = await this.getForm(validFormId, opts);
+    if (!form) {
+      throw new NotFoundError("feedback_form", validFormId);
+    }
+    const existing = form.blockedIpHashes ?? form.fields.blockedIpHashes ?? [];
+    if (existing.includes(validIpHash)) {
+      return form;
+    }
+    return this.updateForm(
+      validFormId,
+      { blockedIpHashes: [...existing, validIpHash] },
+      opts,
+    );
+  }
+
+  /**
+   * Unblocks an `ipHash` on the given form (idempotent).
+   */
+  async unblockIpHash(
+    formId: string,
+    ipHash: string,
+    opts?: OperationOptions,
+  ): Promise<FeedbackForm> {
+    throwIfAborted(opts?.signal);
+    const validFormId = parseOrThrow(IdSchema, formId, "unblockFeedbackIpHash formId");
+    const trimmed = ipHash.trim().toLowerCase();
+    const form = await this.getForm(validFormId, opts);
+    if (!form) {
+      throw new NotFoundError("feedback_form", validFormId);
+    }
+    const existing = form.blockedIpHashes ?? form.fields.blockedIpHashes ?? [];
+    if (!existing.some((h) => h.toLowerCase() === trimmed)) {
+      return form;
+    }
+    const next = existing.filter((h) => h.toLowerCase() !== trimmed);
+    return this.updateForm(
+      validFormId,
+      { blockedIpHashes: next.length > 0 ? next : null },
+      opts,
+    );
+  }
+
+  /**
+   * Checks whether an `ipHash` is blocked on the given form.
+   */
+  async isIpHashBlocked(
+    formId: string,
+    ipHash: string,
+    opts?: OperationOptions,
+  ): Promise<boolean> {
+    throwIfAborted(opts?.signal);
+    const trimmed = ipHash.trim();
+    if (trimmed.length === 0) return false;
+    const form = await this.getForm(formId, opts);
+    if (!form) return false;
+    return isFeedbackIpHashBlocked(form, trimmed);
   }
 
   // ---------------------------------------------------------------------------

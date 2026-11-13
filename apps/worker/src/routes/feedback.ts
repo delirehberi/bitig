@@ -1,11 +1,16 @@
 import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
+import { z } from "zod";
 import {
   CreateFeedbackFormInputSchema,
+  FEEDBACK_MAX_FILL_MS,
+  FEEDBACK_MIN_FILL_MS,
+  FEEDBACK_PENDING_CAP,
   FEEDBACK_SUBMISSION_BODY_MAX,
   FEEDBACK_SUBMISSION_TITLE_MAX,
   FEEDBACK_SUBMITTER_EMAIL_MAX,
   FEEDBACK_SUBMITTER_NAME_MAX,
+  FeedbackBlockedIpHashSchema,
   FeedbackPageUrlSchema,
   FeedbackPublicIdSchema,
   IdSchema,
@@ -14,6 +19,8 @@ import {
   ValidationError,
   feedbackTaskActor,
   hasMinimumOrgRole,
+  isFeedbackIpHashBlocked,
+  isHighSpamScore,
   normalizeAllowedOrigin,
   spamScore,
   taskFromFeedbackSubmission,
@@ -25,7 +32,12 @@ import {
 import { D1FeedbackStore, D1Storage, findFormByPublicId } from "@bitig/storage-d1";
 import type { Context } from "hono";
 import { ForbiddenRoleError } from "../auth";
+import type { AppConfig } from "../config";
 import type { AppEnv } from "../index";
+import {
+  checkFeedbackRateLimits,
+  getClientIp,
+} from "../rate-limit";
 import { publishRealtimeEvent, withRealtimeBroadcast } from "../realtime";
 
 const HTTP_OK = 200;
@@ -33,6 +45,11 @@ const HTTP_CREATED = 201;
 const HTTP_NO_CONTENT = 204;
 const HTTP_BAD_REQUEST = 400;
 const HTTP_NOT_FOUND = 404;
+const HTTP_TOO_MANY_REQUESTS = 429;
+
+export const GENERIC_FEEDBACK_SUBMISSION_ERROR = "Could not process feedback submission.";
+const TURNSTILE_SITEVERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
+const DEFAULT_FEEDBACK_HMAC_FALLBACK = "bitig-default-feedback-hmac-secret";
 
 export interface FeedbackFormResponse extends FeedbackForm {
   readonly publicPath: string;
@@ -44,6 +61,10 @@ export interface FeedbackFormResponse extends FeedbackForm {
 const CreateProjectFeedbackFormBodySchema = CreateFeedbackFormInputSchema.omit({
   projectId: true,
   orgId: true,
+});
+
+const BlockFeedbackIpBodySchema = z.object({
+  ipHash: FeedbackBlockedIpHashSchema,
 });
 
 function assertFeedbackRole(c: Context<AppEnv>, minRole: OrganisationRole): void {
@@ -139,6 +160,263 @@ export function applyPublicFeedbackSecurityHeaders(
 }
 
 // ---------------------------------------------------------------------------
+// Cryptographic Helpers: IP HMAC, Body Hash, and Timestamp Signing (#BIT-178)
+// ---------------------------------------------------------------------------
+
+function bytesToHex(bytes: Uint8Array): string {
+  let out = "";
+  for (const b of bytes) {
+    out += b.toString(16).padStart(2, "0");
+  }
+  return out;
+}
+
+function constantTimeStringEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return diff === 0;
+}
+
+async function hmacSha256Hex(secret: string, message: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const sig = await crypto.subtle.sign("HMAC", key, encoder.encode(message));
+  return bytesToHex(new Uint8Array(sig));
+}
+
+async function sha256Hex(message: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const digest = await crypto.subtle.digest("SHA-256", encoder.encode(message));
+  return bytesToHex(new Uint8Array(digest));
+}
+
+/**
+ * Resolves the HMAC secret for feedback IP hashing and form timestamps.
+ * Uses `FEEDBACK_IP_SECRET` when configured; otherwise derives a domain-separated
+ * secret from `SESSION_SECRET` (with a deterministic fallback in local/test envs).
+ */
+export function resolveFeedbackHmacSecret(
+  config?: Pick<AppConfig, "FEEDBACK_IP_SECRET" | "SESSION_SECRET">,
+): string {
+  const ipSecret = config ? config.FEEDBACK_IP_SECRET.trim() : "";
+  if (ipSecret.length > 0) {
+    return ipSecret;
+  }
+  const sessionSecret = config ? config.SESSION_SECRET.trim() : "";
+  if (sessionSecret.length > 0) {
+    return `bitig-feedback-ip-hmac:${sessionSecret}`;
+  }
+  return DEFAULT_FEEDBACK_HMAC_FALLBACK;
+}
+
+/**
+ * Computes the keyed HMAC-SHA256 hex digest of a submitter IP address.
+ * Raw IP addresses are never stored.
+ */
+export async function computeFeedbackIpHash(
+  ip: string,
+  config?: Pick<AppConfig, "FEEDBACK_IP_SECRET" | "SESSION_SECRET">,
+): Promise<string> {
+  const secret = resolveFeedbackHmacSecret(config);
+  return hmacSha256Hex(secret, `feedback-ip:${ip.trim().toLowerCase()}`);
+}
+
+/**
+ * Computes a normalized SHA-256 hex digest of a submission's title + body
+ * for the 24-hour duplicate guard.
+ */
+export async function computeFeedbackBodyHash(
+  title: string,
+  body: string,
+): Promise<string> {
+  const normalizedTitle = title.trim().replace(/\s+/g, " ").toLowerCase();
+  const normalizedBody = body.trim().replace(/\s+/g, " ").toLowerCase();
+  return sha256Hex(`${normalizedTitle}\n${normalizedBody}`);
+}
+
+/**
+ * Signs a form-render timestamp (`ms` since epoch) bound to `publicId`.
+ */
+export async function signFeedbackTimestamp(
+  publicId: string,
+  timestampMs: number,
+  config?: Pick<AppConfig, "FEEDBACK_IP_SECRET" | "SESSION_SECRET">,
+): Promise<string> {
+  const secret = resolveFeedbackHmacSecret(config);
+  return hmacSha256Hex(secret, `feedback-ts:${publicId}:${String(Math.trunc(timestampMs))}`);
+}
+
+/**
+ * Verifies the HMAC-signed form timestamp and enforces the minimum (3 s) and
+ * maximum (2 h) fill time window.
+ */
+export async function verifyFeedbackTimestamp(params: {
+  readonly publicId: string;
+  readonly rawTimestamp: unknown;
+  readonly rawSignature: unknown;
+  readonly config?: Pick<AppConfig, "FEEDBACK_IP_SECRET" | "SESSION_SECRET"> | undefined;
+  readonly nowMs?: number | undefined;
+}): Promise<boolean> {
+  const tsStr =
+    typeof params.rawTimestamp === "number"
+      ? String(Math.trunc(params.rawTimestamp))
+      : typeof params.rawTimestamp === "string"
+        ? params.rawTimestamp.trim()
+        : "";
+  const sigStr =
+    typeof params.rawSignature === "string" ? params.rawSignature.trim().toLowerCase() : "";
+
+  if (!/^\d{1,16}$/.test(tsStr) || !/^[0-9a-f]{64}$/.test(sigStr)) {
+    return false;
+  }
+
+  const tsMs = Number(tsStr);
+  if (!Number.isSafeInteger(tsMs) || tsMs <= 0) {
+    return false;
+  }
+
+  const expectedSig = await signFeedbackTimestamp(params.publicId, tsMs, params.config);
+  if (!constantTimeStringEqual(sigStr, expectedSig)) {
+    return false;
+  }
+
+  const nowMs = params.nowMs ?? Date.now();
+  const elapsedMs = nowMs - tsMs;
+  if (elapsedMs < FEEDBACK_MIN_FILL_MS || elapsedMs > FEEDBACK_MAX_FILL_MS) {
+    return false;
+  }
+
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// Origin Check and Turnstile Siteverify (#BIT-178)
+// ---------------------------------------------------------------------------
+
+function extractRequestSourceOrigin(c: Context<AppEnv>): string | null {
+  const originHeader = c.req.header("origin")?.trim();
+  if (originHeader && originHeader.length > 0) {
+    if (originHeader.toLowerCase() === "null") {
+      return "null";
+    }
+    return normalizeAllowedOrigin(originHeader) ?? "invalid";
+  }
+
+  const refererHeader = c.req.header("referer")?.trim();
+  if (refererHeader && refererHeader.length > 0) {
+    return normalizeAllowedOrigin(refererHeader) ?? "invalid";
+  }
+
+  return null;
+}
+
+/**
+ * Verifies the request origin on `POST /f/:publicId`:
+ * - Embeds (`embed === true`) must match one of the form's `allowedOrigins`.
+ * - Direct posts (`embed === false`) must come from the Bitig host.
+ */
+export function checkFeedbackOrigin(
+  c: Context<AppEnv>,
+  form: FeedbackForm,
+  embed: boolean,
+): boolean {
+  const sourceOrigin = extractRequestSourceOrigin(c);
+
+  if (embed) {
+    if (sourceOrigin === null || sourceOrigin === "null" || sourceOrigin === "invalid") {
+      return false;
+    }
+    const allowedNormalized = new Set<string>();
+    for (const raw of form.allowedOrigins) {
+      const norm = normalizeAllowedOrigin(raw);
+      if (norm !== null) {
+        allowedNormalized.add(norm);
+      }
+    }
+    return allowedNormalized.has(sourceOrigin);
+  }
+
+  const hostOrigin = normalizeAllowedOrigin(new URL(c.req.url).origin);
+  if (sourceOrigin !== null) {
+    return hostOrigin !== null && sourceOrigin === hostOrigin;
+  }
+
+  const secFetchSite = c.req.header("sec-fetch-site")?.trim().toLowerCase();
+  if (
+    secFetchSite !== undefined &&
+    secFetchSite.length > 0 &&
+    secFetchSite !== "same-origin" &&
+    secFetchSite !== "none"
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+export type TurnstileFetchFn = typeof fetch;
+
+let activeTurnstileFetch: TurnstileFetchFn | undefined;
+
+/**
+ * Registers or clears a custom `fetch` implementation for Turnstile `siteverify` in tests.
+ */
+export function setTurnstileFetch(fn?: TurnstileFetchFn): void {
+  activeTurnstileFetch = fn;
+}
+
+export async function verifyTurnstileToken(params: {
+  readonly secretKey: string;
+  readonly token: string;
+  readonly remoteIp: string;
+  readonly signal?: AbortSignal | undefined;
+}): Promise<boolean> {
+  const trimmedToken = params.token.trim();
+  if (trimmedToken.length === 0 || trimmedToken.length > 2048) {
+    return false;
+  }
+
+  const fetchImpl = activeTurnstileFetch ?? globalThis.fetch;
+  const body = new URLSearchParams({
+    secret: params.secretKey,
+    response: trimmedToken,
+    remoteip: params.remoteIp,
+  });
+
+  try {
+    const res = await fetchImpl(TURNSTILE_SITEVERIFY_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: body.toString(),
+      ...(params.signal ? { signal: params.signal } : {}),
+    });
+    if (!res.ok) {
+      return false;
+    }
+    const data: unknown = await res.json();
+    return (
+      typeof data === "object" &&
+      data !== null &&
+      "success" in data &&
+      (data as { success?: unknown }).success === true
+    );
+  } catch {
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Abuse Protection Hook (extended in BIT-178)
 // ---------------------------------------------------------------------------
 
@@ -148,12 +426,20 @@ export interface FeedbackAbuseCheckContext {
   readonly submission: FeedbackSubmission;
   readonly rawBody: Readonly<Record<string, unknown>>;
   readonly feedbackStore: D1FeedbackStore;
+  readonly ipHash?: string | undefined;
+  readonly bodyHash?: string | undefined;
 }
 
 export type FeedbackAbuseCheckResult =
   | {
       readonly status: "allow";
       readonly spamScore?: number | undefined;
+      readonly ipHash?: string | undefined;
+      readonly bodyHash?: string | undefined;
+    }
+  | {
+      readonly status: "spam";
+      readonly spamScore: number;
       readonly ipHash?: string | undefined;
       readonly bodyHash?: string | undefined;
     }
@@ -180,8 +466,8 @@ export function setFeedbackAbuseCheckHook(hook?: FeedbackAbuseCheckHook): void {
 }
 
 /**
- * Hook executed on `POST /f/:publicId` after field validation and before
- * creating the pending task (#BIT-177 / #BIT-178).
+ * Runs post-validation abuse checks (pending cap, duplicate guard, Turnstile,
+ * and core spam score) on `POST /f/:publicId` (#BIT-178).
  */
 export async function runFeedbackAbuseChecks(
   ctx: FeedbackAbuseCheckContext,
@@ -189,9 +475,75 @@ export async function runFeedbackAbuseChecks(
   if (activeFeedbackAbuseCheckHook) {
     return activeFeedbackAbuseCheckHook(ctx);
   }
+
+  const config = ctx.c.get("config");
+  const signal = ctx.c.req.raw.signal;
+  const clientIp = getClientIp(ctx.c);
+  const ipHash = ctx.ipHash ?? (await computeFeedbackIpHash(clientIp, config));
+  const bodyHash =
+    ctx.bodyHash ?? (await computeFeedbackBodyHash(ctx.submission.title, ctx.submission.body));
+
+  // Pending cap: refuse when the form already has 500 pending entries
+  const pendingCount = await ctx.feedbackStore.getPendingCount(ctx.form.id, { signal });
+  if (pendingCount >= FEEDBACK_PENDING_CAP) {
+    return {
+      status: "reject",
+      httpStatus: HTTP_BAD_REQUEST,
+      message: GENERIC_FEEDBACK_SUBMISSION_ERROR,
+    };
+  }
+
+  // Duplicate guard: same ip_hash and body_hash within 24 h is silently dropped
+  const isDuplicate = await ctx.feedbackStore.hasDuplicateEntry(
+    {
+      formId: ctx.form.id,
+      ipHash,
+      bodyHash,
+    },
+    { signal },
+  );
+  if (isDuplicate) {
+    return { status: "drop" };
+  }
+
+  // Turnstile: per-form switch; skipped when no TURNSTILE_SECRET_KEY is configured
+  const turnstileSecretKey = config.TURNSTILE_SECRET_KEY.trim();
+  if (ctx.form.turnstile && turnstileSecretKey.length > 0) {
+    const rawToken =
+      asOptionalString(ctx.rawBody["cf-turnstile-response"]) ??
+      asOptionalString(ctx.rawBody.turnstileToken) ??
+      "";
+    const verified = await verifyTurnstileToken({
+      secretKey: turnstileSecretKey,
+      token: rawToken,
+      remoteIp: clientIp,
+      signal,
+    });
+    if (!verified) {
+      return {
+        status: "reject",
+        httpStatus: HTTP_BAD_REQUEST,
+        message: GENERIC_FEEDBACK_SUBMISSION_ERROR,
+      };
+    }
+  }
+
+  // Spam score from core: high scores are recorded with outcome "spam" and create no task
+  const score = spamScore(ctx.submission, ctx.form);
+  if (isHighSpamScore(score)) {
+    return {
+      status: "spam",
+      spamScore: score,
+      ipHash,
+      bodyHash,
+    };
+  }
+
   return {
     status: "allow",
-    spamScore: spamScore(ctx.submission, ctx.form),
+    spamScore: score,
+    ipHash,
+    bodyHash,
   };
 }
 
@@ -212,6 +564,16 @@ function isEmbedParam(value: string | undefined): boolean {
   if (!value) return false;
   const normalized = value.trim().toLowerCase();
   return normalized === "1" || normalized === "true" || normalized === "yes";
+}
+
+function hasHoneypotValue(raw: Readonly<Record<string, unknown>>): boolean {
+  for (const key of ["website", "honeypot", "_hp"]) {
+    const value = raw[key];
+    if (typeof value === "string" && value.length > 0) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function buildHallmarkStyles(accentColor?: string): string {
@@ -420,6 +782,15 @@ function buildHallmarkStyles(accentColor?: string): string {
       margin-bottom: var(--space-md);
     }
 
+    .feedback-hp {
+      position: absolute !important;
+      left: -10000px !important;
+      top: auto !important;
+      width: 1px !important;
+      height: 1px !important;
+      overflow: hidden !important;
+    }
+
     .feedback-label {
       display: block;
       margin-bottom: var(--space-2xs);
@@ -565,6 +936,9 @@ export interface RenderPublicFeedbackPageOptions {
   readonly embed?: boolean | undefined;
   readonly pageUrl?: string | undefined;
   readonly errorMessage?: string | undefined;
+  readonly timestampMs?: number | undefined;
+  readonly timestampSig?: string | undefined;
+  readonly turnstileSiteKey?: string | undefined;
   readonly values?: {
     readonly title?: string | undefined;
     readonly body?: string | undefined;
@@ -634,9 +1008,14 @@ export function renderPublicFeedbackPage(
         </div>`
       : "";
 
+  const siteKeyAttr =
+    options?.turnstileSiteKey !== undefined && options.turnstileSiteKey.trim().length > 0
+      ? ` data-sitekey="${escapeHtml(options.turnstileSiteKey.trim())}"`
+      : "";
+
   const turnstileHtml = form.turnstile
     ? `<div class="feedback-field feedback-turnstile">
-        <div class="cf-turnstile" data-action="feedback"></div>
+        <div class="cf-turnstile"${siteKeyAttr} data-action="feedback"></div>
       </div>
       <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>`
     : "";
@@ -646,6 +1025,15 @@ export function renderPublicFeedbackPage(
     options?.pageUrl !== undefined && options.pageUrl.length > 0
       ? `<input type="hidden" name="pageUrl" value="${escapeHtml(options.pageUrl)}" />`
       : "";
+  const hiddenTimestampHtml =
+    options?.timestampMs !== undefined && options.timestampSig !== undefined
+      ? `<input type="hidden" name="_ts" value="${String(Math.trunc(options.timestampMs))}" />
+        <input type="hidden" name="_sig" value="${escapeHtml(options.timestampSig)}" />`
+      : "";
+  const honeypotHtml = `<div class="feedback-hp" aria-hidden="true">
+          <label for="feedback-website">Website</label>
+          <input id="feedback-website" name="website" type="text" tabindex="-1" autocomplete="off" value="" />
+        </div>`;
 
   const chromeHeaderHtml = embed
     ? ""
@@ -675,6 +1063,8 @@ export function renderPublicFeedbackPage(
       <form class="feedback-form" method="post" action="${escapeHtml(actionUrl)}">
         ${hiddenEmbedHtml}
         ${hiddenPageUrlHtml}
+        ${hiddenTimestampHtml}
+        ${honeypotHtml}
         <div class="feedback-field">
           <label class="feedback-label" for="feedback-title">Title <span aria-hidden="true">*</span></label>
           <input class="feedback-input" id="feedback-title" name="title" type="text" required maxlength="${String(FEEDBACK_SUBMISSION_TITLE_MAX)}" value="${escapeHtml(titleVal)}" />
@@ -743,7 +1133,7 @@ export function renderFeedbackThankYouPage(
 }
 
 export function renderFeedbackPrivacyPage(form?: FeedbackForm): string {
-  const title = form ? `Privacy note — ${form.title}` : "Feedback privacy note";
+  const title = form ? `Privacy note \u2014 ${form.title}` : "Feedback privacy note";
   const backHref = form ? buildFeedbackPublicPath(form.publicId) : undefined;
   return `<!doctype html>
 <html lang="en">
@@ -805,6 +1195,70 @@ function respondPublicNotFound(c: Context<AppEnv>): Response {
     return c.json({ error: "not_found" }, HTTP_NOT_FOUND);
   }
   return c.html(renderFeedbackNotFoundPage(), HTTP_NOT_FOUND);
+}
+
+function respondPublicThankYou(
+  c: Context<AppEnv>,
+  form: FeedbackForm,
+  options: {
+    readonly isFormPost: boolean;
+    readonly embed: boolean;
+    readonly taskId?: string | undefined;
+    readonly entryId?: string | undefined;
+  },
+): Response {
+  if (!options.isFormPost && isJsonRequest(c)) {
+    return c.json(
+      {
+        ok: true,
+        status: "submitted",
+        thankYouText: form.thankYouText,
+        message: form.thankYouText,
+        ...(options.taskId !== undefined ? { taskId: options.taskId } : {}),
+        ...(options.entryId !== undefined ? { entryId: options.entryId } : {}),
+      },
+      HTTP_OK,
+    );
+  }
+  return c.html(renderFeedbackThankYouPage(form, { embed: options.embed }), HTTP_OK);
+}
+
+async function respondPublicSubmissionRejected(
+  c: Context<AppEnv>,
+  form: FeedbackForm,
+  options: {
+    readonly isFormPost: boolean;
+    readonly embed: boolean;
+    readonly status?: 400 | 403 | 429 | undefined;
+    readonly message?: string | undefined;
+    readonly values?: {
+      readonly title?: string | undefined;
+      readonly body?: string | undefined;
+      readonly category?: string | undefined;
+      readonly submitterName?: string | undefined;
+      readonly submitterEmail?: string | undefined;
+    } | undefined;
+  },
+): Promise<Response> {
+  const status = options.status ?? HTTP_BAD_REQUEST;
+  const message = options.message ?? GENERIC_FEEDBACK_SUBMISSION_ERROR;
+  if (!options.isFormPost || isJsonRequest(c)) {
+    return c.json({ error: "submission_rejected", message }, status);
+  }
+  const config = c.get("config");
+  const timestampMs = Date.now();
+  const timestampSig = await signFeedbackTimestamp(form.publicId, timestampMs, config);
+  return c.html(
+    renderPublicFeedbackPage(form, {
+      embed: options.embed,
+      errorMessage: message,
+      timestampMs,
+      timestampSig,
+      turnstileSiteKey: config.TURNSTILE_SITE_KEY,
+      values: options.values,
+    }),
+    status,
+  );
 }
 
 const KNOWN_AUXILIARY_FORM_KEYS = new Set([
@@ -982,6 +1436,10 @@ export const publicFeedbackRouter = new Hono<AppEnv>()
 
     c.set("feedbackAllowedOrigins", form.allowedOrigins);
 
+    const config = c.get("config");
+    const timestampMs = Date.now();
+    const timestampSig = await signFeedbackTimestamp(form.publicId, timestampMs, config);
+
     const embed = isEmbedParam(c.req.query("embed"));
     const rawPageUrl = c.req.query("pageUrl") ?? c.req.query("url");
     const parsedPageUrl =
@@ -990,6 +1448,9 @@ export const publicFeedbackRouter = new Hono<AppEnv>()
     return c.html(
       renderPublicFeedbackPage(form, {
         embed,
+        timestampMs,
+        timestampSig,
+        turnstileSiteKey: config.TURNSTILE_SITE_KEY,
         ...(parsedPageUrl?.success ? { pageUrl: parsedPageUrl.data } : {}),
       }),
       HTTP_OK,
@@ -1028,7 +1489,7 @@ export const publicFeedbackRouter = new Hono<AppEnv>()
     const parsedBody = await parsePublicSubmissionBody(c);
     if (!parsedBody.ok) {
       return c.json(
-        { error: "validation_error", message: "Invalid submission body" },
+        { error: "submission_rejected", message: GENERIC_FEEDBACK_SUBMISSION_ERROR },
         HTTP_BAD_REQUEST,
       );
     }
@@ -1038,84 +1499,166 @@ export const publicFeedbackRouter = new Hono<AppEnv>()
       isEmbedParam(c.req.query("embed")) || isEmbedParam(asOptionalString(raw.embed));
     const rawQueryPageUrl = c.req.query("pageUrl") ?? c.req.query("url");
     const submissionCandidate = normalizeRawSubmissionPayload(raw, rawQueryPageUrl);
+    const candidateValues = {
+      title: asOptionalString(submissionCandidate.title),
+      body: asOptionalString(submissionCandidate.body),
+      category: asOptionalString(submissionCandidate.category),
+      submitterName: asOptionalString(submissionCandidate.submitterName),
+      submitterEmail: asOptionalString(submissionCandidate.submitterEmail),
+    };
 
+    // 1. Cheap check: Honeypot field — any value means a silent drop
+    if (hasHoneypotValue(raw)) {
+      return respondPublicThankYou(c, form, {
+        isFormPost: parsedBody.isFormPost,
+        embed,
+      });
+    }
+
+    // 2. Cheap check: Origin check (embeds must match allowed_origins; direct posts from Bitig host)
+    if (!checkFeedbackOrigin(c, form, embed)) {
+      return respondPublicSubmissionRejected(c, form, {
+        isFormPost: parsedBody.isFormPost,
+        embed,
+        status: HTTP_BAD_REQUEST,
+        message: GENERIC_FEEDBACK_SUBMISSION_ERROR,
+        values: candidateValues,
+      });
+    }
+
+    // 3. Cheap check: Minimum fill time (HMAC-signed timestamp; submit must be 3 s to 2 h later)
+    const config = c.get("config");
+    const rawTimestamp = raw._ts ?? raw.timestamp;
+    const rawSignature = raw._sig ?? raw.signature;
+    const timestampValid = await verifyFeedbackTimestamp({
+      publicId: form.publicId,
+      rawTimestamp,
+      rawSignature,
+      config,
+    });
+    if (!timestampValid) {
+      return respondPublicSubmissionRejected(c, form, {
+        isFormPost: parsedBody.isFormPost,
+        embed,
+        status: HTTP_BAD_REQUEST,
+        message: GENERIC_FEEDBACK_SUBMISSION_ERROR,
+        values: candidateValues,
+      });
+    }
+
+    // 4. Cheap check: Per-form blocked IP hash (computed in-memory via HMAC)
+    const clientIp = getClientIp(c);
+    const ipHash = await computeFeedbackIpHash(clientIp, config);
+    if (isFeedbackIpHashBlocked(form, ipHash)) {
+      return respondPublicSubmissionRejected(c, form, {
+        isFormPost: parsedBody.isFormPost,
+        embed,
+        status: HTTP_BAD_REQUEST,
+        message: GENERIC_FEEDBACK_SUBMISSION_ERROR,
+        values: candidateValues,
+      });
+    }
+
+    // 5. Rate limits on RateLimiter DO: per IP per form (5 / 10m) and per form (60 / 1h -> 429)
+    const rateLimit = await checkFeedbackRateLimits(c, form.publicId, clientIp);
+    if (rateLimit.limited) {
+      if (rateLimit.resetSeconds !== undefined) {
+        c.header("Retry-After", String(rateLimit.resetSeconds));
+      }
+      return respondPublicSubmissionRejected(c, form, {
+        isFormPost: parsedBody.isFormPost,
+        embed,
+        status: HTTP_TOO_MANY_REQUESTS,
+        message: GENERIC_FEEDBACK_SUBMISSION_ERROR,
+        values: candidateValues,
+      });
+    }
+
+    // 6. Field validation
     let submission: FeedbackSubmission;
     try {
       submission = validateFeedbackSubmissionForForm(form, submissionCandidate);
     } catch (err) {
       if (err instanceof ValidationError) {
-        if (!parsedBody.isFormPost || isJsonRequest(c)) {
-          return c.json(
-            {
-              error: "validation_error",
-              message: err.message,
-              details: err.issues,
-            },
-            HTTP_BAD_REQUEST,
-          );
-        }
-        return c.html(
-          renderPublicFeedbackPage(form, {
-            embed,
-            errorMessage: err.message,
-            values: {
-              title: asOptionalString(submissionCandidate.title),
-              body: asOptionalString(submissionCandidate.body),
-              category: asOptionalString(submissionCandidate.category),
-              submitterName: asOptionalString(submissionCandidate.submitterName),
-              submitterEmail: asOptionalString(submissionCandidate.submitterEmail),
-            },
-          }),
-          HTTP_BAD_REQUEST,
-        );
+        return respondPublicSubmissionRejected(c, form, {
+          isFormPost: parsedBody.isFormPost,
+          embed,
+          status: HTTP_BAD_REQUEST,
+          message: GENERIC_FEEDBACK_SUBMISSION_ERROR,
+          values: candidateValues,
+        });
       }
       throw err;
     }
 
-    // Abuse and spam protection hook before task creation (#BIT-178)
+    // 7. Pending cap, duplicate guard, Turnstile siteverify, and core spam score (#BIT-178)
+    const bodyHash = await computeFeedbackBodyHash(submission.title, submission.body);
     const abuseResult = await runFeedbackAbuseChecks({
       c,
       form,
       submission,
       rawBody: raw,
       feedbackStore,
+      ipHash,
+      bodyHash,
     });
 
     if (abuseResult.status === "drop") {
-      if (!parsedBody.isFormPost && isJsonRequest(c)) {
-        return c.json(
-          {
-            ok: true,
-            status: "submitted",
-            thankYouText: form.thankYouText,
-            message: form.thankYouText,
-          },
-          HTTP_OK,
-        );
-      }
-      return c.html(renderFeedbackThankYouPage(form, { embed }), HTTP_OK);
+      return respondPublicThankYou(c, form, {
+        isFormPost: parsedBody.isFormPost,
+        embed,
+      });
     }
 
     if (abuseResult.status === "reject") {
       const status = abuseResult.httpStatus ?? HTTP_BAD_REQUEST;
-      const message = abuseResult.message ?? "Could not process feedback submission.";
-      if (!parsedBody.isFormPost || isJsonRequest(c)) {
-        return c.json({ error: "submission_rejected", message }, status);
-      }
-      return c.html(
-        renderPublicFeedbackPage(form, {
-          embed,
-          errorMessage: message,
-          values: {
-            title: submission.title,
-            body: submission.body,
-            category: submission.category,
-            submitterName: submission.submitterName,
-            submitterEmail: submission.submitterEmail,
-          },
-        }),
+      const message = abuseResult.message ?? GENERIC_FEEDBACK_SUBMISSION_ERROR;
+      return respondPublicSubmissionRejected(c, form, {
+        isFormPost: parsedBody.isFormPost,
+        embed,
         status,
+        message,
+        values: {
+          title: submission.title,
+          body: submission.body,
+          category: submission.category,
+          submitterName: submission.submitterName,
+          submitterEmail: submission.submitterEmail,
+        },
+      });
+    }
+
+    const userAgent = c.req.header("user-agent")?.trim();
+    const resolvedIpHash = abuseResult.ipHash ?? ipHash;
+    const resolvedBodyHash = abuseResult.bodyHash ?? bodyHash;
+
+    // High spam score: record in feedback_entries with outcome "spam" and create NO task
+    if (abuseResult.status === "spam") {
+      await feedbackStore.createEntry(
+        {
+          taskId: null,
+          formId: form.id,
+          outcome: "spam",
+          ...(submission.category !== undefined ? { category: submission.category } : {}),
+          ...(submission.submitterEmail !== undefined
+            ? { submitterEmail: submission.submitterEmail }
+            : {}),
+          ...(submission.submitterName !== undefined
+            ? { submitterName: submission.submitterName }
+            : {}),
+          ...(submission.pageUrl !== undefined ? { pageUrl: submission.pageUrl } : {}),
+          ipHash: resolvedIpHash,
+          bodyHash: resolvedBodyHash,
+          ...(userAgent !== undefined && userAgent.length > 0 ? { userAgent } : {}),
+          spamScore: abuseResult.spamScore,
+        },
+        { signal: c.req.raw.signal },
       );
+
+      return respondPublicThankYou(c, form, {
+        isFormPost: parsedBody.isFormPost,
+        embed,
+      });
     }
 
     const taskInput = taskFromFeedbackSubmission(form, submission);
@@ -1125,7 +1668,6 @@ export const publicFeedbackRouter = new Hono<AppEnv>()
       signal: c.req.raw.signal,
     });
 
-    const userAgent = c.req.header("user-agent")?.trim();
     const entry = await feedbackStore.createEntry(
       {
         taskId: task.id,
@@ -1139,8 +1681,8 @@ export const publicFeedbackRouter = new Hono<AppEnv>()
           ? { submitterName: submission.submitterName }
           : {}),
         ...(submission.pageUrl !== undefined ? { pageUrl: submission.pageUrl } : {}),
-        ...(abuseResult.ipHash !== undefined ? { ipHash: abuseResult.ipHash } : {}),
-        ...(abuseResult.bodyHash !== undefined ? { bodyHash: abuseResult.bodyHash } : {}),
+        ipHash: resolvedIpHash,
+        bodyHash: resolvedBodyHash,
         ...(userAgent !== undefined && userAgent.length > 0 ? { userAgent } : {}),
         spamScore: abuseResult.spamScore ?? spamScore(submission, form),
       },
@@ -1151,21 +1693,12 @@ export const publicFeedbackRouter = new Hono<AppEnv>()
       signal: c.req.raw.signal,
     });
 
-    if (!parsedBody.isFormPost && isJsonRequest(c)) {
-      return c.json(
-        {
-          ok: true,
-          status: "submitted",
-          thankYouText: form.thankYouText,
-          message: form.thankYouText,
-          taskId: task.id,
-          entryId: entry.id,
-        },
-        HTTP_OK,
-      );
-    }
-
-    return c.html(renderFeedbackThankYouPage(form, { embed }), HTTP_OK);
+    return respondPublicThankYou(c, form, {
+      isFormPost: parsedBody.isFormPost,
+      embed,
+      taskId: task.id,
+      entryId: entry.id,
+    });
   });
 
 export const projectFeedbackFormsRouter = new Hono<AppEnv>()
@@ -1359,9 +1892,66 @@ export const feedbackFormsRouter = new Hono<AppEnv>()
       signal: c.req.raw.signal,
     });
     return c.json(formatFeedbackFormResponse(c, rotated, pendingCount));
-  });
+  })
+  .post(
+    "/:id/block-ip",
+    zValidator("json", BlockFeedbackIpBodySchema, (result, c) => {
+      if (!result.success) {
+        return c.json(
+          { error: "validation_error", details: result.error.issues },
+          HTTP_BAD_REQUEST,
+        );
+      }
+      return undefined;
+    }),
+    async (c) => {
+      assertFeedbackRole(c, "editor");
+      const id = c.req.param("id");
+      if (!IdSchema.safeParse(id).success) {
+        throw new NotFoundError("feedback_form", id);
+      }
+      const { ipHash } = c.req.valid("json");
+      const store = createScopedFeedbackStore(c);
+      const updated = await store.blockIpHash(id, ipHash, {
+        signal: c.req.raw.signal,
+      });
+      const pendingCount = await store.getPendingCount(updated.id, {
+        signal: c.req.raw.signal,
+      });
+      return c.json(formatFeedbackFormResponse(c, updated, pendingCount));
+    },
+  )
+  .post(
+    "/:id/unblock-ip",
+    zValidator("json", BlockFeedbackIpBodySchema, (result, c) => {
+      if (!result.success) {
+        return c.json(
+          { error: "validation_error", details: result.error.issues },
+          HTTP_BAD_REQUEST,
+        );
+      }
+      return undefined;
+    }),
+    async (c) => {
+      assertFeedbackRole(c, "editor");
+      const id = c.req.param("id");
+      if (!IdSchema.safeParse(id).success) {
+        throw new NotFoundError("feedback_form", id);
+      }
+      const { ipHash } = c.req.valid("json");
+      const store = createScopedFeedbackStore(c);
+      const updated = await store.unblockIpHash(id, ipHash, {
+        signal: c.req.raw.signal,
+      });
+      const pendingCount = await store.getPendingCount(updated.id, {
+        signal: c.req.raw.signal,
+      });
+      return c.json(formatFeedbackFormResponse(c, updated, pendingCount));
+    },
+  );
 
 export const feedbackRouter = new Hono<AppEnv>()
   .route("/projects", projectFeedbackFormsRouter)
   .route("/feedback-forms", feedbackFormsRouter);
+
 

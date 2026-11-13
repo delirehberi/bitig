@@ -57,6 +57,20 @@ const configSchema = z.object({
     .string()
     .default("")
     .transform((val) => val.trim()),
+  // Cloudflare Turnstile site and secret keys for public feedback forms. Empty skips verification.
+  TURNSTILE_SITE_KEY: z
+    .string()
+    .default("")
+    .transform((val) => val.trim()),
+  TURNSTILE_SECRET_KEY: z
+    .string()
+    .default("")
+    .transform((val) => val.trim()),
+  // HMAC key for hashing submitter IP addresses on feedback forms (falls back to SESSION_SECRET).
+  FEEDBACK_IP_SECRET: z
+    .string()
+    .default("")
+    .transform((val) => val.trim()),
   NOSTR_AUTH_PUBKEYS: z
     .string()
     .default("")
