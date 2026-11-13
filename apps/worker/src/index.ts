@@ -37,6 +37,11 @@ import {
   runScheduledFeedbackCleanup,
   taskFeedbackRouter,
 } from "./routes/feedback";
+import {
+  EMBED_SCRIPT_PATH,
+  applyEmbedScriptResourcePolicy,
+  serveEmbedScript,
+} from "./routes/embed";
 import { API_POLICY, MCP_POLICY, WEBHOOK_POLICY, authFailureGuard, rateLimit } from "./rate-limit";
 import { csrfProtection } from "./csrf";
 import { publishRealtimeEvent, realtimeRouter, withRealtimeBroadcast } from "./realtime";
@@ -127,6 +132,11 @@ export function createApp(options?: CreateAppOptions): Hono<AppEnv> {
     applyPublicFeedbackSecurityHeaders(c);
   });
 
+  app.use(EMBED_SCRIPT_PATH, async (c, next) => {
+    await next();
+    applyEmbedScriptResourcePolicy(c);
+  });
+
   app.use(
     "*",
     secureHeaders({
@@ -162,6 +172,8 @@ export function createApp(options?: CreateAppOptions): Hono<AppEnv> {
       storageMode: c.get("config").STORAGE_MODE,
     }),
   );
+
+  app.get(EMBED_SCRIPT_PATH, serveEmbedScript);
 
   // Public feedback form page and submission endpoint (outside /api/*)
   app.route("/f", publicFeedbackRouter);

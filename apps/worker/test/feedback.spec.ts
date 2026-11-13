@@ -2190,6 +2190,117 @@ describe("REST API: Feedback form management (BIT-176)", () => {
     expect(approvedEntry.reviewedAt).toBeDefined();
   });
 
+  it("end to end: embed.js loads, the public form submits into Awaiting approval, and approval makes a normal backlog task (#BIT-182)", async () => {
+    const owner = await registerAndVerify({
+      email: "e2e-owner@acme.test",
+      username: "e2e-owner",
+      displayName: "E2E Owner",
+      organisationName: "E2E Org",
+    });
+    const org = owner.memberships[0]?.organisation;
+    expect(org).toBeDefined();
+    if (!org) throw new Error("missing org");
+
+    const projectRes = await req("/api/projects", {
+      method: "POST",
+      cookie: owner.cookie,
+      org: org.slug,
+      bodyJson: { name: "E2E Project", key: "E2E" },
+    });
+    expect(projectRes.status).toBe(201);
+    const project = await projectRes.json<Project>();
+
+    const formRes = await req(`/api/projects/${project.id}/feedback-forms`, {
+      method: "POST",
+      cookie: owner.cookie,
+      org: org.slug,
+      bodyJson: {
+        name: "E2E Widget",
+        title: "Send feedback",
+        turnstile: false,
+        fields: { email: "optional", name: false, categories: ["Bug"] },
+      },
+    });
+    expect(formRes.status).toBe(201);
+    const form = await formRes.json<FeedbackFormResponse>();
+
+    // 1. The host page loads /embed.js, which the widget uses to build its iframe URL.
+    const embedRes = await app.fetch(new Request(`${BASE_URL}/embed.js`), env);
+    expect(embedRes.status).toBe(200);
+    expect(embedRes.headers.get("cross-origin-resource-policy")).toBe("cross-origin");
+    expect(await embedRes.text()).toContain("/f/");
+
+    // 2. The iframe loads the embed form with the host page URL passed through pageUrl.
+    const hostPageUrl = "https://app.acme.test/settings";
+    const frameRes = await app.fetch(
+      new Request(
+        `${BASE_URL}/f/${form.publicId}?embed=1&pageUrl=${encodeURIComponent(hostPageUrl)}`,
+      ),
+      env,
+    );
+    expect(frameRes.status).toBe(200);
+    expect(await frameRes.text()).toContain(`value="${hostPageUrl}"`);
+
+    // 3. Submitting creates a pending feedback task, shown in Awaiting approval (pendingApproval: true).
+    const ts = await buildValidTimestampFields(form.publicId);
+    const submitRes = await app.fetch(
+      new Request(`${BASE_URL}/f/${form.publicId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "cf-connecting-ip": uniqueIp() },
+        body: JSON.stringify({
+          title: "Export button is hard to find",
+          body: "The export action sits under three menus; a top-level button would help.",
+          category: "Bug",
+          pageUrl: hostPageUrl,
+          ...ts,
+        }),
+      }),
+      env,
+    );
+    expect(submitRes.status).toBe(200);
+    const submitted = await submitRes.json<{ taskId: string; entryId: string }>();
+
+    const awaitingRes = await req(`/api/tasks?projectId=${project.id}`, {
+      cookie: owner.cookie,
+      org: org.slug,
+    });
+    expect(awaitingRes.status).toBe(200);
+    const awaitingTasks = await awaitingRes.json<Task[]>();
+    const pendingTask = awaitingTasks.find((task) => task.id === submitted.taskId);
+    expect(pendingTask?.pendingApproval).toBe(true);
+    expect(pendingTask?.title).toBe("Export button is hard to find");
+    expect(pendingTask?.status).toBe("todo");
+
+    // 4. Approving it (PATCH pendingApproval: null) turns it into a normal backlog task.
+    const approveRes = await req(`/api/tasks/${submitted.taskId}`, {
+      method: "PATCH",
+      cookie: owner.cookie,
+      org: org.slug,
+      bodyJson: { pendingApproval: null },
+    });
+    expect(approveRes.status).toBe(200);
+
+    const backlogRes = await req(`/api/tasks?projectId=${project.id}`, {
+      cookie: owner.cookie,
+      org: org.slug,
+    });
+    const backlogTasks = await backlogRes.json<Task[]>();
+    const approvedTask = backlogTasks.find((task) => task.id === submitted.taskId);
+    expect(approvedTask).toBeDefined();
+    expect(approvedTask?.pendingApproval).toBeUndefined();
+    expect(approvedTask?.status).toBe("todo");
+    expect(backlogTasks.filter((task) => task.pendingApproval === true)).toHaveLength(0);
+
+    const feedbackRes = await req(`/api/tasks/${submitted.taskId}/feedback`, {
+      cookie: owner.cookie,
+      org: org.slug,
+    });
+    expect(feedbackRes.status).toBe(200);
+    const entry = await feedbackRes.json<TaskFeedbackEntryResponse>();
+    expect(entry.id).toBe(submitted.entryId);
+    expect(entry.outcome).toBe("approved");
+  });
+
   it("supports merge, reject, and spam actions on feedback tasks, enforcing editor/owner role and feeding spam IP block counters (#BIT-179)", async () => {
     const owner = await registerAndVerify({
       email: "actions-owner@acme.test",
