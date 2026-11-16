@@ -133,6 +133,7 @@ export type {
   WorkQueueProjectRef,
   WorkQueueUnknownKey,
 } from "./domain/work-queue-parse";
+export * from "./domain/work-queue-plan";
 export { buildMentionIndex, dependencyLinks, hierarchyLinks } from "./domain/task-links";
 export {
   assertTaskContainment,
