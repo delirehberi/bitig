@@ -48,6 +48,7 @@ import { API_POLICY, MCP_POLICY, WEBHOOK_POLICY, authFailureGuard, rateLimit } f
 import { csrfProtection } from "./csrf";
 import { publishRealtimeEvent, realtimeRouter, withRealtimeBroadcast } from "./realtime";
 import { createT3Fetch } from "./t3/client";
+import { dispatchRequestWorkQueues, runInBackground, runScheduledWorkQueues, shouldDispatchWorkQueuesAfter } from "./background";
 import pkg from "../package.json" with { type: "json" };
 
 export interface AppEnv {
@@ -128,6 +129,17 @@ export function createApp(options?: CreateAppOptions): Hono<AppEnv> {
       withRealtimeBroadcast(baseStorage, (event) => publishRealtimeEvent(c.env, event)),
     );
     await next();
+    if (shouldDispatchWorkQueuesAfter(c.req.method, c.req.path, c.res.status)) {
+      await runInBackground(
+        c,
+        dispatchRequestWorkQueues(c.env, {
+          orgId: c.get("orgId"),
+          config: c.get("config"),
+          storage: c.get("storage"),
+          t3Fetch: c.get("t3Fetch"),
+        }),
+      );
+    }
   });
 
   app.use("/f/*", async (c, next) => {
@@ -286,7 +298,7 @@ export async function scheduled(
   ctx: ExecutionContext,
 ): Promise<void> {
   const now = controller.scheduledTime ? new Date(controller.scheduledTime) : undefined;
-  const cleanupPromise = runScheduledFeedbackCleanup(env, { now });
+  const cleanupPromise = Promise.all([runScheduledFeedbackCleanup(env, { now }), runScheduledWorkQueues(env)]);
   ctx.waitUntil(cleanupPromise);
   await cleanupPromise;
 }

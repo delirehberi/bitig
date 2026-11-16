@@ -2,12 +2,21 @@ import { z } from "zod";
 import { AttachmentSchema, CommentSchema, IdSchema, ProjectSchema, TaskSchema, WebhookSchema } from "./schemas";
 import { AgentRunChildSchema } from "./run-profile";
 import { AgentRunSchema } from "./t3";
+import { WorkQueueSchema, WorkQueueEntrySchema } from "./work-queue";
 
 /**
  * Live workspace mutation events broadcast by the Worker's RealtimeHub Durable
  * Object over `/api/realtime`.
  */
 export const RealtimeEventSchema = z.discriminatedUnion("type", [
+  z.strictObject({
+    type: z.literal("work_queue.updated"),
+    queue: WorkQueueSchema,
+  }),
+  z.strictObject({
+    type: z.literal("work_queue_item.updated"),
+    entry: WorkQueueEntrySchema,
+  }),
   z.strictObject({
     type: z.literal("project.created"),
     project: ProjectSchema,
@@ -76,4 +85,3 @@ export const RealtimeEventSchema = z.discriminatedUnion("type", [
 ]);
 
 export type RealtimeEvent = z.output<typeof RealtimeEventSchema>;
-
