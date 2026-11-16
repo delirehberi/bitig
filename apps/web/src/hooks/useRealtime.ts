@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import { RealtimeEventSchema, type RealtimeEvent } from "@bitig/core";
 
 const REALTIME_DOM_EVENT = "bitig:realtime";
@@ -128,7 +128,10 @@ export function useRealtime(enabled: boolean, orgId?: string): void {
 /** Subscribes a hook to incoming `RealtimeEvent` payloads. */
 export function useRealtimeEvent(onEvent: (event: RealtimeEvent) => void): void {
   const handlerRef = useRef(onEvent);
-  useEffect(() => {
+  // A layout effect, not a passive one: an event dispatched between a commit and the passive-effect
+  // flush would otherwise reach the previous render's handler and see stale state (e.g. a list that
+  // has just loaded still looking like null), so the event would be dropped.
+  useLayoutEffect(() => {
     handlerRef.current = onEvent;
   });
 
