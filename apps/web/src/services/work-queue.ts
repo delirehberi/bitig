@@ -259,3 +259,76 @@ export function confirmWorkQueue(input: ConfirmWorkQueueInput, signal?: AbortSig
     signal,
   );
 }
+
+const QUEUES_PATH = "/api/work-queues";
+const ITEMS_PATH = "/api/work-queue-items";
+
+function isQueueView(value: unknown): value is WorkQueueView {
+  return isRecord(value) && typeof value.id === "string" && typeof value.state === "string" && Array.isArray(value.entries);
+}
+
+function isEntryView(value: unknown): value is WorkQueueEntryView {
+  return isRecord(value) && typeof value.id === "string" && typeof value.queueId === "string" && typeof value.state === "string";
+}
+
+function isQueueList(body: unknown): body is WorkQueueView[] {
+  return Array.isArray(body) && body.every(isQueueView);
+}
+
+/** Calls one of the queue endpoints with no body and checks the answer. */
+async function send<T>(
+  method: "GET" | "POST",
+  path: string,
+  fallback: string,
+  guard: (body: unknown) => body is T,
+  payload?: unknown,
+  signal?: AbortSignal,
+): Promise<T> {
+  const response = await fetch(path, {
+    method,
+    headers: requestHeaders(),
+    credentials: "same-origin",
+    ...(payload !== undefined ? { body: JSON.stringify(payload) } : {}),
+    ...(signal ? { signal } : {}),
+  });
+  if (!response.ok) throw await toApiError(response, fallback);
+  const body: unknown = await response.json();
+  if (!guard(body)) throw new WorkQueueApiError(response.status, `${fallback}: unexpected response`);
+  return body;
+}
+
+/** Open work queues (planning, active, paused) with their entries, for the dashboard panel. */
+export function fetchWorkQueues(signal?: AbortSignal): Promise<WorkQueueView[]> {
+  return send("GET", QUEUES_PATH, "Could not load the work queues", isQueueList, undefined, signal);
+}
+
+/** Pauses an active queue: no new entries start until it is resumed. */
+export function pauseWorkQueue(queueId: string): Promise<WorkQueueView> {
+  return send("POST", `${QUEUES_PATH}/${encodeURIComponent(queueId)}/pause`, "Could not pause the queue", isQueueView, {});
+}
+
+/** Resumes a paused queue. */
+export function resumeWorkQueue(queueId: string): Promise<WorkQueueView> {
+  return send("POST", `${QUEUES_PATH}/${encodeURIComponent(queueId)}/resume`, "Could not resume the queue", isQueueView, {});
+}
+
+/** Cancels a queue; unstarted entries are cancelled and running ones finish as they are. */
+export function cancelWorkQueue(queueId: string): Promise<WorkQueueView> {
+  return send("POST", `${QUEUES_PATH}/${encodeURIComponent(queueId)}/cancel`, "Could not cancel the queue", isQueueView, {});
+}
+
+/** Takes a waiting or ready entry out of its queue. */
+export function skipWorkQueueItem(entryId: string): Promise<WorkQueueEntryView> {
+  return send("POST", `${ITEMS_PATH}/${encodeURIComponent(entryId)}/skip`, "Could not skip the task", isEntryView, {});
+}
+
+/** Re-queues a failed, skipped or cancelled entry, optionally on a different run level. */
+export function retryWorkQueueItem(entryId: string, level?: string): Promise<WorkQueueEntryView> {
+  return send(
+    "POST",
+    `${ITEMS_PATH}/${encodeURIComponent(entryId)}/retry`,
+    "Could not retry the task",
+    isEntryView,
+    level !== undefined ? { level } : {},
+  );
+}

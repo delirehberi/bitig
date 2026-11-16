@@ -9,6 +9,7 @@ import { buildAttentionItems, findStalledTasks, workingSessions } from "./dashbo
 import { NeedsYou } from "./dashboard/NeedsYou";
 import { Stalled } from "./dashboard/Stalled";
 import { WorkingNow } from "./dashboard/WorkingNow";
+import { WorkQueuePanel } from "./dashboard/WorkQueuePanel";
 import { WorkQueuePrompt } from "./dashboard/WorkQueuePrompt";
 import { resolveWorkspaceActiveSessions } from "./projects/activeSessions";
 import { WhereYouLeftOff } from "./WhereYouLeftOff";
@@ -121,6 +122,7 @@ export function Overview({
       ) : (
         <>
           <WorkQueuePrompt enabled={t3Available} projects={projects} t3Connected={t3Connected} />
+          <WorkQueuePanel enabled={t3Available} />
           <NeedsYou items={attention} now={now} onArchiveTask={onArchiveTask} />
           {t3Available && (
             <WorkingNow
