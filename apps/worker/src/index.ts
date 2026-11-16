@@ -30,6 +30,7 @@ import { invitationsAcceptRouter, invitationsPublicRouter, orgsRouter } from "./
 import { adminRouter } from "./routes/admin";
 import { t3ApiRouter, t3OauthCallbackRouter, t3TaskRunsRouter } from "./routes/t3";
 import { webhookReceiverRouter, webhooksApiRouter } from "./routes/webhooks";
+import { workQueueItemsRouter, workQueueRouter, workQueuesRouter } from "./routes/work-queue";
 import {
   applyPublicFeedbackSecurityHeaders,
   feedbackFormsRouter,
@@ -216,6 +217,9 @@ export function createApp(options?: CreateAppOptions): Hono<AppEnv> {
   app.route("/api/realtime", realtimeRouter);
   app.route("/api/t3", t3ApiRouter);
   app.route("/api/mcp-tokens", mcpTokensRouter);
+  app.route("/api/work-queue", workQueueRouter);
+  app.route("/api/work-queues", workQueuesRouter);
+  app.route("/api/work-queue-items", workQueueItemsRouter);
 
   // Incoming webhook receiver endpoint guarded by secret token in the URL and rate limiting
   app.use("/webhooks/*", rateLimit(WEBHOOK_POLICY));
