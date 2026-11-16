@@ -1,9 +1,10 @@
-# Run orchestration: task levels, AI router, and parallel umbrella children
+# Run orchestration: task levels, AI router, parallel umbrella children, and work queues
 
-Bitig orchestrates coding sessions on connected T3 Code hosts across two dimensions (#BIT-183):
+Bitig orchestrates coding sessions on connected T3 Code hosts across three dimensions (#BIT-183, #BIT-197):
 
-1. **Model and reasoning effort per task** — organisation-defined task levels mapped to T3 models and options, per-task run profiles (`manual`, `agent`, or `router`), and an optional per-organisation AI router that suggests a level, effort, and touched paths when a task is approved.
+1. **Model and reasoning effort per task** — organisation-defined task levels mapped to T3 models and options, per-task run profiles (`manual`, `agent`, or `router`), and an optional per-organisation AI router that suggests a level, effort, and touched paths when a task is approved or planned.
 2. **Parallel child tasks under an umbrella session** — server-enforced path-overlap and serial-path checks, a configurable per-project parallel cap, child worktrees branched from the umbrella's integration worktree, a single consolidated batch resume, and tracked branch merges (`report_child_merge`).
+3. **Cross-project work queues from a dashboard prompt (#BIT-197)** — deterministic and AI-router prompt parsing, plan previews with wave estimates and inline task approvals, automatic per-lane queue umbrellas (`parentId`) for multi-task project lanes, and a background dispatcher governed by a per-host parallel run cap (`maxParallelRuns`).
 
 For connecting T3 hosts and registering project folders, see [`t3-hosts.md`](t3-hosts.md). For authentication, encryption, and RBAC details, see [`security.md`](security.md#6b-t3-code-access-from-bitig-oauth-mcp-client).
 
@@ -219,20 +220,109 @@ master / main
 
 ---
 
-## 7. What needs a person
+## 7. Dashboard work queues (#BIT-197)
 
-Bitig keeps humans in control of every privilege boundary, cost escalation, and irreversible git action:
+In Cloudflare (`D1`) mode, the **Start work** prompt at the top of the **Overview** dashboard turns a free-text prompt (such as `Start BIT-92 to BIT-102, WOR-1 and KMZ-3`) into a reviewed, cross-project work queue (`work_queues` and `work_queue_items`). When no T3 host is connected, the prompt renders a **Connect T3** link to Settings instead of the form.
 
-- **Approving agent-created tasks (`pendingApproval`):** Every task an agent creates via `add_task` starts with `pendingApproval: true`. Agents cannot approve tasks or start T3 runs for unapproved tasks; a person approves them in the web UI, CLI (`bitig tasks approve`), or REST (`PATCH /api/tasks/:id` with `{ "pendingApproval": null }`).
-- **Owner-only administration:** Connecting T3 hosts, registering host folders, editing organisation task levels and model mappings (`/api/orgs/:id/run-levels`), and configuring the AI router endpoint and token (`/api/orgs/:id/ai-router`) require the organisation `owner` role.
-- **Retry on the next level up (`nextLevelUp`):** When a run fails (`state: "failed"`) or a task sets `needsHuman` while assigned to a level below the organisation's highest level, Bitig includes `nextLevelUp` on `GET /api/tasks/:id/run-profile`, `GET /api/tasks/:id/t3-run`, and MCP `get_task`, and shows a one-click **Retry on <Next Level>** button in the task's T3 section. **Nothing escalates to a higher level automatically.**
-- **Child task blockers (`needsHuman` or failed session):** If a child task sets `needsHuman` or its T3 session fails/stops, its sibling tasks finish normally and the batch resume message reports the blocked or failed child to the umbrella. Either a person resolves the child's question/failure and retries it, or the umbrella stops and sets `needsHuman` on the umbrella task if it cannot proceed.
-- **Unsafe merge conflicts or failing checks:** If merging a child branch into the integration branch produces a conflict the umbrella agent cannot resolve with confidence, or if `make check` fails after the merge, the umbrella aborts the conflicting merge, posts a comment with the exact conflict or failure output, and sets `needsHuman` on the umbrella task.
-- **Pull request review and task archiving:** People review and merge the umbrella's pull request into the default branch and move completed tasks from `done` to `archived`. Agents never merge into the default branch or archive tasks.
+### Two-stage prompt parsing
+
+Submitting the prompt (**Plan** or `Cmd+Enter` / `Ctrl+Enter` → `POST /api/work-queue/plan`) runs a two-stage parser:
+
+1. **Stage 1 — Deterministic parser (`parseWorkQueuePrompt` in `@bitig/core`):**
+   - **Codes:** Case-insensitive project key (`2..10` alphanumeric characters starting with a letter) plus task number (`1..999_999_999`), optionally prefixed with `#` and separated by `-` or whitespace (`BIT-92`, `bit-92`, `#BIT-092`, `Bit 92`). Leading zeros are stripped (`KMZ-03` → `KMZ-3`), and numbers `< 1` are ignored with a warning.
+   - **Known-key guard:** Space-separated references (`Bit 92`) match **only** when the key belongs to a non-archived project in the organisation; otherwise the word is treated as ordinary prose. Hyphenated unknown keys (`KOM-03`) are never guessed silently: they are returned in `unknownKeys` with up to `3` ranked suggestions (project name prefix or initials first, then key prefix, then edit distance `<= 2`).
+   - **Ranges:** Inclusive ranges (`BIT-92 to BIT-102`, `BIT-92..102`, `BIT-92-102`, `BIT-92 through` / `thru` / `till` / `until 102`, or `BIT-92 to 102` sharing the leading key). Cross-project ranges (`BIT-1 to WOR-2`) and backwards ranges (`BIT-10 to BIT-5`) emit a warning and keep only their two endpoints instead of expanding across projects. Single ranges truncate at `50` items (`MAX_WORK_QUEUE_ITEMS`), and total emitted items after deduplication and exclusions are capped at `50`.
+   - **Lists and exclusions:** Commas, `and`, `&`, `plus`, newlines, and semicolons separate items. Exclusion keywords (`except`, `but not`, `other than`, `excluding`, `without`, `minus`) drop matching codes from the selection and carry across list connectors until a newline, `;`, `.`, or non-stopword word resets exclusion mode.
+   - **Unparsed words:** Any remaining non-stopword tokens are returned in `unparsed`.
+2. **Stage 2 — AI router fallback (`parseWorkQueuePromptWithFallback`):**
+   - Invoked **only** when the prompt is non-empty and Stage 1 either matched zero codes or left meaningful words in `unparsed` (skipped when explicit `items` are supplied from preview chip edits, or when `prompt.length > 2,000` characters).
+   - Calls the organisation's configured AI router HTTP endpoint (`8 s` timeout; supports `"cloudflare-run"` and `"openai"` chat styles — `"cloudflare-clef"` is skipped as unsupported). No T3 thread or scratch T3 project is used.
+   - Sends `{ projects: [{ key, name }], text }` as data and validates the response against `{ codes: string[], ranges: [{ key, from, to }] }`. The validated output is re-serialised and passed back through `parseWorkQueuePrompt` together with the original prompt so the model can never invent project keys, bypass exclusions, or exceed `MAX_WORK_QUEUE_ITEMS`.
+   - If the router is disabled, unreachable, times out, or returns invalid JSON/schema, planning never blocks: Bitig returns the Stage 1 deterministic result with a warning (`fallback: "router_unavailable"` or `"failed"`).
+
+### Classification, routing, and approvals from the preview
+
+For each parsed code, `planWorkQueue` classifies live task state:
+
+| `classification` | Preview status | Queued on confirm? |
+| --- | --- | --- |
+| `ready` | Ready | Yes |
+| `after_queued_task` | After `<blocker>` (unfinished dependency is also queued in this batch) | Yes (waits in queue) |
+| `needs_approval` | Needs approval (**Approve `<CODE>`** checkbox + **Approve all**) | Only if ticked by a person |
+| `waits_on_unqueued_task` | Waits on `<blocker>` (not queued), with **Add `<blocker>`** button | No (until blocker added) |
+| `already_running` | Already running (`status === "in_progress"` or active `agent_runs`) | No |
+| `already_queued` | Already queued (occupies an active entry in an open queue) | No |
+| `done` | Done (`done` or `archived`) | No |
+| `not_found` | `<CODE>` doesn't exist (e.g. gap in a range) | No |
+| `project_not_connected` | Project has no T3 mapping, with **Map it in Projects** link | No |
+| `needs_person` | Waiting on you (`needsHuman` set on task) | No |
+| `folded` | Folded under `<UMBRELLA>` (both an umbrella and its child were listed) | No (umbrella runs it) |
+| `unlisted_parent` | Part of `<PARENT>` (task already has an unlisted `parentId`), with **Queue `<PARENT>` instead** button | No (never re-parented) |
+| `dependency_cycle` | Cyclic `dependsOn` chain among listed tasks | No |
+
+**Decision engine & preview overrides:**
+- During `POST /api/work-queue/plan`, Bitig invokes the AI router (`suggestTaskRunProfile` with `onlyWhenUnprofiled: true`, bounded by a `10 s` batch timeout) in parallel for unprofiled `ready`, `after_queued_task`, and `needs_approval` tasks, saving `source: "router"` profiles (including `touches`) and recomputing lane waves. (MCP `plan_work_queue` passes `route: false` so MCP previews remain strictly read-only.)
+- If neither a task profile nor the project's `defaultRunLevel` selects a level, the planner falls back to the organisation's lowest run level and marks the row `"default, not routed"`.
+- In the preview (`WorkQueuePlanPreview`), people can remove code chips, apply one-click unknown-key suggestions (**Use `KMZ (Komuz)`**), tick **Approve `<CODE>`** / **Approve all**, and change any row's `level`, `model`, or `effort`.
+- Clicking **Queue N tasks** (`POST /api/work-queue` with `{ prompt, items, approvals, overrides }`) rebuilds the plan on the server from `items` (never trusting client classifications or waves), clears `pendingApproval` attributed to the signed-in person for ticked `approvals` (recording task activity and settling any linked feedback entry), saves `overrides` as `source: "manual"` run profiles, creates lane umbrellas where needed, and activates the queue. If nothing listed can be queued, the server responds with `409 { error: "nothing_to_queue", message, plan }`.
+
+### Lanes, parallelism, queue umbrellas, and the per-host cap
+
+Each Bitig project forms an independent **lane** (`work_queue_items.lane = projectId`):
+
+- **Parallel across project lanes:** Tasks in different projects (e.g. `BIT`, `WOR`, `KMZ`) touch separate repositories and T3 projects, so lanes run concurrently side by side, bounded only by each T3 host's `maxParallelRuns`.
+- **Per-host parallel run cap (`maxParallelRuns`):** Stored per T3 host on `t3_connections.max_parallel_runs` (`1..20`, default `3` via `DEFAULT_HOST_MAX_PARALLEL_RUNS` when `null`, read/written via `D1WorkQueueStore` and preserved when reauthorising a host; there is no REST or Settings UI editor for `maxParallelRuns` yet). The cap counts **every** active session (`queued`, `working`, `waiting_for_approval`, `waiting_subagent`, `offline`) on that host across both `agent_runs` (including manual runs and running umbrella children) and `project_t3_threads`. `reserveWorkQueueLaunch` arbitrates the last slot in a single conditional SQL `INSERT ... SELECT` (using idempotent `clientRequestId` `wq:<entryId>` or `wq:<entryId>:child` and releasing stale reservations older than `10` minutes).
+- **Single-task lane (1 queued task in a project):** Launches directly on its own worktree branch `bitig/<code>` (`umbrellaTaskId: null`) with its snapshotted `resolvedSelection`, and opens its own pull request when finished.
+- **Multi-task lane (2+ queued tasks in a project):** Confirm creates an approved queue umbrella task in that project (`Queue: BIT-92..BIT-102` when contiguous, `Queue: BIT-92, BIT-95` up to 5 codes, or `Queue: BIT-92..BIT-110 (N tasks)` above 5; labelled `work-queue`), sets explicit `task.parentId = umbrella.id` on every queued task in that lane (never setting `dependsOn` on the umbrella), and records `umbrellaTaskId = umbrella.id` on each queue item.
+  - The dispatcher launches **only** the queue umbrella session; the umbrella agent drives its children through the standard Section 6 flow (`start_ready_children` → `bitig/<child-code>` worktrees → ordered merges → `make check` → `report_child_merge` → **one pull request** for the lane).
+  - Inside a multi-task lane, a child task with `dependsOn` on an earlier child in the same lane stays gated (`Waiting for dependency <id> to be merged`) until `report_child_merge` records `mergedAt` — completing the dependency on its child branch alone does not unblock the dependent.
+  - After the lane finishes, the queue umbrella moves to `done` and its children keep `parentId = umbrella.id` as a permanent record of how they shipped.
+- **Wave preview vs live dispatcher:** The preview groups each lane into estimated waves (`Wave 1`, `Wave 2`, …) using `dependsOn` readiness and `pickParallelBatch` (`touches`, `parallelSafe`, `serialPaths`, `maxParallelChildren`). At runtime, the dispatcher (`dispatchWorkQueues`) re-evaluates live gates after every mutating `/api/*` or `/mcp` request, after every `agent_runs` state change or `report_child_merge`, and on the scheduled Worker cron (`runScheduledWorkQueues`, which reconciles live T3 runs via `listT3RunsLive` first).
+
+### Queue & item state machines
+
+- **`work_queues.state`:** `planning` → `active` ⇄ `paused`, `planning | active | paused` → `cancelled`, and `active` → `done` (once every stored row in `work_queue_items` is `done`, `skipped`, or `cancelled`).
+- **`work_queue_items.state`:** `waiting` → `ready` → `running` → `merged` → `done`, plus terminal transitions to `failed`, `skipped`, and `cancelled`. A partial unique index on `work_queue_items(task_id)` over `('waiting', 'ready', 'running', 'merged')` ensures each task occupies at most one active queue item at a time.
+  - Single-task lane items advance `running` → `merged` → `done` when the task completes.
+  - Multi-task lane items stay `running` (`Waiting for umbrella merge`) after `complete_task` until `report_child_merge` sets `mergedAt` (moving the item to `merged`), and advance `merged` → `done` when the lane's queue umbrella task reaches `done`.
+
+### Failure handling, isolation, and queue controls
+
+- **Failure isolation across lanes and unrelated tasks:** If a task run fails, stops, or finishes without completing the task (or throws on launch), its queue item moves to `failed`. Items that `dependsOn` the failed task remain `waiting` (`Dependency <id> failed`), while unrelated items and other project lanes keep running normally. While a failed item remains unretried, the queue stays `active` rather than closing as `done`.
+- **Umbrella `needsHuman` (merge conflict or failing `make check`):** If a lane's queue umbrella sets `needsHuman`, only that lane pauses (`Lane paused: <reason>`); other project lanes continue.
+- **T3 host offline:** Launches fall back to `agent_runs.state = "queued"` (`t3_run_requests`) while the queue item becomes `ready` (`T3 host offline or waiting to dispatch`), draining automatically on reconnect after re-running `checkWorkQueueLaunch`.
+- **Host/provider usage limits:** Errors matching usage, rate, credit, or quota limits stamp `Host usage limit: <reason>` onto open items mapped to **that host**, holding further launches on that host while other connected hosts continue. Explicitly pausing and resuming the queue (`queue.updatedAt > entry.updatedAt`) clears the hold without automatic paid escalation.
+- **Expired T3 OAuth sign-in:** An expired host token (`expiresAt <= now` or `401`) records `T3 sign-in expired; reconnect before resuming the queue` on the item, pauses the queue (`state: "paused"`), and broadcasts `work_queue.updated`.
+- **Mid-queue task edits:** Before launching (and before draining an offline run), the dispatcher re-checks live task state: tasks archived, completed externally, deleted, moved across projects, or reparented elsewhere are `skipped` with the reason; tasks whose approval was revoked or that gained `needsHuman` are held as `waiting`.
+- **Dashboard controls (`WorkQueuePanel`):**
+  - **Pause / Resume (`POST /api/work-queues/:id/pause` | `/resume`):** Holds new launches and offline drains while letting active sessions continue, then resumes dispatch.
+  - **Cancel queue (`POST /api/work-queues/:id/cancel`):** Immediately cancels unstarted (`waiting` / `ready`) items and detaches their `parentId` (`null`) from any queue umbrella so they return cleanly to the backlog. The dispatcher stops running sessions (`t3_thread_interrupt`, umbrellas before children so child stops cannot wake a cancelled umbrella) without deleting git branches; already-merged items transition to `done`.
+  - **Skip (`POST /api/work-queue-items/:id/skip`):** Marks an unstarted (`waiting` / `ready`) item `skipped` and detaches `parentId` from its queue umbrella.
+  - **Retry & Retry on next level up (`POST /api/work-queue-items/:id/retry`):** Appends a new `waiting` item at the end of the open queue (with a fresh `wq:<newEntryId>` idempotency key, re-attaching `parentId` to the lane umbrella if a prior skip/cancel detached it) while preserving the earlier `failed` / `skipped` / `cancelled` item as history. Passing `{ level }` escalates the retry explicitly — never automatically.
+
+### Known v1 limitations
+
+- **No PR links in the queue panel:** `WorkQueueEntry` rows do not carry pull request URLs, so `WorkQueuePanel` does not render PR links directly; open the lane umbrella task (for 2+ task lanes) or the task itself (for single-task lanes) to view reported `pullRequestUrls`.
+- **Manual control actions do not broadcast over realtime:** `pause`, `resume`, `cancel`, `skip`, and `retry` update the caller's tab from the HTTP response, while only the background dispatcher publishes `work_queue.updated` and `work_queue_item.updated` WebSocket events.
+- **MCP agents cannot approve tasks when queueing:** `queue_tasks` never passes `approvals`, leaving `needs_approval` tasks out of the queue until a person approves them in Bitig.
+- **Historical `failed` rows keep a retried queue `active`:** Because `retry` appends a new `work_queue_items` row while preserving the earlier `failed` row and the dispatcher checks `every` stored row for `done | skipped | cancelled`, a queue with a retried failure stays `active` after the retry finishes until explicitly cancelled.
 
 ---
 
-## 8. API & MCP reference
+## 8. What needs a person
+
+Bitig keeps humans in control of every privilege boundary, cost escalation, and irreversible git action:
+
+- **Approving agent-created tasks (`pendingApproval`):** Every task an agent creates via `add_task` starts with `pendingApproval: true`. Agents cannot approve tasks (including via MCP `queue_tasks`) or start T3 runs for unapproved tasks; a person approves them in the web UI (task detail or the work-queue plan preview), CLI (`bitig tasks approve`), or REST (`PATCH /api/tasks/:id` with `{ "pendingApproval": null }` or `POST /api/work-queue` with `approvals`).
+- **Owner-only administration:** Connecting T3 hosts, registering host folders, editing organisation task levels and model mappings (`/api/orgs/:id/run-levels`), and configuring the AI router endpoint and token (`/api/orgs/:id/ai-router`) require the organisation `owner` role.
+- **Retry on the next level up (`nextLevelUp`):** When a run fails (`state: "failed"`) or a task sets `needsHuman` while assigned to a level below the organisation's highest level, Bitig includes `nextLevelUp` on `GET /api/tasks/:id/run-profile`, `GET /api/tasks/:id/t3-run`, and MCP `get_task`, and offers one-click **Retry on <Next Level>** / **Retry on next level up** buttons in the task's T3 section and the dashboard work-queue panel. **Nothing escalates to a higher level automatically.**
+- **Child task blockers (`needsHuman` or failed session):** If a child task sets `needsHuman` or its T3 session fails/stops, its sibling tasks finish normally and the batch resume message reports the blocked or failed child to the umbrella. Either a person resolves the child's question/failure and retries it, or the umbrella stops and sets `needsHuman` on the umbrella task if it cannot proceed.
+- **Unsafe merge conflicts or failing checks:** If merging a child branch into the integration branch produces a conflict the umbrella agent cannot resolve with confidence, or if `make check` fails after the merge, the umbrella aborts the conflicting merge, posts a comment with the exact conflict or failure output, and sets `needsHuman` on the umbrella task.
+- **Pull request review and task archiving:** People review and merge the umbrella's (or single-task lane's) pull request into the default branch and move completed tasks from `done` to `archived`. Agents never merge into the default branch or archive tasks.
+
+---
+
+## 9. API & MCP reference
 
 ### REST endpoints
 
@@ -256,6 +346,14 @@ Bitig keeps humans in control of every privilege boundary, cost escalation, and 
 | `POST /api/tasks/:id/children/stop` | Editor / Owner | Stop all currently running child T3 sessions of an umbrella task |
 | `GET /api/tasks/hierarchy/inventory` | Member | Read-only inventory of pre-cutoff legacy hierarchy candidates and conflicts (`?projectId=<id>`) |
 | `POST /api/tasks/hierarchy/import` | Editor / Owner | Human-confirmed import of selected legacy child-parent links into explicit `task.parentId` |
+| `POST /api/work-queue/plan` | Editor / Owner | Parse a free-text `prompt` (or explicit `items`), route unprofiled tasks via the AI router, and return the `WorkQueuePlanView` preview |
+| `POST /api/work-queue` | Editor / Owner | Confirm a work queue from `items`, applying human `approvals` and manual `overrides`, creating 2+ task lane umbrellas, and activating the queue (`409 nothing_to_queue` if none are queueable) |
+| `GET /api/work-queues` | Member | List open work queues and decorated entries (`?all=true` includes `done` and `cancelled` queues, up to 50 newest) |
+| `POST /api/work-queues/:id/pause` | Editor / Owner | Pause an `active` work queue so no new sessions or offline drains start |
+| `POST /api/work-queues/:id/resume` | Editor / Owner | Resume a `paused` work queue |
+| `POST /api/work-queues/:id/cancel` | Editor / Owner | Cancel a work queue, detaching unstarted children from queue umbrellas and stopping running sessions via the dispatcher |
+| `POST /api/work-queue-items/:id/skip` | Editor / Owner | Skip an unstarted (`waiting` / `ready`) queue item and detach its task from any queue umbrella |
+| `POST /api/work-queue-items/:id/retry` | Editor / Owner | Append a fresh `waiting` item for a `failed`, `skipped`, or `cancelled` queue item (accepts optional `{ level }`) |
 
 ### MCP tools
 
@@ -270,3 +368,6 @@ Bitig keeps humans in control of every privilege boundary, cost escalation, and 
 | `report_child_merge` | Record that the umbrella session merged `childTaskId`'s branch into `parentTaskId`'s integration branch at `mergedSha` |
 | `list_legacy_hierarchy_inventory` | Inspect pre-cutoff inferred parent-child candidates and conflicts without mutating tasks |
 | `import_explicit_hierarchy` | Apply explicitly selected legacy parent-child links into `task.parentId` without overwriting existing parents |
+| `plan_work_queue` | Read-only preview (`route: false`, no writes) of how a `prompt` or `items` list parses into rows, classifications, lanes, waves, and run selections |
+| `queue_tasks` | Queue listed ticket `items` with `prompt` (`editor`+ role; never approves `needs_approval` tasks, returning `{ queued: false, reason: "nothing_to_queue", plan }` when nothing can be queued) |
+| `list_work_queues` | List open work queues and their entries (or all up to 50 with `includeClosed: true`) |
