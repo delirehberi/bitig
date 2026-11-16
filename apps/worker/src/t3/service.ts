@@ -99,6 +99,15 @@ import type { SaveRunLevelsInput, T3ConnectionRecord, T3D1Store } from "@bitig/s
 import { T3McpClient, T3McpError } from "./client";
 import { decryptT3Token } from "./crypto";
 import {
+  checkWorkQueueLaunch,
+  dispatchWorkQueuesForT3,
+  recordWorkQueueFailure,
+  reserveWorkQueueLaunch,
+  WorkQueueCapReachedError,
+  WorkQueueHeldError,
+  type WorkQueueContext,
+} from "../work-queue/dispatcher";
+import {
   HttpRunProfileRouter,
   buildEffortValuesByLevel,
   type RunProfileRouter,
@@ -138,6 +147,10 @@ export interface T3ServiceDeps {
   runProfileRouter?: RunProfileRouter | undefined;
   publishRealtime?: ((event: RealtimeEvent) => Promise<void>) | undefined;
   now?: (() => number) | undefined;
+  /** D1 and organisation of the work queues (#BIT-203); resolved from the Workers binding when omitted. */
+  workQueue?: WorkQueueContext | undefined;
+  /** Set while the dispatcher itself launches, so run changes it causes do not re-enter it. */
+  dispatchingWorkQueue?: boolean | undefined;
 }
 
 /**
@@ -375,6 +388,7 @@ export interface LaunchTaskInT3Options {
    * ticket code. Its run then waits (`waiting_subagent`) until this task is done.
    */
   parentTaskRef?: string | undefined;
+  clientRequestId?: string | undefined;
 }
 
 export interface LaunchTaskInT3Result {
@@ -487,6 +501,12 @@ export async function dispatchQueuedTaskT3Run(
   switchComment?: Comment | undefined;
 }> {
   const now = deps.now ? deps.now() : Date.now();
+  try {
+    await checkWorkQueueLaunch(deps, taskId);
+  } catch (error) {
+    if (!(error instanceof WorkQueueHeldError)) throw error;
+    return { run: (await deps.store.getAgentRunByTaskId(taskId)) ?? null, dispatched: false };
+  }
   const initialHostId = await resolveOriginatingTaskHostId(deps, taskId);
   const clientByHostKey = new Map<string, T3McpClient>();
   if (existingMcpClient) {
@@ -543,6 +563,13 @@ export async function dispatchQueuedTaskT3Run(
 
       if (claimed.kind === "launch") {
         const payload = JSON.parse(claimed.payload) as QueuedLaunchPayload;
+        try {
+          await checkWorkQueueLaunch(deps, taskId);
+        } catch (error) {
+          if (!(error instanceof WorkQueueHeldError)) throw error;
+          await deps.store.requests.finish(claimed, "queued", stepNow);
+          break;
+        }
         const launchHostId = payload.hostId ?? requestHostId;
         if (payload.workspaceStrategy === "root") {
           await assertRootWorkspaceFree(
@@ -912,10 +939,14 @@ export async function launchTaskInT3(
     deps.storage.getComments(task.id),
     parent ? deps.store.getTaskRunProfile(task.id) : Promise.resolve(undefined),
   ]);
+  const queueReservation = await reserveWorkQueueLaunch(deps, task.id);
+  if (queueReservation?.existing) {
+    return { run: queueReservation.existing, task, ...(code ? { code } : {}) };
+  }
   const childCode = code ?? task.id;
-  const childBranch = parent ? `bitig/${childCode}` : undefined;
+  const childBranch = parent || queueReservation ? `bitig/${childCode}` : undefined;
   const childBaseRef = parent ? (parent.run.branch ?? parent.run.headSha) : undefined;
-  const gitMetadataRunId = defaultIdGenerator();
+  const gitMetadataRunId = queueReservation?.runId ?? defaultIdGenerator();
   const builtPrompt = buildT3LaunchPrompt({
     gitMetadataRunId,
     task,
@@ -974,9 +1005,9 @@ export async function launchTaskInT3(
       projectId: mapping.t3ProjectId,
       title: builtPrompt.title,
       prompt: builtPrompt.prompt,
-      clientRequestId: existingRun
+      clientRequestId: queueReservation?.clientRequestId ?? options.clientRequestId ?? (existingRun
         ? `${builtPrompt.clientRequestId}:${gitMetadataRunId}`
-        : builtPrompt.clientRequestId,
+        : builtPrompt.clientRequestId),
       workspaceStrategy,
       ...(childBaseRef ? { baseRef: childBaseRef } : {}),
       ...(childBranch ? { branch: childBranch } : {}),
@@ -1045,11 +1076,11 @@ export async function launchTaskInT3(
     t3ProjectId: mapping.t3ProjectId,
     title: builtPrompt.title,
     prompt: builtPrompt.prompt,
-    clientRequestId: existingRunForLaunch
+    clientRequestId: queueReservation?.clientRequestId ?? options.clientRequestId ?? (existingRunForLaunch
       ? `${builtPrompt.clientRequestId}:${gitMetadataRunId}`
-      : builtPrompt.clientRequestId,
+      : builtPrompt.clientRequestId),
     workspaceStrategy,
-    ...(existingRunForLaunch && !existingRunForLaunch.threadId.startsWith("queued:")
+    ...(existingRunForLaunch && !existingRunForLaunch.threadId.startsWith("queued:") && !queueReservation
       ? { settleThreadId: existingRunForLaunch.threadId }
       : {}),
     ...(childBaseRef ? { baseRef: childBaseRef } : {}),
@@ -1599,6 +1630,7 @@ export async function reportChildMerge(
     );
   }
   await publishRunChild(deps, updated);
+  await dispatchWorkQueuesForT3(deps);
   return updated;
 }
 
@@ -2504,7 +2536,14 @@ async function afterRunStateChange(
   updated: AgentRun,
   stopReason?: string,
 ): Promise<void> {
-  if (updated.state === previous.state || !ENDED_CHILD_RUN_STATES.has(updated.state)) return;
+  if (updated.state === previous.state) return;
+  try {
+    await recordWorkQueueFailure(deps, updated, stopReason);
+  } catch (error) {
+    console.error("recording a work queue usage limit failed", { taskId: updated.taskId, error });
+  }
+  await dispatchWorkQueuesForT3(deps);
+  if (!ENDED_CHILD_RUN_STATES.has(updated.state)) return;
   try {
     await handBackEndedChildRun(deps, updated, stopReason);
   } catch (error) {
@@ -3286,12 +3325,21 @@ export async function startReadyChildrenInT3(
 
   const started: StartedReadyChildSummary[] = [];
   for (const picked of evaluated.picked) {
-    const launched = await launchTaskInT3(deps, {
-      taskRef: picked.id,
-      parentTaskRef: evaluated.parentTask.id,
-      workspaceStrategy: "worktree",
-      actor: input.actor,
-    });
+    let launched: LaunchTaskInT3Result;
+    try {
+      launched = await launchTaskInT3(deps, {
+        taskRef: picked.id,
+        parentTaskRef: evaluated.parentTask.id,
+        workspaceStrategy: "worktree",
+        actor: input.actor,
+      });
+    } catch (error) {
+      if (!(error instanceof WorkQueueHeldError)) throw error;
+      const heldTask = await deps.storage.getTask(picked.id);
+      evaluated.skipped.push({ taskId: picked.id, title: heldTask?.title ?? picked.id,
+        reason: error instanceof WorkQueueCapReachedError ? "cap_reached" : "blocked", detail: error.message });
+      continue;
+    }
     const code = taskCode(launched.task, evaluated.projectById.get(launched.task.projectId));
     started.push({
       taskId: launched.task.id,
@@ -4911,7 +4959,4 @@ export async function importExplicitHierarchy(
 
   return { imported, rejected };
 }
-
-
-
 
