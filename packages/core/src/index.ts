@@ -126,6 +126,13 @@ export {
 } from "./domain/ticket-codes";
 export type { ParsedTaskCode, TaskWithCode, TicketCodeBackfillResult } from "./domain/ticket-codes";
 export { extractTaskMentions, taskMentions } from "./domain/mentions";
+export { MAX_WORK_QUEUE_ITEMS, parseWorkQueuePrompt } from "./domain/work-queue-parse";
+export type {
+  WorkQueueItem,
+  WorkQueueParseResult,
+  WorkQueueProjectRef,
+  WorkQueueUnknownKey,
+} from "./domain/work-queue-parse";
 export { buildMentionIndex, dependencyLinks, hierarchyLinks } from "./domain/task-links";
 export {
   assertTaskContainment,
