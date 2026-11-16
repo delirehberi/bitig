@@ -9,6 +9,7 @@ import { buildAttentionItems, findStalledTasks, workingSessions } from "./dashbo
 import { NeedsYou } from "./dashboard/NeedsYou";
 import { Stalled } from "./dashboard/Stalled";
 import { WorkingNow } from "./dashboard/WorkingNow";
+import { WorkQueuePrompt } from "./dashboard/WorkQueuePrompt";
 import { resolveWorkspaceActiveSessions } from "./projects/activeSessions";
 import { WhereYouLeftOff } from "./WhereYouLeftOff";
 
@@ -29,6 +30,8 @@ interface OverviewProps {
   readonly activeSessions?: readonly T3ProjectActiveSession[];
   /** The current time; tests pass a fixed one. */
   readonly now?: Date;
+  /** Known T3 connection for the work queue prompt (tests); the prompt checks it itself otherwise. */
+  readonly t3Connected?: boolean;
 }
 
 /**
@@ -70,6 +73,7 @@ export function Overview({
   agentRuns,
   activeSessions,
   now = new Date(),
+  t3Connected,
 }: OverviewProps) {
   const t3Available = mode === "cloudflare";
   const suppliedRuns = agentRuns !== undefined || activeSessions !== undefined;
@@ -116,6 +120,7 @@ export function Overview({
         </section>
       ) : (
         <>
+          <WorkQueuePrompt enabled={t3Available} projects={projects} t3Connected={t3Connected} />
           <NeedsYou items={attention} now={now} onArchiveTask={onArchiveTask} />
           {t3Available && (
             <WorkingNow
