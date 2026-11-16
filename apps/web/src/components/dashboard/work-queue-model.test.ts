@@ -1,7 +1,16 @@
 import { describe, expect, it } from "vitest";
+import type { RunLevel } from "@bitig/core";
+import type { WorkQueueEntryView, WorkQueueView } from "../../services/work-queue";
 import { row, samplePlan, WQ_CAPABILITIES, WQ_PROJECTS } from "./work-queue-fixtures";
 import {
   addCodes,
+  applyRealtimeEvent,
+  canRetryEntry,
+  canSkipEntry,
+  laneProgress,
+  nextLevelUp,
+  queueControls,
+  queueTitle,
   buildOverrides,
   describeLaneWaves,
   describeRowStatus,
@@ -132,5 +141,205 @@ describe("planWarnings", () => {
       "Not understood: header",
       "The AI router could not suggest a level for 1 task; the default level applies.",
     ]);
+  });
+});
+
+describe("queue panel helpers", () => {
+  const QUEUE = "q-1";
+  const LANE = "lane-bit";
+  const AT = "2026-11-16T00:00:00.000Z";
+  const levels: RunLevel[] = [
+    { key: "cheap", label: "Cheap", description: "", order: 0, selection: { providerInstanceId: "p", model: "small" } },
+    { key: "mid", label: "Mid", description: "", order: 1, selection: { providerInstanceId: "p", model: "medium" } },
+    { key: "strong", label: "Strong", description: "", order: 2, selection: { providerInstanceId: "p", model: "large" } },
+  ];
+
+  function entry(id: string, overrides: Partial<WorkQueueEntryView> = {}): WorkQueueEntryView {
+    return {
+      id,
+      queueId: QUEUE,
+      taskId: `task-${id}`,
+      position: 0,
+      lane: LANE,
+      state: "waiting",
+      waitingReason: null,
+      resolvedSelection: null,
+      umbrellaTaskId: null,
+      createdAt: AT,
+      updatedAt: AT,
+      taskCode: `BIT-${id}`,
+      ...overrides,
+    };
+  }
+
+  function queue(overrides: Partial<WorkQueueView> = {}): WorkQueueView {
+    return {
+      id: QUEUE,
+      orgId: "org",
+      createdBy: "Emre",
+      prompt: "Start BIT-1",
+      state: "active",
+      createdAt: AT,
+      updatedAt: AT,
+      entries: [entry("1")],
+      ...overrides,
+    };
+  }
+
+  describe("queueControls", () => {
+    it("offers pause only while active, resume only while paused, cancel while still open", () => {
+      expect(queueControls("active")).toEqual({ pause: true, resume: false, cancel: true });
+      expect(queueControls("paused")).toEqual({ pause: false, resume: true, cancel: true });
+      expect(queueControls("planning")).toEqual({ pause: false, resume: false, cancel: true });
+      expect(queueControls("done")).toEqual({ pause: false, resume: false, cancel: false });
+      expect(queueControls("cancelled")).toEqual({ pause: false, resume: false, cancel: false });
+    });
+  });
+
+  describe("entry controls", () => {
+    it("allows skip only before a task starts", () => {
+      expect(canSkipEntry("waiting")).toBe(true);
+      expect(canSkipEntry("ready")).toBe(true);
+      expect(canSkipEntry("running")).toBe(false);
+      expect(canSkipEntry("merged")).toBe(false);
+    });
+
+    it("allows retry only for failed, skipped or cancelled entries", () => {
+      expect(canRetryEntry("failed")).toBe(true);
+      expect(canRetryEntry("skipped")).toBe(true);
+      expect(canRetryEntry("cancelled")).toBe(true);
+      expect(canRetryEntry("waiting")).toBe(false);
+      expect(canRetryEntry("done")).toBe(false);
+    });
+  });
+
+  describe("queueTitle", () => {
+    it("collapses whitespace and keeps short prompts whole", () => {
+      expect(queueTitle("  Start   BIT-1\n to BIT-3 ")).toBe("Start BIT-1 to BIT-3");
+    });
+
+    it("cuts long prompts with an ellipsis inside the limit", () => {
+      const title = queueTitle("x".repeat(200));
+      expect(title).toHaveLength(80);
+      expect(title.endsWith("…")).toBe(true);
+    });
+  });
+
+  describe("laneProgress", () => {
+    it("counts running, waiting (waiting and ready), merged, done and failed per lane", () => {
+      const [lane] = laneProgress([
+        entry("1", { state: "running" }),
+        entry("2", { state: "waiting" }),
+        entry("3", { state: "ready" }),
+        entry("4", { state: "merged" }),
+        entry("5", { state: "done" }),
+        entry("6", { state: "failed" }),
+      ]);
+      expect(lane).toMatchObject({ projectKey: "BIT", running: 1, waiting: 2, merged: 1, done: 1, failed: 1 });
+      expect(lane?.label).toBe("BIT: 1 running, 2 waiting, 1 merged, 1 done, 1 failed");
+    });
+
+    it("keeps one line per lane, keyed by the project", () => {
+      const lanes = laneProgress([
+        entry("1", { state: "running" }),
+        entry("2", { lane: "lane-other", taskCode: "KMZ-2" }),
+      ]);
+      expect(lanes.map((lane) => lane.label)).toEqual(["BIT: 1 running", "KMZ: 1 waiting"]);
+    });
+
+    it("reads nothing active when every entry is closed", () => {
+      const [lane] = laneProgress([entry("1", { state: "skipped" })]);
+      expect(lane?.label).toBe("BIT: nothing active");
+    });
+
+    it("falls back to the lane id when no entry carries a task code", () => {
+      const [lane] = laneProgress([entry("1", { state: "running", taskCode: undefined })]);
+      expect(lane?.projectKey).toBe(LANE);
+    });
+  });
+
+  describe("nextLevelUp", () => {
+    it("returns the level one step above the entry's current level", () => {
+      expect(nextLevelUp(levels, { providerInstanceId: "p", model: "small" })?.key).toBe("mid");
+      expect(nextLevelUp(levels, { providerInstanceId: "p", model: "medium" })?.key).toBe("strong");
+    });
+
+    it("returns null at the highest level, for unknown models, and without a selection", () => {
+      expect(nextLevelUp(levels, { providerInstanceId: "p", model: "large" })).toBeNull();
+      expect(nextLevelUp(levels, { providerInstanceId: "p", model: "unknown" })).toBeNull();
+      expect(nextLevelUp(levels, null)).toBeNull();
+    });
+
+    it("matches the provider as well as the model", () => {
+      expect(nextLevelUp(levels, { providerInstanceId: "other", model: "small" })).toBeNull();
+    });
+
+    it("sorts by order rather than list position", () => {
+      const shuffled = [levels[2], levels[0], levels[1]].filter((level): level is RunLevel => level !== undefined);
+      expect(nextLevelUp(shuffled, { providerInstanceId: "p", model: "small" })?.key).toBe("mid");
+    });
+  });
+
+  describe("applyRealtimeEvent", () => {
+    const queueUpdate = (state: WorkQueueView["state"]) => ({
+      id: QUEUE,
+      orgId: "org",
+      createdBy: "Emre",
+      prompt: "Start BIT-1",
+      state,
+      createdAt: AT,
+      updatedAt: AT,
+    });
+
+    it("keeps entries when a queue's fields change", () => {
+      const [updated] = applyRealtimeEvent([queue()], { type: "work_queue.updated", queue: queueUpdate("paused") }) ?? [];
+      expect(updated?.state).toBe("paused");
+      expect(updated?.entries).toHaveLength(1);
+    });
+
+    it("drops a queue that has closed", () => {
+      expect(applyRealtimeEvent([queue()], { type: "work_queue.updated", queue: queueUpdate("done") })).toEqual([]);
+    });
+
+    it("returns null for a queue it does not have", () => {
+      expect(applyRealtimeEvent([], { type: "work_queue.updated", queue: queueUpdate("active") })).toBeNull();
+    });
+
+    it("replaces an entry and keeps the task code it already had", () => {
+      const [updated] = applyRealtimeEvent([queue()], {
+        type: "work_queue_item.updated",
+        entry: entry("1", { state: "running", taskCode: undefined }),
+      }) ?? [];
+      expect(updated?.entries[0]).toMatchObject({ state: "running", taskCode: "BIT-1" });
+    });
+
+    it("appends an entry that the queue does not list yet", () => {
+      const [updated] = applyRealtimeEvent([queue()], {
+        type: "work_queue_item.updated",
+        entry: {
+          id: "2",
+          queueId: QUEUE,
+          taskId: "task-2",
+          position: 1,
+          lane: LANE,
+          state: "waiting",
+          waitingReason: null,
+          resolvedSelection: null,
+          umbrellaTaskId: null,
+          createdAt: AT,
+          updatedAt: AT,
+        },
+      }) ?? [];
+      expect(updated?.entries.map((item) => item.id)).toEqual(["1", "2"]);
+    });
+
+    it("returns null for an entry whose queue is not in the list", () => {
+      expect(applyRealtimeEvent([queue()], { type: "work_queue_item.updated", entry: { ...entry("9"), queueId: "gone" } })).toBeNull();
+    });
+
+    it("returns the list unchanged for other events", () => {
+      const queues = [queue()];
+      expect(applyRealtimeEvent(queues, { type: "project.deleted", id: "p-1" })).toBe(queues);
+    });
   });
 });

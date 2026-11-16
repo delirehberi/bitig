@@ -1,9 +1,21 @@
-import type { Project, T3ModelCapability, T3ModelSelection } from "@bitig/core";
+import {
+  isOpenWorkQueueState,
+  type Project,
+  type RealtimeEvent,
+  type RunLevel,
+  type T3ModelCapability,
+  type T3ModelSelection,
+  type WorkQueue,
+  type WorkQueueEntryState,
+  type WorkQueueState,
+} from "@bitig/core";
 import type {
+  WorkQueueEntryView,
   WorkQueuePlanLane,
   WorkQueuePlanRow,
   WorkQueuePlanView,
   WorkQueueRunOverride,
+  WorkQueueView,
 } from "../../services/work-queue";
 
 /** Option IDs T3 models use for reasoning effort; the worker reads the same set. */
@@ -185,4 +197,168 @@ export function planWarnings(plan: WorkQueuePlanView): string[] {
     );
   }
   return warnings;
+}
+
+// ---------------------------------------------------------------------------
+// Queue panel (#BIT-206)
+// ---------------------------------------------------------------------------
+
+export const QUEUE_STATE_LABELS: Record<WorkQueueState, string> = {
+  planning: "Planning",
+  active: "Active",
+  paused: "Paused",
+  done: "Done",
+  cancelled: "Cancelled",
+};
+
+export const ENTRY_STATE_LABELS: Record<WorkQueueEntryState, string> = {
+  waiting: "Waiting",
+  ready: "Ready",
+  running: "Running",
+  merged: "Merged",
+  done: "Done",
+  failed: "Failed",
+  skipped: "Skipped",
+  cancelled: "Cancelled",
+};
+
+/** Longest prompt shown as a queue's title before it is cut. */
+export const QUEUE_TITLE_MAX_LENGTH = 80;
+const ELLIPSIS = "…";
+
+/** Which queue-level controls a queue in this state accepts; mirrors the worker's queue transitions. */
+export function queueControls(state: WorkQueueState): { pause: boolean; resume: boolean; cancel: boolean } {
+  return {
+    pause: state === "active",
+    resume: state === "paused",
+    cancel: state === "planning" || state === "active" || state === "paused",
+  };
+}
+
+/** Skip is offered only while the task has not started. */
+export function canSkipEntry(state: WorkQueueEntryState): boolean {
+  return state === "waiting" || state === "ready";
+}
+
+/** Retry is offered only for terminal entries that did not finish their work. */
+export function canRetryEntry(state: WorkQueueEntryState): boolean {
+  return state === "failed" || state === "skipped" || state === "cancelled";
+}
+
+/** A prompt cut to a title, with the ellipsis counted inside the limit. */
+export function queueTitle(prompt: string): string {
+  const text = prompt.replace(/\s+/g, " ").trim();
+  if (text.length <= QUEUE_TITLE_MAX_LENGTH) return text;
+  return `${text.slice(0, QUEUE_TITLE_MAX_LENGTH - ELLIPSIS.length).trimEnd()}${ELLIPSIS}`;
+}
+
+export interface LaneProgress {
+  /** Stable key: the lane's project id. */
+  readonly lane: string;
+  /** Project key for the label, e.g. `BIT`. */
+  readonly projectKey: string;
+  readonly running: number;
+  /** Waiting plus ready: queued but not started. */
+  readonly waiting: number;
+  readonly merged: number;
+  readonly done: number;
+  readonly failed: number;
+  /** "BIT: 2 running, 3 waiting, 1 merged"; "BIT: nothing active" when every entry is closed. */
+  readonly label: string;
+}
+
+/**
+ * Per-lane counts for one queue. `formatUmbrellaProgress` is not used here: it reads "2 of 5 running"
+ * and has no waiting count, while the queue panel shows queued-but-not-started work too.
+ */
+export function laneProgress(entries: readonly WorkQueueEntryView[]): LaneProgress[] {
+  const byLane = new Map<string, WorkQueueEntryView[]>();
+  for (const entry of entries) {
+    const bucket = byLane.get(entry.lane) ?? [];
+    bucket.push(entry);
+    byLane.set(entry.lane, bucket);
+  }
+  return [...byLane.entries()].map(([lane, laneEntries]) => {
+    const count = (states: readonly WorkQueueEntryState[]) =>
+      laneEntries.filter((entry) => states.includes(entry.state)).length;
+    const running = count(["running"]);
+    const waiting = count(["waiting", "ready"]);
+    const merged = count(["merged"]);
+    const done = count(["done"]);
+    const failed = count(["failed"]);
+    const projectKey = laneEntries.map((entry) => entry.taskCode).find((code) => code !== undefined);
+    const key = projectKey ? projectKeyOf(projectKey) : lane;
+    const parts: string[] = [];
+    if (running > 0) parts.push(`${String(running)} running`);
+    if (waiting > 0) parts.push(`${String(waiting)} waiting`);
+    if (merged > 0) parts.push(`${String(merged)} merged`);
+    if (done > 0) parts.push(`${String(done)} done`);
+    if (failed > 0) parts.push(`${String(failed)} failed`);
+    const detail = parts.length > 0 ? parts.join(", ") : "nothing active";
+    return { lane, projectKey: key, running, waiting, merged, done, failed, label: `${key}: ${detail}` };
+  });
+}
+
+/**
+ * The run level one step above the entry's current one, or null when the current level is unknown
+ * or already the highest. The entry stores a model selection, so the level is found by matching it.
+ */
+export function nextLevelUp(levels: readonly RunLevel[], selection: T3ModelSelection | null): RunLevel | null {
+  if (!selection) return null;
+  const current = levels.find(
+    (level) =>
+      level.selection?.providerInstanceId === selection.providerInstanceId && level.selection.model === selection.model,
+  );
+  if (!current) return null;
+  const higher = levels
+    .filter((level) => level.order > current.order)
+    .sort((a, b) => a.order - b.order);
+  return higher[0] ?? null;
+}
+
+/** Replaces the queue with the same id, or adds it when open; drops it when it has closed. Null when unknown. */
+export function applyQueueUpdate(queues: readonly WorkQueueView[], queue: WorkQueue): readonly WorkQueueView[] | null {
+  const index = queues.findIndex((candidate) => candidate.id === queue.id);
+  if (!isOpenWorkQueueState(queue.state)) {
+    return index < 0 ? queues : queues.filter((candidate) => candidate.id !== queue.id);
+  }
+  if (index < 0) return null;
+  const current = queues[index];
+  if (!current) return null;
+  return queues.map((candidate, position) => (position === index ? { ...current, ...queue } : candidate));
+}
+
+/**
+ * Replaces an entry in its queue, keeping the task code and title the list already had when the
+ * update does not carry them. Null when the entry's queue is not in the list.
+ */
+export function applyEntryUpdate(queues: readonly WorkQueueView[], entry: WorkQueueEntryView): readonly WorkQueueView[] | null {
+  const index = queues.findIndex((candidate) => candidate.id === entry.queueId);
+  const queue = queues[index];
+  if (index < 0 || !queue) return null;
+  const existing = queue.entries.find((candidate) => candidate.id === entry.id);
+  const next: WorkQueueEntryView = {
+    ...entry,
+    taskCode: entry.taskCode ?? existing?.taskCode,
+    taskTitle: entry.taskTitle ?? existing?.taskTitle,
+  };
+  const entries = existing
+    ? queue.entries.map((candidate) => (candidate.id === entry.id ? next : candidate))
+    : [...queue.entries, next];
+  return queues.map((candidate, position) => (position === index ? { ...queue, entries } : candidate));
+}
+
+/**
+ * Applies one realtime event to the panel's list. Returns the list unchanged for events the panel
+ * does not show, and null when the event refers to a queue the list does not have (the caller reloads).
+ */
+export function applyRealtimeEvent(queues: readonly WorkQueueView[], event: RealtimeEvent): readonly WorkQueueView[] | null {
+  switch (event.type) {
+    case "work_queue.updated":
+      return applyQueueUpdate(queues, event.queue);
+    case "work_queue_item.updated":
+      return applyEntryUpdate(queues, event.entry);
+    default:
+      return queues;
+  }
 }
