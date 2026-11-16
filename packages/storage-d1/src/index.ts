@@ -65,3 +65,10 @@ export {
   type SetFeedbackEntryOutcomeOptions,
 } from "./feedback-store";
 
+export {
+  D1WorkQueueStore,
+  type AddWorkQueueEntryInput,
+  type CreateWorkQueueInput,
+  type ListWorkQueuesOptions,
+  type TransitionWorkQueueEntryInput,
+} from "./work-queue-store";

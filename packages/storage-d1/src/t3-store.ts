@@ -453,6 +453,8 @@ export class T3D1Store {
       expiresAt: input.expiresAt,
       connectedAt: existing?.connectedAt ?? now,
       updatedAt: now,
+      // Re-connecting a host keeps its run cap; the upsert below does not overwrite it.
+      maxParallelRuns: existing?.maxParallelRuns ?? null,
     };
 
     await this.db

@@ -701,7 +701,8 @@ describe("multi-user organisations, permissions, tokens, invitations, profile an
         \`scope\` text NOT NULL,
         \`expires_at\` integer NOT NULL,
         \`connected_at\` integer NOT NULL,
-        \`updated_at\` integer NOT NULL
+        \`updated_at\` integer NOT NULL,
+        \`max_parallel_runs\` integer
       )`),
       env.DB.prepare(`CREATE TABLE \`t3_oauth_states\` (
         \`state\` text PRIMARY KEY NOT NULL,

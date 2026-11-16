@@ -28,6 +28,8 @@ export type EntityKind =
   | "attachment"
   | "webhook"
   | "t3_host"
+  | "work_queue"
+  | "work_queue_entry"
   | "t3_thread"
   | "run_level"
   | "user"

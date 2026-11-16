@@ -227,7 +227,8 @@ const AGENT_RUN_SETUP = [
     \`scope\` text NOT NULL,
     \`expires_at\` integer NOT NULL,
     \`connected_at\` integer NOT NULL,
-    \`updated_at\` integer NOT NULL
+    \`updated_at\` integer NOT NULL,
+    \`max_parallel_runs\` integer
   )`,
   "CREATE UNIQUE INDEX `t3_connections_org_id_unique` ON `t3_connections` (`org_id`)",
   `CREATE TABLE \`t3_oauth_states\` (

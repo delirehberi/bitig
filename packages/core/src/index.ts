@@ -128,11 +128,12 @@ export type { ParsedTaskCode, TaskWithCode, TicketCodeBackfillResult } from "./d
 export { extractTaskMentions, taskMentions } from "./domain/mentions";
 export { MAX_WORK_QUEUE_ITEMS, parseWorkQueuePrompt } from "./domain/work-queue-parse";
 export type {
-  WorkQueueItem,
+  WorkQueueItem as WorkQueueParsedItem,
   WorkQueueParseResult,
   WorkQueueProjectRef,
   WorkQueueUnknownKey,
 } from "./domain/work-queue-parse";
+export * from "./domain/work-queue";
 export * from "./domain/work-queue-plan";
 export { buildMentionIndex, dependencyLinks, hierarchyLinks } from "./domain/task-links";
 export {

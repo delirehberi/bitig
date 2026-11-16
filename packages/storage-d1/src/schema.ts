@@ -42,6 +42,8 @@ import {
   type UserStatus,
   type WebhookMapping,
   type WebhookProvider,
+  type WorkQueueEntryState,
+  type WorkQueueState,
 } from "@bitig/core";
 
 export const users = sqliteTable(
@@ -355,10 +357,55 @@ export const t3Connections = sqliteTable(
     expiresAt: integer("expires_at").notNull(),
     connectedAt: integer("connected_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
+    /** Null means the code default (`DEFAULT_HOST_MAX_PARALLEL_RUNS`) applies. */
+    maxParallelRuns: integer("max_parallel_runs"),
   },
   (table) => [
     uniqueIndex("t3_connections_org_mcp_url_unique").on(table.orgId, table.mcpUrl),
     index("t3_connections_org_id_idx").on(table.orgId),
+  ],
+);
+
+export const workQueues = sqliteTable(
+  "work_queues",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id").notNull().default(DEFAULT_ORGANISATION_ID),
+    createdBy: text("created_by").notNull(),
+    prompt: text("prompt").notNull(),
+    state: text("state").$type<WorkQueueState>().notNull().default("planning"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [index("work_queues_org_state_idx").on(table.orgId, table.state)],
+);
+
+export const workQueueItems = sqliteTable(
+  "work_queue_items",
+  {
+    id: text("id").primaryKey(),
+    queueId: text("queue_id")
+      .notNull()
+      .references(() => workQueues.id, { onDelete: "cascade" }),
+    taskId: text("task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    position: integer("position").notNull(),
+    lane: text("lane").notNull(),
+    state: text("state").$type<WorkQueueEntryState>().notNull().default("waiting"),
+    waitingReason: text("waiting_reason"),
+    resolvedSelection: text("resolved_selection"),
+    umbrellaTaskId: text("umbrella_task_id"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("work_queue_items_queue_position_idx").on(table.queueId, table.position),
+    index("work_queue_items_task_id_idx").on(table.taskId),
+    // Mirrors ACTIVE_WORK_QUEUE_ENTRY_STATES in @bitig/core: one active entry per task.
+    uniqueIndex("work_queue_items_one_active_per_task_idx")
+      .on(table.taskId)
+      .where(sql`${table.state} IN ('waiting', 'ready', 'running', 'merged')`),
   ],
 );
 
@@ -544,6 +591,8 @@ export type AttachmentRecord = typeof attachments.$inferSelect;
 export type InsertAttachmentRecord = typeof attachments.$inferInsert;
 export type T3ConnectionRecord = typeof t3Connections.$inferSelect;
 export type InsertT3ConnectionRecord = typeof t3Connections.$inferInsert;
+export type WorkQueueRecord = typeof workQueues.$inferSelect;
+export type WorkQueueItemRecord = typeof workQueueItems.$inferSelect;
 export type T3OauthStateRecord = typeof t3OauthStates.$inferSelect;
 export type InsertT3OauthStateRecord = typeof t3OauthStates.$inferInsert;
 export type T3ProjectMappingRecord = typeof t3ProjectMappings.$inferSelect;
