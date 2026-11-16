@@ -1,4 +1,4 @@
-import { and, count, eq, inArray, isNotNull, max, ne, or } from "drizzle-orm";
+import { and, count, eq, inArray, isNotNull, isNull, max, ne, or, sql } from "drizzle-orm";
 import { drizzle, type DrizzleD1Database } from "drizzle-orm/d1";
 import {
   BUNDLE_VERSION,
@@ -17,7 +17,10 @@ import {
   applyTaskPatch,
   applyWebhookPatch,
   assertTaskAttachmentQuota,
+  assertTaskContainment,
+  assertTaskDeletable,
   assertTaskDependencies,
+  assertTaskProjectMoveAllowed,
   buildAttachment,
   buildCheckpoint,
   buildComment,
@@ -52,6 +55,7 @@ import {
   type BackupBundle,
   type Checkpoint,
   type Comment,
+  type ContainmentNode,
   type CreateAttachmentInput,
   type SaveCheckpointInput,
   type CreateCommentInput,
@@ -223,6 +227,9 @@ function recordToTask(row: TaskRecord): Task {
     createdAt: new Date(row.createdAt).toISOString(),
     updatedAt: new Date(row.updatedAt).toISOString(),
   };
+  if (row.parentId !== null) {
+    task.parentId = row.parentId;
+  }
   if (row.dueDate !== null) {
     task.dueDate = row.dueDate;
   }
@@ -695,6 +702,10 @@ export class D1Storage implements StorageProvider {
       .get();
     throwIfAborted(opts?.signal);
     if (!projectRow) throw new NotFoundError("project", task.projectId);
+    if (task.parentId !== undefined) {
+      assertTaskContainment(task, await this.#containmentGraph(), "saveTask");
+      throwIfAborted(opts?.signal);
+    }
     if (hasNewDependencies(undefined, task)) {
       assertTaskDependencies(task, await this.#dependencyGraph(), "saveTask");
       throwIfAborted(opts?.signal);
@@ -702,32 +713,96 @@ export class D1Storage implements StorageProvider {
 
     for (let attempt = 0; ; attempt++) {
       try {
-        await this.#db.insert(tasks).values({
-          id: task.id,
-          projectId: task.projectId,
-          title: task.title,
-          description: task.description,
-          status: task.status,
-          isPublic: task.isPublic,
-          dueDate: task.dueDate ?? null,
-          priority: task.priority ?? null,
-          labels: task.labels ? [...task.labels] : null,
-          order: task.order ?? null,
-          checklist: task.checklist ?? null,
-          needsHuman: task.needsHuman ?? null,
-          pendingApproval: task.pendingApproval ?? null,
-          dependsOn: task.dependsOn ? [...task.dependsOn] : null,
-          number: task.number ?? null,
-          startedAt: task.startedAt !== undefined ? Date.parse(task.startedAt) : null,
-          completedAt: task.completedAt !== undefined ? Date.parse(task.completedAt) : null,
-          createdBy: task.createdBy ?? null,
-          startedBy: task.startedBy ?? null,
-          completedBy: task.completedBy ?? null,
-          updatedBy: task.updatedBy ?? null,
-          activity: task.activity ? task.activity.map((entry) => ({ ...entry })) : null,
-          createdAt: Date.parse(task.createdAt),
-          updatedAt: Date.parse(task.updatedAt),
-        });
+        if (task.parentId === undefined) {
+          await this.#db.insert(tasks).values({
+            id: task.id,
+            projectId: task.projectId,
+            parentId: null,
+            title: task.title,
+            description: task.description,
+            status: task.status,
+            isPublic: task.isPublic,
+            dueDate: task.dueDate ?? null,
+            priority: task.priority ?? null,
+            labels: task.labels ? [...task.labels] : null,
+            order: task.order ?? null,
+            checklist: task.checklist ?? null,
+            needsHuman: task.needsHuman ?? null,
+            pendingApproval: task.pendingApproval ?? null,
+            dependsOn: task.dependsOn ? [...task.dependsOn] : null,
+            number: task.number ?? null,
+            startedAt: task.startedAt !== undefined ? Date.parse(task.startedAt) : null,
+            completedAt: task.completedAt !== undefined ? Date.parse(task.completedAt) : null,
+            createdBy: task.createdBy ?? null,
+            startedBy: task.startedBy ?? null,
+            completedBy: task.completedBy ?? null,
+            updatedBy: task.updatedBy ?? null,
+            activity: task.activity ? task.activity.map((entry) => ({ ...entry })) : null,
+            createdAt: Date.parse(task.createdAt),
+            updatedAt: Date.parse(task.updatedAt),
+          });
+        } else {
+          const result = await this.#db.run(sql`
+            INSERT INTO tasks (
+              id, project_id, parent_id, title, description, status, is_public,
+              due_date, priority, labels, "order", checklist, needs_human,
+              pending_approval, depends_on, number, started_at, completed_at,
+              created_by, started_by, completed_by, updated_by, activity,
+              created_at, updated_at
+            )
+            SELECT
+              ${task.id},
+              ${task.projectId},
+              ${task.parentId},
+              ${task.title},
+              ${task.description},
+              ${task.status},
+              ${task.isPublic ? 1 : 0},
+              ${task.dueDate ?? null},
+              ${task.priority ?? null},
+              ${task.labels ? JSON.stringify([...task.labels]) : null},
+              ${task.order ?? null},
+              ${task.checklist ? JSON.stringify(task.checklist) : null},
+              ${task.needsHuman ?? null},
+              ${task.pendingApproval ? 1 : null},
+              ${task.dependsOn ? JSON.stringify([...task.dependsOn]) : null},
+              ${task.number ?? null},
+              ${task.startedAt !== undefined ? Date.parse(task.startedAt) : null},
+              ${task.completedAt !== undefined ? Date.parse(task.completedAt) : null},
+              ${task.createdBy ?? null},
+              ${task.startedBy ?? null},
+              ${task.completedBy ?? null},
+              ${task.updatedBy ?? null},
+              ${task.activity ? JSON.stringify(task.activity.map((entry) => ({ ...entry }))) : null},
+              ${Date.parse(task.createdAt)},
+              ${Date.parse(task.updatedAt)}
+            WHERE EXISTS (
+              SELECT 1 FROM projects pr
+              WHERE pr.id = ${task.projectId} AND pr.org_id = ${this.#orgId}
+            )
+            AND EXISTS (
+              SELECT 1 FROM tasks p
+              WHERE p.id = ${task.parentId} AND p.project_id = ${task.projectId}
+            )
+          `);
+          if (result.meta.changes === 0) {
+            const currentProject = await this.#db
+              .select({ id: projects.id })
+              .from(projects)
+              .where(and(eq(projects.id, task.projectId), eq(projects.orgId, this.#orgId)))
+              .get();
+            if (!currentProject) throw new NotFoundError("project", task.projectId);
+            assertTaskContainment(task, await this.#containmentGraph(), "saveTask");
+            throw new ValidationError("saveTask", [
+              {
+                code: "custom",
+                path: ["parentId"],
+                message: `Parent task ${task.parentId} is no longer valid in project ${task.projectId}`,
+                input: task.parentId,
+              },
+            ]);
+          }
+        }
         break;
       } catch (err) {
         if (attempt >= TASK_NUMBER_CONFLICT_MAX_RETRIES || !isTaskNumberConflict(err)) throw err;
@@ -757,6 +832,7 @@ export class D1Storage implements StorageProvider {
       userAvatarUrl: opts?.userAvatarUrl,
     });
     const movedProject = next.projectId !== existing.projectId;
+    const changedParent = next.parentId !== existing.parentId;
 
     if (movedProject) {
       const targetProject = await this.#db
@@ -766,6 +842,18 @@ export class D1Storage implements StorageProvider {
         .get();
       throwIfAborted(opts?.signal);
       if (!targetProject) throw new NotFoundError("project", next.projectId);
+    }
+
+    if (movedProject || changedParent) {
+      const graph = await this.#containmentGraph();
+      throwIfAborted(opts?.signal);
+      if (movedProject) {
+        assertTaskProjectMoveAllowed(existing, next.projectId, graph, "updateTask");
+      }
+      assertTaskContainment(next, graph, "updateTask");
+    }
+
+    if (movedProject) {
       next = renumberTask(next, await this.#nextTaskNumber(next.projectId));
       throwIfAborted(opts?.signal);
     }
@@ -774,12 +862,39 @@ export class D1Storage implements StorageProvider {
       throwIfAborted(opts?.signal);
     }
 
+    const whereConditions = [eq(tasks.id, validId), inArray(tasks.projectId, this.#orgProjectIds())];
+    if (movedProject) {
+      whereConditions.push(
+        eq(tasks.projectId, existing.projectId),
+        isNull(tasks.parentId),
+        sql`NOT EXISTS (SELECT 1 FROM tasks c WHERE c.parent_id = ${validId})`,
+        sql`EXISTS (SELECT 1 FROM projects pr WHERE pr.id = ${next.projectId} AND pr.org_id = ${this.#orgId})`,
+      );
+    }
+    if (next.parentId !== undefined && (changedParent || movedProject)) {
+      whereConditions.push(
+        sql`EXISTS (SELECT 1 FROM tasks p WHERE p.id = ${next.parentId} AND p.project_id = ${next.projectId})`,
+        sql`NOT EXISTS (
+          WITH RECURSIVE anc(id, depth) AS (
+            SELECT ${next.parentId}, 0
+            UNION ALL
+            SELECT t.parent_id, anc.depth + 1
+            FROM tasks t
+            JOIN anc ON t.id = anc.id
+            WHERE t.parent_id IS NOT NULL AND anc.depth < 1000
+          )
+          SELECT 1 FROM anc WHERE id = ${validId}
+        )`,
+      );
+    }
+
     for (let attempt = 0; ; attempt++) {
       try {
-        await this.#db
+        const updated = await this.#db
           .update(tasks)
           .set({
             projectId: next.projectId,
+            parentId: next.parentId ?? null,
             title: next.title,
             description: next.description,
             status: next.status,
@@ -802,7 +917,38 @@ export class D1Storage implements StorageProvider {
             activity: next.activity ? next.activity.map((entry) => ({ ...entry })) : null,
             updatedAt: Date.parse(next.updatedAt),
           })
-          .where(eq(tasks.id, validId));
+          .where(and(...whereConditions))
+          .returning({ id: tasks.id });
+        if (updated.length === 0) {
+          const latestRow = await this.#db
+            .select()
+            .from(tasks)
+            .where(and(eq(tasks.id, validId), inArray(tasks.projectId, this.#orgProjectIds())))
+            .get();
+          if (!latestRow) throw new NotFoundError("task", validId);
+          if (movedProject) {
+            const targetProject = await this.#db
+              .select({ id: projects.id })
+              .from(projects)
+              .where(and(eq(projects.id, next.projectId), eq(projects.orgId, this.#orgId)))
+              .get();
+            if (!targetProject) throw new NotFoundError("project", next.projectId);
+          }
+          const latest = recordToTask(latestRow);
+          const graph = await this.#containmentGraph();
+          if (movedProject) {
+            assertTaskProjectMoveAllowed(latest, next.projectId, graph, "updateTask");
+          }
+          assertTaskContainment(next, graph, "updateTask");
+          throw new ValidationError("updateTask", [
+            {
+              code: "custom",
+              path: ["parentId"],
+              message: "Concurrent task hierarchy modification rejected",
+              input: next.parentId ?? next.projectId,
+            },
+          ]);
+        }
         break;
       } catch (err) {
         if (!movedProject || attempt >= TASK_NUMBER_CONFLICT_MAX_RETRIES || !isTaskNumberConflict(err)) throw err;
@@ -829,12 +975,47 @@ export class D1Storage implements StorageProvider {
     throwIfAborted(opts?.signal);
     if (!existingRow) throw new NotFoundError("task", validId);
 
+    assertTaskDeletable(validId, await this.#containmentGraph(), "deleteTask");
+    throwIfAborted(opts?.signal);
+
     const attachmentRows = await this.#db
       .select({ id: attachments.id })
       .from(attachments)
       .where(eq(attachments.taskId, validId))
       .all();
-    await this.#db.delete(attachments).where(eq(attachments.taskId, validId));
+    throwIfAborted(opts?.signal);
+
+    // Delete the task atomically only if no child task was attached concurrently;
+    // related rows and R2 blobs are only removed once the task delete succeeds.
+    const deleted = await this.#db
+      .delete(tasks)
+      .where(
+        and(
+          eq(tasks.id, validId),
+          inArray(tasks.projectId, this.#orgProjectIds()),
+          sql`NOT EXISTS (SELECT 1 FROM tasks c WHERE c.parent_id = ${validId})`,
+        ),
+      )
+      .returning({ id: tasks.id });
+
+    if (deleted.length === 0) {
+      const stillExists = await this.#db
+        .select({ id: tasks.id })
+        .from(tasks)
+        .where(and(eq(tasks.id, validId), inArray(tasks.projectId, this.#orgProjectIds())))
+        .get();
+      if (!stillExists) throw new NotFoundError("task", validId);
+      assertTaskDeletable(validId, await this.#containmentGraph(), "deleteTask");
+      throw new ValidationError("deleteTask", [
+        {
+          code: "custom",
+          path: ["id"],
+          message: `Cannot delete task ${validId} while it still has child tasks; detach or reparent children first`,
+          input: validId,
+        },
+      ]);
+    }
+
     if (attachmentRows.length > 0) {
       await this.#bucket.delete(attachmentRows.map((row) => attachmentBlobKey(validId, row.id)));
     }
@@ -850,6 +1031,7 @@ export class D1Storage implements StorageProvider {
         throw err;
       }
     };
+    await ignoreMissingT3Table(this.#db.delete(attachments).where(eq(attachments.taskId, validId)));
     await ignoreMissingT3Table(this.#db.delete(taskRunProfiles).where(eq(taskRunProfiles.taskId, validId)));
     await ignoreMissingT3Table(
       this.#db
@@ -861,7 +1043,6 @@ export class D1Storage implements StorageProvider {
     );
     await this.#db.delete(comments).where(eq(comments.taskId, validId));
     await this.#db.delete(checkpoints).where(eq(checkpoints.taskId, validId));
-    await this.#db.delete(tasks).where(eq(tasks.id, validId));
     await this.#dropDependencies(new Set([validId]));
     throwIfAborted(opts?.signal);
   }
@@ -1310,6 +1491,7 @@ export class D1Storage implements StorageProvider {
       const taskValues = {
         id: task.id,
         projectId: task.projectId,
+        parentId: task.parentId ?? null,
         title: task.title,
         description: task.description,
         status: task.status,
@@ -1399,6 +1581,20 @@ export class D1Storage implements StorageProvider {
       .where(condition)
       .all();
     return rows.flatMap((row) => (row.key === null ? [] : [row.key]));
+  }
+
+  /** Every task's ID, projectId, and parentId in this organisation, for containment validation. */
+  async #containmentGraph(): Promise<ContainmentNode[]> {
+    const rows = await this.#db
+      .select({ id: tasks.id, projectId: tasks.projectId, parentId: tasks.parentId })
+      .from(tasks)
+      .where(inArray(tasks.projectId, this.#orgProjectIds()))
+      .all();
+    return rows.map((row) =>
+      row.parentId === null
+        ? { id: row.id, projectId: row.projectId }
+        : { id: row.id, projectId: row.projectId, parentId: row.parentId },
+    );
   }
 
   /** Every task's ID and dependencies in this organisation, for `assertTaskDependencies`. */

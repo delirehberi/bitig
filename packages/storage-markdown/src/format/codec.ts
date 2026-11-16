@@ -60,6 +60,7 @@ const PROJECT_KEY_ORDER = [
 ] as const satisfies readonly (keyof ProjectFileData)[];
 const TASK_KEY_ORDER = [
   "number",
+  "parentId",
   "title",
   "status",
   "isPublic",

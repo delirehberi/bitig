@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildLegacyHierarchyInventory,
   buildUmbrellaIndex,
   formatUmbrellaProgress,
   hasExplicitUmbrellaMarker,
@@ -20,6 +21,16 @@ const PROJECT: Project = {
   updatedAt: TIMESTAMP,
 };
 
+const OTHER_PROJECT: Project = {
+  id: "01940000-0000-7000-8000-000000000002",
+  name: "Other",
+  key: "OTH",
+  description: "",
+  kind: "hobby",
+  createdAt: TIMESTAMP,
+  updatedAt: TIMESTAMP,
+};
+
 function makeTask(number: number, overrides: Partial<Task> = {}): Task {
   return {
     id: `01940000-0000-7000-8000-${String(number).padStart(12, "0")}`,
@@ -35,7 +46,7 @@ function makeTask(number: number, overrides: Partial<Task> = {}): Task {
   };
 }
 
-describe("umbrella domain helpers (#BIT-191)", () => {
+describe("umbrella domain helpers (#BIT-191, #BIT-195)", () => {
   describe("hasExplicitUmbrellaMarker", () => {
     it("matches explicit umbrella labels and title markers without false positives on leaf titles", () => {
       expect(hasExplicitUmbrellaMarker({ title: "Umbrella: Run orchestration", labels: [] })).toBe(true);
@@ -73,7 +84,82 @@ describe("umbrella domain helpers (#BIT-191)", () => {
   });
 
   describe("buildUmbrellaIndex", () => {
-    it("resolves umbrella children and progress without false positives on child back-references or sibling dependencies", () => {
+    it("defaults to explicit mode: uses strictly same-project task.parentId and ignores mentions, dependsOn, or run ancestry", () => {
+      const parent = makeTask(100, {
+        title: "Umbrella: Explicit Parent",
+        description: "Mentions #BIT-102",
+        checklist: [{ text: "#BIT-103 checklist mention", done: false }],
+        status: "in_progress",
+      });
+      const explicitChild = makeTask(101, {
+        title: "Explicit child",
+        parentId: parent.id,
+        status: "in_progress",
+      });
+      const mentionedOnly = makeTask(102, {
+        title: "Mentioned only",
+        dependsOn: [parent.id],
+      });
+      const checklistMentionedOnly = makeTask(103, {
+        title: "Checklist mentioned only",
+      });
+      const crossProjectTask = makeTask(104, {
+        title: "Foreign task",
+        projectId: OTHER_PROJECT.id,
+        parentId: parent.id,
+      });
+
+      const runs: AgentRun[] = [
+        {
+          id: "01940000-0000-7000-8000-000000009100",
+          taskId: parent.id,
+          t3ProjectId: "t3-proj",
+          threadId: "thread-100",
+          state: "waiting_subagent",
+          waitingForTaskId: mentionedOnly.id,
+          startedAt: TIMESTAMP,
+          updatedAt: TIMESTAMP,
+        },
+        {
+          id: "01940000-0000-7000-8000-000000009101",
+          taskId: explicitChild.id,
+          parentTaskId: parent.id,
+          t3ProjectId: "t3-proj",
+          threadId: "thread-101",
+          state: "working",
+          startedAt: TIMESTAMP,
+          updatedAt: TIMESTAMP,
+        },
+      ];
+      const runChildren: AgentRunChild[] = [
+        {
+          parentTaskId: parent.id,
+          childTaskId: checklistMentionedOnly.id,
+          state: "done",
+          startedAt: TIMESTAMP,
+          finishedAt: TIMESTAMP,
+        },
+      ];
+
+      const index = buildUmbrellaIndex({
+        tasks: [parent, explicitChild, mentionedOnly, checklistMentionedOnly, crossProjectTask],
+        projects: [PROJECT, OTHER_PROJECT],
+        runs,
+        runChildren,
+      });
+
+      expect(index.isUmbrella(parent.id)).toBe(true);
+      expect(index.childrenFor(parent.id).map((t) => t.id)).toEqual([explicitChild.id]);
+      expect(index.progressFor(parent.id)).toEqual({
+        total: 1,
+        running: 1,
+        merged: 0,
+        done: 0,
+      });
+      expect(index.isUmbrella(explicitChild.id)).toBe(false);
+    });
+
+    it("resolves legacy inferred umbrella children and progress when mode is 'legacy'", () => {
       const umbrella = makeTask(183, {
         title: "Umbrella: Model routing and parallel children",
         status: "in_progress",
@@ -178,6 +264,7 @@ describe("umbrella domain helpers (#BIT-191)", () => {
         projects: [PROJECT],
         runs,
         runChildren,
+        mode: "legacy",
       });
 
       expect(index.isUmbrella(umbrella.id)).toBe(true);
@@ -201,6 +288,81 @@ describe("umbrella domain helpers (#BIT-191)", () => {
         expect(index.isUmbrella(leaf.id)).toBe(false);
         expect(index.progressFor(leaf.id)).toBeUndefined();
       }
+    });
+  });
+
+  describe("buildLegacyHierarchyInventory", () => {
+    it("surfaces inferred edges with provenance and conflict flags without mutating tasks", () => {
+      const parentA = makeTask(1, {
+        title: "Umbrella A",
+        checklist: [{ text: "#BIT-3", done: false }],
+        description: "Also touches #BIT-4 and #OTH-1",
+      });
+      const parentB = makeTask(2, {
+        title: "Umbrella B",
+        checklist: [{ text: "#BIT-3", done: false }],
+      });
+      const multiChild = makeTask(3, {
+        title: "Ambiguous child",
+        dependsOn: [parentA.id],
+      });
+      const alreadyChild = makeTask(4, {
+        title: "Already parented child",
+        parentId: parentA.id,
+      });
+      const foreignChild = makeTask(1, {
+        id: "01940000-0000-7000-8000-000000000201",
+        projectId: OTHER_PROJECT.id,
+        title: "Other project task",
+      });
+
+      const inventory = buildLegacyHierarchyInventory({
+        tasks: [parentA, parentB, multiChild, alreadyChild, foreignChild],
+        projects: [PROJECT, OTHER_PROJECT],
+        runs: [
+          {
+            id: "01940000-0000-7000-8000-000000009003",
+            taskId: multiChild.id,
+            parentTaskId: parentA.id,
+            t3ProjectId: "t3",
+            threadId: "t-3",
+            state: "working",
+            startedAt: TIMESTAMP,
+            updatedAt: TIMESTAMP,
+          },
+        ],
+        hierarchyMode: "explicit",
+      });
+
+      expect(inventory.hierarchyMode).toBe("explicit");
+      expect(inventory.alreadyParentedCount).toBe(1);
+
+      const multiA = inventory.candidates.find(
+        (c) => c.childTaskId === multiChild.id && c.proposedParentId === parentA.id,
+      );
+      expect(multiA).toMatchObject({
+        childCode: "BIT-3",
+        proposedParentCode: "BIT-1",
+        alternateParentIds: [parentB.id],
+        importable: true,
+      });
+      expect(multiA?.provenance).toContain("run_parent_task");
+      expect(multiA?.provenance).toContain("checklist_mention");
+      expect(multiA?.provenance).toContain("reverse_dependency");
+      expect(multiA?.conflicts).toContain("multiple_parents");
+      expect(multiA?.conflicts).toContain("parent_dependency");
+
+      const already = inventory.candidates.find((c) => c.childTaskId === alreadyChild.id);
+      expect(already).toMatchObject({
+        conflicts: ["already_parented"],
+        importable: false,
+      });
+
+      const crossProject = inventory.candidates.find((c) => c.childTaskId === foreignChild.id);
+      expect(crossProject).toMatchObject({
+        conflicts: ["cross_project"],
+        importable: false,
+      });
     });
   });
 });

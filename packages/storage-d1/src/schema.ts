@@ -26,6 +26,7 @@ import {
   type CommentAuthorType,
   type FeedbackEntryOutcome,
   type FeedbackFields,
+  type HierarchyMode,
   type OrganisationRole,
   type PlatformRole,
   type ProjectKind,
@@ -221,6 +222,7 @@ export const tasks = sqliteTable(
     projectId: text("project_id")
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
+    parentId: text("parent_id"),
     title: text("title").notNull(),
     description: text("description").notNull().default(DEFAULT_DESCRIPTION),
     status: text("status").$type<TaskStatus>().notNull().default(DEFAULT_TASK_STATUS),
@@ -248,6 +250,7 @@ export const tasks = sqliteTable(
   },
   (table) => [
     index("tasks_project_id_idx").on(table.projectId),
+    index("tasks_parent_id_idx").on(table.parentId),
     index("tasks_status_idx").on(table.status),
     index("tasks_order_idx").on(table.order),
     uniqueIndex("tasks_project_number_idx").on(table.projectId, table.number),
@@ -422,6 +425,8 @@ export const agentRuns = sqliteTable(
     parentTaskId: text("parent_task_id").references(() => tasks.id, { onDelete: "set null" }),
     /** On an umbrella task's run: the child task it waits on while `waiting_subagent` (#BIT-141). */
     waitingForTaskId: text("waiting_for_task_id").references(() => tasks.id, { onDelete: "set null" }),
+    /** Hierarchy semantics active when this run was launched (`legacy` vs `explicit`, #BIT-195). */
+    hierarchyMode: text("hierarchy_mode").$type<HierarchyMode>(),
     startedBy: text("started_by").$type<TaskActor>(),
     startedAt: integer("started_at").notNull(),
     updatedAt: integer("updated_at").notNull(),

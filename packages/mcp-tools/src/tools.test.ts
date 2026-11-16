@@ -66,6 +66,7 @@ describe("MCP Tools integration", () => {
       "report_child_merge",
       "start_t3_thread",
       "start_ready_children",
+      "list_legacy_hierarchy_inventory",
       "list_run_levels",
       "suggest_run_profile",
     ]);
@@ -1104,15 +1105,21 @@ describe("umbrella task child sessions (#BIT-141)", () => {
     return { client, server };
   }
 
-  it("resolves parentTaskId and does not let a dependency on the umbrella task block its child", async () => {
+  it("does not exempt parentTaskId dependencies in explicit mode, and preserves the exemption in legacy mode (#BIT-141, #BIT-195)", async () => {
     const storage = new InMemoryStorage();
     const project = await storage.createProject({ name: "Bitig", key: "BIT" });
     const umbrella = await storage.saveTask({ projectId: project.id, title: "Umbrella", status: "in_progress" });
     const other = await storage.saveTask({ projectId: project.id, title: "Unfinished other" });
-    const child = await storage.saveTask({ projectId: project.id, title: "Child", dependsOn: [umbrella.id] });
+    const child = await storage.saveTask({
+      projectId: project.id,
+      title: "Child",
+      parentId: umbrella.id,
+      dependsOn: [umbrella.id],
+    });
     const blocked = await storage.saveTask({
       projectId: project.id,
       title: "Blocked child",
+      parentId: umbrella.id,
       dependsOn: [umbrella.id, other.id],
     });
     const startT3Thread = vi.fn((input: { taskId: string }) =>
@@ -1132,14 +1139,31 @@ describe("umbrella task child sessions (#BIT-141)", () => {
         };
       }),
     );
-    const { client, server } = await connect(storage, { startT3Thread });
 
+    const explicitConn = await connect(storage, { startT3Thread });
     try {
-      const withoutParent = await client.callTool({ name: "start_t3_thread", arguments: { taskId: "BIT-3" } });
+      const explicitBlocked = await explicitConn.client.callTool({
+        name: "start_t3_thread",
+        arguments: { taskId: "BIT-3", parentTaskId: "BIT-1" },
+      });
+      expect(explicitBlocked.isError).toBe(true);
+      expect((explicitBlocked.content as { text: string }[])[0]?.text).toContain("BIT-1");
+      expect(startT3Thread).not.toHaveBeenCalled();
+    } finally {
+      await explicitConn.client.close();
+      await explicitConn.server.close();
+    }
+
+    const legacyConn = await connect(storage, { startT3Thread, hierarchyMode: "legacy" });
+    try {
+      const withoutParent = await legacyConn.client.callTool({
+        name: "start_t3_thread",
+        arguments: { taskId: "BIT-3" },
+      });
       expect(withoutParent.isError).toBe(true);
       expect(startT3Thread).not.toHaveBeenCalled();
 
-      const started = await client.callTool({
+      const started = await legacyConn.client.callTool({
         name: "start_t3_thread",
         arguments: { taskId: "BIT-3", parentTaskId: "BIT-1" },
       });
@@ -1148,7 +1172,7 @@ describe("umbrella task child sessions (#BIT-141)", () => {
         expect.objectContaining({ taskId: child.id, parentTaskId: umbrella.id }),
       );
 
-      const stillBlocked = await client.callTool({
+      const stillBlocked = await legacyConn.client.callTool({
         name: "start_t3_thread",
         arguments: { taskId: blocked.id, parentTaskId: "BIT-1" },
       });
@@ -1156,8 +1180,8 @@ describe("umbrella task child sessions (#BIT-141)", () => {
       expect((stillBlocked.content as { text: string }[])[0]?.text).toContain("BIT-2");
       expect(startT3Thread).toHaveBeenCalledTimes(1);
     } finally {
-      await client.close();
-      await server.close();
+      await legacyConn.client.close();
+      await legacyConn.server.close();
     }
   });
 
@@ -1387,6 +1411,7 @@ describe("run orchestration MCP tools (#BIT-186)", () => {
           profile: existing,
           resolved,
           suggestion: null,
+          suggestionFailure: null,
           stored: false,
           routerEnabled: true,
         };
@@ -1414,6 +1439,7 @@ describe("run orchestration MCP tools (#BIT-186)", () => {
         profile: saved,
         resolved,
         suggestion,
+        suggestionFailure: null,
         stored: true,
         routerEnabled: true,
       };
@@ -1601,6 +1627,201 @@ describe("run orchestration MCP tools (#BIT-186)", () => {
     expect(BITIG_SERVER_INSTRUCTIONS).toContain("parallelSafe");
     expect(BITIG_SERVER_INSTRUCTIONS).toContain("start_ready_children");
     expect(BITIG_SERVER_INSTRUCTIONS).toContain("report_child_merge");
+    expect(BITIG_SERVER_INSTRUCTIONS).toContain("parentId");
+    expect(BITIG_SERVER_INSTRUCTIONS).toContain("list_legacy_hierarchy_inventory");
   });
 });
+
+describe("explicit task hierarchy MCP tools (#BIT-195)", () => {
+  async function connectWith(
+    storage: InMemoryStorage,
+    options?: Parameters<typeof registerBitigTools>[2],
+  ): Promise<{ client: Client; server: McpServer }> {
+    const server = new McpServer({ name: "bitig-test", version: "1.0.0" });
+    registerBitigTools(server, storage, options);
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    const client = new Client({ name: "client-test", version: "1.0.0" }, { capabilities: {} });
+    await client.connect(clientTransport);
+    return { client, server };
+  }
+
+  it("supports parentId on add_task/update_task, returns explicit parent/children on get_task, and enforces hierarchy & delegation guards", async () => {
+    const storage = new InMemoryStorage();
+    const bitig = await storage.createProject({ name: "Bitig", key: "BIT" });
+    const other = await storage.createProject({ name: "Other", key: "OTH" });
+    const assertHierarchyMutationAllowed = vi.fn().mockResolvedValue(undefined);
+    const { client, server } = await connectWith(storage, { assertHierarchyMutationAllowed });
+
+    try {
+      const parentRes = await client.callTool({
+        name: "add_task",
+        arguments: {
+          projectId: "BIT",
+          title: "Parent epic",
+          description: "Mentions #BIT-2 only as reference",
+        },
+      });
+      const parent = JSON.parse((parentRes.content as { text: string }[])[0]?.text ?? "{}") as {
+        id: string;
+        code: string;
+      };
+
+      const childRes = await client.callTool({
+        name: "add_task",
+        arguments: {
+          projectId: bitig.id,
+          title: "Explicit child",
+          parentId: parent.code,
+        },
+      });
+      expect(childRes.isError).toBeFalsy();
+      const child = JSON.parse((childRes.content as { text: string }[])[0]?.text ?? "{}") as {
+        id: string;
+        code: string;
+        parentId: string;
+      };
+      expect(child.parentId).toBe(parent.id);
+
+      const mentionOnlyRes = await client.callTool({
+        name: "add_task",
+        arguments: {
+          projectId: "BIT",
+          title: "Standalone mentioned task",
+        },
+      });
+      const mentionOnly = JSON.parse((mentionOnlyRes.content as { text: string }[])[0]?.text ?? "{}") as {
+        id: string;
+        code: string;
+      };
+
+      // Cross-project parenting is rejected
+      const crossProjRes = await client.callTool({
+        name: "add_task",
+        arguments: {
+          projectId: other.id,
+          title: "Foreign child",
+          parentId: parent.code,
+        },
+      });
+      expect(crossProjRes.isError).toBe(true);
+
+      // Cycle is rejected
+      const cycleRes = await client.callTool({
+        name: "update_task",
+        arguments: {
+          id: parent.code,
+          parentId: child.code,
+        },
+      });
+      expect(cycleRes.isError).toBe(true);
+
+      // get_task separates explicit parent/children from mentions
+      const gotParent = JSON.parse(
+        ((await client.callTool({ name: "get_task", arguments: { id: parent.code } })).content as { text: string }[])[0]
+          ?.text ?? "{}",
+      ) as {
+        parent: unknown;
+        children: { id: string; code: string }[];
+        mentions: { id: string; code: string }[];
+      };
+      expect(gotParent.parent).toBeNull();
+      expect(gotParent.children.map((c) => c.id)).toEqual([child.id]);
+      expect(gotParent.mentions.map((m) => m.id)).toEqual([child.id]);
+
+      // Adding mention-only reference does NOT make it a child
+      await client.callTool({
+        name: "update_task",
+        arguments: { id: parent.code, description: `Mentions #${child.code} and #${mentionOnly.code}` },
+      });
+      const gotParentAfterMention = JSON.parse(
+        ((await client.callTool({ name: "get_task", arguments: { id: parent.code } })).content as { text: string }[])[0]
+          ?.text ?? "{}",
+      ) as {
+        children: { id: string }[];
+        mentions: { id: string }[];
+      };
+      expect(gotParentAfterMention.children.map((c) => c.id)).toEqual([child.id]);
+      expect(gotParentAfterMention.mentions.map((m) => m.id)).toEqual([child.id, mentionOnly.id]);
+
+      // Cannot delete parent while child still points to it
+      const deleteWithChild = await client.callTool({
+        name: "delete_task",
+        arguments: { id: parent.code },
+      });
+      expect(deleteWithChild.isError).toBe(true);
+
+      // Detaching calls assertHierarchyMutationAllowed and succeeds
+      const detached = await client.callTool({
+        name: "update_task",
+        arguments: { id: child.code, parentId: null },
+      });
+      expect(detached.isError).toBeFalsy();
+      expect(assertHierarchyMutationAllowed).toHaveBeenCalledWith({ action: "reparent", taskId: child.id });
+
+      const deletedParent = await client.callTool({
+        name: "delete_task",
+        arguments: { id: parent.code },
+      });
+      expect(deletedParent.isError).toBeFalsy();
+      expect(assertHierarchyMutationAllowed).toHaveBeenCalledWith({ action: "delete", taskId: parent.id });
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("exposes read-only list_legacy_hierarchy_inventory without mutating tasks", async () => {
+    const storage = new InMemoryStorage();
+    const project = await storage.createProject({ name: "Bitig", key: "BIT" });
+    const umbrella = await storage.saveTask({
+      projectId: project.id,
+      title: "Umbrella",
+      description: "Covers #BIT-2",
+    });
+    const candidate = await storage.saveTask({
+      projectId: project.id,
+      title: "Candidate child",
+    });
+    const { client, server } = await connectWith(storage);
+
+    try {
+      const res = await client.callTool({
+        name: "list_legacy_hierarchy_inventory",
+        arguments: { projectId: "BIT" },
+      });
+      expect(res.isError).toBeFalsy();
+      const inventory = JSON.parse((res.content as { text: string }[])[0]?.text ?? "{}") as {
+        hierarchyMode: string;
+        totalTasks: number;
+        alreadyParentedCount: number;
+        candidates: {
+          childTaskId: string;
+          proposedParentId: string;
+          provenance: string[];
+          conflicts: string[];
+          importable: boolean;
+        }[];
+      };
+      expect(inventory.hierarchyMode).toBe("explicit");
+      expect(inventory.totalTasks).toBe(2);
+      expect(inventory.alreadyParentedCount).toBe(0);
+      expect(inventory.candidates).toEqual([
+        expect.objectContaining({
+          childTaskId: candidate.id,
+          proposedParentId: umbrella.id,
+          provenance: ["description_mention"],
+          conflicts: [],
+          importable: true,
+        }),
+      ]);
+      // Inventory is strictly read-only
+      expect((await storage.getTask(candidate.id))?.parentId).toBeUndefined();
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+});
+
 

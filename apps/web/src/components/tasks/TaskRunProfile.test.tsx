@@ -223,6 +223,33 @@ describe("task run profile (#BIT-188)", () => {
     expect(screen.queryByRole("button", { name: "Suggest" })).not.toBeInTheDocument();
   });
 
+  it.each([
+    [{ reason: "no_token" }, "The AI router has no API token set; the project default level applies."],
+    [{ reason: "http_error", status: 503 }, "The AI router returned HTTP 503; the project default level applies."],
+    [{ reason: "timeout" }, "The AI router did not answer in time; the project default level applies."],
+    [
+      { reason: "validation_failed", field: "touches" },
+      "The AI router's suggestion had an invalid touches; the project default level applies.",
+    ],
+    [
+      { reason: "low_confidence", confidence: 0.42 },
+      "The AI router was not confident enough (0.42); the project default level applies.",
+    ],
+    [undefined, "The router had no confident suggestion; the project default level applies."],
+  ])("explains why the router gave no suggestion (%o) (#BIT-208)", async (suggestionFailure, message) => {
+    const user = userEvent.setup();
+    vi.mocked(suggestTaskRunProfile).mockResolvedValue({
+      ...profileResponse(task.id),
+      stored: false,
+      suggestion: null,
+      ...(suggestionFailure ? { suggestionFailure } : {}),
+    });
+    renderSection(task, project);
+
+    await user.click(await screen.findByRole("button", { name: "Suggest" }));
+    expect(await screen.findByText(message)).toBeInTheDocument();
+  });
+
   it("offers Retry on the next level up after a failed run and launches on that level", async () => {
     const user = userEvent.setup();
     vi.mocked(fetchTaskT3Run).mockResolvedValue({ run: makeRun(task.id, "failed"), pendingQuestions: [] });

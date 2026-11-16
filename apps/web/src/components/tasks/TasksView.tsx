@@ -2,14 +2,17 @@ import { useMemo, useState } from "react";
 import { Ban, Hand, Kanban, List, MessageSquareText, Plus, ShieldQuestionMark, X } from "lucide-react";
 import type { TaskFeedbackActionResult, TaskFeedbackClient } from "@bitig/api-client";
 import {
+  DEFAULT_HIERARCHY_MODE,
   blockedByFromError,
   buildMentionIndex,
   buildUmbrellaIndex,
   dependencyLinks,
+  hierarchyLinks,
   compareTasks,
   type AgentRun,
   type AgentRunChild,
   type CreateTaskInput,
+  type HierarchyMode,
   type Project,
   type StorageProvider,
   type Task,
@@ -38,6 +41,7 @@ interface TasksViewProps {
   readonly projects: Project[];
   readonly agentRuns?: readonly AgentRun[] | undefined;
   readonly umbrellaChildren?: readonly AgentRunChild[] | undefined;
+  readonly hierarchyMode?: HierarchyMode | undefined;
   readonly isLoading: boolean;
   readonly error: string | null;
   readonly selectedProjectId?: string | undefined;
@@ -82,6 +86,7 @@ export function TasksView({
   projects,
   agentRuns,
   umbrellaChildren,
+  hierarchyMode,
   isLoading,
   error,
   selectedProjectId,
@@ -140,9 +145,17 @@ export function TasksView({
   // Resolved on every render so the detail modal follows updates and closes when the task is deleted.
   const viewTask = viewTaskRef === undefined ? null : (findTaskByRef(viewTaskRef, projects, tasks) ?? null);
   const mentionIndex = useMemo(() => buildMentionIndex(tasks, projects), [tasks, projects]);
+  const effectiveHierarchyMode = hierarchyMode ?? DEFAULT_HIERARCHY_MODE;
   const umbrellaIndex = useMemo(
-    () => buildUmbrellaIndex({ tasks, projects, runs: agentRuns, runChildren: umbrellaChildren }),
-    [tasks, projects, agentRuns, umbrellaChildren],
+    () =>
+      buildUmbrellaIndex({
+        tasks,
+        projects,
+        runs: agentRuns,
+        runChildren: umbrellaChildren,
+        mode: effectiveHierarchyMode,
+      }),
+    [tasks, projects, agentRuns, umbrellaChildren, effectiveHierarchyMode],
   );
   const blockersOf = useMemo(() => buildBlockersResolver(projects, tasks), [projects, tasks]);
   // Finished tasks wait on nothing, whatever their dependencies.
@@ -250,6 +263,7 @@ export function TasksView({
       const patch: UpdateTaskInput = {
         ...input,
         needsHuman: input.needsHuman ?? null,
+        parentId: input.parentId ?? null,
         dependsOn: input.dependsOn ?? null,
         pendingApproval: undefined,
       };
@@ -614,6 +628,7 @@ export function TasksView({
           agentRuns={agentRuns}
           umbrellaChildren={umbrellaChildren}
           umbrellaIndex={umbrellaIndex}
+          hierarchyMode={effectiveHierarchyMode}
           showProject={!selectedProjectId}
           onView={openTask}
           onEdit={(t) => {
@@ -639,6 +654,7 @@ export function TasksView({
           agentRuns={agentRuns}
           umbrellaChildren={umbrellaChildren}
           umbrellaIndex={umbrellaIndex}
+          hierarchyMode={effectiveHierarchyMode}
           showProject={!selectedProjectId}
           onView={openTask}
           onEdit={(t) => {
@@ -661,6 +677,8 @@ export function TasksView({
         projects={projects}
         agentRun={viewTask ? agentRuns?.find((r) => r.taskId === viewTask.id) : undefined}
         isUmbrella={viewTask ? umbrellaIndex.isUmbrella(viewTask.id) : false}
+        hierarchy={viewTask ? hierarchyLinks(viewTask, tasks, projects) : undefined}
+        hierarchyMode={effectiveHierarchyMode}
         onClose={closeTask}
         onEdit={(t) => {
           closeTask();

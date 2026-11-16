@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { Hono } from "hono";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   AgentRun,
   Project,
@@ -98,6 +98,7 @@ const STATEMENTS = [
     \`needs_human\` text,
     \`pending_approval\` integer,
     \`depends_on\` text,
+    \`parent_id\` text,
     \`number\` integer,
     \`started_at\` integer,
     \`completed_at\` integer,
@@ -222,6 +223,7 @@ const STATEMENTS = [
     \`workspace_strategy\` text,
     \`parent_task_id\` text,
     \`waiting_for_task_id\` text,
+    \`hierarchy_mode\` text,
     \`started_by\` text,
     \`started_at\` integer NOT NULL,
     \`updated_at\` integer NOT NULL,
@@ -2511,7 +2513,7 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
         body: JSON.stringify({
           projectId: project.id,
           title: "Child step one",
-          dependsOn: [umbrella.id],
+          parentId: umbrella.id,
           checklist: [{ text: "Write handler", done: true }],
         }),
       })
@@ -2523,7 +2525,8 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
         body: JSON.stringify({
           projectId: project.id,
           title: "Child step two",
-          dependsOn: [umbrella.id, childOne.id],
+          parentId: umbrella.id,
+          dependsOn: [childOne.id],
         }),
       })
     ).json<Task>();
@@ -2791,7 +2794,7 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
         body: JSON.stringify({
           projectId: project.id,
           title: "Child A (core)",
-          dependsOn: [umbrella.id],
+          parentId: umbrella.id,
         }),
       })
     ).json<Task>();
@@ -2813,7 +2816,7 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
         body: JSON.stringify({
           projectId: project.id,
           title: "Child Overlap (core/src)",
-          dependsOn: [umbrella.id],
+          parentId: umbrella.id,
         }),
       })
     ).json<Task>();
@@ -2835,7 +2838,7 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
         body: JSON.stringify({
           projectId: project.id,
           title: "Child B (mcp-tools)",
-          dependsOn: [umbrella.id],
+          parentId: umbrella.id,
         }),
       })
     ).json<Task>();
@@ -2857,7 +2860,7 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
         body: JSON.stringify({
           projectId: project.id,
           title: "Child C (web)",
-          dependsOn: [umbrella.id],
+          parentId: umbrella.id,
         }),
       })
     ).json<Task>();
@@ -2879,7 +2882,7 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
         body: JSON.stringify({
           projectId: project.id,
           title: "Child Serial (migrations)",
-          dependsOn: [umbrella.id],
+          parentId: umbrella.id,
         }),
       })
     ).json<Task>();
@@ -2900,7 +2903,7 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
       body: JSON.stringify({
         projectId: project.id,
         title: "Child Unprofiled",
-        dependsOn: [umbrella.id],
+        parentId: umbrella.id,
       }),
     });
 
@@ -3203,7 +3206,7 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
         body: JSON.stringify({
           projectId: project.id,
           title: "Child Two (order 20, leaves declared paths)",
-          dependsOn: [umbrella.id],
+          parentId: umbrella.id,
           order: 20,
         }),
       })
@@ -3226,7 +3229,7 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
         body: JSON.stringify({
           projectId: project.id,
           title: "Child Three (order 10, stays inside declared paths)",
-          dependsOn: [umbrella.id],
+          parentId: umbrella.id,
           order: 10,
         }),
       })
@@ -5878,7 +5881,7 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
           await multiRequest("/api/tasks", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ projectId: projA.id, title: "Child task" }),
+            body: JSON.stringify({ projectId: projA.id, title: "Child task", parentId: task1.id }),
           })
         ).json<Task>();
         await multiMcpCall("report_t3_git_metadata", {
@@ -6158,12 +6161,15 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
           },
         );
         expect(cfSuggestion).toEqual({
-          level: "nano",
-          effort: "low",
-          touches: ["README.md"],
-          parallelSafe: true,
-          reason: "Simple documentation fix in README.",
-          confidence: 0.94,
+          ok: true,
+          suggestion: {
+            level: "nano",
+            effort: "low",
+            touches: ["README.md"],
+            parallelSafe: true,
+            reason: "Simple documentation fix in README.",
+            confidence: 0.94,
+          },
         });
         expect(capturedCalls).toHaveLength(1);
         expect(capturedCalls[0]?.url).toBe(
@@ -6214,12 +6220,15 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
           },
         );
         expect(oaSuggestion).toEqual({
-          level: "architect",
-          effort: "high",
-          touches: ["packages/core/**", "apps/worker/**"],
-          parallelSafe: false,
-          reason: "Cross-package domain and worker changes.",
-          confidence: 0.88,
+          ok: true,
+          suggestion: {
+            level: "architect",
+            effort: "high",
+            touches: ["packages/core/**", "apps/worker/**"],
+            parallelSafe: false,
+            reason: "Cross-package domain and worker changes.",
+            confidence: 0.88,
+          },
         });
         expect(openAiCalls).toHaveLength(1);
         expect(openAiCalls[0]?.url).toBe(
@@ -6228,28 +6237,37 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
         expect(openAiCalls[0]?.body.model).toBe("@cf/cloudflare/clef");
 
         // Rejects unknown level key, effort not supported by that level, or low confidence
-        for (const badPayload of [
+        for (const { payload: badPayload, failure } of [
           {
-            level: "cheap", // not in [nano, architect]
-            touches: ["README.md"],
-            parallelSafe: true,
-            reason: "Wrong level key",
-            confidence: 0.9,
+            payload: {
+              level: "cheap", // not in [nano, architect]
+              touches: ["README.md"],
+              parallelSafe: true,
+              reason: "Wrong level key",
+              confidence: 0.9,
+            },
+            failure: { reason: "validation_failed", field: "level" },
           },
           {
-            level: "nano",
-            effort: "high", // nano only offers [low, medium]
-            touches: ["README.md"],
-            parallelSafe: true,
-            reason: "Unsupported effort for nano",
-            confidence: 0.9,
+            payload: {
+              level: "nano",
+              effort: "high", // nano only offers [low, medium]
+              touches: ["README.md"],
+              parallelSafe: true,
+              reason: "Unsupported effort for nano",
+              confidence: 0.9,
+            },
+            failure: { reason: "validation_failed", field: "effort" },
           },
           {
-            level: "nano",
-            touches: ["README.md"],
-            parallelSafe: true,
-            reason: "Low confidence",
-            confidence: 0.2,
+            payload: {
+              level: "nano",
+              touches: ["README.md"],
+              parallelSafe: true,
+              reason: "Low confidence",
+              confidence: 0.2,
+            },
+            failure: { reason: "low_confidence", confidence: 0.2 },
           },
         ]) {
           const badRouter = new HttpRunProfileRouter({
@@ -6271,8 +6289,114 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
                 effortValuesByLevel: { nano: ["low", "medium"], architect: ["medium", "high"] },
               },
             ),
-          ).toBeNull();
+          ).toEqual({ ok: false, failure });
         }
+      });
+
+      it("classifies every reason the AI router gives no suggestion (#BIT-208)", async () => {
+        const endpoint = "https://api.cloudflare.com/client/v4/accounts/8423a8bddcba5f61bc5f599e64bbdd62/ai/run";
+        const levels = [
+          {
+            key: "nano",
+            label: "Nano",
+            description: "Tiny",
+            order: 0,
+            selection: { providerInstanceId: "prov-codex", model: "gpt-6-sol", options: [{ id: "reasoningEffort", value: "low" }] },
+          },
+          {
+            key: "architect",
+            label: "Architect",
+            description: "Hard",
+            order: 1,
+            selection: { providerInstanceId: "prov-claude", model: "claude-opus-4-7", options: [{ id: "effort", value: "high" }] },
+          },
+        ];
+        const context = { levels };
+        const task = { title: "Classify failures" };
+        const respondWith = (body: unknown, status = 200): typeof fetch => () =>
+          Promise.resolve(new Response(typeof body === "string" ? body : JSON.stringify(body), { status }));
+        const routerWith = (
+          fetchFn: typeof fetch,
+          overrides: { baseUrl?: string; apiToken?: string; enabled?: boolean; model?: string; timeoutMs?: number } = {},
+        ) =>
+          new HttpRunProfileRouter({
+            baseUrl: overrides.baseUrl ?? endpoint,
+            model: overrides.model ?? "@cf/cloudflare/clef",
+            apiToken: overrides.apiToken ?? "token",
+            enabled: overrides.enabled ?? true,
+            fetchFn,
+            ...(overrides.timeoutMs !== undefined ? { timeoutMs: overrides.timeoutMs } : {}),
+          });
+        const validPayload = {
+          success: true,
+          result: {
+            response: { level: "nano", touches: ["README.md"], parallelSafe: true, reason: "Doc fix", confidence: 0.9 },
+          },
+        };
+
+        expect(await routerWith(respondWith(validPayload), { enabled: false }).suggest(task, context)).toEqual({
+          ok: false,
+          failure: { reason: "router_disabled" },
+        });
+        expect(await routerWith(respondWith(validPayload), { apiToken: "" }).suggest(task, context)).toEqual({
+          ok: false,
+          failure: { reason: "no_token" },
+        });
+        expect(await routerWith(respondWith(validPayload), { baseUrl: "" }).suggest(task, context)).toEqual({
+          ok: false,
+          failure: { reason: "not_configured" },
+        });
+        expect(
+          await routerWith(respondWith(validPayload), { baseUrl: "http://insecure.example.com" }).suggest(task, context),
+        ).toEqual({ ok: false, failure: { reason: "invalid_endpoint" } });
+        expect(await routerWith(respondWith(validPayload)).suggest(task, { levels: [] })).toEqual({
+          ok: false,
+          failure: { reason: "no_run_levels" },
+        });
+        expect(await routerWith(respondWith("upstream down", 503)).suggest(task, context)).toEqual({
+          ok: false,
+          // `detail` is the truncated response body, kept for server logs only (#BIT-210).
+          failure: { reason: "http_error", status: 503, detail: "upstream down" },
+        });
+        expect(
+          await routerWith(
+            async (_input, init) =>
+              new Promise<Response>((_resolve, reject) => {
+                init?.signal?.addEventListener("abort", () => {
+                  reject(new Error("aborted"));
+                });
+              }),
+            { timeoutMs: 1 },
+          ).suggest(task, context),
+        ).toEqual({ ok: false, failure: { reason: "timeout" } });
+        const cancelled = new AbortController();
+        cancelled.abort();
+        expect(await routerWith(respondWith(validPayload)).suggest(task, { ...context, signal: cancelled.signal })).toEqual({
+          ok: false,
+          failure: { reason: "aborted" },
+        });
+        expect(
+          await routerWith(() => Promise.reject(new TypeError("fetch failed"))).suggest(task, context),
+        ).toEqual({ ok: false, failure: { reason: "network_error" } });
+        expect(await routerWith(respondWith("<html>not json</html>")).suggest(task, context)).toEqual({
+          ok: false,
+          failure: { reason: "bad_response_shape" },
+        });
+        expect(
+          await routerWith(respondWith({ success: true, result: { response: "not json at all" } })).suggest(task, context),
+        ).toEqual({ ok: false, failure: { reason: "bad_response_shape" } });
+        expect(
+          await routerWith(respondWith({ success: true, result: { response: { level: "nano" } } })).suggest(task, context),
+        ).toEqual({ ok: false, failure: { reason: "validation_failed", field: "touches" } });
+        expect(
+          await routerWith(
+            respondWith({ success: true, result: { response: { ...validPayload.result.response, extra: "x" } } }),
+          ).suggest(task, context),
+        ).toEqual({ ok: false, failure: { reason: "validation_failed", field: "unexpectedKey" } });
+        const aboveMinimumConfidence = await routerWith(
+          respondWith({ success: true, result: { response: { ...validPayload.result.response, confidence: 0.6 } } }),
+        ).suggest(task, context);
+        expect(aboveMinimumConfidence).toMatchObject({ ok: true, suggestion: { level: "nano", confidence: 0.6 } });
       });
 
       it("manages per-org AI router settings (owners only, token encryption & masking, org isolation), runs router on task approval and on-demand (REST & MCP), falls back on failure, and offers nextLevelUp on failed or needsHuman runs (#BIT-187)", async () => {
@@ -6815,15 +6939,24 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
             body: JSON.stringify({ projectId: proj.id, title: "Router fails on this task" }),
           })
         ).json<Task>();
+        const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
         const failedSuggestRes = await multiRequest(
           `/api/tasks/${fallbackTask.id}/run-profile/suggest`,
           { method: "POST" },
         );
         expect(failedSuggestRes.status).toBe(200);
+        // Logged with the classification only: never the token or the response body (#BIT-208)
+        expect(warnSpy).toHaveBeenCalledWith(
+          "AI run-profile router returned no suggestion",
+          expect.objectContaining({ taskId: fallbackTask.id, reason: "http_error", status: 500 }),
+        );
+        expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(ROUTER_SECRET_TOKEN);
+        warnSpy.mockRestore();
         expect(await failedSuggestRes.json()).toMatchObject({
           stored: false,
           profile: null,
           suggestion: null,
+          suggestionFailure: { reason: "http_error", status: 500 },
           resolved: {
             source: "project_default_level",
             levelKey: "balanced",
@@ -7003,7 +7136,7 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
             body: JSON.stringify({
               projectId: proj.id,
               title: "Child A (core)",
-              dependsOn: [umbrella.id],
+              parentId: umbrella.id,
             }),
           })
         ).json<Task>();
@@ -7027,7 +7160,7 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
             body: JSON.stringify({
               projectId: proj.id,
               title: "Child Overlap (core/src)",
-              dependsOn: [umbrella.id],
+              parentId: umbrella.id,
             }),
           })
         ).json<Task>();
@@ -7050,7 +7183,7 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
             body: JSON.stringify({
               projectId: proj.id,
               title: "Child B (web)",
-              dependsOn: [umbrella.id],
+              parentId: umbrella.id,
             }),
           })
         ).json<Task>();
@@ -7074,7 +7207,7 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
             body: JSON.stringify({
               projectId: proj.id,
               title: "Child Cap (mcp-tools)",
-              dependsOn: [umbrella.id],
+              parentId: umbrella.id,
             }),
           })
         ).json<Task>();
@@ -7097,7 +7230,8 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
             body: JSON.stringify({
               projectId: proj.id,
               title: "Child Blocked (cli)",
-              dependsOn: [umbrella.id, childA.id],
+              parentId: umbrella.id,
+              dependsOn: [childA.id],
             }),
           })
         ).json<Task>();
@@ -7379,7 +7513,7 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
               projectId: proj.id,
               title: "Child 1: Core schema helpers",
               order: 10,
-              dependsOn: [umbrella.id],
+              parentId: umbrella.id,
             }),
           })
         ).json<Task>();
@@ -7404,7 +7538,7 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
               projectId: proj.id,
               title: "Child 2: Dashboard orchestration card",
               order: 20,
-              dependsOn: [umbrella.id],
+              parentId: umbrella.id,
             }),
           })
         ).json<Task>();
@@ -7429,7 +7563,7 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
               projectId: proj.id,
               title: "Child 3: Core storage contract updates",
               order: 30,
-              dependsOn: [umbrella.id],
+              parentId: umbrella.id,
             }),
           })
         ).json<Task>();
@@ -7454,7 +7588,8 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
               projectId: proj.id,
               title: "Child 4: Worker route wiring",
               order: 40,
-              dependsOn: [umbrella.id, child3.id],
+              parentId: umbrella.id,
+              dependsOn: [child3.id],
             }),
           })
         ).json<Task>();
@@ -8015,6 +8150,442 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
           source: "manual",
           reason: "Manual choice before approval",
         });
+      });
+
+      it("enforces explicit containment vs mentions/dependencies, excludes archived children from launches, and blocks active-delegation reparent/delete (#BIT-195)", async () => {
+        hostAState.remoteProjects = [{ id: "t3-proj-exp", title: "ExplicitSpec", workspaceRoot: "~/www/explicit" }];
+        await authorizeHost({ mcpUrl: HOST_A_MCP_URL, label: "Host A", kind: "user" });
+        const { hosts } = await (await multiRequest("/api/t3/hosts")).json<{ hosts: T3HostConnectionStatus[] }>();
+        const hostA = hosts[0];
+        if (!hostA) throw new Error("Expected Host A");
+
+        const proj = await (
+          await multiRequest("/api/projects", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              name: "Explicit Project",
+              key: "EXP",
+              hostId: hostA.id,
+              workspaceRoot: "~/www/explicit",
+            }),
+          })
+        ).json<Project>();
+
+        const umbrella = await (
+          await multiRequest("/api/tasks", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              projectId: proj.id,
+              title: "Umbrella parent",
+              description: "References #EXP-3 and #EXP-4 as context",
+            }),
+          })
+        ).json<Task>();
+
+        const childExplicit = await (
+          await multiRequest("/api/tasks", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              projectId: proj.id,
+              title: "Explicit child",
+              parentId: umbrella.id,
+            }),
+          })
+        ).json<Task>();
+
+        // EXP-3: Mentioned only (no parentId)
+        const mentionOnly = await (
+          await multiRequest("/api/tasks", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ projectId: proj.id, title: "Mentioned only" }),
+          })
+        ).json<Task>();
+
+        // EXP-4: Reverse dependsOn umbrella (no parentId)
+        const depOnly = await (
+          await multiRequest("/api/tasks", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              projectId: proj.id,
+              title: "Depends on umbrella only",
+              dependsOn: [umbrella.id],
+            }),
+          })
+        ).json<Task>();
+
+        // EXP-5: Explicit child that also depends on unfinished umbrella -> blocked in explicit mode
+        const explicitAlsoDep = await (
+          await multiRequest("/api/tasks", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              projectId: proj.id,
+              title: "Explicit child blocked by umbrella dependency",
+              parentId: umbrella.id,
+              dependsOn: [umbrella.id],
+            }),
+          })
+        ).json<Task>();
+
+        // EXP-6: Explicit child archived -> preserved in containment but excluded from launches
+        const archivedChild = await (
+          await multiRequest("/api/tasks", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              projectId: proj.id,
+              title: "Archived child",
+              parentId: umbrella.id,
+              status: "archived",
+            }),
+          })
+        ).json<Task>();
+
+        const childrenRes = await multiRequest(`/api/tasks/${umbrella.id}/children`);
+        expect(childrenRes.status).toBe(200);
+        const childrenBody = await childrenRes.json<UmbrellaChildrenStatusResponse>();
+        expect(childrenBody.children.map((c) => c.taskId)).toEqual([
+          childExplicit.id,
+          explicitAlsoDep.id,
+          archivedChild.id,
+        ]);
+        expect(childrenBody.children.some((c) => c.taskId === mentionOnly.id || c.taskId === depOnly.id)).toBe(false);
+        expect(childrenBody.readyBatch.map((b) => b.taskId)).toEqual([childExplicit.id]);
+        expect(childrenBody.children.find((c) => c.taskId === explicitAlsoDep.id)?.waitingReason).toMatchObject({
+          reason: "blocked",
+          blockingTaskId: umbrella.id,
+        });
+
+        // Start umbrella and report clean git metadata
+        hostAState.launchThreadIds = ["thread-exp-umb"];
+        const startUmb = await (
+          await multiRequest(`/api/tasks/${umbrella.id}/t3-run`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ workspaceStrategy: "worktree" }),
+          })
+        ).json<{ run: AgentRun }>();
+        await multiMcpCall("report_t3_git_metadata", {
+          taskId: "EXP-1",
+          runId: startUmb.run.id,
+          threadId: "thread-exp-umb",
+          metadata: {
+            branch: "bitig/EXP-1",
+            headSha: "1000000000000000000000000000000000000001",
+            worktreePath: "/tmp/worktrees/exp-1",
+            dirty: false,
+          },
+        });
+
+        // Reject starting non-child, archived child, and umbrella-dependent child via start_t3_thread
+        const launchNonChild = await multiMcpCall("start_t3_thread", {
+          taskId: mentionOnly.id,
+          parentTaskId: "EXP-1",
+        });
+        expect(launchNonChild.isError).toBe(true);
+        expect(launchNonChild.text).toContain("must have parentId set to umbrella task EXP-1");
+
+        const launchDepOnly = await multiMcpCall("start_t3_thread", {
+          taskId: depOnly.id,
+          parentTaskId: "EXP-1",
+        });
+        expect(launchDepOnly.isError).toBe(true);
+        expect(launchDepOnly.text).toContain("must have parentId set to umbrella task EXP-1");
+
+        const launchArchived = await multiMcpCall("start_t3_thread", {
+          taskId: archivedChild.id,
+          parentTaskId: "EXP-1",
+        });
+        expect(launchArchived.isError).toBe(true);
+        expect(launchArchived.text).toMatch(/archived/i);
+
+        const launchBlockedChild = await multiMcpCall("start_t3_thread", {
+          taskId: explicitAlsoDep.id,
+          parentTaskId: "EXP-1",
+        });
+        expect(launchBlockedChild.isError).toBe(true);
+        expect(launchBlockedChild.text).toContain("EXP-1");
+
+        // Start explicit child and verify active-delegation guards prevent reparenting or deleting
+        hostAState.launchThreadIds = ["thread-exp-child"];
+        const startChild = await multiMcpCall("start_t3_thread", {
+          taskId: childExplicit.id,
+          parentTaskId: "EXP-1",
+        });
+        expect(startChild.isError).toBeFalsy();
+
+        const reparentWhileActive = await multiRequest(`/api/tasks/${childExplicit.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ parentId: null }),
+        });
+        expect(reparentWhileActive.status).toBe(400);
+
+        const deleteChildWhileActive = await multiRequest(`/api/tasks/${childExplicit.id}`, {
+          method: "DELETE",
+        });
+        expect(deleteChildWhileActive.status).toBe(400);
+
+        const deleteUmbrellaWhileActive = await multiRequest(`/api/tasks/${umbrella.id}`, {
+          method: "DELETE",
+        });
+        expect(deleteUmbrellaWhileActive.status).toBe(400);
+
+        // Stop active child run -> now detaching & deleting succeed cleanly
+        expect((await multiRequest(`/api/tasks/${childExplicit.id}/t3-run/stop`, { method: "POST" })).status).toBe(200);
+        const detachAfterStop = await multiRequest(`/api/tasks/${childExplicit.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ parentId: null }),
+        });
+        expect(detachAfterStop.status).toBe(200);
+        expect((await detachAfterStop.json<Task>()).parentId).toBeUndefined();
+      });
+
+      it("supports HIERARCHY_MODE=legacy rollback and keeps active legacy umbrella runs working after flipping to explicit (#BIT-195)", async () => {
+        hostAState.remoteProjects = [{ id: "t3-proj-leg", title: "LegacySpec", workspaceRoot: "~/www/legacy" }];
+        await authorizeHost({ mcpUrl: HOST_A_MCP_URL, label: "Host A", kind: "user" });
+        const { hosts } = await (await multiRequest("/api/t3/hosts")).json<{ hosts: T3HostConnectionStatus[] }>();
+        const hostA = hosts[0];
+        if (!hostA) throw new Error("Expected Host A");
+
+        const legacyEnv = { ...env, HIERARCHY_MODE: "legacy" };
+        function legacyRequest(path: string, init?: RequestInit): Promise<Response> {
+          const headers = new Headers(init?.headers);
+          if (!headers.has("Authorization")) headers.set("Authorization", TEST_AUTH_HEADER);
+          return Promise.resolve(multiApp.request(`${BASE_URL}${path}`, { ...init, headers }, legacyEnv));
+        }
+
+        const healthLegacy = await (await legacyRequest("/health")).json<{ hierarchyMode: string }>();
+        expect(healthLegacy.hierarchyMode).toBe("legacy");
+
+        const proj = await (
+          await legacyRequest("/api/projects", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              name: "Legacy Project",
+              key: "LEG",
+              hostId: hostA.id,
+              workspaceRoot: "~/www/legacy",
+            }),
+          })
+        ).json<Project>();
+
+        const umbrella = await (
+          await legacyRequest("/api/tasks", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ projectId: proj.id, title: "Legacy umbrella" }),
+          })
+        ).json<Task>();
+
+        // Inferred legacy child via reverse dependsOn only (no parentId)
+        const legacyChild = await (
+          await legacyRequest("/api/tasks", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              projectId: proj.id,
+              title: "Legacy child",
+              dependsOn: [umbrella.id],
+            }),
+          })
+        ).json<Task>();
+
+        hostAState.launchThreadIds = ["thread-leg-umb", "thread-leg-child"];
+        const startUmbRes = await legacyRequest(`/api/tasks/${umbrella.id}/t3-run`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ workspaceStrategy: "worktree" }),
+        });
+        expect(startUmbRes.status).toBe(201);
+        const umbRun = (await startUmbRes.json<{ run: AgentRun }>()).run;
+        expect(umbRun.hierarchyMode).toBe("legacy");
+
+        const mcpLegacyCall = async (name: string, args: Record<string, unknown>) => {
+          const res = await legacyRequest("/mcp", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Accept: "application/json, text/event-stream",
+            },
+            body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }),
+          });
+          const raw = await res.text();
+          const dataLine = raw.split("\n").find((l) => l.startsWith("data: "));
+          return JSON.parse(dataLine ? dataLine.slice(6) : raw) as {
+            result?: { isError?: boolean; content?: { text?: string }[] };
+          };
+        };
+
+        await mcpLegacyCall("report_t3_git_metadata", {
+          taskId: "LEG-1",
+          runId: umbRun.id,
+          threadId: "thread-leg-umb",
+          metadata: {
+            branch: "bitig/LEG-1",
+            headSha: "1000000000000000000000000000000000000001",
+            worktreePath: "/tmp/worktrees/leg-1",
+            dirty: false,
+          },
+        });
+
+        // Start ready children in legacy mode -> succeeds despite dependsOn: [umbrella.id] and no parentId
+        const batchRes = await mcpLegacyCall("start_ready_children", { parentTaskId: "LEG-1" });
+        expect(batchRes.result?.isError).toBeFalsy();
+        const batchBody = JSON.parse(batchRes.result?.content?.[0]?.text ?? "{}") as {
+          started: { taskId: string }[];
+        };
+        expect(batchBody.started.map((s) => s.taskId)).toEqual([legacyChild.id]);
+
+        // Now flip back to explicit mode (multiRequest uses default env HIERARCHY_MODE="explicit").
+        // The active legacy umbrella still completes its handback cleanly!
+        const childrenStatusAfterFlip = await (
+          await multiRequest(`/api/tasks/${umbrella.id}/children`)
+        ).json<UmbrellaChildrenStatusResponse>();
+        expect(childrenStatusAfterFlip.children.map((c) => c.taskId)).toEqual([legacyChild.id]);
+
+        const completeRes = await multiRequest(`/api/tasks/${legacyChild.id}/complete`, { method: "POST" });
+        expect(completeRes.status).toBe(200);
+        expect(hostAState.toolCalls.some((c) => c.name === "t3_thread_send")).toBe(true);
+      });
+
+      it("exposes read-only legacy hierarchy inventory and human-confirmed import with RBAC and conflict checks (#BIT-195)", async () => {
+        const viewerAuth = await createOrgMemberToken("viewer", false);
+
+        const projA = await (
+          await multiRequest("/api/projects", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: "Inventory A", key: "INVA" }),
+          })
+        ).json<Project>();
+        const projB = await (
+          await multiRequest("/api/projects", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: "Inventory B", key: "INVB" }),
+          })
+        ).json<Project>();
+
+        const parentA = await (
+          await multiRequest("/api/tasks", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              projectId: projA.id,
+              title: "Umbrella: Parent A",
+              description: "Covers #INVA-2 and cross-project #INVB-1",
+            }),
+          })
+        ).json<Task>();
+        const cleanChild = await (
+          await multiRequest("/api/tasks", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ projectId: projA.id, title: "Clean child" }),
+          })
+        ).json<Task>();
+        const foreignChild = await (
+          await multiRequest("/api/tasks", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ projectId: projB.id, title: "Foreign child" }),
+          })
+        ).json<Task>();
+
+        const invRes = await multiRequest(`/api/tasks/hierarchy/inventory?projectId=${projA.id}`);
+        expect(invRes.status).toBe(200);
+        const inventory = await invRes.json<{
+          hierarchyMode: string;
+          totalTasks: number;
+          alreadyParentedCount: number;
+          candidates: {
+            childTaskId: string;
+            proposedParentId: string;
+            provenance: string[];
+            conflicts: string[];
+            importable: boolean;
+          }[];
+        }>();
+        expect(inventory.hierarchyMode).toBe("explicit");
+        expect(inventory.candidates).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              childTaskId: cleanChild.id,
+              proposedParentId: parentA.id,
+              provenance: ["description_mention"],
+              conflicts: [],
+              importable: true,
+            }),
+          ]),
+        );
+        const foreignCandidate = inventory.candidates.find((c) => c.childTaskId === foreignChild.id);
+        expect(foreignCandidate).toMatchObject({
+          childTaskId: foreignChild.id,
+          proposedParentId: parentA.id,
+          importable: false,
+        });
+        expect(foreignCandidate?.conflicts).toContain("cross_project");
+
+        // Inventory never auto-promotes
+        const checkUnchanged = await (await multiRequest(`/api/tasks/${cleanChild.id}`)).json<Task>();
+        expect(checkUnchanged.parentId).toBeUndefined();
+
+        // RBAC: viewer cannot import
+        const viewerImport = await multiRequest("/api/tasks/hierarchy/import", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: viewerAuth },
+          body: JSON.stringify({ edges: [{ childTaskId: cleanChild.id, parentTaskId: parentA.id }] }),
+        });
+        expect(viewerImport.status).toBe(403);
+
+        // Editor/owner imports clean + cross-project edge -> clean succeeds, cross-project rejected
+        const importRes = await multiRequest("/api/tasks/hierarchy/import", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            edges: [
+              { childTaskId: cleanChild.id, parentTaskId: parentA.id },
+              { childTaskId: foreignChild.id, parentTaskId: parentA.id },
+            ],
+          }),
+        });
+        expect(importRes.status).toBe(200);
+        const importBody = await importRes.json<{
+          imported: { childTaskId: string; parentTaskId: string }[];
+          rejected: { childTaskId: string; parentTaskId: string; reason: string }[];
+        }>();
+        expect(importBody.imported).toEqual([
+          {
+            childTaskId: cleanChild.id,
+            childCode: "INVA-2",
+            parentTaskId: parentA.id,
+            parentCode: "INVA-1",
+          },
+        ]);
+        expect(importBody.rejected).toHaveLength(1);
+        expect(importBody.rejected[0]?.childTaskId).toBe(foreignChild.id);
+
+        const afterImport = await (await multiRequest(`/api/tasks/${cleanChild.id}`)).json<Task>();
+        expect(afterImport.parentId).toBe(parentA.id);
+
+        // Re-importing already-parented edge is rejected safely (non-overwrite)
+        const secondImport = await (
+          await multiRequest("/api/tasks/hierarchy/import", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ edges: [{ childTaskId: cleanChild.id, parentTaskId: parentA.id }] }),
+          })
+        ).json<{ imported: unknown[]; rejected: { reason: string }[] }>();
+        expect(secondImport.imported).toEqual([]);
+        expect(secondImport.rejected).toHaveLength(1);
       });
     });
   });

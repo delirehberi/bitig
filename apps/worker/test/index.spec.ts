@@ -19,6 +19,7 @@ describe("GET /health", () => {
       status: "ok",
       version: pkg.version,
       storageMode: "cloudflare",
+      hierarchyMode: "explicit",
     });
   });
 

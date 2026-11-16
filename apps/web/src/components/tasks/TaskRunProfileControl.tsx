@@ -5,6 +5,7 @@ import {
   clearTaskRunProfile,
   saveTaskRunProfile,
   suggestTaskRunProfile,
+  type RunProfileSuggestionFailure,
   type StoredRunProfile,
   type TaskRunProfileResponse,
 } from "../../services/run-orchestration";
@@ -46,6 +47,53 @@ function parseTouches(text: string): string[] {
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
+}
+
+const DEFAULT_LEVEL_NOTICE = "The router had no confident suggestion; the project default level applies.";
+
+/** Cause-specific notice for a router run that produced no suggestion (#BIT-208). */
+function suggestionFailureNotice(failure: RunProfileSuggestionFailure | null | undefined): string {
+  if (!failure) {
+    return DEFAULT_LEVEL_NOTICE;
+  }
+  switch (failure.reason) {
+    case "router_disabled":
+      return "The AI router is turned off for this organisation; the project default level applies.";
+    case "not_configured":
+      return "The AI router is missing its base URL or model; the project default level applies.";
+    case "no_token":
+      return "The AI router has no API token set; the project default level applies.";
+    case "decrypt_failed":
+      return "The AI router's API token could not be read; save the token again in settings.";
+    case "store_unavailable":
+      return "The AI router settings could not be loaded. Try again.";
+    case "invalid_endpoint":
+      return "The AI router's base URL is not a valid endpoint; the project default level applies.";
+    case "no_run_levels":
+      return "The organisation has no run levels to route to.";
+    case "http_error":
+      return failure.status === undefined
+        ? "The AI router returned an error; the project default level applies."
+        : `The AI router returned HTTP ${String(failure.status)}; the project default level applies.`;
+    case "timeout":
+      return "The AI router did not answer in time; the project default level applies.";
+    case "aborted":
+      return "The suggestion was cancelled; the project default level applies.";
+    case "network_error":
+      return "The AI router could not be reached; the project default level applies.";
+    case "bad_response_shape":
+      return "The AI router's reply was not in the expected format; the project default level applies.";
+    case "validation_failed":
+      return failure.field === "unexpectedKey"
+        ? "The AI router's suggestion had an unexpected field; the project default level applies."
+        : `The AI router's suggestion had an invalid ${failure.field ?? "value"}; the project default level applies.`;
+    case "low_confidence":
+      return failure.confidence === undefined
+        ? DEFAULT_LEVEL_NOTICE
+        : `The AI router was not confident enough (${failure.confidence.toFixed(2)}); the project default level applies.`;
+    default:
+      return DEFAULT_LEVEL_NOTICE;
+  }
 }
 
 /**
@@ -123,7 +171,7 @@ export function TaskRunProfileControl({
           `Router suggested level ${levelLabel(levels, response.suggestion.level)}, but the profile set by you or an agent is kept.`,
         );
       } else {
-        setNotice("The router had no confident suggestion; the project default level applies.");
+        setNotice(suggestionFailureNotice(response.suggestionFailure));
       }
     }, "Could not get a suggestion from the AI router.");
   }

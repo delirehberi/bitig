@@ -1055,7 +1055,13 @@ export function parseTaskRunProfile(input: unknown, context = "taskRunProfile"):
 // Run Level Model Bindings, AI Router Settings, Project Run Settings & Children (#BIT-185)
 // ---------------------------------------------------------------------------
 
-export const AI_ROUTER_API_STYLES = ["cloudflare-run", "openai", "openai-chat"] as const;
+/** `cloudflare-clef` targets Clef decision models (`@cf/cloudflare/clef`), which take typed questions rather than chat messages (#BIT-210). */
+export const AI_ROUTER_API_STYLES = [
+  "cloudflare-run",
+  "cloudflare-clef",
+  "openai",
+  "openai-chat",
+] as const;
 export type AiRouterApiStyle = (typeof AI_ROUTER_API_STYLES)[number];
 export const AiRouterApiStyleSchema = z.enum(AI_ROUTER_API_STYLES);
 

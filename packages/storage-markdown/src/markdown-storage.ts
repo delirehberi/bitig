@@ -17,7 +17,10 @@ import {
   applyTaskPatch,
   applyWebhookPatch,
   assertTaskAttachmentQuota,
+  assertTaskContainment,
+  assertTaskDeletable,
   assertTaskDependencies,
+  assertTaskProjectMoveAllowed,
   buildAttachment,
   buildCheckpoint,
   buildComment,
@@ -258,8 +261,13 @@ export class MarkdownStorage implements StorageProvider {
       const pFilePath = projectFilePath(task.projectId);
       const pExists = await this.#fs.fileExists(pFilePath, { signal: opts?.signal });
       if (!pExists) throw new NotFoundError("project", task.projectId);
-      if (hasNewDependencies(undefined, task)) {
-        assertTaskDependencies(task, await this.#readAllTasks(opts?.signal), "saveTask");
+      const needsAllTasks = task.parentId !== undefined || hasNewDependencies(undefined, task);
+      const allTasks = needsAllTasks ? await this.#readAllTasks(opts?.signal) : undefined;
+      if (task.parentId !== undefined && allTasks !== undefined) {
+        assertTaskContainment(task, allTasks, "saveTask");
+      }
+      if (hasNewDependencies(undefined, task) && allTasks !== undefined) {
+        assertTaskDependencies(task, allTasks, "saveTask");
       }
 
       const filePath = taskFilePath(task.projectId, task.id);
@@ -289,14 +297,27 @@ export class MarkdownStorage implements StorageProvider {
         opts?.overrideBlockedBy,
         opts ? { userId: opts.userId, userAvatarUrl: opts.userAvatarUrl } : undefined,
       );
-      if (hasNewDependencies(existing, next)) {
-        assertTaskDependencies(next, await this.#readAllTasks(opts?.signal), "updateTask");
-      }
-
-      if (next.projectId !== existing.projectId) {
+      const movedProject = next.projectId !== existing.projectId;
+      const changedParent = next.parentId !== existing.parentId;
+      if (movedProject) {
         const targetProjFile = projectFilePath(next.projectId);
         const targetProjExists = await this.#fs.fileExists(targetProjFile, { signal: opts?.signal });
         if (!targetProjExists) throw new NotFoundError("project", next.projectId);
+      }
+
+      const needsAllTasks = movedProject || changedParent || hasNewDependencies(existing, next);
+      const allTasks = needsAllTasks ? await this.#readAllTasks(opts?.signal) : undefined;
+      if (movedProject && allTasks !== undefined) {
+        assertTaskProjectMoveAllowed(existing, next.projectId, allTasks, "updateTask");
+      }
+      if ((changedParent || movedProject) && allTasks !== undefined) {
+        assertTaskContainment(next, allTasks, "updateTask");
+      }
+      if (hasNewDependencies(existing, next) && allTasks !== undefined) {
+        assertTaskDependencies(next, allTasks, "updateTask");
+      }
+
+      if (movedProject) {
         const targetTasks = await this.#readProjectTasks(next.projectId, opts?.signal);
         next = renumberTask(next, nextTaskNumber(targetTasks));
 
@@ -329,6 +350,9 @@ export class MarkdownStorage implements StorageProvider {
       throwIfAborted(opts?.signal);
       const found = await this.#locateTask(validId, opts?.signal);
       if (found === null) throw new NotFoundError("task", validId);
+
+      const projectTasks = await this.#readProjectTasks(found.projectId, opts?.signal);
+      assertTaskDeletable(validId, projectTasks, "deleteTask");
 
       await this.#fs.removeFile(found.filePath, { signal: opts?.signal });
       await this.#fs.removeDir(commentsDirPath(found.projectId, validId), { signal: opts?.signal });

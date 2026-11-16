@@ -5,6 +5,8 @@
  */
 
 export const TASK_STATUSES = ["todo", "in_progress", "done", "archived"] as const;
+export const HIERARCHY_MODES = ["legacy", "explicit"] as const;
+export const DEFAULT_HIERARCHY_MODE = "explicit" satisfies (typeof HIERARCHY_MODES)[number];
 export const CHECKPOINT_STATUSES = ["PENDING", "IN_PROGRESS", "WAITING_HUMAN_APPROVAL", "COMPLETED", "FAILED"] as const;
 export const CHECKPOINT_SUMMARY_MAX = 500;
 export const CHECKPOINT_INSTRUCTIONS_MAX = 4000;

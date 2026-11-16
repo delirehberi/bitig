@@ -28,6 +28,11 @@ import {
   withTaskAttachmentCount,
   withTaskCommentCount,
 } from "../domain/entities";
+import {
+  assertTaskContainment,
+  assertTaskDeletable,
+  assertTaskProjectMoveAllowed,
+} from "../domain/containment";
 import { assertTaskDependencies, hasNewDependencies, withoutDependencies } from "../domain/dependencies";
 import { nextTaskNumber } from "../domain/ticket-codes";
 import { buildCheckpoint, compareCheckpoints } from "../domain/checkpoints";
@@ -199,6 +204,7 @@ export class InMemoryStorage implements StorageProvider {
         opts ? { userId: opts.userId, userAvatarUrl: opts.userAvatarUrl } : undefined,
       );
       this.#requireProject(task.projectId);
+      if (task.parentId !== undefined) assertTaskContainment(task, this.#tasks.values(), "saveTask");
       if (hasNewDependencies(undefined, task)) assertTaskDependencies(task, this.#tasks.values(), "saveTask");
       this.#tasks.set(task.id, task);
       return copyTask(task);
@@ -218,7 +224,11 @@ export class InMemoryStorage implements StorageProvider {
       );
       if (next.projectId !== existing.projectId) {
         this.#requireProject(next.projectId);
+        assertTaskProjectMoveAllowed(existing, next.projectId, this.#tasks.values(), "updateTask");
         next = renumberTask(next, nextTaskNumber(this.#tasksOf(next.projectId)));
+      }
+      if (next.parentId !== existing.parentId || next.projectId !== existing.projectId) {
+        assertTaskContainment(next, this.#tasks.values(), "updateTask");
       }
       if (hasNewDependencies(existing, next)) assertTaskDependencies(next, this.#tasks.values(), "updateTask");
       this.#tasks.set(next.id, next);
@@ -229,6 +239,7 @@ export class InMemoryStorage implements StorageProvider {
   deleteTask(id: string, opts?: OperationOptions): Promise<void> {
     return run(opts?.signal, () => {
       const task = this.#requireTask(parseId(id, "deleteTask"));
+      assertTaskDeletable(task.id, this.#tasks.values(), "deleteTask");
       this.#deleteTaskAndChildren(task.id);
       this.#dropDependencies(new Set([task.id]));
     });

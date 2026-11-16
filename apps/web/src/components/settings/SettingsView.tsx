@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { LegacyHierarchyPanel } from "./LegacyHierarchyPanel";
 import { McpTokensPanel } from "./McpTokensPanel";
 import { NotificationsPanel } from "./NotificationsPanel";
 import {
@@ -79,6 +80,7 @@ function synthesizeHostFromConnection(conn: T3ConnectionStatus): T3HostConnectio
 const SETTINGS_TABS = [
   { id: "t3", label: "T3 Code" },
   { id: "mcp", label: "MCP Tokens" },
+  { id: "hierarchy", label: "Task Hierarchy" },
   { id: "notifications", label: "Notifications" },
 ] as const;
 type SettingsTab = (typeof SETTINGS_TABS)[number]["id"];
@@ -100,7 +102,7 @@ export function SettingsView({ mode, projects, role }: SettingsViewProps) {
     <div className="mx-auto flex max-w-4xl flex-col gap-6">
       <header className="flex flex-col gap-1">
         <h1 className="m-0 font-display text-2xl font-bold text-ink">Settings</h1>
-        <p className="m-0 text-sm text-ink-2">Manage MCP client access, your T3 Code integration, and browser notifications.</p>
+        <p className="m-0 text-sm text-ink-2">Manage MCP client access, your T3 Code integration, task hierarchy imports, and browser notifications.</p>
       </header>
       <div role="tablist" aria-label="Settings" className="flex gap-2 border-b border-rule pb-2">
         {SETTINGS_TABS.map((item) => (
@@ -120,7 +122,21 @@ export function SettingsView({ mode, projects, role }: SettingsViewProps) {
         ))}
       </div>
       <div role="tabpanel" id={`settings-panel-${tab}`} aria-labelledby={`settings-tab-${tab}`} tabIndex={0}>
-        {tab === "t3" ? <T3SettingsPanel mode={mode} projects={projects} role={role} /> : tab === "notifications" ? <NotificationsPanel /> : mode === "cloudflare" ? <McpTokensPanel /> : (
+        {tab === "t3" ? (
+          <T3SettingsPanel mode={mode} projects={projects} role={role} />
+        ) : tab === "notifications" ? (
+          <NotificationsPanel />
+        ) : tab === "hierarchy" ? (
+          mode === "cloudflare" ? (
+            <LegacyHierarchyPanel projects={projects} role={role} />
+          ) : (
+            <p role="note" className="rounded-lg border border-rule bg-paper-2 p-5 text-sm text-ink-2">
+              Legacy task hierarchy inventory requires the Cloudflare Worker storage mode.
+            </p>
+          )
+        ) : mode === "cloudflare" ? (
+          <McpTokensPanel />
+        ) : (
           <p role="note" className="rounded-lg border border-rule bg-paper-2 p-5 text-sm text-ink-2">MCP token management requires the Cloudflare Worker storage mode.</p>
         )}
       </div>

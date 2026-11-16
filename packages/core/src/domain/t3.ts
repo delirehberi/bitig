@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { formatT3CommentAttachmentContext, type T3CommentAttachmentInfo } from "./attachments";
-import { CommentAuthorSchema, CommentBodySchema, IdSchema, TaskActorSchema, TimestampSchema } from "./schemas";
+import { CommentAuthorSchema, CommentBodySchema, HierarchyModeSchema, IdSchema, TaskActorSchema, TimestampSchema } from "./schemas";
 import type { Checkpoint, Comment, Task } from "./types";
 import type { AgentRunChild } from "./run-profile";
 import { COMMENT_BODY_MAX } from "./constants";
@@ -206,6 +206,8 @@ export const AgentRunSchema = z.strictObject({
   parentTaskId: IdSchema.exactOptional(),
   /** On an umbrella task's run: the child task it waits on while `waiting_subagent` (#BIT-141). */
   waitingForTaskId: IdSchema.exactOptional(),
+  /** Hierarchy semantics active when this run was launched (`legacy` vs `explicit`, #BIT-195). */
+  hierarchyMode: HierarchyModeSchema.exactOptional(),
   startedBy: TaskActorSchema.exactOptional(),
   startedAt: TimestampSchema,
   updatedAt: TimestampSchema,

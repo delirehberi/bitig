@@ -110,6 +110,7 @@ export function buildServiceDeps(c: Context<AppEnv>): T3ServiceDeps {
     store: new T3D1Store(c.env.DB, orgId),
     storage: c.get("storage"),
     encryptionKey: c.get("config").T3_ENCRYPTION_KEY,
+    hierarchyMode: c.get("config").HIERARCHY_MODE,
     fetchFn: c.get("t3Fetch"),
     publishRealtime: (event) => publishRealtimeEvent(c.env, event, orgId),
   };
@@ -243,6 +244,7 @@ export const t3OauthCallbackRouter = new Hono<AppEnv>().get("/", async (c) => {
       store: orgStore,
       storage: orgStorage,
       encryptionKey,
+      hierarchyMode: c.get("config").HIERARCHY_MODE,
       fetchFn: c.get("t3Fetch"),
       publishRealtime: (event) => publishRealtimeEvent(c.env, event, stateRecord.orgId),
     }).catch(() => undefined);
@@ -814,6 +816,7 @@ export const t3TaskRunsRouter = new Hono<AppEnv>()
         profile: result.profile,
         resolved: result.resolved,
         suggestion: result.suggestion,
+        suggestionFailure: result.suggestionFailure,
         stored: result.stored,
         routerEnabled: result.routerEnabled,
         ...(result.nextLevelUp ? { nextLevelUp: result.nextLevelUp } : {}),

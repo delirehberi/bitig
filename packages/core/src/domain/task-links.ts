@@ -3,6 +3,7 @@
  * They are worked out on read from task text rather than stored, so they work the same in every
  * adapter and never go stale when a description or subtask is edited.
  */
+import { compareTasks } from "./entities";
 import { extractTaskMentions, taskMentions } from "./mentions";
 import { withTaskCodes, type TaskWithCode } from "./ticket-codes";
 import type { Comment, Project, Task, TaskStatus } from "./types";
@@ -94,4 +95,27 @@ export function dependencyLinks(task: Task, tasks: readonly Task[], projects: re
     }),
     dependents: coded.filter((t) => t.dependsOn?.includes(task.id) === true).map(summarize),
   };
+}
+
+export interface HierarchyLinks {
+  /** Explicit same-project parent task when `task.parentId` is set, or `null`. */
+  readonly parent: TaskLinkSummary | null;
+  /** Explicit same-project direct child tasks ordered canonically. */
+  readonly children: TaskLinkSummary[];
+}
+
+/** Explicit containment links (`parent` and direct `children`) resolved among `tasks`, with ticket codes. */
+export function hierarchyLinks(task: Task, tasks: readonly Task[], projects: readonly Project[]): HierarchyLinks {
+  const coded = withTaskCodes(tasks, projects);
+  const byId = new Map(coded.map((t) => [t.id, t]));
+  const rawParent = task.parentId ? byId.get(task.parentId) : undefined;
+  const parent =
+    rawParent && rawParent.id !== task.id && rawParent.projectId === task.projectId
+      ? summarize(rawParent)
+      : null;
+  const children = coded
+    .filter((t) => t.id !== task.id && t.parentId === task.id && t.projectId === task.projectId)
+    .sort(compareTasks)
+    .map(summarize);
+  return { parent, children };
 }

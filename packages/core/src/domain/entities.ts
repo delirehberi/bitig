@@ -49,6 +49,7 @@ import { assertProjectKeyAvailable, deriveProjectKey } from "./ticket-codes";
 
 type TaskRequiredFields = Omit<
   Task,
+  | "parentId"
   | "startedAt"
   | "completedAt"
   | "createdBy"
@@ -70,6 +71,7 @@ type TaskRequiredFields = Omit<
 >;
 
 interface TaskOptionalValues {
+  readonly parentId: string | undefined;
   readonly startedAt: string | undefined;
   readonly completedAt: string | undefined;
   readonly createdBy: string | undefined;
@@ -93,6 +95,7 @@ interface TaskOptionalValues {
 /** Builds a task that omits unset optional fields (exactOptionalPropertyTypes). */
 function assembleTask(base: TaskRequiredFields, optional: TaskOptionalValues): Task {
   const task: Task = { ...base };
+  if (optional.parentId !== undefined) task.parentId = optional.parentId;
   if (optional.startedAt !== undefined) task.startedAt = optional.startedAt;
   if (optional.completedAt !== undefined) task.completedAt = optional.completedAt;
   if (optional.createdBy !== undefined) task.createdBy = optional.createdBy;
@@ -437,6 +440,7 @@ export function buildTask(
       updatedAt: now,
     },
     {
+      parentId: parsed.parentId,
       startedAt,
       completedAt,
       createdBy: validActor,
@@ -495,6 +499,7 @@ export function applyTaskPatch(
       updatedAt,
     },
     {
+      parentId: resolveClearable(task.parentId, parsed.parentId),
       startedAt,
       completedAt,
       createdBy: task.createdBy,
@@ -537,6 +542,7 @@ export function touchTaskEntity(task: Task, now: Date, actor?: string, user?: Ac
         updatedAt,
       },
       {
+        parentId: task.parentId,
         startedAt: task.startedAt,
         completedAt: task.completedAt,
         createdBy: task.createdBy,
@@ -602,6 +608,7 @@ export function completeTaskEntity(
       updatedAt,
     },
     {
+      parentId: task.parentId,
       startedAt: task.startedAt,
       completedAt: updatedAt,
       createdBy: task.createdBy,

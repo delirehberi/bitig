@@ -44,6 +44,7 @@ const DB_SETUP_STATEMENTS = [
     \`needs_human\` text,
     \`pending_approval\` integer,
     \`depends_on\` text,
+    \`parent_id\` text,
     \`number\` integer,
     \`started_at\` integer,
     \`completed_at\` integer,

@@ -1,8 +1,10 @@
 import {
+  DEFAULT_HIERARCHY_MODE,
   blockedByFromError,
   buildMentionIndex,
   buildUmbrellaIndex,
   dependencyLinks,
+  hierarchyLinks,
   sortProjectsByActivity,
   type CreateTaskInput,
   type StorageMode,
@@ -223,6 +225,7 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
     () => (activeTab === "tasks" ? undefined : buildMentionIndex(tasks, recentProjects)),
     [activeTab, tasks, recentProjects],
   );
+  const hierarchyMode = health.kind === "online" ? health.hierarchyMode : DEFAULT_HIERARCHY_MODE;
   const umbrellaIndex = useMemo(
     () =>
       activeTab === "tasks"
@@ -232,8 +235,9 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
             projects: recentProjects,
             runs: agentRuns,
             runChildren: umbrellaChildren,
+            mode: hierarchyMode,
           }),
-    [activeTab, tasks, recentProjects, agentRuns, umbrellaChildren],
+    [activeTab, tasks, recentProjects, agentRuns, umbrellaChildren, hierarchyMode],
   );
 
   async function confirmIfBlocked(
@@ -270,6 +274,7 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
       const patch: UpdateTaskInput = {
         ...input,
         needsHuman: input.needsHuman ?? null,
+        parentId: input.parentId ?? null,
         dependsOn: input.dependsOn ?? null,
         pendingApproval: undefined,
       };
@@ -385,6 +390,7 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
                 projects={recentProjects}
                 agentRuns={agentRuns}
                 umbrellaChildren={umbrellaChildren}
+                hierarchyMode={hierarchyMode}
                 isLoading={isTasksLoading}
                 error={tasksError}
                 selectedProjectId={selectedProjectId}
@@ -435,6 +441,8 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
                   projects={recentProjects}
                   agentRun={agentRuns.find((r) => r.taskId === pageTask.id)}
                   isUmbrella={umbrellaIndex ? umbrellaIndex.isUmbrella(pageTask.id) : false}
+                  hierarchy={hierarchyLinks(pageTask, tasks, recentProjects)}
+                  hierarchyMode={hierarchyMode}
                   onEdit={(t) => {
                     setEditModalState((prev) => ({
                       isOpen: true,
@@ -493,6 +501,7 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
               <SettingsView
                 mode={mode}
                 projects={recentProjects}
+                role={currentRole}
               />
             )}
 
@@ -510,6 +519,8 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
                   projects={recentProjects}
                   agentRun={viewTask ? agentRuns.find((r) => r.taskId === viewTask.id) : undefined}
                   isUmbrella={viewTask && umbrellaIndex ? umbrellaIndex.isUmbrella(viewTask.id) : false}
+                  hierarchy={viewTask ? hierarchyLinks(viewTask, tasks, recentProjects) : undefined}
+                  hierarchyMode={hierarchyMode}
                   onClose={() => {
                     handleViewTask(undefined);
                   }}

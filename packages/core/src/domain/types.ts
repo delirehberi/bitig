@@ -14,6 +14,7 @@ import type {
   CreateProjectInputSchema,
   CreateTaskInputSchema,
   CreateWebhookInputSchema,
+  HierarchyModeSchema,
   ProjectKindSchema,
   ProjectResourceSchema,
   ProjectSchema,
@@ -35,6 +36,7 @@ import type {
   BackupBundleSchema,
 } from "./schemas";
 
+export type HierarchyMode = z.output<typeof HierarchyModeSchema>;
 export type Project = z.output<typeof ProjectSchema>;
 export type Checkpoint = z.output<typeof CheckpointSchema>;
 export type CheckpointStatus = z.output<typeof CheckpointStatusSchema>;

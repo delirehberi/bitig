@@ -6,6 +6,7 @@ import {
   NotFoundError,
   ProjectBusyError,
   ValidationError,
+  type HierarchyMode,
   type OrganisationRole,
   type StorageMode,
   type StorageProvider,
@@ -76,6 +77,7 @@ export interface HealthResponse {
   status: "ok";
   version: string;
   storageMode: StorageMode;
+  hierarchyMode: HierarchyMode;
 }
 
 export interface CreateAppOptions {
@@ -170,6 +172,7 @@ export function createApp(options?: CreateAppOptions): Hono<AppEnv> {
       status: "ok",
       version: pkg.version,
       storageMode: c.get("config").STORAGE_MODE,
+      hierarchyMode: c.get("config").HIERARCHY_MODE,
     }),
   );
 

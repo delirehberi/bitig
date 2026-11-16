@@ -30,6 +30,8 @@ describe("Settings tabs", () => {
     await user.keyboard("{End}");
     expect(screen.getByRole("tab", { name: "Notifications" })).toHaveFocus();
     await user.keyboard("{ArrowLeft}");
+    expect(screen.getByRole("tab", { name: "Task Hierarchy" })).toHaveFocus();
+    await user.keyboard("{ArrowLeft}");
     expect(screen.getByRole("tab", { name: "MCP Tokens" })).toHaveFocus();
     await user.keyboard("{ArrowLeft}");
     expect(t3Tab).toHaveFocus();

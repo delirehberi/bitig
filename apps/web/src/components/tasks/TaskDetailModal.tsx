@@ -14,12 +14,15 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import {
+  DEFAULT_HIERARCHY_MODE,
   extractTaskMentions,
   formatDuration,
   getTaskTiming,
   hasExplicitUmbrellaMarker,
   type AgentRun,
   type ChecklistItem,
+  type HierarchyLinks,
+  type HierarchyMode,
   type Project,
   type StorageProvider,
   type Task,
@@ -47,7 +50,7 @@ import { TaskFeedbackPanel } from "./TaskFeedbackPanel";
 import { TaskComments, type TaskCommentsT3Context } from "./TaskComments";
 import { TaskT3Section } from "./TaskT3Section";
 import { UmbrellaChildrenPanel } from "./UmbrellaChildrenPanel";
-import { LinkedTasks, TaskDependencies } from "./LinkedTasks";
+import { LinkedTasks, TaskDependencies, TaskHierarchy } from "./LinkedTasks";
 
 interface TaskDetailModalProps {
   readonly task: Task | null;
@@ -68,6 +71,10 @@ interface TaskDetailModalProps {
   readonly storage?: StorageProvider | undefined;
   /** Loads the feedback behind a feedback task; omit to hide the Feedback panel (#BIT-181). */
   readonly feedbackApi?: Pick<TaskFeedbackClient, "getTaskFeedback"> | undefined;
+  /** Explicit parent and child tasks for this task (#BIT-195). */
+  readonly hierarchy?: HierarchyLinks | undefined;
+  /** Workspace hierarchy mode (`"explicit"` or `"legacy"`). */
+  readonly hierarchyMode?: HierarchyMode | undefined;
   /** The tasks this task mentions and the tasks that mention it; omit to hide them. */
   readonly links?: TaskLinks | undefined;
   /** The tasks this task depends on and the tasks waiting on it; omit to hide them. */
@@ -151,6 +158,8 @@ export function TaskDetailModal({
   onApprove,
   storage,
   feedbackApi,
+  hierarchy,
+  hierarchyMode,
   links,
   dependencies,
   agentRun,
@@ -199,14 +208,17 @@ export function TaskDetailModal({
     task.startedAt !== undefined || task.completedAt !== undefined ? timing.spentMs : undefined;
   const activeRunForChildren =
     t3Context?.taskId === task.id ? t3Context.run : agentRun?.taskId === task.id ? agentRun : null;
+  const effectiveHierarchyMode = hierarchyMode ?? DEFAULT_HIERARCHY_MODE;
   const hasCandidateChildren =
     isUmbrella === true ||
-    hasExplicitUmbrellaMarker(task) ||
-    Boolean(task.checklist?.some((item) => extractTaskMentions(item.text).length > 0)) ||
-    (dependencies?.dependents.length ?? 0) > 0 ||
-    (links?.mentions.length ?? 0) > 0 ||
+    (hierarchy?.children.length ?? 0) > 0 ||
     activeRunForChildren?.state === "waiting_subagent" ||
-    activeRunForChildren?.waitingForTaskId !== undefined;
+    activeRunForChildren?.waitingForTaskId !== undefined ||
+    (effectiveHierarchyMode === "legacy" &&
+      (hasExplicitUmbrellaMarker(task) ||
+        Boolean(task.checklist?.some((item) => extractTaskMentions(item.text).length > 0)) ||
+        (dependencies?.dependents.length ?? 0) > 0 ||
+        (links?.mentions.length ?? 0) > 0));
 
   function toggleChecklist(current: Task, next: ChecklistItem[]) {
     if (!onChecklistChange) return;
@@ -386,6 +398,7 @@ export function TaskDetailModal({
         {/* Prefixed: sibling keys must be unique, and TaskComments already uses the bare task ID (#BIT-120). */}
         {storage && <TaskCheckpoint key={`checkpoint-${task.id}`} storage={storage} taskId={task.id} />}
 
+        {hierarchy && <TaskHierarchy hierarchy={hierarchy} />}
         {dependencies && <TaskDependencies dependencies={dependencies} />}
         {links && <LinkedTasks links={links} />}
 

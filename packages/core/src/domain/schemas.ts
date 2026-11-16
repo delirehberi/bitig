@@ -23,6 +23,7 @@ import {
   DEFAULT_WEBHOOK_ENABLED,
   DEFAULT_WEBHOOK_PROVIDER,
   DESCRIPTION_MAX,
+  HIERARCHY_MODES,
   LABELS_MAX_COUNT,
   DEPENDS_ON_MAX_COUNT,
   LABEL_MAX,
@@ -59,6 +60,8 @@ export const TimestampSchema = z.iso.datetime();
 
 /** Name of the LLM or actor that touched a task, e.g. `claude` or `antigravity`. */
 export const TaskActorSchema = z.string().trim().min(1).max(TASK_ACTOR_MAX);
+
+export const HierarchyModeSchema = z.enum(HIERARCHY_MODES);
 
 export const CheckpointStatusSchema = z.enum(CHECKPOINT_STATUSES);
 const CheckpointValueSchema = z.union([z.string().max(CHECKPOINT_VALUE_MAX), z.number(), z.boolean(), z.null()]);
@@ -242,6 +245,8 @@ export const ProjectSchema = z.strictObject({
 export const TaskSchema = z.strictObject({
   id: IdSchema,
   projectId: IdSchema,
+  /** Explicit parent task ID within the same project; omitted when unparented. */
+  parentId: IdSchema.exactOptional(),
   title: TaskTitleSchema,
   description: DescriptionSchema,
   status: TaskStatusSchema,
@@ -363,6 +368,8 @@ export const UpdateProjectInputSchema = z
 
 export const CreateTaskInputSchema = z.strictObject({
   projectId: IdSchema,
+  /** Optional explicit parent task ID within the same project. */
+  parentId: IdSchema.optional(),
   title: TaskTitleSchema,
   description: DescriptionSchema.default(DEFAULT_DESCRIPTION),
   status: TaskStatusSchema.default(DEFAULT_TASK_STATUS),
@@ -383,6 +390,8 @@ export const CreateTaskInputSchema = z.strictObject({
 export const UpdateTaskInputSchema = z
   .strictObject({
     projectId: IdSchema.optional(),
+    /** Explicit parent task ID within the same project; `null` detaches, `undefined` keeps existing. */
+    parentId: IdSchema.nullable().optional(),
     title: TaskTitleSchema.optional(),
     description: DescriptionSchema.optional(),
     status: TaskStatusSchema.optional(),
@@ -507,6 +516,27 @@ export const ProjectBundleSchema = z
       return new Set(numbers).size === numbers.length;
     },
     { message: "Task numbers must be unique within a project" },
+  )
+  .refine(
+    (bundle) => {
+      const parentById = new Map<string, string | undefined>();
+      for (const task of bundle.tasks) {
+        parentById.set(task.id, task.parentId);
+      }
+      for (const task of bundle.tasks) {
+        if (task.parentId === undefined) continue;
+        if (task.parentId === task.id || !parentById.has(task.parentId)) return false;
+        const visited = new Set<string>([task.id]);
+        let current: string | undefined = task.parentId;
+        while (current !== undefined) {
+          if (visited.has(current)) return false;
+          visited.add(current);
+          current = parentById.get(current);
+        }
+      }
+      return true;
+    },
+    { message: "Task parentId in bundle must reference a bundled task without cycles" },
   );
 
 export const BackupBundleSchema = z.strictObject({

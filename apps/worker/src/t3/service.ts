@@ -1,6 +1,8 @@
 import {
+  DEFAULT_HIERARCHY_MODE,
   DEFAULT_MAX_PARALLEL_CHILDREN,
   DEFAULT_PROJECT_T3_WORKSPACE_STRATEGY,
+  ImportHierarchyInputSchema,
   ReportChildMergeInputSchema,
   ReportT3GitMetadataInputSchema,
   type ReportChildMergeInput,
@@ -11,6 +13,8 @@ import {
   PROJECT_T3_MESSAGE_MAX_CHARS,
   T3WorkspaceBusyError,
   ValidationError,
+  assertTaskContainment,
+  buildLegacyHierarchyInventory,
   buildMentionIndex,
   buildProjectT3LaunchPrompt,
   buildProjectT3ModelSwitchNotice,
@@ -49,6 +53,12 @@ import {
   type AgentRunState,
   type Checkpoint,
   type Comment,
+  type HierarchyMode,
+  type ImportHierarchyInput,
+  type ImportHierarchyResponse,
+  type ImportedHierarchyEdge,
+  type LegacyHierarchyInventoryResponse,
+  type OperationOptions,
   type ParallelBatchCandidate,
   type ParallelSkipReason,
   type Project,
@@ -56,6 +66,7 @@ import {
   type ProjectT3ThreadMessagesResponse,
   type ProjectT3ThreadsResponse,
   type RealtimeEvent,
+  type RejectedHierarchyEdge,
   type ResolvedRunSelection,
   type RunLevel,
   type RunLevelModelBinding,
@@ -92,6 +103,7 @@ import {
   buildEffortValuesByLevel,
   type RunProfileRouter,
   type RunProfileSuggestion,
+  type RunProfileSuggestionFailure,
 } from "./router";
 
 /** How long the model list from `orchestrator_capabilities` is reused before T3 is asked again. */
@@ -121,10 +133,47 @@ export interface T3ServiceDeps {
   store: T3D1Store;
   storage: StorageProvider;
   encryptionKey: string;
+  hierarchyMode?: HierarchyMode | undefined;
   fetchFn?: typeof fetch | undefined;
   runProfileRouter?: RunProfileRouter | undefined;
   publishRealtime?: ((event: RealtimeEvent) => Promise<void>) | undefined;
   now?: (() => number) | undefined;
+}
+
+/**
+ * Resolves the effective hierarchy semantics for an operation (#BIT-195):
+ * - When `HIERARCHY_MODE` is `"legacy"` (pre-cutoff or rollback), returns `"legacy"`.
+ * - When an in-flight run (like an active legacy umbrella) was started in `"legacy"` mode
+ *   (or before `hierarchyMode` existed), keeps that active run in `"legacy"` mode until it ends.
+ * - Otherwise uses `deps.hierarchyMode ?? DEFAULT_HIERARCHY_MODE` (`"explicit"`).
+ */
+export function resolveEffectiveHierarchyMode(
+  deps: Pick<T3ServiceDeps, "hierarchyMode">,
+  activeRun?: AgentRun | null,
+): HierarchyMode {
+  const configured = deps.hierarchyMode ?? DEFAULT_HIERARCHY_MODE;
+  if (configured === "legacy") {
+    return "legacy";
+  }
+  if (activeRun && isActiveAgentRunState(activeRun.state) && (activeRun.hierarchyMode ?? "legacy") === "legacy") {
+    return "legacy";
+  }
+  return configured;
+}
+
+async function ignoreMissingT3Table<T>(promise: Promise<T>, fallback: T): Promise<T> {
+  try {
+    return await promise;
+  } catch (err) {
+    const message =
+      err instanceof Error
+        ? `${err.message} ${err.cause instanceof Error ? err.cause.message : ""}`
+        : String(err);
+    if (message.includes("no such table") || message.includes("no such column")) {
+      return fallback;
+    }
+    throw err;
+  }
 }
 
 function makeValidationIssue(path: string, message: string): never {
@@ -292,6 +341,7 @@ interface QueuedLaunchPayload {
   runtimeMode?: T3RuntimeMode | undefined;
   settleThreadId?: string | undefined;
   parentTaskId?: string | undefined;
+  hierarchyMode?: HierarchyMode | undefined;
   childLabel?: string | undefined;
   childTitle?: string | undefined;
   actor: string;
@@ -589,6 +639,7 @@ export async function dispatchQueuedTaskT3Run(
           ...(resolvedSkippedReason ? { skippedReason: resolvedSkippedReason } : {}),
           workspaceStrategy: payload.workspaceStrategy,
           ...(payload.parentTaskId ? { parentTaskId: payload.parentTaskId } : {}),
+          hierarchyMode: payload.hierarchyMode ?? deps.hierarchyMode ?? DEFAULT_HIERARCHY_MODE,
           startedBy: payload.actor,
           startedAt: stepNow,
           updatedAt: stepNow,
@@ -768,6 +819,9 @@ export async function launchTaskInT3(
   if (!task) {
     throw new NotFoundError("task", taskId);
   }
+  if (task.status === "archived") {
+    makeValidationIssue("taskId", `Archived task ${task.id} cannot be launched in T3.`);
+  }
 
   const project = await deps.storage.getProject(task.projectId);
   if (!project) {
@@ -775,6 +829,7 @@ export async function launchTaskInT3(
   }
 
   const parent = options.parentTaskRef ? await requireUmbrellaParent(deps, task, options.parentTaskRef) : undefined;
+  const effectiveLaunchMode = parent?.effectiveMode ?? (deps.hierarchyMode ?? DEFAULT_HIERARCHY_MODE);
   if (parent && options.workspaceStrategy === "root") {
     makeValidationIssue(
       "workspaceStrategy",
@@ -783,10 +838,13 @@ export async function launchTaskInT3(
   }
 
   // Enforce pendingApproval and unfinished dependency gates (same rules as an agent moving to in_progress).
-  // The umbrella task is in progress while it delegates, so a dependency on it does not block its child.
+  // In legacy mode, a dependency on the umbrella task does not block its child; in explicit mode (#BIT-195),
+  // containment and dependsOn are orthogonal so dependsOn always gates launches.
   await checkStatusChange(deps.storage, task.id, "in_progress", "startT3Thread", {
     requireApproval: true,
-    ...(parent ? { dependsOn: (task.dependsOn ?? []).filter((id) => id !== parent.task.id) } : {}),
+    ...(parent && effectiveLaunchMode === "legacy"
+      ? { dependsOn: (task.dependsOn ?? []).filter((id) => id !== parent.task.id) }
+      : {}),
   });
 
   const code = taskCode(task, project);
@@ -956,6 +1014,7 @@ export async function launchTaskInT3(
       ...(resolvedSkippedReason ? { skippedReason: resolvedSkippedReason } : {}),
       workspaceStrategy,
       ...(parent ? { parentTaskId: parent.task.id } : {}),
+      hierarchyMode: effectiveLaunchMode,
       startedBy: actor,
       startedAt: now,
       updatedAt: now,
@@ -1014,6 +1073,7 @@ export async function launchTaskInT3(
           childTitle: task.title,
         }
       : {}),
+    hierarchyMode: effectiveLaunchMode,
     actor,
   };
 
@@ -1039,6 +1099,7 @@ export async function launchTaskInT3(
       ...(resolvedSkippedReason ? { skippedReason: resolvedSkippedReason } : {}),
       workspaceStrategy,
       ...(parent ? { parentTaskId: parent.task.id } : {}),
+      hierarchyMode: effectiveLaunchMode,
       startedBy: actor,
       startedAt: now,
       updatedAt: now,
@@ -1109,6 +1170,7 @@ interface UmbrellaParent {
   readonly run: AgentRun;
   /** Ticket code, or ID when the task has none. */
   readonly label: string;
+  readonly effectiveMode: HierarchyMode;
 }
 
 async function labelTask(storage: StorageProvider, task: Task): Promise<string> {
@@ -1317,6 +1379,21 @@ async function requireUmbrellaParent(deps: T3ServiceDeps, child: Task, parentRef
     );
   }
   assertUmbrellaParentGitReady(run, label);
+  const effectiveMode = resolveEffectiveHierarchyMode(deps, run);
+  if (effectiveMode === "explicit") {
+    if (parentTask.projectId !== child.projectId) {
+      makeValidationIssue(
+        "parentTaskId",
+        `Child task must belong to the same project as umbrella task ${label}.`,
+      );
+    }
+    if (child.parentId !== parentTask.id) {
+      makeValidationIssue(
+        "parentTaskId",
+        `Task ${child.id} must have parentId set to umbrella task ${label} before launching as a child session.`,
+      );
+    }
+  }
   const childRun = await deps.store.getAgentRunByTaskId(child.id);
   if (childRun && isActiveAgentRunState(childRun.state)) {
     makeValidationIssue(
@@ -1324,7 +1401,7 @@ async function requireUmbrellaParent(deps: T3ServiceDeps, child: Task, parentRef
       `This task already has an active T3 session (${childRun.state.replaceAll("_", " ")}). Wait for it instead of starting another one.`,
     );
   }
-  return { task: parentTask, run, label };
+  return { task: parentTask, run, label, effectiveMode };
 }
 
 /** Most threads `t3_thread_list` returns for one T3 project when the root-workspace guard checks it. */
@@ -2881,64 +2958,79 @@ async function evaluateUmbrellaChildren(
   const profileByTaskId = new Map(allProfiles.map((p) => [p.taskId, p]));
   const levelsByKey = new Map(levels.map((l) => [l.key, l]));
 
-  const umbrellaIndex = buildUmbrellaIndex({
-    tasks: allTasks,
-    projects: allProjects,
-    runs: allRuns,
-    runChildren: allRunChildren,
-  });
+  const effectiveMode = resolveEffectiveHierarchyMode(deps, parentRun);
+  let allChildTasks: Task[];
 
-  const parentsOfSelf = new Set<string>(parentRowsForSelf.map((row) => row.parentTaskId));
-  if (parentRun?.parentTaskId) {
-    parentsOfSelf.add(parentRun.parentTaskId);
-  }
-  const siblingsUnderSharedParent = new Set<string>();
-  for (const candidateParent of allTasks) {
-    if (candidateParent.id === parentTask.id) continue;
-    const candidateChildren = umbrellaIndex.childrenFor(candidateParent.id);
-    if (candidateChildren.some((c) => c.id === parentTask.id)) {
-      parentsOfSelf.add(candidateParent.id);
-      for (const sibling of candidateChildren) {
-        if (sibling.id !== parentTask.id) {
-          siblingsUnderSharedParent.add(sibling.id);
+  if (effectiveMode === "explicit") {
+    allChildTasks = allTasks
+      .filter(
+        (t) =>
+          t.id !== parentTask.id &&
+          t.parentId === parentTask.id &&
+          t.projectId === parentTask.projectId,
+      )
+      .sort(compareTasks);
+  } else {
+    const umbrellaIndex = buildUmbrellaIndex({
+      tasks: allTasks,
+      projects: allProjects,
+      runs: allRuns,
+      runChildren: allRunChildren,
+      mode: "legacy",
+    });
+
+    const parentsOfSelf = new Set<string>(parentRowsForSelf.map((row) => row.parentTaskId));
+    if (parentRun?.parentTaskId) {
+      parentsOfSelf.add(parentRun.parentTaskId);
+    }
+    const siblingsUnderSharedParent = new Set<string>();
+    for (const candidateParent of allTasks) {
+      if (candidateParent.id === parentTask.id) continue;
+      const candidateChildren = umbrellaIndex.childrenFor(candidateParent.id);
+      if (candidateChildren.some((c) => c.id === parentTask.id)) {
+        parentsOfSelf.add(candidateParent.id);
+        for (const sibling of candidateChildren) {
+          if (sibling.id !== parentTask.id) {
+            siblingsUnderSharedParent.add(sibling.id);
+          }
         }
       }
     }
-  }
-  const ownDependencies = new Set(parentTask.dependsOn ?? []);
+    const ownDependencies = new Set(parentTask.dependsOn ?? []);
 
-  const mentionIndex = buildMentionIndex(allTasks, allProjects);
-  const mentionedIds = new Set(
-    mentionIndex
-      .linksFor(parentTask, parentComments)
-      .mentions.map((m) => m.id)
-      .filter(
-        (id) =>
-          !ownDependencies.has(id) &&
-          !parentsOfSelf.has(id) &&
-          !siblingsUnderSharedParent.has(id),
-      ),
-  );
+    const mentionIndex = buildMentionIndex(allTasks, allProjects);
+    const mentionedIds = new Set(
+      mentionIndex
+        .linksFor(parentTask, parentComments)
+        .mentions.map((m) => m.id)
+        .filter(
+          (id) =>
+            !ownDependencies.has(id) &&
+            !parentsOfSelf.has(id) &&
+            !siblingsUnderSharedParent.has(id),
+        ),
+    );
 
-  // All child tasks under this umbrella (finished, active, or waiting), sorted in task order.
-  const allChildTasks = allTasks
-    .filter((t) => {
-      if (t.id === parentTask.id) return false;
-      if (childRowById.has(t.id) || runByTaskId.get(t.id)?.parentTaskId === parentTask.id) {
-        return true;
-      }
-      if (parentsOfSelf.has(t.id) || siblingsUnderSharedParent.has(t.id)) return false;
-      if (mentionedIds.has(t.id)) return true;
-      if ((t.dependsOn ?? []).includes(parentTask.id)) {
-        const candidateRunParent = runByTaskId.get(t.id)?.parentTaskId;
-        if (candidateRunParent && candidateRunParent !== parentTask.id && parentsOfSelf.has(candidateRunParent)) {
-          return false;
+    // All child tasks under this umbrella (finished, active, or waiting), sorted in task order.
+    allChildTasks = allTasks
+      .filter((t) => {
+        if (t.id === parentTask.id) return false;
+        if (childRowById.has(t.id) || runByTaskId.get(t.id)?.parentTaskId === parentTask.id) {
+          return true;
         }
-        return true;
-      }
-      return false;
-    })
-    .sort(compareTasks);
+        if (parentsOfSelf.has(t.id) || siblingsUnderSharedParent.has(t.id)) return false;
+        if (mentionedIds.has(t.id)) return true;
+        if ((t.dependsOn ?? []).includes(parentTask.id)) {
+          const candidateRunParent = runByTaskId.get(t.id)?.parentTaskId;
+          if (candidateRunParent && candidateRunParent !== parentTask.id && parentsOfSelf.has(candidateRunParent)) {
+            return false;
+          }
+          return true;
+        }
+        return false;
+      })
+      .sort(compareTasks);
+  }
 
   const openChildTasks = allChildTasks.filter((t) => !FINISHED_TASK_STATUSES.has(t.status));
   const runningSet = new Set(activeRunning.map((r) => r.id));
@@ -2980,7 +3072,7 @@ async function evaluateUmbrellaChildren(
 
     const blockedBy: string[] = [];
     for (const depId of candidateTask.dependsOn ?? []) {
-      if (depId === parentTask.id) continue;
+      if (effectiveMode === "legacy" && depId === parentTask.id) continue;
       const depTask = taskById.get(depId);
       if (depTask && !FINISHED_TASK_STATUSES.has(depTask.status)) {
         const depCode = taskCode(depTask, projectById.get(depTask.projectId));
@@ -3675,6 +3767,11 @@ export async function replyToTaskT3Run(
     });
 
     await deps.store.requests.cancel(task.id, now);
+    const preservedHierarchyMode: HierarchyMode =
+      existingRun.hierarchyMode ??
+      (isActiveAgentRunState(existingRun.state)
+        ? "legacy"
+        : (deps.hierarchyMode ?? DEFAULT_HIERARCHY_MODE));
     const launchPayload: QueuedLaunchPayload = {
       hostId: resolvedHostId,
       t3ProjectId: existingRun.t3ProjectId,
@@ -3687,6 +3784,7 @@ export async function replyToTaskT3Run(
       ...(targetOptions ? { options: targetOptions } : {}),
       ...(!existingRun.threadId.startsWith("queued:") ? { settleThreadId: existingRun.threadId } : {}),
       ...(existingRun.parentTaskId ? { parentTaskId: existingRun.parentTaskId } : {}),
+      hierarchyMode: preservedHierarchyMode,
       actor: input.actor,
     };
 
@@ -3709,6 +3807,7 @@ export async function replyToTaskT3Run(
         modelOptions: targetOptions,
         workspaceStrategy,
         ...(existingRun.parentTaskId ? { parentTaskId: existingRun.parentTaskId } : {}),
+        hierarchyMode: preservedHierarchyMode,
         startedBy: input.actor,
         startedAt: now,
         updatedAt: now,
@@ -4221,25 +4320,37 @@ export async function resolveTaskRunProfileWithSelection(
   };
 }
 
+export type RunProfileRouterCreation =
+  | { readonly ok: true; readonly router: RunProfileRouter }
+  | { readonly ok: false; readonly failure: RunProfileSuggestionFailure };
+
+/**
+ * Builds the organisation's AI router, or reports why there is none (#BIT-208).
+ * The API token is decrypted here and never included in the failure.
+ */
 export async function createOrgRunProfileRouter(
   deps: Pick<T3ServiceDeps, "store" | "encryptionKey" | "fetchFn" | "runProfileRouter">,
-): Promise<RunProfileRouter | null> {
+): Promise<RunProfileRouterCreation> {
   if (deps.runProfileRouter) {
-    return deps.runProfileRouter;
+    return { ok: true, router: deps.runProfileRouter };
   }
   if (!deps.encryptionKey) {
-    return null;
+    return { ok: false, failure: { reason: "decrypt_failed" } };
   }
-  const record = await deps.store.getAiRouterSettingsRecord().catch(() => undefined);
-  if (
-    !record ||
-    !record.enabled ||
-    !record.baseUrl.trim() ||
-    !record.model.trim() ||
-    !record.encryptedApiToken ||
-    !record.tokenIv
-  ) {
-    return null;
+  let record: Awaited<ReturnType<T3D1Store["getAiRouterSettingsRecord"]>>;
+  try {
+    record = await deps.store.getAiRouterSettingsRecord();
+  } catch {
+    return { ok: false, failure: { reason: "store_unavailable" } };
+  }
+  if (!record?.enabled) {
+    return { ok: false, failure: { reason: "router_disabled" } };
+  }
+  if (!record.encryptedApiToken || !record.tokenIv) {
+    return { ok: false, failure: { reason: "no_token" } };
+  }
+  if (!record.baseUrl.trim() || !record.model.trim()) {
+    return { ok: false, failure: { reason: "not_configured" } };
   }
 
   let apiToken: string;
@@ -4252,20 +4363,23 @@ export async function createOrgRunProfileRouter(
       deps.encryptionKey,
     );
   } catch {
-    return null;
+    return { ok: false, failure: { reason: "decrypt_failed" } };
   }
   if (!apiToken.trim()) {
-    return null;
+    return { ok: false, failure: { reason: "no_token" } };
   }
 
-  return new HttpRunProfileRouter({
-    baseUrl: record.baseUrl,
-    model: record.model,
-    apiToken,
-    apiStyle: record.apiStyle,
-    enabled: record.enabled,
-    fetchFn: deps.fetchFn,
-  });
+  return {
+    ok: true,
+    router: new HttpRunProfileRouter({
+      baseUrl: record.baseUrl,
+      model: record.model,
+      apiToken,
+      apiStyle: record.apiStyle,
+      enabled: record.enabled,
+      fetchFn: deps.fetchFn,
+    }),
+  };
 }
 
 export async function readCachedCapabilitiesForOrg(
@@ -4304,10 +4418,30 @@ export interface SuggestTaskRunProfileResult {
   readonly profile: TaskRunProfile | null;
   readonly resolved: ResolvedRunSelection;
   readonly suggestion: RunProfileSuggestion | null;
+  /** Why no suggestion was produced; null when one was, or when the router was not consulted (#BIT-208). */
+  readonly suggestionFailure: RunProfileSuggestionFailure | null;
   readonly stored: boolean;
   readonly suggested: boolean;
   readonly nextLevelUp?: RunLevel | undefined;
   readonly routerEnabled: boolean;
+}
+
+/**
+ * Logs a router failure with its classification and, for HTTP errors, a truncated token-redacted
+ * response body (#BIT-208, #BIT-210). The token is never logged.
+ */
+function logRunProfileSuggestionFailure(taskId: string, failure: RunProfileSuggestionFailure): void {
+  console.warn("AI run-profile router returned no suggestion", { taskId, ...failure });
+}
+
+/** Drops the log-only `detail` so provider error bodies are not returned to API or MCP clients. */
+function toClientSuggestionFailure(
+  failure: RunProfileSuggestionFailure,
+): RunProfileSuggestionFailure {
+  if (failure.reason !== "http_error") {
+    return failure;
+  }
+  return { reason: "http_error", status: failure.status };
 }
 
 /**
@@ -4316,7 +4450,7 @@ export interface SuggestTaskRunProfileResult {
  *
  * - Stored with `source: "router"`; never overwrites a `manual` or `agent` profile.
  * - On failure, timeout, non-2xx, invalid JSON, or low confidence, no profile is stored so the
- *   project default level applies.
+ *   project default level applies, and the reason is returned as `suggestionFailure` and logged.
  */
 export async function suggestTaskRunProfile(
   deps: T3ServiceDeps,
@@ -4340,19 +4474,22 @@ export async function suggestTaskRunProfile(
     return {
       ...current,
       suggestion: null,
+      suggestionFailure: null,
       stored: false,
       suggested: false,
     };
   }
 
-  const router = await createOrgRunProfileRouter(deps);
-  if (!router) {
+  const creation = await createOrgRunProfileRouter(deps);
+  if (!creation.ok) {
+    logRunProfileSuggestionFailure(task.id, creation.failure);
     const current = await resolveTaskRunProfileWithSelection(deps, task.id, {
       hostId: options?.hostId,
     });
     return {
       ...current,
       suggestion: null,
+      suggestionFailure: creation.failure,
       stored: false,
       suggested: false,
     };
@@ -4371,7 +4508,7 @@ export async function suggestTaskRunProfile(
   });
   const effortValuesByLevel = buildEffortValuesByLevel(levels, cachedCaps);
 
-  const suggestion = await router.suggest(
+  const outcome = await creation.router.suggest(
     {
       title: task.title,
       description: task.description,
@@ -4386,17 +4523,20 @@ export async function suggestTaskRunProfile(
     },
   );
 
-  if (!suggestion) {
+  if (!outcome.ok) {
+    logRunProfileSuggestionFailure(task.id, outcome.failure);
     const current = await resolveTaskRunProfileWithSelection(deps, task.id, {
       hostId: targetHostId,
     });
     return {
       ...current,
       suggestion: null,
+      suggestionFailure: toClientSuggestionFailure(outcome.failure),
       stored: false,
       suggested: false,
     };
   }
+  const suggestion = outcome.suggestion;
 
   const saved = await deps.store.saveTaskRunProfile({
     taskId: task.id,
@@ -4420,6 +4560,7 @@ export async function suggestTaskRunProfile(
     ...updated,
     profile: saved,
     suggestion,
+    suggestionFailure: null,
     stored: wasStored,
     suggested: wasStored,
   };
@@ -4549,6 +4690,228 @@ export async function validateAndSaveOrgRunLevels(
   ]);
   return { levels, models };
 }
+
+/**
+ * Rejects hierarchy mutations (`reparent` or `delete`) that would disrupt an active delegation run (#BIT-195).
+ */
+export async function assertHierarchyMutationAllowed(
+  deps: Pick<T3ServiceDeps, "store">,
+  input: {
+    readonly action: "reparent" | "delete";
+    readonly taskId: string;
+  },
+): Promise<void> {
+  const [taskRun, parentLinks, waitingParents] = await Promise.all([
+    ignoreMissingT3Table(deps.store.getAgentRunByTaskId(input.taskId), undefined),
+    ignoreMissingT3Table(deps.store.listAgentRunParentsForChild(input.taskId), []),
+    ignoreMissingT3Table(deps.store.listAgentRunsWaitingFor(input.taskId), []),
+  ]);
+
+  const hasActiveChildDelegation =
+    Boolean(taskRun && isActiveAgentRunState(taskRun.state) && taskRun.parentTaskId) ||
+    parentLinks.some((row) => row.state === "running") ||
+    waitingParents.some((run) => isActiveAgentRunState(run.state));
+
+  if (hasActiveChildDelegation) {
+    throw new ValidationError(input.action === "reparent" ? "updateTask" : "deleteTask", [
+      {
+        code: "custom",
+        path: [input.action === "reparent" ? "parentId" : "id"],
+        message:
+          input.action === "reparent"
+            ? `Cannot change parentId of task ${input.taskId} while it has an active delegation run.`
+            : `Cannot delete task ${input.taskId} while it has an active delegation run.`,
+        input: input.taskId,
+      },
+    ]);
+  }
+
+  if (input.action === "delete") {
+    const [childRows, allRuns] = await Promise.all([
+      ignoreMissingT3Table(deps.store.listAgentRunChildren(input.taskId), []),
+      ignoreMissingT3Table(deps.store.listAgentRuns(), []),
+    ]);
+    const hasActiveUmbrellaDelegation =
+      taskRun?.state === "waiting_subagent" ||
+      childRows.some((row) => row.state === "running") ||
+      allRuns.some((run) => run.parentTaskId === input.taskId && isActiveAgentRunState(run.state));
+
+    if (hasActiveUmbrellaDelegation) {
+      throw new ValidationError("deleteTask", [
+        {
+          code: "custom",
+          path: ["id"],
+          message: `Cannot delete umbrella task ${input.taskId} while it has an active child delegation run.`,
+          input: input.taskId,
+        },
+      ]);
+    }
+  }
+}
+
+/**
+ * Produces a read-only inventory of legacy inferred parent-child links with provenance and conflicts (#BIT-195).
+ */
+export async function getLegacyHierarchyInventory(
+  deps: Pick<T3ServiceDeps, "store" | "storage" | "hierarchyMode">,
+  options?: { readonly projectId?: string | undefined },
+): Promise<LegacyHierarchyInventoryResponse> {
+  const [tasks, projects, runs, runChildren] = await Promise.all([
+    deps.storage.getTasks(),
+    deps.storage.getProjects(),
+    ignoreMissingT3Table(deps.store.listAgentRuns(), []),
+    ignoreMissingT3Table(deps.store.listAllAgentRunChildren(), []),
+  ]);
+  return buildLegacyHierarchyInventory({
+    tasks,
+    projects,
+    runs,
+    runChildren,
+    hierarchyMode: deps.hierarchyMode ?? DEFAULT_HIERARCHY_MODE,
+    ...(options?.projectId ? { projectId: options.projectId } : {}),
+  });
+}
+
+/**
+ * Persists human-confirmed legacy parent-child links into `task.parentId`, revalidating
+ * existence, non-overwrite, same-project, acyclicity, and active-delegation guards per edge (#BIT-195).
+ */
+export async function importExplicitHierarchy(
+  deps: Pick<T3ServiceDeps, "store" | "storage">,
+  input: ImportHierarchyInput,
+  options?: OperationOptions,
+): Promise<ImportHierarchyResponse> {
+  const parsed = ImportHierarchyInputSchema.parse(input);
+  const [allTasks, allProjects] = await Promise.all([
+    deps.storage.getTasks(),
+    deps.storage.getProjects(),
+  ]);
+  const projectById = new Map(allProjects.map((p) => [p.id, p]));
+  const workingTasks = new Map(allTasks.map((t) => [t.id, t]));
+  const seenChildren = new Set<string>();
+  const imported: ImportedHierarchyEdge[] = [];
+  const rejected: RejectedHierarchyEdge[] = [];
+
+  for (const edge of parsed.edges) {
+    const { childTaskId, parentTaskId } = edge;
+    if (seenChildren.has(childTaskId)) {
+      rejected.push({
+        childTaskId,
+        parentTaskId,
+        reason: "Duplicate child task in import batch.",
+      });
+      continue;
+    }
+    seenChildren.add(childTaskId);
+
+    const child = workingTasks.get(childTaskId);
+    const parent = workingTasks.get(parentTaskId);
+    if (!child) {
+      rejected.push({ childTaskId, parentTaskId, reason: `Child task ${childTaskId} not found.` });
+      continue;
+    }
+    if (!parent) {
+      rejected.push({ childTaskId, parentTaskId, reason: `Parent task ${parentTaskId} not found.` });
+      continue;
+    }
+    if (child.parentId !== undefined) {
+      rejected.push({
+        childTaskId,
+        parentTaskId,
+        reason: `Task ${childTaskId} already has an explicit parentId (${child.parentId}).`,
+      });
+      continue;
+    }
+
+    try {
+      await assertHierarchyMutationAllowed(deps, { action: "reparent", taskId: child.id });
+    } catch (err) {
+      const reason =
+        err instanceof ValidationError
+          ? (err.issues[0]?.message ?? err.message)
+          : err instanceof Error
+            ? err.message
+            : "Active delegation prevents reparenting this task.";
+      rejected.push({ childTaskId, parentTaskId, reason });
+      continue;
+    }
+
+    const candidate: Task = { ...child, parentId: parent.id };
+    try {
+      assertTaskContainment(candidate, workingTasks.values(), "importHierarchy");
+    } catch (err) {
+      const reason =
+        err instanceof ValidationError
+          ? (err.issues[0]?.message ?? err.message)
+          : err instanceof Error
+            ? err.message
+            : "Containment validation failed.";
+      rejected.push({ childTaskId, parentTaskId, reason });
+      continue;
+    }
+
+    // Revalidate against latest stored state immediately before writing so concurrent mutations
+    // cannot bypass acyclicity, same-project, or existing parentId protection.
+    const [latestChild, latestParent] = await Promise.all([
+      deps.storage.getTask(child.id),
+      deps.storage.getTask(parent.id),
+    ]);
+    if (!latestChild) {
+      rejected.push({ childTaskId, parentTaskId, reason: `Child task ${childTaskId} no longer exists.` });
+      continue;
+    }
+    if (!latestParent) {
+      rejected.push({ childTaskId, parentTaskId, reason: `Parent task ${parentTaskId} no longer exists.` });
+      continue;
+    }
+    if (latestChild.parentId !== undefined) {
+      rejected.push({
+        childTaskId,
+        parentTaskId,
+        reason: `Task ${childTaskId} already has an explicit parentId (${latestChild.parentId}).`,
+      });
+      continue;
+    }
+    if (latestChild.projectId !== latestParent.projectId) {
+      rejected.push({
+        childTaskId,
+        parentTaskId,
+        reason: `Parent task ${parentTaskId} must belong to the same project.`,
+      });
+      continue;
+    }
+
+    try {
+      const updated = await deps.storage.updateTask(
+        child.id,
+        { parentId: latestParent.id },
+        options,
+      );
+      workingTasks.set(updated.id, updated);
+      const childCode = taskCode(updated, projectById.get(updated.projectId));
+      const parentCode = taskCode(latestParent, projectById.get(latestParent.projectId));
+      imported.push({
+        childTaskId: updated.id,
+        parentTaskId: latestParent.id,
+        ...(childCode ? { childCode } : {}),
+        ...(parentCode ? { parentCode } : {}),
+      });
+    } catch (err) {
+      if (err instanceof ValidationError) {
+        rejected.push({
+          childTaskId,
+          parentTaskId,
+          reason: err.issues[0]?.message ?? err.message,
+        });
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  return { imported, rejected };
+}
+
 
 
 

@@ -133,7 +133,8 @@ Projects and tasks round-trip across **Markdown ↔ D1** through the canonical b
 - **Project IDs & Task IDs:** Immutable UUIDv7 identifiers preserved across all storage media.
 - **Timestamps (`createdAt`, `updatedAt`):** Preserved exactly to the millisecond.
 - **Comments:** IDs, authors and timestamps are preserved.
-- **Optional Metadata:** `dueDate`, `priority`, `order`, and `labels` retain their exact types, values, and order.
+- **Optional Metadata:** `dueDate`, `priority`, `order`, `labels`, `dependsOn`, and `parentId` retain their exact types, values, and order.
+- **Explicit Containment (`parentId`):** `parentId` is validated on import to remain within the same project and acyclic (no self-parenting or ancestor cycles). Moving a task with children across projects clears or rejects invalid cross-project parent links consistently across Markdown and D1.
 
 ## Retiring Nostr storage
 

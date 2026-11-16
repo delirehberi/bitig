@@ -42,6 +42,7 @@ const STATEMENTS = [
     \`needs_human\` text,
     \`pending_approval\` integer,
     \`depends_on\` text,
+    \`parent_id\` text,
     \`number\` integer,
     \`started_at\` integer,
     \`completed_at\` integer,
@@ -55,6 +56,7 @@ const STATEMENTS = [
     FOREIGN KEY (\`project_id\`) REFERENCES \`projects\`(\`id\`) ON UPDATE no action ON DELETE cascade
   )`,
   "CREATE INDEX `tasks_project_id_idx` ON `tasks` (`project_id`)",
+  "CREATE INDEX `tasks_parent_id_idx` ON `tasks` (`parent_id`)",
   "CREATE INDEX `tasks_status_idx` ON `tasks` (`status`)",
   "CREATE INDEX `tasks_order_idx` ON `tasks` (`order`)",
   "CREATE UNIQUE INDEX `tasks_project_number_idx` ON `tasks` (`project_id`,`number`)",
@@ -211,6 +213,43 @@ describe("D1Storage extra tests", () => {
     );
 
     expect(moved.map((t) => t.number).sort((a, b) => (a ?? 0) - (b ?? 0))).toEqual([5, 6, 7]);
+  });
+
+  it("enforces atomic parentId containment, delete rejection, and project-move guards in SQL", async () => {
+    const storage = new D1Storage(env.DB);
+    const projA = await storage.createProject({ name: "Proj A" });
+    const projB = await storage.createProject({ name: "Proj B" });
+    const parent = await storage.saveTask({ projectId: projA.id, title: "Parent" });
+    const child = await storage.saveTask({ projectId: projA.id, title: "Child", parentId: parent.id });
+    const grandchild = await storage.saveTask({ projectId: projA.id, title: "Grandchild", parentId: child.id });
+
+    // Deleting parent leaves attachments and children completely untouched when rejected
+    await storage.addAttachment({ taskId: parent.id, name: "keep.txt", data: "keep" });
+    await expect(storage.deleteTask(parent.id)).rejects.toThrow(/child/i);
+    expect(await storage.getTask(parent.id)).not.toBeNull();
+    expect((await storage.getAttachments(parent.id)).map((a) => a.name)).toEqual(["keep.txt"]);
+
+    // Cycle detection in SQL WITH RECURSIVE prevents grandchild -> parent cycle
+    await expect(storage.updateTask(parent.id, { parentId: grandchild.id })).rejects.toThrow(/cycle/i);
+
+    // Cross-project move blocked when task has a parent or children
+    await expect(storage.updateTask(child.id, { projectId: projB.id })).rejects.toThrow(/parent/i);
+    await expect(storage.updateTask(parent.id, { projectId: projB.id })).rejects.toThrow(/child/i);
+
+    // Concurrent race between deleting a parent and attaching a child leaves consistent state
+    const leaf = await storage.saveTask({ projectId: projA.id, title: "Leaf" });
+    const [attachResult, deleteResult] = await Promise.allSettled([
+      storage.saveTask({ projectId: projA.id, title: "Race Child", parentId: leaf.id }),
+      storage.deleteTask(leaf.id),
+    ]);
+    const leafAfter = await storage.getTask(leaf.id);
+    if (leafAfter === null) {
+      expect(deleteResult.status).toBe("fulfilled");
+      expect(attachResult.status).toBe("rejected");
+    } else {
+      expect(attachResult.status).toBe("fulfilled");
+      expect(deleteResult.status).toBe("rejected");
+    }
   });
 });
 

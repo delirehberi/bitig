@@ -7,9 +7,12 @@ import { ForbiddenRoleError } from "../auth";
 import type { AppEnv } from "../index";
 import { registerHostFolder, unregisterHostFolder } from "../t3/host-folders";
 import {
+  assertHierarchyMutationAllowed,
+  getLegacyHierarchyInventory,
   launchTaskInT3,
   reportChildMerge,
   reportTaskT3GitMetadata,
+  resolveEffectiveHierarchyMode,
   resolveTaskRunProfileWithSelection,
   startReadyChildrenInT3,
   suggestTaskRunProfile,
@@ -97,8 +100,18 @@ export const mcpRouter = new Hono<AppEnv>().all("*", async (c) => {
     // Resumes an umbrella task's T3 session waiting on the finished task (#BIT-141, #BIT-189).
     onTaskFinished: (task) => handBackFinishedTaskInBackground(c, task.id),
     onTaskNeedsHuman: (task) => handBackNeedsHumanTaskInBackground(c, task.id),
-    getUmbrellaParentTaskId: async (taskId) =>
-      (await t3Deps.store.getAgentRunByTaskId(taskId).catch(() => null))?.parentTaskId,
+    hierarchyMode: t3Deps.hierarchyMode,
+    isLegacyHierarchyParent: async (parentTaskId) => {
+      const run = await t3Deps.store.getAgentRunByTaskId(parentTaskId).catch(() => null);
+      return resolveEffectiveHierarchyMode(t3Deps, run) === "legacy";
+    },
+    getUmbrellaParentTaskId: async (taskId) => {
+      const run = await t3Deps.store.getAgentRunByTaskId(taskId).catch(() => null);
+      if (!run?.parentTaskId) return undefined;
+      return resolveEffectiveHierarchyMode(t3Deps, run) === "legacy" ? run.parentTaskId : undefined;
+    },
+    assertHierarchyMutationAllowed: (input) => assertHierarchyMutationAllowed(t3Deps, input),
+    listLegacyHierarchyInventory: (input) => getLegacyHierarchyInventory(t3Deps, input),
     listRunLevels: async () => {
       const role = c.get("orgRole");
       if (!role || !hasMinimumOrgRole(role, "viewer")) {

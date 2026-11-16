@@ -39,6 +39,7 @@ import {
   type AgentRunChildState,
   type AgentRunState,
   type AiRouterApiStyle,
+  type HierarchyMode,
   type OrgAiRouterSettings,
   type ProjectRunSettings,
   type ProjectT3Thread,
@@ -145,6 +146,8 @@ export interface SaveAgentRunInput {
   workspaceStrategy?: T3WorkspaceStrategy | undefined;
   /** The umbrella task whose session started this run (#BIT-141); cleared when absent. */
   parentTaskId?: string | undefined;
+  /** Hierarchy semantics active when this run was launched (`legacy` vs `explicit`, #BIT-195). */
+  hierarchyMode?: HierarchyMode | undefined;
   startedBy?: TaskActor | undefined;
   startedAt: number;
   updatedAt: number;
@@ -229,6 +232,7 @@ function toAgentRun(row: AgentRunRecord): AgentRun {
     ...(row.workspaceStrategy !== null ? { workspaceStrategy: row.workspaceStrategy } : {}),
     ...(row.parentTaskId !== null ? { parentTaskId: row.parentTaskId } : {}),
     ...(row.waitingForTaskId !== null ? { waitingForTaskId: row.waitingForTaskId } : {}),
+    ...(row.hierarchyMode != null ? { hierarchyMode: row.hierarchyMode } : {}),
     ...(row.startedBy !== null ? { startedBy: row.startedBy } : {}),
     startedAt: toTimestamp(new Date(row.startedAt)),
     updatedAt: toTimestamp(new Date(row.updatedAt)),
@@ -720,6 +724,7 @@ export class T3D1Store {
       parentTaskId: input.parentTaskId ?? null,
       // A new launch never waits on a child yet; a relaunch drops any earlier wait.
       waitingForTaskId: null,
+      hierarchyMode: input.hierarchyMode ?? null,
       startedBy: input.startedBy ?? null,
       startedAt: input.startedAt,
       updatedAt: input.updatedAt,
@@ -750,6 +755,7 @@ export class T3D1Store {
           workspaceStrategy: record.workspaceStrategy,
           parentTaskId: record.parentTaskId,
           waitingForTaskId: record.waitingForTaskId,
+          hierarchyMode: record.hierarchyMode,
           startedBy: record.startedBy,
           startedAt: record.startedAt,
           updatedAt: record.updatedAt,

@@ -316,10 +316,23 @@ export interface TaskRunProfileResponse {
   readonly routerEnabled: boolean;
 }
 
+/**
+ * Why the AI router gave no suggestion (#BIT-208). `reason` is one of the server's classifications;
+ * `status`, `field` and `confidence` are set only for the reasons that carry them.
+ */
+export interface RunProfileSuggestionFailure {
+  readonly reason: string;
+  readonly status?: number | undefined;
+  readonly field?: string | undefined;
+  readonly confidence?: number | undefined;
+}
+
 export interface SuggestRunProfileResponse extends TaskRunProfileResponse {
   /** False when the router answered nothing usable, or when a manual or agent profile is kept. */
   readonly stored: boolean;
   readonly suggestion: { readonly level: string; readonly reason: string } | null;
+  /** Null or absent when a suggestion was produced or the router was not consulted. */
+  readonly suggestionFailure?: RunProfileSuggestionFailure | null | undefined;
 }
 
 /** Fields a person sets on a task's run profile; `null` clears one. The server records `source: "manual"`. */

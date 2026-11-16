@@ -9,7 +9,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 describe("fetchHealth", () => {
-  it("returns the payload when the worker is healthy", async () => {
+  it("returns the payload when the worker is healthy and defaults omitted hierarchyMode to explicit", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       jsonResponse({ status: "ok", version: "1.2.3", storageMode: "cloudflare" }),
     );
@@ -18,8 +18,32 @@ describe("fetchHealth", () => {
       status: "ok",
       version: "1.2.3",
       storageMode: "cloudflare",
+      hierarchyMode: "explicit",
     });
     expect(fetchImpl).toHaveBeenCalledWith(HEALTH_PATH, expect.anything());
+  });
+
+  it("preserves explicit or legacy hierarchyMode reported by the worker", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({ status: "ok", version: "1.2.3", storageMode: "cloudflare", hierarchyMode: "legacy" }),
+    );
+
+    await expect(fetchHealth(new AbortController().signal, fetchImpl)).resolves.toEqual({
+      status: "ok",
+      version: "1.2.3",
+      storageMode: "cloudflare",
+      hierarchyMode: "legacy",
+    });
+  });
+
+  it("rejects an unknown hierarchy mode", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({ status: "ok", version: "1.2.3", storageMode: "cloudflare", hierarchyMode: "inferred" }),
+    );
+
+    await expect(fetchHealth(new AbortController().signal, fetchImpl)).rejects.toBeInstanceOf(
+      HealthCheckError,
+    );
   });
 
   it("rejects a non-2xx response", async () => {

@@ -22,6 +22,7 @@ import {
   getTaskTiming,
   type AgentRun,
   type AgentRunChild,
+  type HierarchyMode,
   type Project,
   type Task,
   type TaskPriority,
@@ -50,6 +51,7 @@ interface TaskListProps {
   readonly agentRuns?: readonly AgentRun[] | undefined;
   readonly umbrellaChildren?: readonly AgentRunChild[] | undefined;
   readonly umbrellaIndex?: UmbrellaIndex | undefined;
+  readonly hierarchyMode?: HierarchyMode | undefined;
   readonly onView: (task: Task) => void;
   readonly onEdit: (task: Task) => void;
   readonly onDelete: (task: Task) => void;
@@ -148,6 +150,7 @@ export function TaskList({
   agentRuns,
   umbrellaChildren,
   umbrellaIndex,
+  hierarchyMode,
   onView,
   onEdit,
   onDelete,
@@ -166,8 +169,9 @@ export function TaskList({
         projects,
         runs: agentRuns,
         runChildren: umbrellaChildren,
+        ...(hierarchyMode ? { mode: hierarchyMode } : {}),
       }),
-    [umbrellaIndex, tasks, projects, agentRuns, umbrellaChildren],
+    [umbrellaIndex, tasks, projects, agentRuns, umbrellaChildren, hierarchyMode],
   );
   const activeTasks = tasks.filter((task) => task.status !== "archived");
 

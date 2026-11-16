@@ -16,6 +16,7 @@ interface AiRouterSectionProps {
 
 const API_STYLE_LABELS: Record<AiRouterApiStyle, string> = {
   "cloudflare-run": "Cloudflare Workers AI (run)",
+  "cloudflare-clef": "Cloudflare Clef (decision model)",
   openai: "OpenAI-compatible (responses)",
   "openai-chat": "OpenAI-compatible (chat completions)",
 };

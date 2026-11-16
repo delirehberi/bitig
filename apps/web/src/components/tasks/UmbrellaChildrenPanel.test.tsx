@@ -472,7 +472,14 @@ describe("UmbrellaChildrenPanel & umbrella progress UI (#BIT-191)", () => {
   });
 
   it("shows '2 of 5 running, 1 merged' on umbrella cards in TaskBoard and TaskList without false badges on leaf tasks", () => {
-    const tasks = [UMBRELLA, CHILD_189, CHILD_190, CHILD_191, CHILD_192, CHILD_193];
+    const tasks = [
+      UMBRELLA,
+      { ...CHILD_189, parentId: UMBRELLA.id },
+      { ...CHILD_190, parentId: UMBRELLA.id },
+      { ...CHILD_191, parentId: UMBRELLA.id },
+      { ...CHILD_192, parentId: UMBRELLA.id },
+      { ...CHILD_193, parentId: UMBRELLA.id },
+    ];
     const agentRuns: AgentRun[] = [
       {
         id: "01940000-0000-7000-8000-000000009190",
@@ -560,5 +567,44 @@ describe("UmbrellaChildrenPanel & umbrella progress UI (#BIT-191)", () => {
     const listBadges = screen.getAllByTestId("umbrella-progress-badge");
     expect(listBadges).toHaveLength(1);
     expect(listBadges[0]).toHaveTextContent("2 of 5 running, 1 merged");
+  });
+
+  it("does not infer umbrella badges from mentions or dependencies in explicit mode, but does in legacy mode (#BIT-195)", () => {
+    const tasks = [UMBRELLA, CHILD_189, CHILD_190, CHILD_191, CHILD_192, CHILD_193];
+
+    const { unmount } = render(
+      <TaskMentionsProvider projects={[PROJECT]} tasks={tasks}>
+        <TaskBoard
+          tasks={tasks}
+          projects={[PROJECT]}
+          hierarchyMode="explicit"
+          onView={vi.fn()}
+          onEdit={vi.fn()}
+          onDelete={vi.fn()}
+          onComplete={vi.fn()}
+          onStatusChange={vi.fn()}
+          onMove={vi.fn()}
+        />
+      </TaskMentionsProvider>,
+    );
+    expect(screen.queryByTestId("umbrella-progress-badge")).not.toBeInTheDocument();
+    unmount();
+
+    render(
+      <TaskMentionsProvider projects={[PROJECT]} tasks={tasks}>
+        <TaskBoard
+          tasks={tasks}
+          projects={[PROJECT]}
+          hierarchyMode="legacy"
+          onView={vi.fn()}
+          onEdit={vi.fn()}
+          onDelete={vi.fn()}
+          onComplete={vi.fn()}
+          onStatusChange={vi.fn()}
+          onMove={vi.fn()}
+        />
+      </TaskMentionsProvider>,
+    );
+    expect(screen.getByTestId("umbrella-progress-badge")).toHaveTextContent("0 of 5 running, 1 done");
   });
 });

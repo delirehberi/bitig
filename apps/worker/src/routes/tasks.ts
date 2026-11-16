@@ -3,6 +3,7 @@ import { zValidator } from "@hono/zod-validator";
 import {
   CreateCommentInputSchema,
   CreateTaskInputSchema,
+  ImportHierarchyInputSchema,
   SaveCheckpointInputSchema,
   UpdateTaskInputSchema,
   ValidationError,
@@ -10,16 +11,22 @@ import {
   checkNewTaskStatus,
   checkStatusChange,
   decodeBase64,
+  hasMinimumOrgRole,
   type Comment,
   type OperationOptions,
 } from "@bitig/core";
 import type { Context } from "hono";
+import { ForbiddenRoleError } from "../auth";
 import type { AppEnv } from "../index";
 import { runInBackground } from "../background";
 import {
+  assertHierarchyMutationAllowed,
   forwardCommentToT3Run,
+  getLegacyHierarchyInventory,
   handBackCompletedChildTask,
   handBackNeedsHumanChildTask,
+  importExplicitHierarchy,
+  resolveEffectiveHierarchyMode,
   settleTaskT3Run,
   suggestTaskRunProfile,
 } from "../t3/service";
@@ -140,9 +147,10 @@ async function statusChangeOptions(
   }
   const storage = c.get("storage");
   let effectiveDependsOn = dependsOn;
-  const run = await buildServiceDeps(c).store.getAgentRunByTaskId(id).catch(() => null);
+  const serviceDeps = buildServiceDeps(c);
+  const run = await serviceDeps.store.getAgentRunByTaskId(id).catch(() => null);
   const parentTaskId = run?.parentTaskId;
-  if (parentTaskId) {
+  if (parentTaskId && resolveEffectiveHierarchyMode(serviceDeps, run) === "legacy") {
     if (effectiveDependsOn !== undefined) {
       effectiveDependsOn = effectiveDependsOn
         ? effectiveDependsOn.filter((depId) => depId !== parentTaskId)
@@ -189,6 +197,34 @@ export const tasksRouter = new Hono<AppEnv>()
       return c.json(task, HTTP_CREATED);
     },
   )
+  .get("/hierarchy/inventory", async (c) => {
+    const rawProjectId = c.req.query("projectId")?.trim();
+    const projectId = rawProjectId && rawProjectId.length > 0 ? rawProjectId : undefined;
+    const inventory = await getLegacyHierarchyInventory(buildServiceDeps(c), { projectId });
+    return c.json(inventory);
+  })
+  .post(
+    "/hierarchy/import",
+    zValidator("json", ImportHierarchyInputSchema, (result, c) => {
+      if (!result.success) {
+        return c.json({ error: "validation_error", details: result.error.issues }, HTTP_BAD_REQUEST);
+      }
+      return undefined;
+    }),
+    async (c) => {
+      const role = c.get("orgRole");
+      if (role && !hasMinimumOrgRole(role, "editor")) {
+        throw new ForbiddenRoleError("Forbidden: editor role required to import explicit task hierarchy");
+      }
+      const actor = c.req.header("X-Bitig-Actor") ?? c.req.header("X-Bitig-Agent") ?? c.get("user")?.id;
+      const result = await importExplicitHierarchy(
+        buildServiceDeps(c),
+        c.req.valid("json"),
+        actor ? { actor } : undefined,
+      );
+      return c.json(result);
+    },
+  )
   .get("/:id", async (c) => {
     const storage = c.get("storage");
     const id = c.req.param("id");
@@ -212,8 +248,15 @@ export const tasksRouter = new Hono<AppEnv>()
       const patch = c.req.valid("json");
       const finishing = patch.status === "archived" || patch.status === "done";
       const approving = patch.pendingApproval === null;
+      const reparenting = patch.parentId !== undefined;
       const settingNeedsHuman = typeof patch.needsHuman === "string" && patch.needsHuman.trim().length > 0;
-      const previous = finishing || approving ? await storage.getTask(id) : null;
+      const previous = finishing || approving || reparenting ? await storage.getTask(id) : null;
+      if (reparenting && previous) {
+        const nextParentId = patch.parentId === null ? undefined : patch.parentId;
+        if (nextParentId !== previous.parentId) {
+          await assertHierarchyMutationAllowed(buildServiceDeps(c), { action: "reparent", taskId: id });
+        }
+      }
       const updated = await storage.updateTask(id, patch, await statusChangeOptions(c, id, patch.status, "updateTask"));
       if (approving && previous?.pendingApproval === true && !updated.pendingApproval) {
         await markTaskFeedbackApproved(c, updated.id);
@@ -234,6 +277,7 @@ export const tasksRouter = new Hono<AppEnv>()
   .delete("/:id", async (c) => {
     const storage = c.get("storage");
     const id = c.req.param("id");
+    await assertHierarchyMutationAllowed(buildServiceDeps(c), { action: "delete", taskId: id });
     await storage.deleteTask(id);
     return c.body(null, HTTP_NO_CONTENT);
   })

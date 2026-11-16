@@ -107,9 +107,10 @@ Bitig exposes unified MCP tools across two distribution channels:
    - Protected by Bearer token authentication (or `?token=<MCP_URL_TOKEN>` for clients that cannot send headers) and edge rate limiting.
    - Backed by Cloudflare D1 storage.
 
-### Unified Tool Suite (20 tools):
+### Unified Tool Suite:
 - **Projects:** `list_projects`, `create_project`, `update_project`, `delete_project`
 - **Tasks:** `list_tasks`, `get_task`, `add_task`, `update_task`, `complete_task`, `delete_task`, `backfill_ticket_codes`
+- **Hierarchy (Cloudflare / explicit containment):** `list_legacy_hierarchy_inventory`, `import_explicit_hierarchy`
 - **Comments:** `list_comments`, `add_comment`, `delete_comment`
 - **Checkpoints:** `save_checkpoint`, `resume_from_checkpoint`
 - **Webhooks:** `list_webhooks`, `create_webhook`, `update_webhook`, `delete_webhook`
@@ -146,7 +147,7 @@ MCP is available over STDIO (local CLI) and Streamable HTTP (Cloudflare, authent
 
 - `Project`: `id`, `name`, `description`, `kind`, `createdAt`, `updatedAt`, plus optional `key` (2–10 uppercase characters for ticket codes), `resources` (`repository | issue_tracker | design | documentation | other`), and `archived`.
   - `kind`: `paid | hobby | open_source | personal | internal`; defaults to `hobby`, cannot be cleared.
-- `Task`: `id`, `projectId`, `title`, `description`, `status`, `createdAt`, `updatedAt`, `isPublic`, plus optional `dueDate`, `priority`, `labels`, `order`, `number` (for ticket codes like `BIT-12`), `checklist` (`{ text, done, startedAt?, completedAt? }[]`), `needsHuman`, `pendingApproval` (`true` while a task an agent or webhook created waits for a person's approval), `startedAt`, `completedAt`, `createdBy`, `startedBy`, `completedBy`, `updatedBy`, `activity`, and `commentCount`.
+- `Task`: `id`, `projectId`, `title`, `description`, `status`, `createdAt`, `updatedAt`, `isPublic`, plus optional `parentId` (explicit single-parent, same-project, acyclic containment; stored in D1 via migration `0029_task_parent_id.sql` and in Markdown frontmatter), `dependsOn` (ordering prerequisites, distinct from containment), `dueDate`, `priority`, `labels`, `order`, `number` (for ticket codes like `BIT-12`), `checklist` (`{ text, done, startedAt?, completedAt? }[]`), `needsHuman`, `pendingApproval` (`true` while a task an agent or webhook created waits for a person's approval), `startedAt`, `completedAt`, `createdBy`, `startedBy`, `completedBy`, `updatedBy`, `activity`, and `commentCount`.
 - `Comment`: `id`, `taskId`, `body`, `authorType` (`human | agent`), `createdAt`, plus optional `author`.
 - `Webhook`: `id`, `projectId`, `name`, `provider` (`generic | sentry | github | linear`), `token`, `enabled`, `triggerCount`, `createdAt`, `updatedAt`, plus optional `mapping`, `defaultPriority`, `defaultLabels`, and `lastTriggeredAt`.
 - `status`: `todo | in_progress | done | archived`.
@@ -158,6 +159,7 @@ MCP is available over STDIO (local CLI) and Streamable HTTP (Cloudflare, authent
   - D1: ID is the primary key.
 - `isPublic` is retained for bundle compatibility but has no runtime effect and defaults to `false`.
 - `deleteProject` cascades to tasks, comments, and webhooks (D1: FK `ON DELETE CASCADE`; Markdown: remove directory).
+- **Hierarchy mode (`HIERARCHY_MODE`):** Defaults to `"explicit"` (exposed on `/health` as `hierarchyMode`), where parent-child containment comes solely from `task.parentId` (separate from `dependsOn`, `#BIT-x` mentions, checklist items, and run ancestry); `"legacy"` enables read-time fallback inference for pre-cutoff workspaces.
 
 ---
 

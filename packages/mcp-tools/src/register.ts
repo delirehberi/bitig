@@ -10,6 +10,7 @@ import {
   CreateHostBoundProjectInputSchema,
   CreateTaskInputSchema,
   CreateWebhookInputSchema,
+  DEFAULT_HIERARCHY_MODE,
   DEFAULT_RUN_LEVELS,
   DueDateSchema,
   HostFolderPathSchema,
@@ -48,6 +49,7 @@ import {
   backfillTicketCodes,
   blockingTasks,
   buildExecutionContext,
+  buildLegacyHierarchyInventory,
   buildMentionIndex,
   buildProjectWorkContext,
   canOverwriteRunProfile,
@@ -58,6 +60,7 @@ import {
   dependencyLinks,
   encodeBase64,
   findBlockingTasks,
+  hierarchyLinks,
   isPendingFeedbackTask,
   isTextAttachmentMimeType,
   resolveProjectRef,
@@ -69,6 +72,8 @@ import {
   withTaskCodes,
   type AgentRun,
   type AgentRunChild,
+  type HierarchyMode,
+  type LegacyHierarchyInventoryResponse,
   type OperationOptions,
   type ResolvedRunSelection,
   type RunLevel,
@@ -233,10 +238,15 @@ export interface McpRunProfileSuggestion {
   readonly confidence: number;
 }
 
+/** Why the router gave no suggestion (#BIT-208). Mirrors the worker's `RunProfileSuggestionFailure`. */
+export type McpRunProfileSuggestionFailure =
+  | { readonly reason: string; readonly status?: number; readonly field?: string; readonly confidence?: number };
+
 export interface SuggestMcpTaskRunProfileResult {
   readonly profile: TaskRunProfile | null;
   readonly resolved: ResolvedRunSelection;
   readonly suggestion: McpRunProfileSuggestion | null;
+  readonly suggestionFailure: McpRunProfileSuggestionFailure | null;
   readonly stored: boolean;
   readonly routerEnabled: boolean;
   readonly nextLevelUp?: RunLevel | undefined;
@@ -288,10 +298,29 @@ export interface RegisterBitigToolsOptions {
   readonly onTaskNeedsHuman?: ((task: Task) => Promise<void>) | undefined;
   /**
    * Optional lookup returning the umbrella parent task ID recorded on `taskId`'s T3 run (#BIT-141),
-   * so a child task that listed its umbrella parent in `dependsOn` is not blocked by that parent
-   * while moving to `in_progress` or `done`.
+   * only when legacy parent-dependency exemption applies (#BIT-195).
    */
   readonly getUmbrellaParentTaskId?: ((taskId: string) => Promise<string | undefined>) | undefined;
+  /**
+   * Configured hierarchy mode for the server (`"explicit"` or `"legacy"`, #BIT-195).
+   */
+  readonly hierarchyMode?: HierarchyMode | undefined;
+  /**
+   * Optional lookup returning whether `parentTaskId`'s active run is operating in legacy mode (#BIT-195).
+   */
+  readonly isLegacyHierarchyParent?: ((parentTaskId: string) => Promise<boolean>) | undefined;
+  /**
+   * Optional guard rejecting reparent/delete mutations that would disrupt an active delegation run (#BIT-195).
+   */
+  readonly assertHierarchyMutationAllowed?:
+    | ((input: { readonly action: "reparent" | "delete"; readonly taskId: string }) => Promise<void>)
+    | undefined;
+  /**
+   * Optional callback returning the read-only legacy hierarchy inventory (including D1 run ancestry, #BIT-195).
+   */
+  readonly listLegacyHierarchyInventory?:
+    | ((input: { readonly projectId?: string | undefined }) => Promise<LegacyHierarchyInventoryResponse>)
+    | undefined;
   /**
    * Optional callback returning the organisation's ordered list of run levels (#BIT-186).
    */
@@ -847,7 +876,7 @@ export function registerBitigTools(
     "get_task",
     {
       description:
-        "Get a task by its ID or ticket code (e.g. BIT-12), with its comments and attachments oldest first, its runProfile and resolved model selection, the tasks it mentions (#BIT-12 in its description, subtasks or comments) as mentions, the tasks that mention it as mentionedIn, the tasks it depends on as dependsOn, the tasks that depend on it as dependents, and the unfinished ones it waits on as blockedBy",
+        "Get a task by its ID or ticket code (e.g. BIT-12), with its comments and attachments oldest first, its runProfile and resolved model selection, explicit parent and direct children, the tasks it mentions (#BIT-12 in its description, subtasks or comments) as mentions, the tasks that mention it as mentionedIn, the tasks it depends on as dependsOn, the tasks that depend on it as dependents, and the unfinished ones it waits on as blockedBy",
       annotations: { readOnlyHint: true },
       inputSchema: {
         id: TASK_REF,
@@ -871,10 +900,12 @@ export function registerBitigTools(
         ]);
         const links = buildMentionIndex(tasks, projects).linksFor(task, comments);
         const dependencies = dependencyLinks(task, tasks, projects);
+        const hierarchy = hierarchyLinks(task, tasks, projects);
         return formatSuccessResult({
           ...(await withCode(task, opts)),
           comments,
           attachments,
+          ...hierarchy,
           ...links,
           ...dependencies,
           runProfile: runSelection.profile,
@@ -915,6 +946,9 @@ export function registerBitigTools(
         order: TaskOrderSchema.optional(),
         checklist: ChecklistSchema.optional().describe(CHECKLIST_DESCRIPTION),
         needsHuman: NeedsHumanSchema.optional().describe(NEEDS_HUMAN_DESCRIPTION),
+        parentId: TASK_REF.optional().describe(
+          "Optional explicit same-project parent task ID or ticket code (e.g. BIT-10)",
+        ),
         dependsOn: z.array(TASK_REF).optional().describe(DEPENDS_ON_DESCRIPTION),
         runProfile: AgentRunProfileInputSchema.optional(),
       },
@@ -923,11 +957,12 @@ export function registerBitigTools(
       try {
         const actor = resolveMcpActor(server, extra, options?.fallbackActor);
         const opts: OperationOptions = { signal: extra.signal, actor };
-        const { dependsOn: dependencyRefs, runProfile, ...rest } = args;
+        const { dependsOn: dependencyRefs, parentId: parentRef, runProfile, ...rest } = args;
         if (runProfile?.level) {
           await assertValidRunLevelKey(runProfile.level, "add_task");
         }
         const projectId = await resolveProjectRef(storage, rest.projectId, opts);
+        const parentId = parentRef === undefined ? undefined : await resolveTaskRef(storage, parentRef, opts);
         const dependsOn = dependencyRefs === undefined ? [] : await resolveTaskRefs(storage, dependencyRefs, opts);
         await checkNewTaskStatus(storage, { status: rest.status, dependsOn }, "add_task", opts);
         // Not an input: every task an agent creates waits for a person to approve it.
@@ -936,6 +971,7 @@ export function registerBitigTools(
           projectId,
           status: "todo",
           pendingApproval: true,
+          ...(parentId !== undefined ? { parentId } : {}),
           ...(dependsOn.length > 0 ? { dependsOn } : {}),
         });
         const task = await storage.saveTask(parsed, opts);
@@ -958,7 +994,7 @@ export function registerBitigTools(
     "update_task",
     {
       description:
-        "Update task fields (set null to clear optional fields). Moving a task to another project gives it a new code there. Moving it to in_progress or done is refused while it awaits approval or any task it depends on is unfinished.",
+        "Update task fields (set null to clear optional fields). Moving a task to another project gives it a new code there, and is refused while the task has a parent or children. Moving it to in_progress or done is refused while it awaits approval or any task it depends on is unfinished.",
       inputSchema: {
         id: TASK_REF,
         projectId: PROJECT_REF.optional(),
@@ -978,6 +1014,11 @@ export function registerBitigTools(
           .describe(
             `${NEEDS_HUMAN_DESCRIPTION} null clears it when resolved manually or when a person's comment explicitly states it is resolved.`,
           ),
+        parentId: TASK_REF.nullable()
+          .optional()
+          .describe(
+            "Explicit same-project parent task ID or ticket code, or null to detach from current parent.",
+          ),
         dependsOn: z
           .array(TASK_REF)
           .nullable()
@@ -990,16 +1031,40 @@ export function registerBitigTools(
       try {
         const actor = resolveMcpActor(server, extra, options?.fallbackActor);
         const opts: OperationOptions = { signal: extra.signal, actor };
-        const { id: ref, projectId: projectRef, dependsOn: dependencyRefs, runProfile, ...rest } = args;
+        const {
+          id: ref,
+          projectId: projectRef,
+          parentId: parentRef,
+          dependsOn: dependencyRefs,
+          runProfile,
+          ...rest
+        } = args;
         const id = await resolveTaskRef(storage, ref, opts);
         if (runProfile?.level) {
           await assertValidRunLevelKey(runProfile.level, "update_task");
+        }
+        const parentId =
+          parentRef === undefined
+            ? undefined
+            : parentRef === null
+              ? null
+              : await resolveTaskRef(storage, parentRef, opts);
+        if (parentId !== undefined) {
+          const existing = await storage.getTask(id, opts);
+          const nextParentId = parentId ?? undefined;
+          if (existing && nextParentId !== existing.parentId) {
+            await options?.assertHierarchyMutationAllowed?.({ action: "reparent", taskId: id });
+          }
         }
         const resolved = dependencyRefs ? await resolveTaskRefs(storage, dependencyRefs, opts) : undefined;
         // An empty list clears dependencies, as null does.
         const dependsOn = dependencyRefs === null || resolved?.length === 0 ? null : resolved;
         if (rest.status !== undefined) await assertAgentMayMove(id, rest.status, "update_task", opts, dependsOn);
-        const fields = dependsOn === undefined ? rest : { ...rest, dependsOn };
+        const fields = {
+          ...rest,
+          ...(parentId !== undefined ? { parentId } : {}),
+          ...(dependsOn !== undefined ? { dependsOn } : {}),
+        };
         const patch =
           projectRef === undefined ? fields : { ...fields, projectId: await resolveProjectRef(storage, projectRef, opts) };
         const hasTaskPatch = Object.values(patch).some((value) => value !== undefined);
@@ -1061,7 +1126,8 @@ export function registerBitigTools(
   server.registerTool(
     "delete_task",
     {
-      description: "Permanently delete a task by ID or ticket code",
+      description:
+        "Permanently delete a task by ID or ticket code. Refused while the task still has child tasks or an active delegation run.",
       annotations: { destructiveHint: true },
       inputSchema: {
         id: TASK_REF,
@@ -1071,6 +1137,7 @@ export function registerBitigTools(
       try {
         const opts = { signal: extra.signal };
         const id = await resolveTaskRef(storage, args.id, opts);
+        await options?.assertHierarchyMutationAllowed?.({ action: "delete", taskId: id });
         await storage.deleteTask(id, opts);
         return formatSuccessResult({ success: true, deletedTaskId: id });
       } catch (err) {
@@ -1538,11 +1605,11 @@ export function registerBitigTools(
     "start_t3_thread",
     {
       description:
-        "Launch a T3 Code thread for a task on the connected T3 host. Refused if the task has pendingApproval: true, has unfinished dependencies in dependsOn, belongs to an unmapped project, or if no T3 host is connected. Moves the task to in_progress and records the T3 thread link. From an umbrella task's T3 session, pass parentTaskId to start one related task as a child session (must use workspaceStrategy 'worktree', branch from the umbrella's reported branch/head with no uncommitted changes, stay under the project's max_parallel_children, and have no path overlap with running siblings): the umbrella session then waits (waiting_subagent), so end your turn; Bitig resumes it once every running child in the batch has ended. Checklist items are steps of a task, never child sessions.",
+        "Launch a T3 Code thread for a task on the connected T3 host. Refused if the task is archived, has pendingApproval: true, has unfinished dependencies in dependsOn, belongs to an unmapped project, or if no T3 host is connected. Moves the task to in_progress and records the T3 thread link. From an umbrella task's T3 session, pass parentTaskId to start a child task (which must have explicit parentId set to parentTaskId in the same project, use workspaceStrategy 'worktree', branch from the umbrella's reported branch/head with no uncommitted changes, stay under the project's max_parallel_children, and have no path overlap with running siblings): the umbrella session then waits (waiting_subagent), so end your turn; Bitig resumes it once every running child in the batch has ended. Checklist items are steps of a task, never child sessions.",
       inputSchema: {
         taskId: TASK_REF,
         parentTaskId: TASK_REF.optional().describe(
-          "Umbrella task whose T3 session starts this task as a child session, as a task ID or ticket code, e.g. TAS-1. It must have an active T3 session. A dependency of taskId on it does not block the launch.",
+          "Umbrella task whose T3 session starts this task as a child session, as a task ID or ticket code, e.g. TAS-1. It must have an active T3 session and, in explicit hierarchy mode, match the child task's parentId.",
         ),
         workspaceStrategy: T3WorkspaceStrategySchema.optional().describe(
           "Workspace strategy: 'worktree' (default, isolated git worktree; required when parentTaskId is passed) or 'root'",
@@ -1579,9 +1646,24 @@ export function registerBitigTools(
         }
         const parentTaskId =
           args.parentTaskId === undefined ? undefined : await resolveTaskRef(storage, args.parentTaskId, opts);
-        // The umbrella task is in progress while it delegates, so a dependency on it does not block its child.
-        const task = parentTaskId === undefined ? null : await storage.getTask(taskId, opts);
-        const dependsOn = task ? (task.dependsOn ?? []).filter((id) => id !== parentTaskId) : undefined;
+        const isLegacyMode =
+          options?.hierarchyMode === "legacy" ||
+          (parentTaskId !== undefined && (await options?.isLegacyHierarchyParent?.(parentTaskId)) === true);
+        const task = parentTaskId !== undefined ? await storage.getTask(taskId, opts) : null;
+        if (parentTaskId !== undefined && !isLegacyMode && task && task.parentId !== parentTaskId) {
+          const parentTask = await storage.getTask(parentTaskId, opts);
+          const parentLabel = parentTask ? ((await withCode(parentTask, opts)).code ?? parentTask.id) : parentTaskId;
+          throw new ValidationError("start_t3_thread", [
+            {
+              code: "custom",
+              path: ["parentTaskId"],
+              message: `Task ${task.id} must have parentId set to umbrella task ${parentLabel} before launching as a child session.`,
+              input: args.parentTaskId,
+            },
+          ]);
+        }
+        const dependsOn =
+          task && isLegacyMode ? (task.dependsOn ?? []).filter((id) => id !== parentTaskId) : undefined;
         await checkStatusChange(storage, taskId, "in_progress", "start_t3_thread", {
           signal: opts.signal,
           ...(dependsOn ? { dependsOn } : {}),
@@ -1621,7 +1703,7 @@ export function registerBitigTools(
     "start_ready_children",
     {
       description:
-        "Pick the next parallel-safe batch of child tasks for an umbrella task (tasks the umbrella mentions or that depend on it), start them in T3 with worktree isolation branching from the umbrella's reported branch/head and their resolved run profiles, and return what started and why the rest were skipped. Refused until the umbrella has reported clean git metadata (branch, headSha, worktreePath, dirty: false). After starting a batch, end your turn without polling: Bitig resumes the umbrella session once when every running child in the batch has ended.",
+        "Pick the next parallel-safe batch of child tasks for an umbrella task (tasks with explicit parentId set to the umbrella in explicit mode), start them in T3 with worktree isolation branching from the umbrella's reported branch/head and their resolved run profiles, and return what started and why the rest were skipped. Refused until the umbrella has reported clean git metadata (branch, headSha, worktreePath, dirty: false). After starting a batch, end your turn without polling: Bitig resumes the umbrella session once when every running child in the batch has ended.",
       inputSchema: {
         parentTaskId: TASK_REF.describe(
           "Umbrella task ID or ticket code (e.g. BIT-183) whose T3 session is starting the batch",
@@ -1656,6 +1738,43 @@ export function registerBitigTools(
           actor,
         });
         return formatSuccessResult(result);
+      } catch (err) {
+        return formatErrorResult(err);
+      }
+    },
+  );
+
+  // 19b. list_legacy_hierarchy_inventory
+  server.registerTool(
+    "list_legacy_hierarchy_inventory",
+    {
+      description:
+        "Read-only inventory of legacy inferred parent-child relationships (from run ancestry, mentions, checklists, and reverse dependencies) with provenance and conflict flags so humans can review before importing into explicit task.parentId. Never modifies tasks.",
+      annotations: { readOnlyHint: true },
+      inputSchema: {
+        projectId: PROJECT_REF.optional(),
+      },
+    },
+    async (args, extra) => {
+      try {
+        const opts = { signal: extra.signal };
+        const projectId =
+          args.projectId === undefined ? undefined : await resolveProjectRef(storage, args.projectId, opts);
+        if (options?.listLegacyHierarchyInventory) {
+          return formatSuccessResult(await options.listLegacyHierarchyInventory({ projectId }));
+        }
+        const [tasks, projects] = await Promise.all([
+          storage.getTasks(undefined, opts),
+          storage.getProjects(opts),
+        ]);
+        return formatSuccessResult(
+          buildLegacyHierarchyInventory({
+            tasks,
+            projects,
+            hierarchyMode: options?.hierarchyMode ?? DEFAULT_HIERARCHY_MODE,
+            ...(projectId ? { projectId } : {}),
+          }),
+        );
       } catch (err) {
         return formatErrorResult(err);
       }
@@ -1718,6 +1837,7 @@ export function registerBitigTools(
             profile,
             resolved,
             suggestion: null,
+            suggestionFailure: null,
             stored: false,
             routerEnabled: false,
             ...(nextLevelUp ? { nextLevelUp } : {}),

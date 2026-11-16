@@ -661,6 +661,10 @@ export class ApiStorage implements StorageProvider {
     if (res.status === HTTP_NOT_FOUND) {
       throw new NotFoundError("task", id);
     }
+    if (res.status === HTTP_BAD_REQUEST) {
+      const err = await this.parseJsonResponse<{ details?: readonly [] }>(res);
+      throw new ValidationError("deleteTask", err.details ?? []);
+    }
     if (res.status === HTTP_UNAUTHORIZED) {
       throw new AuthError();
     }

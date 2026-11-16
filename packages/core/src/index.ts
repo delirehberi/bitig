@@ -7,12 +7,19 @@
  * production bundles.
  */
 
+import { HIERARCHY_MODES } from "./domain/constants";
+import type { HierarchyMode } from "./domain/types";
+
 export const STORAGE_MODES = ["local", "cloudflare"] as const;
 
 export type StorageMode = (typeof STORAGE_MODES)[number];
 
 export function isStorageMode(value: unknown): value is StorageMode {
   return typeof value === "string" && (STORAGE_MODES as readonly string[]).includes(value);
+}
+
+export function isHierarchyMode(value: unknown): value is HierarchyMode {
+  return typeof value === "string" && (HIERARCHY_MODES as readonly string[]).includes(value);
 }
 
 export * from "./domain/constants";
@@ -119,7 +126,13 @@ export {
 } from "./domain/ticket-codes";
 export type { ParsedTaskCode, TaskWithCode, TicketCodeBackfillResult } from "./domain/ticket-codes";
 export { extractTaskMentions, taskMentions } from "./domain/mentions";
-export { buildMentionIndex, dependencyLinks } from "./domain/task-links";
+export { buildMentionIndex, dependencyLinks, hierarchyLinks } from "./domain/task-links";
+export {
+  assertTaskContainment,
+  assertTaskDeletable,
+  assertTaskProjectMoveAllowed,
+} from "./domain/containment";
+export type { ContainmentNode } from "./domain/containment";
 export {
   assertTaskDependencies,
   blockingTasks,
@@ -140,7 +153,7 @@ export {
 export type { StatusChangeOptions } from "./domain/status-gate";
 export type { DependencyNode } from "./domain/dependencies";
 export type { MentionRange, TaskMention } from "./domain/mentions";
-export type { DependencyLinks, MentionIndex, TaskLinks, TaskLinkSummary } from "./domain/task-links";
+export type { DependencyLinks, HierarchyLinks, MentionIndex, TaskLinks, TaskLinkSummary } from "./domain/task-links";
 export {
   addChecklistItem,
   checklistProgress,

@@ -877,6 +877,99 @@ export function runStorageContractSuite(name: string, factory: StorageFactory): 
       });
     });
 
+    describe("containment", () => {
+      it("round-trips parentId, preserves it on unrelated edits, reparents, and detaches with null", async () => {
+        const project = await createProject();
+        const parentA = await storage.saveTask({ projectId: project.id, title: "Parent A" });
+        const parentB = await storage.saveTask({ projectId: project.id, title: "Parent B" });
+        const child = await storage.saveTask({
+          projectId: project.id,
+          title: "Child",
+          parentId: parentA.id,
+        });
+
+        expect(child.parentId).toBe(parentA.id);
+        expect(TaskSchema.parse(child)).toEqual(child);
+        expect(await storage.getTask(child.id)).toEqual(child);
+
+        const renamed = await storage.updateTask(child.id, { title: "Child renamed" });
+        expect(renamed.parentId).toBe(parentA.id);
+
+        const reparented = await storage.updateTask(child.id, { parentId: parentB.id });
+        expect(reparented.parentId).toBe(parentB.id);
+        expect(await storage.getTask(child.id)).toEqual(reparented);
+
+        const detached = await storage.updateTask(child.id, { parentId: null });
+        expect(detached).not.toHaveProperty("parentId");
+        expect(await storage.getTask(child.id)).toEqual(detached);
+      });
+
+      it("rejects self-parenting, unknown parents, cross-project parents, and containment cycles", async () => {
+        const projectA = await createProject("A");
+        const projectB = await createProject("B");
+        const a = await storage.saveTask({ projectId: projectA.id, title: "a" });
+        const b = await storage.saveTask({ projectId: projectA.id, title: "b", parentId: a.id });
+        const c = await storage.saveTask({ projectId: projectA.id, title: "c", parentId: b.id });
+        const foreign = await storage.saveTask({ projectId: projectB.id, title: "foreign" });
+
+        await expect(
+          storage.saveTask({ projectId: projectA.id, title: "bad", parentId: UNKNOWN_ID }),
+        ).rejects.toBeInstanceOf(ValidationError);
+        await expect(
+          storage.saveTask({ projectId: projectA.id, title: "bad", parentId: MALFORMED_ID }),
+        ).rejects.toBeInstanceOf(ValidationError);
+        await expect(
+          storage.saveTask({ projectId: projectA.id, title: "bad", parentId: foreign.id }),
+        ).rejects.toBeInstanceOf(ValidationError);
+
+        await expect(storage.updateTask(a.id, { parentId: a.id })).rejects.toBeInstanceOf(ValidationError);
+        await expect(storage.updateTask(a.id, { parentId: UNKNOWN_ID })).rejects.toBeInstanceOf(ValidationError);
+        await expect(storage.updateTask(a.id, { parentId: foreign.id })).rejects.toBeInstanceOf(ValidationError);
+        await expect(storage.updateTask(a.id, { parentId: b.id })).rejects.toBeInstanceOf(ValidationError);
+        await expect(storage.updateTask(a.id, { parentId: c.id })).rejects.toBeInstanceOf(ValidationError);
+
+        expect(await storage.getTask(a.id)).toEqual(a);
+        expect((await storage.getTask(b.id))?.parentId).toBe(a.id);
+        expect((await storage.getTask(c.id))?.parentId).toBe(b.id);
+      });
+
+      it("rejects deleting a parent while children exist and allows delete after detaching", async () => {
+        const project = await createProject();
+        const parent = await storage.saveTask({ projectId: project.id, title: "Parent" });
+        const child = await storage.saveTask({ projectId: project.id, title: "Child", parentId: parent.id });
+
+        await expect(storage.deleteTask(parent.id)).rejects.toBeInstanceOf(ValidationError);
+        expect(await storage.getTask(parent.id)).toEqual(parent);
+
+        await storage.updateTask(child.id, { parentId: null });
+        await storage.deleteTask(parent.id);
+        expect(await storage.getTask(parent.id)).toBeNull();
+        expect(await storage.getTask(child.id)).not.toBeNull();
+      });
+
+      it("rejects moving a task to another project while it has a parent or children", async () => {
+        const projectA = await createProject("A");
+        const projectB = await createProject("B");
+        const parent = await storage.saveTask({ projectId: projectA.id, title: "Parent" });
+        const child = await storage.saveTask({ projectId: projectA.id, title: "Child", parentId: parent.id });
+
+        await expect(storage.updateTask(parent.id, { projectId: projectB.id })).rejects.toBeInstanceOf(
+          ValidationError,
+        );
+        await expect(storage.updateTask(child.id, { projectId: projectB.id })).rejects.toBeInstanceOf(
+          ValidationError,
+        );
+        expect((await storage.getTask(parent.id))?.projectId).toBe(projectA.id);
+        expect((await storage.getTask(child.id))?.projectId).toBe(projectA.id);
+
+        await storage.updateTask(child.id, { parentId: null });
+        const movedChild = await storage.updateTask(child.id, { projectId: projectB.id });
+        const movedParent = await storage.updateTask(parent.id, { projectId: projectB.id });
+        expect(movedChild.projectId).toBe(projectB.id);
+        expect(movedParent.projectId).toBe(projectB.id);
+      });
+    });
+
     describe("comments", () => {
       async function createTask(title = "t"): Promise<Task> {
         const project = await createProject();

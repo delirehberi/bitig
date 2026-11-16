@@ -120,6 +120,7 @@ const STATEMENTS = [
     \`needs_human\` text,
     \`pending_approval\` integer,
     \`depends_on\` text,
+    \`parent_id\` text,
     \`number\` integer,
     \`started_at\` integer,
     \`completed_at\` integer,
@@ -133,6 +134,7 @@ const STATEMENTS = [
     FOREIGN KEY (\`project_id\`) REFERENCES \`projects\`(\`id\`) ON UPDATE no action ON DELETE cascade
   )`,
   "CREATE INDEX `tasks_project_id_idx` ON `tasks` (`project_id`)",
+  "CREATE INDEX `tasks_parent_id_idx` ON `tasks` (`parent_id`)",
   "CREATE INDEX `tasks_status_idx` ON `tasks` (`status`)",
   "CREATE INDEX `tasks_order_idx` ON `tasks` (`order`)",
   "CREATE UNIQUE INDEX `tasks_project_number_idx` ON `tasks` (`project_id`,`number`)",

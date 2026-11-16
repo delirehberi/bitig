@@ -33,6 +33,28 @@ export const DEFAULT_REPO_MAP = [
   "packages/storage-md",
 ] as const;
 
+/** Model selectors accepted by the Clef decision-model API (`@cf/cloudflare/clef[-flash]`, #BIT-210). */
+export const CLEF_MODEL_SELECTORS = ["clef", "clef-flash"] as const;
+type ClefModelSelector = (typeof CLEF_MODEL_SELECTORS)[number];
+
+/** Question ids sent to Clef; answers come back under the same ids. */
+const CLEF_LEVEL_QUESTION_ID = "level";
+const CLEF_EFFORT_QUESTION_ID = "effort";
+/** Clef `choice` questions need at least two options. */
+const CLEF_MIN_CHOICE_OPTIONS = 2;
+const CLEF_LEVEL_INSTRUCTIONS =
+  "Choose the organisation run level that best fits the software engineering task described in the state. Prefer the cheapest level that can complete the task reliably.";
+const CLEF_EFFORT_INSTRUCTIONS =
+  "Choose how much reasoning effort the software engineering task described in the state needs.";
+const CLEF_EFFORT_DESCRIPTIONS: Readonly<Record<string, string>> = {
+  low: "Simple, well-scoped work that needs little reasoning.",
+  medium: "Typical work with some ambiguity or several moving parts.",
+  high: "Hard, ambiguous or risky work that needs deep reasoning.",
+};
+const PERCENT = 100;
+/** Maximum characters of an error response body kept in the `http_error` log detail. */
+const HTTP_ERROR_DETAIL_MAX = 300;
+
 export interface RunProfileSuggestion {
   readonly level: RunLevelKey;
   readonly effort?: string | undefined;
@@ -63,6 +85,32 @@ export interface RunProfileRouterContext {
 }
 
 /**
+ * Why the router produced no suggestion (#BIT-208). Carries only the classification and small
+ * non-sensitive values (HTTP status, failing field, confidence); never tokens. `http_error.detail`
+ * is a truncated, token-redacted response body for server logs only (#BIT-210); the service strips
+ * it before the failure is returned to clients.
+ */
+export type RunProfileSuggestionFailure =
+  | { readonly reason: "router_disabled" }
+  | { readonly reason: "not_configured" }
+  | { readonly reason: "no_token" }
+  | { readonly reason: "decrypt_failed" }
+  | { readonly reason: "store_unavailable" }
+  | { readonly reason: "invalid_endpoint" }
+  | { readonly reason: "no_run_levels" }
+  | { readonly reason: "http_error"; readonly status: number; readonly detail?: string }
+  | { readonly reason: "timeout" }
+  | { readonly reason: "aborted" }
+  | { readonly reason: "network_error" }
+  | { readonly reason: "bad_response_shape" }
+  | { readonly reason: "validation_failed"; readonly field: string }
+  | { readonly reason: "low_confidence"; readonly confidence: number };
+
+export type RunProfileSuggestionOutcome =
+  | { readonly ok: true; readonly suggestion: RunProfileSuggestion }
+  | { readonly ok: false; readonly failure: RunProfileSuggestionFailure };
+
+/**
  * Pluggable task run profile router (#BIT-187).
  * Another decider (e.g. an ACP decision model reached through T3) can replace the HTTP router later.
  */
@@ -70,7 +118,11 @@ export interface RunProfileRouter {
   suggest(
     task: RunProfileRouterTaskInput,
     context: RunProfileRouterContext,
-  ): Promise<RunProfileSuggestion | null>;
+  ): Promise<RunProfileSuggestionOutcome>;
+}
+
+function failed(failure: RunProfileSuggestionFailure): RunProfileSuggestionOutcome {
+  return { ok: false, failure };
 }
 
 export interface PublicOrgAiRouterSettings {
@@ -351,7 +403,7 @@ export function validateAiRouterModel(rawModel: string): string {
 
 /**
  * Builds the target URL for an AI router call:
- * - `cloudflare-run`: appends `<baseUrl>/<model>` directly so `@` and `/` in the model ID are preserved in the URL path.
+ * - `cloudflare-run` / `cloudflare-clef`: appends `<baseUrl>/<model>` directly so `@` and `/` in the model ID are preserved in the URL path.
  * - `openai` / `openai-chat`: appends `/chat/completions` to `<baseUrl>` (unless already ending with `/chat/completions`).
  */
 export function buildAiRouterEndpointUrl(
@@ -363,7 +415,7 @@ export function buildAiRouterEndpointUrl(
   const validatedModel = validateAiRouterModel(model);
   const style = parseOrThrow(AiRouterApiStyleSchema, apiStyle, "buildAiRouterEndpointUrl apiStyle");
 
-  if (style === "cloudflare-run") {
+  if (style === "cloudflare-run" || style === "cloudflare-clef") {
     return `${validatedBase}/${validatedModel}`;
   }
 
@@ -440,6 +492,21 @@ export interface BuiltRouterRequest {
   readonly allowedEffortsByLevel: ReadonlyMap<string, ReadonlySet<string>>;
 }
 
+/** The non-sensitive task fields sent to any router: never comments, attachments, secrets or model names. */
+function sanitizeRouterState(task: RunProfileRouterTaskInput, context: RunProfileRouterContext) {
+  return {
+    title: task.title.trim(),
+    description: (task.description ?? "").trim(),
+    checklist: (task.checklist ?? []).map((item) => ({
+      text: item.text,
+      done: item.done,
+    })),
+    labels: [...(task.labels ?? [])],
+    serialPaths: [...(context.serialPaths ?? [])],
+    repoMap: [...(context.repoMap ?? DEFAULT_REPO_MAP)],
+  };
+}
+
 /**
  * Generates the router messages and JSON schema from the organisation's ordered run levels
  * and the task's non-sensitive fields (`title`, `description`, `checklist`, `labels`,
@@ -513,17 +580,7 @@ export function buildRouterRequest(
     "Respond strictly with JSON matching the provided JSON schema.",
   ].join("\n");
 
-  const sanitizedInput = {
-    title: task.title.trim(),
-    description: (task.description ?? "").trim(),
-    checklist: (task.checklist ?? []).map((item) => ({
-      text: item.text,
-      done: item.done,
-    })),
-    labels: [...(task.labels ?? [])],
-    serialPaths: [...(context.serialPaths ?? [])],
-    repoMap: [...(context.repoMap ?? DEFAULT_REPO_MAP)],
-  };
+  const sanitizedInput = sanitizeRouterState(task, context);
 
   const properties: Record<string, unknown> = {
     level: {
@@ -645,79 +702,322 @@ export function validateRouterSuggestionPayload(
   raw: unknown,
   built: BuiltRouterRequest,
   minConfidence = DEFAULT_ROUTER_MIN_CONFIDENCE,
-): RunProfileSuggestion | null {
+): RunProfileSuggestionOutcome {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    return null;
+    return failed({ reason: "bad_response_shape" });
   }
   const obj = raw as Record<string, unknown>;
 
-  // Reject unexpected extra keys
+  // Reject unexpected extra keys. The key itself comes from model output, so it is not echoed.
   const allowedKeys = new Set(["level", "effort", "touches", "parallelSafe", "reason", "confidence"]);
   for (const key of Object.keys(obj)) {
     if (!allowedKeys.has(key)) {
-      return null;
+      return failed({ reason: "validation_failed", field: "unexpectedKey" });
     }
   }
 
   if (typeof obj.level !== "string") {
-    return null;
+    return failed({ reason: "validation_failed", field: "level" });
   }
   const levelKey = obj.level.trim().toLowerCase();
   if (!built.allowedLevels.has(levelKey)) {
-    return null;
+    return failed({ reason: "validation_failed", field: "level" });
   }
 
   let validatedEffort: string | undefined;
   if (obj.effort !== undefined && obj.effort !== null) {
     if (typeof obj.effort !== "string") {
-      return null;
+      return failed({ reason: "validation_failed", field: "effort" });
     }
     const parsedEffort = RunProfileEffortSchema.safeParse(obj.effort);
     if (!parsedEffort.success) {
-      return null;
+      return failed({ reason: "validation_failed", field: "effort" });
     }
     const allowedEfforts = built.allowedEffortsByLevel.get(levelKey);
     if (!allowedEfforts?.has(parsedEffort.data)) {
-      return null;
+      return failed({ reason: "validation_failed", field: "effort" });
     }
     validatedEffort = parsedEffort.data;
   }
 
   if (!Array.isArray(obj.touches) || !obj.touches.every((item) => typeof item === "string")) {
-    return null;
+    return failed({ reason: "validation_failed", field: "touches" });
   }
   const parsedTouches = RunProfileTouchesSchema.safeParse(obj.touches);
   if (!parsedTouches.success) {
-    return null;
+    return failed({ reason: "validation_failed", field: "touches" });
   }
 
   if (typeof obj.parallelSafe !== "boolean") {
-    return null;
+    return failed({ reason: "validation_failed", field: "parallelSafe" });
   }
 
   if (typeof obj.reason !== "string") {
-    return null;
+    return failed({ reason: "validation_failed", field: "reason" });
   }
   const parsedReason = RunProfileReasonSchema.safeParse(obj.reason);
   if (!parsedReason.success) {
-    return null;
+    return failed({ reason: "validation_failed", field: "reason" });
   }
 
   if (typeof obj.confidence !== "number" || !Number.isFinite(obj.confidence)) {
-    return null;
+    return failed({ reason: "validation_failed", field: "confidence" });
   }
   const parsedConfidence = RunProfileConfidenceSchema.safeParse(obj.confidence);
-  if (!parsedConfidence.success || parsedConfidence.data < minConfidence) {
-    return null;
+  if (!parsedConfidence.success) {
+    return failed({ reason: "validation_failed", field: "confidence" });
+  }
+  if (parsedConfidence.data < minConfidence) {
+    return failed({ reason: "low_confidence", confidence: parsedConfidence.data });
   }
 
   return {
-    level: levelKey,
-    ...(validatedEffort !== undefined ? { effort: validatedEffort } : {}),
-    touches: parsedTouches.data,
-    parallelSafe: obj.parallelSafe,
-    reason: parsedReason.data,
-    confidence: parsedConfidence.data,
+    ok: true,
+    suggestion: {
+      level: levelKey,
+      ...(validatedEffort !== undefined ? { effort: validatedEffort } : {}),
+      touches: parsedTouches.data,
+      parallelSafe: obj.parallelSafe,
+      reason: parsedReason.data,
+      confidence: parsedConfidence.data,
+    },
+  };
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Resolves the Clef `model` selector from a configured model id such as `@cf/cloudflare/clef-flash`. */
+export function resolveClefModelSelector(model: string): ClefModelSelector | undefined {
+  const lastSegment = model.trim().split("/").pop()?.trim().toLowerCase();
+  return CLEF_MODEL_SELECTORS.find((selector) => selector === lastSegment);
+}
+
+export interface BuiltClefRequest {
+  readonly body: {
+    readonly model: ClefModelSelector;
+    readonly state: unknown;
+    readonly questions: Record<string, unknown>;
+  };
+  readonly allowedLevels: ReadonlySet<string>;
+  readonly allowedEffortsByLevel: ReadonlyMap<string, ReadonlySet<string>>;
+}
+
+/**
+ * Builds a request for the Clef decision-model API (#BIT-210). Clef answers typed questions rather
+ * than chat prompts, so the level (and, when the levels offer 2+ efforts, the effort) are two
+ * `choice` questions over the task state. Returns null when fewer than two levels are configured,
+ * because a `choice` question needs at least two options.
+ */
+export function buildClefRequest(
+  task: RunProfileRouterTaskInput,
+  context: RunProfileRouterContext,
+  selector: ClefModelSelector,
+): BuiltClefRequest | null {
+  // Reuse the level and per-level effort derivation shared with the chat-style routers.
+  const chat = buildRouterRequest(task, context);
+  if (!chat || chat.allowedLevels.size < CLEF_MIN_CHOICE_OPTIONS) {
+    return null;
+  }
+
+  const levelCriteria: Record<string, string> = {};
+  for (const level of sortRunLevels(context.levels)) {
+    levelCriteria[level.key] = `${level.label}: ${level.description}`;
+  }
+
+  const efforts = new Set<string>();
+  for (const levelEfforts of chat.allowedEffortsByLevel.values()) {
+    for (const effort of levelEfforts) {
+      efforts.add(effort);
+    }
+  }
+
+  const questions: Record<string, unknown> = {
+    [CLEF_LEVEL_QUESTION_ID]: {
+      type: "choice",
+      instructions: CLEF_LEVEL_INSTRUCTIONS,
+      criteria: levelCriteria,
+    },
+  };
+  if (efforts.size >= CLEF_MIN_CHOICE_OPTIONS) {
+    questions[CLEF_EFFORT_QUESTION_ID] = {
+      type: "choice",
+      instructions: CLEF_EFFORT_INSTRUCTIONS,
+      criteria: Object.fromEntries(
+        [...efforts].map((effort) => [effort, CLEF_EFFORT_DESCRIPTIONS[effort] ?? null]),
+      ),
+    };
+  }
+
+  return {
+    body: { model: selector, state: sanitizeRouterState(task, context), questions },
+    allowedLevels: chat.allowedLevels,
+    allowedEffortsByLevel: chat.allowedEffortsByLevel,
+  };
+}
+
+/**
+ * Turns a Clef response (`{ answers: { level: { choice, probabilities, confidence }, effort? } }`,
+ * optionally wrapped in the Cloudflare REST envelope `{ success, result }`) into a suggestion.
+ * Clef cannot write free text, so `touches` is empty, `parallelSafe` is false and `reason` is
+ * generated from the model's own probabilities (never naming a model).
+ */
+export function validateClefResponse(
+  raw: unknown,
+  built: BuiltClefRequest,
+  minConfidence = DEFAULT_ROUTER_MIN_CONFIDENCE,
+): RunProfileSuggestionOutcome {
+  if (!isPlainRecord(raw) || raw.success === false) {
+    return failed({ reason: "bad_response_shape" });
+  }
+  const payload = isPlainRecord(raw.result) && "answers" in raw.result ? raw.result : raw;
+  const answers = payload.answers;
+  if (!isPlainRecord(answers)) {
+    return failed({ reason: "bad_response_shape" });
+  }
+
+  const levelAnswer = answers[CLEF_LEVEL_QUESTION_ID];
+  if (!isPlainRecord(levelAnswer) || levelAnswer.type !== "choice") {
+    return failed({ reason: "bad_response_shape" });
+  }
+  if (typeof levelAnswer.choice !== "string") {
+    return failed({ reason: "validation_failed", field: "level" });
+  }
+  const levelKey = levelAnswer.choice.trim().toLowerCase();
+  if (!built.allowedLevels.has(levelKey)) {
+    return failed({ reason: "validation_failed", field: "level" });
+  }
+
+  const parsedConfidence = RunProfileConfidenceSchema.safeParse(levelAnswer.confidence);
+  if (!parsedConfidence.success) {
+    return failed({ reason: "validation_failed", field: "confidence" });
+  }
+  if (parsedConfidence.data < minConfidence) {
+    return failed({ reason: "low_confidence", confidence: parsedConfidence.data });
+  }
+
+  // An effort the chosen level does not offer is dropped; the level suggestion is still useful.
+  let effort: string | undefined;
+  const effortAnswer = answers[CLEF_EFFORT_QUESTION_ID];
+  if (
+    isPlainRecord(effortAnswer) &&
+    effortAnswer.type === "choice" &&
+    typeof effortAnswer.choice === "string"
+  ) {
+    const parsedEffort = RunProfileEffortSchema.safeParse(effortAnswer.choice);
+    if (parsedEffort.success && built.allowedEffortsByLevel.get(levelKey)?.has(parsedEffort.data)) {
+      effort = parsedEffort.data;
+    }
+  }
+
+  const probabilities = isPlainRecord(levelAnswer.probabilities) ? levelAnswer.probabilities : {};
+  const levelProbability = probabilities[levelAnswer.choice] ?? probabilities[levelKey];
+  const probability =
+    typeof levelProbability === "number" && Number.isFinite(levelProbability)
+      ? levelProbability
+      : parsedConfidence.data;
+  const reasonText = `Router chose "${levelKey}" (${String(Math.round(probability * PERCENT))}% probability)${
+    effort !== undefined ? `, effort ${effort}` : ""
+  }`;
+  const parsedReason = RunProfileReasonSchema.safeParse(reasonText);
+  if (!parsedReason.success) {
+    return failed({ reason: "validation_failed", field: "reason" });
+  }
+
+  return {
+    ok: true,
+    suggestion: {
+      level: levelKey,
+      ...(effort !== undefined ? { effort } : {}),
+      touches: [],
+      parallelSafe: false,
+      reason: parsedReason.data,
+      confidence: parsedConfidence.data,
+    },
+  };
+}
+
+export interface PreparedRouterRequest {
+  readonly body: unknown;
+  /** Extracts and validates a suggestion from the endpoint's parsed JSON response. */
+  readonly parse: (json: unknown, minConfidence: number) => RunProfileSuggestionOutcome;
+}
+
+export type PreparedRouterRequestResult =
+  | { readonly ok: true; readonly request: PreparedRouterRequest }
+  | { readonly ok: false; readonly failure: RunProfileSuggestionFailure };
+
+/**
+ * Builds the request body and response parser for an API style, so `HttpRunProfileRouter.suggest`
+ * and `testAiRouterEndpoint` cannot drift apart (#BIT-210).
+ */
+export function prepareRouterRequest(args: {
+  readonly apiStyle: AiRouterApiStyle;
+  readonly model: string;
+  readonly task: RunProfileRouterTaskInput;
+  readonly context: RunProfileRouterContext;
+}): PreparedRouterRequestResult {
+  const { apiStyle, task, context } = args;
+  const model = args.model.trim();
+
+  if (apiStyle === "cloudflare-clef") {
+    const selector = resolveClefModelSelector(model);
+    if (!selector) {
+      return { ok: false, failure: { reason: "invalid_endpoint" } };
+    }
+    const built = buildClefRequest(task, context, selector);
+    if (!built) {
+      return { ok: false, failure: { reason: "no_run_levels" } };
+    }
+    return {
+      ok: true,
+      request: {
+        body: built.body,
+        parse: (json, minConfidence) => validateClefResponse(json, built, minConfidence),
+      },
+    };
+  }
+
+  const built = buildRouterRequest(task, context);
+  if (!built) {
+    return { ok: false, failure: { reason: "no_run_levels" } };
+  }
+  const body =
+    apiStyle === "cloudflare-run"
+      ? {
+          messages: built.messages,
+          response_format: {
+            type: "json_schema",
+            json_schema: built.jsonSchema,
+          },
+        }
+      : {
+          model,
+          messages: built.messages,
+          response_format: {
+            type: "json_schema",
+            json_schema: {
+              name: "run_profile_suggestion",
+              strict: true,
+              schema: built.jsonSchema,
+            },
+          },
+        };
+  return {
+    ok: true,
+    request: {
+      body,
+      parse: (json, minConfidence) => {
+        let extracted: unknown;
+        try {
+          extracted = extractRawRouterPayload(json, apiStyle);
+        } catch {
+          return failed({ reason: "bad_response_shape" });
+        }
+        return validateRouterSuggestionPayload(extracted, built, minConfidence);
+      },
+    },
   };
 }
 
@@ -756,47 +1056,40 @@ export class HttpRunProfileRouter implements RunProfileRouter {
   async suggest(
     task: RunProfileRouterTaskInput,
     context: RunProfileRouterContext,
-  ): Promise<RunProfileSuggestion | null> {
-    if (!this.enabled || !this.baseUrl || !this.model || !this.apiToken) {
-      return null;
+  ): Promise<RunProfileSuggestionOutcome> {
+    if (!this.enabled) {
+      return failed({ reason: "router_disabled" });
+    }
+    if (!this.apiToken) {
+      return failed({ reason: "no_token" });
+    }
+    if (!this.baseUrl || !this.model) {
+      return failed({ reason: "not_configured" });
     }
 
     let endpointUrl: string;
     try {
       endpointUrl = buildAiRouterEndpointUrl(this.baseUrl, this.model, this.apiStyle);
     } catch {
-      return null;
+      return failed({ reason: "invalid_endpoint" });
     }
 
-    const built = buildRouterRequest(task, context);
-    if (!built) {
-      return null;
+    const prepared = prepareRouterRequest({
+      apiStyle: this.apiStyle,
+      model: this.model,
+      task,
+      context,
+    });
+    if (!prepared.ok) {
+      return failed(prepared.failure);
     }
-
-    const requestBody =
-      this.apiStyle === "cloudflare-run"
-        ? {
-            messages: built.messages,
-            response_format: {
-              type: "json_schema",
-              json_schema: built.jsonSchema,
-            },
-          }
-        : {
-            model: this.model,
-            messages: built.messages,
-            response_format: {
-              type: "json_schema",
-              json_schema: {
-                name: "run_profile_suggestion",
-                strict: true,
-                schema: built.jsonSchema,
-              },
-            },
-          };
+    const requestBody = prepared.request.body;
 
     const controller = new AbortController();
+    // Object state so the flag set inside the timer callback is not narrowed to `false` below.
+    const timeoutState = { fired: false };
     const timeoutId = setTimeout(() => {
+      timeoutState.fired = true;
       controller.abort(new Error("AI router request timed out"));
     }, this.timeoutMs);
     const onExternalAbort = () => {
@@ -805,31 +1098,57 @@ export class HttpRunProfileRouter implements RunProfileRouter {
     if (context.signal) {
       if (context.signal.aborted) {
         clearTimeout(timeoutId);
-        return null;
+        return failed({ reason: "aborted" });
       }
       context.signal.addEventListener("abort", onExternalAbort, { once: true });
     }
 
-    try {
-      const response = await this.fetchFn(endpointUrl, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${this.apiToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(requestBody),
-        signal: controller.signal,
-      });
+    // Timeouts and external aborts surface as fetch/body-read rejections; classify them before
+    // falling back to a generic network failure or an unreadable body.
+    const transportFailure = (): RunProfileSuggestionFailure => {
+      if (timeoutState.fired) return { reason: "timeout" };
+      if (context.signal?.aborted) return { reason: "aborted" };
+      return { reason: "network_error" };
+    };
 
-      if (!response.ok) {
-        return null;
+    try {
+      let response: Response;
+      try {
+        response = await this.fetchFn(endpointUrl, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${this.apiToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(requestBody),
+          signal: controller.signal,
+        });
+      } catch {
+        return failed(transportFailure());
       }
 
-      const json: unknown = await response.json();
-      const extracted = extractRawRouterPayload(json, this.apiStyle);
-      return validateRouterSuggestionPayload(extracted, built, this.minConfidence);
-    } catch {
-      return null;
+      if (!response.ok) {
+        // Redact before truncating so a token cut at the boundary cannot survive.
+        const bodyText = redactSecret(
+          (await response.text().catch(() => "")).trim(),
+          this.apiToken,
+        ).slice(0, HTTP_ERROR_DETAIL_MAX);
+        return failed({
+          reason: "http_error",
+          status: response.status,
+          ...(bodyText ? { detail: bodyText } : {}),
+        });
+      }
+
+      let json: unknown;
+      try {
+        json = await response.json();
+      } catch {
+        const interrupted = timeoutState.fired || context.signal?.aborted === true;
+        return failed(interrupted ? transportFailure() : { reason: "bad_response_shape" });
+      }
+
+      return prepared.request.parse(json, this.minConfidence);
     } finally {
       clearTimeout(timeoutId);
       if (context.signal) {
@@ -873,43 +1192,32 @@ export async function testAiRouterEndpoint(options: {
     makeRouterValidationError("apiToken", "AI router API token is not set.");
   }
 
-  const built = buildRouterRequest(
-    {
+  const prepared = prepareRouterRequest({
+    apiStyle,
+    model: options.model,
+    task: {
       title: "Update button label in settings header",
       description: "Rename the Save button label in the settings header component.",
       checklist: [{ text: "Update label text", done: false }],
       labels: ["ui"],
     },
-    {
+    context: {
       levels: options.levels,
       ...(options.effortValuesByLevel ? { effortValuesByLevel: options.effortValuesByLevel } : {}),
     },
-  );
-  if (!built) {
-    return { ok: false, error: "Organisation has no run levels configured." };
+  });
+  if (!prepared.ok) {
+    return {
+      ok: false,
+      error:
+        prepared.failure.reason === "invalid_endpoint"
+          ? "The model must be @cf/cloudflare/clef or @cf/cloudflare/clef-flash for the Clef API style."
+          : apiStyle === "cloudflare-clef"
+            ? "The Clef API style needs at least two run levels; the organisation has fewer configured."
+            : "Organisation has no run levels configured.",
+    };
   }
-
-  const requestBody =
-    apiStyle === "cloudflare-run"
-      ? {
-          messages: built.messages,
-          response_format: {
-            type: "json_schema",
-            json_schema: built.jsonSchema,
-          },
-        }
-      : {
-          model: options.model.trim(),
-          messages: built.messages,
-          response_format: {
-            type: "json_schema",
-            json_schema: {
-              name: "run_profile_suggestion",
-              strict: true,
-              schema: built.jsonSchema,
-            },
-          },
-        };
+  const requestBody = prepared.request.body;
 
   const fetchFn = options.fetchFn ?? globalThis.fetch.bind(globalThis);
   const timeoutMs = options.timeoutMs ?? DEFAULT_ROUTER_TIMEOUT_MS;
@@ -952,30 +1260,23 @@ export async function testAiRouterEndpoint(options: {
       };
     }
 
-    let extracted: unknown;
-    try {
-      extracted = extractRawRouterPayload(json, apiStyle);
-    } catch {
+    // minConfidence 0: the diagnostic checks the response shape, not the model's certainty.
+    const outcome = prepared.request.parse(json, 0);
+    if (!outcome.ok) {
       return {
         ok: false,
         status: response.status,
-        error: "Endpoint response content was not valid JSON.",
-      };
-    }
-
-    const suggestion = validateRouterSuggestionPayload(extracted, built, 0);
-    if (!suggestion) {
-      return {
-        ok: false,
-        status: response.status,
-        error: "Endpoint response did not match the expected run profile schema.",
+        error:
+          outcome.failure.reason === "bad_response_shape"
+            ? "Endpoint response content was not valid JSON or had an unexpected shape."
+            : "Endpoint response did not match the expected run profile schema.",
       };
     }
 
     return {
       ok: true,
       status: response.status,
-      suggestion,
+      suggestion: outcome.suggestion,
     };
   } catch (err) {
     const rawMessage = err instanceof Error ? err.message : String(err);

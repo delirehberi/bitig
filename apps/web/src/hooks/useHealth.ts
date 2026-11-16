@@ -1,10 +1,10 @@
-import type { StorageMode } from "@bitig/core";
+import type { HierarchyMode, StorageMode } from "@bitig/core";
 import { useEffect, useState } from "react";
 import { HealthCheckError, fetchHealth } from "../services/health";
 
 export type HealthState =
   | { kind: "checking" }
-  | { kind: "online"; version: string; storageMode: StorageMode }
+  | { kind: "online"; version: string; storageMode: StorageMode; hierarchyMode: HierarchyMode }
   | { kind: "unreachable"; reason: string };
 
 const UNKNOWN_FAILURE = "health check failed";
@@ -17,7 +17,12 @@ export function useHealth(): HealthState {
 
     fetchHealth(controller.signal).then(
       (payload) => {
-        setState({ kind: "online", version: payload.version, storageMode: payload.storageMode });
+        setState({
+          kind: "online",
+          version: payload.version,
+          storageMode: payload.storageMode,
+          hierarchyMode: payload.hierarchyMode,
+        });
       },
       (error: unknown) => {
         // Unmount cancelled the request; there is no UI left to update.

@@ -2,7 +2,13 @@
  * Client for the Worker's GET /health endpoint.
  */
 
-import { isStorageMode, type StorageMode } from "@bitig/core";
+import {
+  DEFAULT_HIERARCHY_MODE,
+  isHierarchyMode,
+  isStorageMode,
+  type HierarchyMode,
+  type StorageMode,
+} from "@bitig/core";
 
 export const HEALTH_PATH = "/health";
 export const HEALTH_TIMEOUT_MS = 5_000;
@@ -11,19 +17,28 @@ export interface HealthPayload {
   status: "ok";
   version: string;
   storageMode: StorageMode;
+  hierarchyMode: HierarchyMode;
 }
 
 export class HealthCheckError extends Error {
   override readonly name = "HealthCheckError";
 }
 
-function isHealthPayload(value: unknown): value is HealthPayload {
+interface RawHealthPayload {
+  status: "ok";
+  version: string;
+  storageMode: StorageMode;
+  hierarchyMode?: HierarchyMode;
+}
+
+function isRawHealthPayload(value: unknown): value is RawHealthPayload {
   if (typeof value !== "object" || value === null) return false;
   const record = value as Record<string, unknown>;
   return (
     record.status === "ok" &&
     typeof record.version === "string" &&
-    isStorageMode(record.storageMode)
+    isStorageMode(record.storageMode) &&
+    (record.hierarchyMode === undefined || isHierarchyMode(record.hierarchyMode))
   );
 }
 
@@ -56,8 +71,13 @@ export async function fetchHealth(
     throw new HealthCheckError("worker sent an unreadable response", { cause: error });
   }
 
-  if (!isHealthPayload(body)) {
+  if (!isRawHealthPayload(body)) {
     throw new HealthCheckError("worker sent an unexpected response");
   }
-  return body;
+  return {
+    status: body.status,
+    version: body.version,
+    storageMode: body.storageMode,
+    hierarchyMode: body.hierarchyMode ?? DEFAULT_HIERARCHY_MODE,
+  };
 }

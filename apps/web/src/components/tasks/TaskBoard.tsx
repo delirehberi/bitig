@@ -5,6 +5,7 @@ import {
   buildUmbrellaIndex,
   type AgentRun,
   type AgentRunChild,
+  type HierarchyMode,
   type Project,
   type Task,
   type TaskStatus,
@@ -26,6 +27,7 @@ interface TaskBoardProps {
   readonly agentRuns?: readonly AgentRun[] | undefined;
   readonly umbrellaChildren?: readonly AgentRunChild[] | undefined;
   readonly umbrellaIndex?: UmbrellaIndex | undefined;
+  readonly hierarchyMode?: HierarchyMode | undefined;
   readonly onView: (task: Task) => void;
   readonly onEdit: (task: Task) => void;
   readonly onDelete: (task: Task) => void;
@@ -66,6 +68,7 @@ export function TaskBoard({
   agentRuns,
   umbrellaChildren,
   umbrellaIndex,
+  hierarchyMode,
   onView,
   onEdit,
   onDelete,
@@ -91,8 +94,9 @@ export function TaskBoard({
         projects,
         runs: agentRuns,
         runChildren: umbrellaChildren,
+        ...(hierarchyMode ? { mode: hierarchyMode } : {}),
       }),
-    [umbrellaIndex, tasks, projects, agentRuns, umbrellaChildren],
+    [umbrellaIndex, tasks, projects, agentRuns, umbrellaChildren, hierarchyMode],
   );
 
   const columns = new Map(

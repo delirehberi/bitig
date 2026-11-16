@@ -1,4 +1,4 @@
-import type { DependencyLinks, TaskLinks, TaskLinkSummary } from "@bitig/core";
+import type { DependencyLinks, HierarchyLinks, TaskLinks, TaskLinkSummary } from "@bitig/core";
 import { Link } from "../../routing/Link";
 import { taskHref, useLocationHref } from "../../routing/router";
 
@@ -86,6 +86,20 @@ export function TaskDependencies({ dependencies }: { readonly dependencies: Depe
       lists={[
         { label: "Depends on", tasks: dependencies.dependsOn },
         { label: "Blocks", tasks: dependencies.dependents },
+      ]}
+    />
+  );
+}
+
+/** Explicit same-project parent and children of a task, completely distinct from dependencies and mentions. */
+export function TaskHierarchy({ hierarchy }: { readonly hierarchy: HierarchyLinks }) {
+  return (
+    <TaskLinkSection
+      id="task-detail-hierarchy"
+      heading="Hierarchy"
+      lists={[
+        { label: "Parent", tasks: hierarchy.parent ? [hierarchy.parent] : [] },
+        { label: "Children", tasks: hierarchy.children },
       ]}
     />
   );

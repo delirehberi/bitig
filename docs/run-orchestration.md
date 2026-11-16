@@ -84,10 +84,11 @@ In **Settings → Organisation → AI Router** (or via `GET` / `PUT` / `DELETE /
    - Must be an `https://` URL without embedded credentials or query strings.
    - Validated against SSRF: `localhost`, loopback (`127.0.0.0/8`, `::1`), RFC 1918 private networks (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), link-local (`169.254.0.0/16`, `fe80::/10`), unique-local (`fc00::/7`), single-label hostnames, and `.local` / `.internal` domains are rejected with `400`.
 2. **API style (`apiStyle`):**
-   - `"cloudflare-run"` (default) — posts to `<baseUrl>/<model>` (for example, `https://api.cloudflare.com/client/v4/accounts/<account_id>/ai/run` with model `@cf/cloudflare/clef`).
+   - `"cloudflare-run"` (default) — posts chat `messages` with a JSON-schema `response_format` to `<baseUrl>/<model>` (for example, `https://api.cloudflare.com/client/v4/accounts/<account_id>/ai/run` with a chat model such as `@cf/meta/llama-3.1-8b-instruct`). Do not use it for Clef: Clef is not a chat model and answers HTTP 400 (`required properties at '/' are 'model,state,questions'`).
+   - `"cloudflare-clef"` — for Clef decision models (`@cf/cloudflare/clef` or `@cf/cloudflare/clef-flash`). Posts `{ model, state, questions }` to the same `<baseUrl>/<model>` URL. The level (and the effort, when the levels offer two or more) are `choice` questions over the task state, and the answer's own `confidence` is the suggestion confidence. Clef cannot write free text, so the suggestion has `touches: []`, `parallelSafe: false` and a `reason` generated from the answer probabilities, so the router never enables parallel runs. A model other than `clef` or `clef-flash` is rejected, and at least two run levels are required.
    - `"openai"` — posts to `<baseUrl>/chat/completions` with `{ model, messages, response_format }` (for example, a Cloudflare AI Gateway `/compat` endpoint or any OpenAI-compatible provider). Switching between direct Workers AI and an AI Gateway requires changing settings only.
 3. **Model ID (`model`):**
-   - The model identifier passed to the endpoint (for example, `@cf/cloudflare/clef`).
+   - The model identifier passed to the endpoint (for example, `@cf/cloudflare/clef` with the `cloudflare-clef` style).
 4. **API token (`apiToken`):**
    - Encrypted at rest in D1 (`org_ai_router_settings.encrypted_api_token` + `token_iv`) using Web Crypto `AES-256-GCM` keyed by `T3_ENCRYPTION_KEY`.
    - Write-only in the UI and REST API: `GET` and `PUT` responses never return the plaintext or ciphertext token, exposing only `hasToken`, `tokenStatus` (`"set"` or `"not set"`), and `tokenLast4`.
@@ -166,6 +167,27 @@ When a child is skipped during batch selection or refused on direct launch, Biti
 
 ---
 
+## 5b. Explicit task hierarchy (`parentId`), `HIERARCHY_MODE`, and legacy migration (#BIT-195)
+
+Umbrella parent-child containment is an **explicit** same-project, acyclic, single-parent relationship on `Task.parentId` — distinct from `dependsOn` (ordering prerequisites), `#BIT-x` mentions (cross-references), checklist items, and historical run ancestry:
+
+- **Explicit mode (`HIERARCHY_MODE="explicit"`, default):**
+  - `GET /health` exposes `hierarchyMode` (`"explicit"` or `"legacy"`).
+  - Umbrella children come solely from `task.parentId === umbrellaTaskId` (plus persisted `agent_run_children` records for run execution tracking).
+  - Passing `parentTaskId` to `start_t3_thread` validates that the child task's `parentId` already equals `parentTaskId` (refusing unattached tasks even if they mention or depend on the umbrella).
+  - UI badges, sidebars, and **Parent / Children** hierarchy panels do not infer containment from `dependsOn`, mentions, checklist `#BIT-x` entries, or `"Umbrella:"` title markers.
+- **Legacy rollback mode (`HIERARCHY_MODE="legacy"`):**
+  - Restores read-time fallback child inference (explicit `Umbrella:` markers, checklist mentions, and recorded run ancestry) for pre-cutoff workspaces.
+- **Per-run `hierarchyMode` snapshot:**
+  - Each `agent_runs` record snapshots `hierarchyMode` when started. An umbrella run started in `"legacy"` mode keeps resolving its active child batch under `"legacy"` rules until completion even if `HIERARCHY_MODE` flips to `"explicit"`.
+- **Active-delegation mutation guards:**
+  - While an umbrella session has an active child delegation (`agent_run_children.state === "running"` or active `waiting_subagent` run), changing/clearing a child's `parentId`, moving the parent or child to another project, or deleting the parent/child task is rejected with `409 Conflict`.
+- **Read-only legacy inventory & human-confirmed import (`editor+`):**
+  - `GET /api/tasks/hierarchy/inventory` (MCP `list_legacy_hierarchy_inventory`) inspects pre-cutoff umbrella candidates and returns `{ candidates, conflicts, summary }` with provenance (`run_ancestry`, `checklist`, `umbrella_marker`) without modifying any tasks.
+  - `POST /api/tasks/hierarchy/import` (MCP `import_explicit_hierarchy`, `editor` or `owner` role) applies only explicitly selected `(childTaskId, parentTaskId)` links, never overwrites an existing `parentId`, and rejects cross-project or cycle candidates. People can review and import candidates in **Settings → Task Hierarchy**.
+
+---
+
 ## 6. Worktree, branch, and merge flow
 
 Umbrella orchestration uses isolated git worktrees and branches so parallel children never step on each other or on the root checkout:
@@ -232,15 +254,19 @@ Bitig keeps humans in control of every privilege boundary, cost escalation, and 
 | `GET /api/tasks/:id/children` | Member | Inspect an umbrella task's children, resolved levels/models, `readyBatch` preview, `waitingReason`s, git/merge status, and `progress` |
 | `POST /api/tasks/:id/children/start-ready` | Editor / Owner | Launch the next parallel-safe batch of ready children for an umbrella task |
 | `POST /api/tasks/:id/children/stop` | Editor / Owner | Stop all currently running child T3 sessions of an umbrella task |
+| `GET /api/tasks/hierarchy/inventory` | Member | Read-only inventory of pre-cutoff legacy hierarchy candidates and conflicts (`?projectId=<id>`) |
+| `POST /api/tasks/hierarchy/import` | Editor / Owner | Human-confirmed import of selected legacy child-parent links into explicit `task.parentId` |
 
 ### MCP tools
 
 | Tool | Purpose |
 | --- | --- |
 | `list_run_levels` | List the organisation's ordered run levels (`key`, `label`, `description`, `order`, `selection`) before breaking work into tasks |
-| `add_task` / `update_task` (`runProfile`) | Save `{ level, effort, selection, touches, parallelSafe, reason }` on a task with `source: "agent"` (never overwrites `source: "manual"`) |
+| `add_task` / `update_task` (`parentId`, `runProfile`) | Set explicit single-parent `parentId` containment and save `{ level, effort, selection, touches, parallelSafe, reason }` on a task with `source: "agent"` (never overwrites `source: "manual"`) |
 | `suggest_run_profile` | Ask the organisation's AI router to suggest and store a `router` profile for a task |
-| `start_t3_thread` | Launch a task (or a single umbrella child with `parentTaskId`) in T3, optionally overriding `level`, `model`, `providerInstanceId`, and `options` |
+| `start_t3_thread` | Launch a task (or a single umbrella child with `parentTaskId`, requiring `task.parentId === parentTaskId` in explicit mode) in T3, optionally overriding `level`, `model`, `providerInstanceId`, and `options` |
 | `start_ready_children` | Pick and launch the next batch of approved, unblocked, non-overlapping child tasks for `parentTaskId` |
 | `report_t3_git_metadata` | Report `branch`, `headSha`, `worktreePath`, `dirty` / `uncommittedChanges`, `changedPaths`, `diffStat`, and `pullRequestUrls` |
 | `report_child_merge` | Record that the umbrella session merged `childTaskId`'s branch into `parentTaskId`'s integration branch at `mergedSha` |
+| `list_legacy_hierarchy_inventory` | Inspect pre-cutoff inferred parent-child candidates and conflicts without mutating tasks |
+| `import_explicit_hierarchy` | Apply explicitly selected legacy parent-child links into `task.parentId` without overwriting existing parents |

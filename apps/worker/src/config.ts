@@ -1,4 +1,4 @@
-import { STORAGE_MODES } from "@bitig/core";
+import { DEFAULT_HIERARCHY_MODE, HIERARCHY_MODES, STORAGE_MODES } from "@bitig/core";
 import { z } from "zod";
 
 const ORIGIN_SEPARATOR = ",";
@@ -84,6 +84,8 @@ const configSchema = z.object({
     .pipe(z.array(z.url({ protocol: /^wss$/ }))),
   // Chosen per deployment; the dashboard reads it from /health instead of offering a switch.
   STORAGE_MODE: z.enum(STORAGE_MODES).default("cloudflare"),
+  // Task hierarchy resolution mode: "explicit" (default, parentId only) or "legacy" (inferred).
+  HIERARCHY_MODE: z.enum(HIERARCHY_MODES).default(DEFAULT_HIERARCHY_MODE),
 });
 
 export type AppConfig = z.infer<typeof configSchema>;

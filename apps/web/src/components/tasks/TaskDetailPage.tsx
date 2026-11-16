@@ -18,6 +18,7 @@ import {
   Trash2,
 } from "lucide-react";
 import {
+  DEFAULT_HIERARCHY_MODE,
   checklistProgress,
   extractTaskMentions,
   formatDuration,
@@ -29,6 +30,8 @@ import {
   type ChecklistItem,
   type Comment,
   type DependencyLinks,
+  type HierarchyLinks,
+  type HierarchyMode,
   type Project,
   type StorageProvider,
   type T3ModelCapability,
@@ -73,6 +76,10 @@ export interface TaskDetailPageProps {
   readonly storage?: StorageProvider | undefined;
   /** Loads the feedback behind a feedback task; omit to hide the Feedback panel (#BIT-181). */
   readonly feedbackApi?: Pick<TaskFeedbackClient, "getTaskFeedback"> | undefined;
+  /** Explicit parent and child tasks for this task (#BIT-195). */
+  readonly hierarchy?: HierarchyLinks | undefined;
+  /** Workspace hierarchy mode (`"explicit"` or `"legacy"`). */
+  readonly hierarchyMode?: HierarchyMode | undefined;
   readonly links?: TaskLinks | undefined;
   readonly dependencies?: DependencyLinks | undefined;
   readonly agentRun?: AgentRun | null | undefined;
@@ -187,6 +194,8 @@ export function TaskDetailPage({
   onApprove,
   storage,
   feedbackApi,
+  hierarchy,
+  hierarchyMode,
   links,
   dependencies,
   agentRun,
@@ -266,14 +275,17 @@ export function TaskDetailPage({
       : activeRun
         ? { run: activeRun, capabilities: [] }
         : undefined;
+  const effectiveHierarchyMode = hierarchyMode ?? DEFAULT_HIERARCHY_MODE;
   const hasCandidateChildren =
     isUmbrella === true ||
-    hasExplicitUmbrellaMarker(task) ||
-    Boolean(task.checklist?.some((item) => extractTaskMentions(item.text).length > 0)) ||
-    (dependencies?.dependents.length ?? 0) > 0 ||
-    (links?.mentions.length ?? 0) > 0 ||
+    (hierarchy?.children.length ?? 0) > 0 ||
     activeRun?.state === "waiting_subagent" ||
-    activeRun?.waitingForTaskId !== undefined;
+    activeRun?.waitingForTaskId !== undefined ||
+    (effectiveHierarchyMode === "legacy" &&
+      (hasExplicitUmbrellaMarker(task) ||
+        Boolean(task.checklist?.some((item) => extractTaskMentions(item.text).length > 0)) ||
+        (dependencies?.dependents.length ?? 0) > 0 ||
+        (links?.mentions.length ?? 0) > 0));
 
   function toggleChecklist(current: Task, next: ChecklistItem[]) {
     if (!onChecklistChange) return;
@@ -676,6 +688,61 @@ export function TaskDetailPage({
                         #{label}
                       </span>
                     ))}
+                  </dd>
+                </div>
+              )}
+
+              {hierarchy?.parent && (
+                <div>
+                  <dt className="mb-1 text-2xs font-semibold uppercase tracking-wider text-ink-3">
+                    Parent
+                  </dt>
+                  <dd className="m-0 flex flex-col gap-1 text-xs">
+                    {(() => {
+                      const parent = hierarchy.parent;
+                      const closed = parent.status === "done" || parent.status === "archived";
+                      return (
+                        <Link
+                          href={taskHref(parent.code ?? parent.id, locationHref)}
+                          className={`inline-flex items-center gap-1.5 text-ink hover:text-accent-ink focus-visible:outline-focus ${
+                            closed ? "line-through text-ink-3" : ""
+                          }`}
+                        >
+                          <span className="font-mono font-semibold">{parent.code ?? parent.id}</span>
+                          <span className="truncate">{parent.title}</span>
+                        </Link>
+                      );
+                    })()}
+                  </dd>
+                </div>
+              )}
+
+              {hierarchy && hierarchy.children.length > 0 && (
+                <div>
+                  <dt className="mb-1 text-2xs font-semibold uppercase tracking-wider text-ink-3">
+                    Children ({String(hierarchy.children.length)})
+                  </dt>
+                  <dd className="m-0 flex flex-col gap-1 text-xs">
+                    {hierarchy.children.map((child) => {
+                      const closed = child.status === "done" || child.status === "archived";
+                      return (
+                        <Link
+                          key={child.id}
+                          href={taskHref(child.code ?? child.id, locationHref)}
+                          className={`inline-flex items-center gap-1.5 text-ink hover:text-accent-ink focus-visible:outline-focus ${
+                            closed ? "line-through text-ink-3" : ""
+                          }`}
+                        >
+                          {closed ? (
+                            <Check size={12} aria-hidden="true" className="shrink-0 text-ok" />
+                          ) : (
+                            <Clock size={12} aria-hidden="true" className="shrink-0 text-ink-3" />
+                          )}
+                          <span className="font-mono font-semibold">{child.code ?? child.id}</span>
+                          <span className="truncate">{child.title}</span>
+                        </Link>
+                      );
+                    })}
                   </dd>
                 </div>
               )}
