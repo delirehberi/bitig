@@ -128,6 +128,7 @@ export type { ParsedTaskCode, TaskWithCode, TicketCodeBackfillResult } from "./d
 export { extractTaskMentions, taskMentions } from "./domain/mentions";
 export { MAX_WORK_QUEUE_ITEMS, parseWorkQueuePrompt } from "./domain/work-queue-parse";
 export type {
+  WorkQueueItem,
   WorkQueueItem as WorkQueueParsedItem,
   WorkQueueParseResult,
   WorkQueueProjectRef,
