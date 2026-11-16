@@ -3,19 +3,46 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { TEST_AUTH_HEADER, TEST_MCP_TOKEN, TEST_MCP_URL_TOKEN } from "./constants";
+import { DEFAULT_ORGANISATION_ID } from "@bitig/core";
+import { D1WorkQueueStore, T3D1Store } from "@bitig/storage-d1";
+import { encryptT3Token } from "../src/t3/crypto";
+import { TEST_AUTH_HEADER, TEST_MCP_TOKEN, TEST_MCP_URL_TOKEN, TEST_T3_ENCRYPTION_KEY } from "./constants";
 
 const BASE_URL = "https://bitig.test";
 
 const DB_SETUP_STATEMENTS = [
+  "DROP TABLE IF EXISTS `work_queue_items`",
+  "DROP TABLE IF EXISTS `work_queues`",
   "DROP TABLE IF EXISTS `feedback_entries`",
   "DROP TABLE IF EXISTS `feedback_forms`",
+  "DROP TABLE IF EXISTS `agent_run_children`",
+  "DROP TABLE IF EXISTS `project_run_settings`",
+  "DROP TABLE IF EXISTS `task_run_profiles`",
+  "DROP TABLE IF EXISTS `org_ai_router_settings`",
+  "DROP TABLE IF EXISTS `run_level_models`",
+  "DROP TABLE IF EXISTS `run_levels`",
+  "DROP TABLE IF EXISTS `t3_run_requests`",
+  "DROP TABLE IF EXISTS `project_t3_threads`",
+  "DROP TABLE IF EXISTS `agent_runs`",
+  "DROP TABLE IF EXISTS `t3_project_mappings`",
+  "DROP TABLE IF EXISTS `t3_oauth_states`",
+  "DROP TABLE IF EXISTS `t3_connections`",
   "DROP TABLE IF EXISTS `webhooks`",
   "DROP TABLE IF EXISTS `attachments`",
   "DROP TABLE IF EXISTS `checkpoints`",
   "DROP TABLE IF EXISTS `comments`",
   "DROP TABLE IF EXISTS `tasks`",
   "DROP TABLE IF EXISTS `projects`",
+  `CREATE TABLE IF NOT EXISTS \`organisations\` (
+    \`id\` text PRIMARY KEY NOT NULL,
+    \`name\` text NOT NULL,
+    \`slug\` text NOT NULL,
+    \`created_at\` integer NOT NULL,
+    \`updated_at\` integer NOT NULL,
+    \`deleted_at\` integer
+  )`,
+  "CREATE UNIQUE INDEX IF NOT EXISTS `organisations_slug_unique` ON `organisations` (`slug`)",
+  "INSERT OR IGNORE INTO `organisations` (`id`, `name`, `slug`, `created_at`, `updated_at`) VALUES ('01a10000-0000-7000-8000-000000000001', 'Default Organisation', 'default', 1791723553130, 1791723553130)",
   `CREATE TABLE \`projects\` (
     \`id\` text PRIMARY KEY NOT NULL,
     \`org_id\` text DEFAULT '01a10000-0000-7000-8000-000000000001' NOT NULL,
@@ -103,6 +130,187 @@ const DB_SETUP_STATEMENTS = [
   )`,
   "CREATE INDEX `webhooks_project_id_idx` ON `webhooks` (`project_id`)",
   "CREATE UNIQUE INDEX `webhooks_token_idx` ON `webhooks` (`token`)",
+  `CREATE TABLE \`t3_connections\` (
+    \`id\` text PRIMARY KEY NOT NULL,
+    \`org_id\` text DEFAULT '01a10000-0000-7000-8000-000000000001' NOT NULL,
+    \`label\` text,
+    \`kind\` text DEFAULT 'user' NOT NULL,
+    \`projects_root\` text DEFAULT '~/www' NOT NULL,
+    \`mcp_url\` text NOT NULL,
+    \`issuer\` text NOT NULL,
+    \`client_id\` text NOT NULL,
+    \`encrypted_access_token\` text NOT NULL,
+    \`token_iv\` text NOT NULL,
+    \`scope\` text NOT NULL,
+    \`expires_at\` integer NOT NULL,
+    \`connected_at\` integer NOT NULL,
+    \`updated_at\` integer NOT NULL,
+    \`max_parallel_runs\` integer
+  )`,
+  "CREATE INDEX `t3_connections_org_id_idx` ON `t3_connections` (`org_id`)",
+  "CREATE UNIQUE INDEX `t3_connections_org_mcp_url_unique` ON `t3_connections` (`org_id`, `mcp_url`)",
+  `CREATE TABLE \`t3_oauth_states\` (
+    \`state\` text PRIMARY KEY NOT NULL,
+    \`org_id\` text DEFAULT '01a10000-0000-7000-8000-000000000001' NOT NULL,
+    \`host_id\` text,
+    \`label\` text,
+    \`kind\` text DEFAULT 'user' NOT NULL,
+    \`projects_root\` text DEFAULT '~/www' NOT NULL,
+    \`mcp_url\` text NOT NULL,
+    \`issuer\` text NOT NULL,
+    \`token_endpoint\` text NOT NULL,
+    \`client_id\` text NOT NULL,
+    \`code_verifier\` text NOT NULL,
+    \`redirect_uri\` text NOT NULL,
+    \`created_at\` integer NOT NULL,
+    \`expires_at\` integer NOT NULL
+  )`,
+  `CREATE TABLE \`t3_project_mappings\` (
+    \`project_id\` text PRIMARY KEY NOT NULL,
+    \`host_id\` text,
+    \`t3_project_id\` text NOT NULL,
+    \`t3_project_title\` text NOT NULL,
+    \`workspace_root\` text,
+    \`updated_at\` integer NOT NULL,
+    FOREIGN KEY (\`project_id\`) REFERENCES \`projects\`(\`id\`) ON UPDATE no action ON DELETE cascade
+  )`,
+  "CREATE INDEX `t3_project_mappings_host_id_idx` ON `t3_project_mappings` (`host_id`)",
+  `CREATE TABLE \`agent_runs\` (
+    \`id\` text PRIMARY KEY NOT NULL,
+    \`task_id\` text NOT NULL,
+    \`host_id\` text,
+    \`t3_project_id\` text NOT NULL,
+    \`thread_id\` text NOT NULL,
+    \`link\` text,
+    \`state\` text NOT NULL,
+    \`model\` text,
+    \`provider_instance_id\` text,
+    \`model_options\` text,
+    \`model_source\` text,
+    \`level_key\` text,
+    \`model_skip_reason\` text,
+    \`branch\` text,
+    \`head_sha\` text,
+    \`diff_stat\` text,
+    \`pull_request_urls\` text,
+    \`workspace_strategy\` text,
+    \`parent_task_id\` text,
+    \`waiting_for_task_id\` text,
+    \`hierarchy_mode\` text,
+    \`started_by\` text,
+    \`started_at\` integer NOT NULL,
+    \`updated_at\` integer NOT NULL,
+    FOREIGN KEY (\`task_id\`) REFERENCES \`tasks\`(\`id\`) ON UPDATE no action ON DELETE cascade
+  )`,
+  "CREATE UNIQUE INDEX `agent_runs_task_id_idx` ON `agent_runs` (`task_id`)",
+  "CREATE INDEX `agent_runs_host_id_idx` ON `agent_runs` (`host_id`)",
+  "CREATE INDEX `agent_runs_thread_id_idx` ON `agent_runs` (`thread_id`)",
+  "CREATE INDEX `agent_runs_waiting_for_task_id_idx` ON `agent_runs` (`waiting_for_task_id`)",
+  `CREATE TABLE \`t3_run_requests\` (
+    \`sequence\` integer PRIMARY KEY AUTOINCREMENT,
+    \`id\` text NOT NULL UNIQUE,
+    \`org_id\` text NOT NULL,
+    \`task_id\` text NOT NULL REFERENCES \`tasks\` (\`id\`) ON DELETE CASCADE,
+    \`host_id\` text,
+    \`kind\` text NOT NULL,
+    \`payload\` text NOT NULL,
+    \`state\` text NOT NULL DEFAULT 'queued',
+    \`claim_token\` text,
+    \`lease_until\` integer,
+    \`attempted\` integer NOT NULL DEFAULT 0,
+    \`created_at\` integer NOT NULL
+  )`,
+  "CREATE INDEX `t3_run_requests_pending_idx` ON `t3_run_requests` (`org_id`, `task_id`, `state`, `sequence`)",
+  `CREATE TABLE \`project_t3_threads\` (
+    \`id\` text PRIMARY KEY NOT NULL,
+    \`project_id\` text NOT NULL,
+    \`host_id\` text,
+    \`t3_project_id\` text NOT NULL,
+    \`thread_id\` text NOT NULL,
+    \`title\` text NOT NULL,
+    \`link\` text,
+    \`state\` text NOT NULL,
+    \`model\` text,
+    \`provider_instance_id\` text,
+    \`model_options\` text,
+    \`workspace_strategy\` text NOT NULL,
+    \`started_by\` text,
+    \`started_at\` integer NOT NULL,
+    \`updated_at\` integer NOT NULL,
+    FOREIGN KEY (\`project_id\`) REFERENCES \`projects\`(\`id\`) ON UPDATE no action ON DELETE cascade
+  )`,
+  "CREATE UNIQUE INDEX `project_t3_threads_host_thread_idx` ON `project_t3_threads` (`host_id`, `thread_id`)",
+  "CREATE INDEX `project_t3_threads_project_id_idx` ON `project_t3_threads` (`project_id`)",
+  "CREATE INDEX `project_t3_threads_host_id_idx` ON `project_t3_threads` (`host_id`)",
+  `CREATE TABLE \`run_levels\` (
+    \`org_id\` text NOT NULL REFERENCES \`organisations\` (\`id\`) ON DELETE CASCADE,
+    \`key\` text NOT NULL,
+    \`label\` text NOT NULL,
+    \`description\` text NOT NULL,
+    \`sort_order\` integer NOT NULL,
+    \`created_at\` integer NOT NULL,
+    \`updated_at\` integer NOT NULL
+  )`,
+  "CREATE UNIQUE INDEX `run_levels_org_key_unique` ON `run_levels` (`org_id`, `key`)",
+  "CREATE INDEX `run_levels_org_sort_idx` ON `run_levels` (`org_id`, `sort_order`)",
+  `CREATE TABLE \`run_level_models\` (
+    \`org_id\` text NOT NULL REFERENCES \`organisations\` (\`id\`) ON DELETE CASCADE,
+    \`level_key\` text NOT NULL,
+    \`host_id\` text,
+    \`provider_instance_id\` text NOT NULL,
+    \`model\` text NOT NULL,
+    \`options\` text,
+    \`updated_at\` integer NOT NULL
+  )`,
+  "CREATE UNIQUE INDEX `run_level_models_org_level_host_unique` ON `run_level_models` (`org_id`, `level_key`, `host_id`)",
+  "CREATE UNIQUE INDEX `run_level_models_org_level_default_unique` ON `run_level_models` (`org_id`, `level_key`) WHERE `host_id` IS NULL",
+  `CREATE TABLE \`org_ai_router_settings\` (
+    \`org_id\` text PRIMARY KEY NOT NULL REFERENCES \`organisations\` (\`id\`) ON DELETE CASCADE,
+    \`base_url\` text NOT NULL,
+    \`model\` text NOT NULL,
+    \`api_style\` text DEFAULT 'cloudflare-run' NOT NULL,
+    \`encrypted_api_token\` text,
+    \`token_iv\` text,
+    \`token_last4\` text,
+    \`enabled\` integer DEFAULT 0 NOT NULL,
+    \`updated_by\` text,
+    \`updated_at\` integer NOT NULL
+  )`,
+  `CREATE TABLE \`task_run_profiles\` (
+    \`task_id\` text PRIMARY KEY NOT NULL REFERENCES \`tasks\` (\`id\`) ON DELETE CASCADE,
+    \`level_key\` text,
+    \`provider_instance_id\` text,
+    \`model\` text,
+    \`options\` text,
+    \`touches\` text,
+    \`parallel_safe\` integer,
+    \`source\` text NOT NULL,
+    \`reason\` text,
+    \`confidence\` real,
+    \`updated_by\` text,
+    \`updated_at\` integer NOT NULL
+  )`,
+  `CREATE TABLE \`project_run_settings\` (
+    \`project_id\` text PRIMARY KEY NOT NULL REFERENCES \`projects\` (\`id\`) ON DELETE CASCADE,
+    \`default_run_level\` text,
+    \`serial_paths\` text,
+    \`max_parallel_children\` integer DEFAULT 3 NOT NULL,
+    \`updated_at\` integer NOT NULL
+  )`,
+  `CREATE TABLE \`agent_run_children\` (
+    \`parent_task_id\` text NOT NULL REFERENCES \`tasks\` (\`id\`) ON DELETE CASCADE,
+    \`child_task_id\` text NOT NULL REFERENCES \`tasks\` (\`id\`) ON DELETE CASCADE,
+    \`state\` text NOT NULL,
+    \`branch\` text,
+    \`head_sha\` text,
+    \`merged_at\` integer,
+    \`merged_sha\` text,
+    \`started_at\` integer NOT NULL,
+    \`finished_at\` integer
+  )`,
+  "CREATE UNIQUE INDEX `agent_run_children_parent_child_unique` ON `agent_run_children` (`parent_task_id`, `child_task_id`)",
+  "CREATE INDEX `agent_run_children_parent_task_id_idx` ON `agent_run_children` (`parent_task_id`)",
+  "CREATE INDEX `agent_run_children_child_task_id_idx` ON `agent_run_children` (`child_task_id`)",
   `CREATE TABLE \`feedback_forms\` (
     \`id\` text PRIMARY KEY NOT NULL,
     \`org_id\` text DEFAULT '01a10000-0000-7000-8000-000000000001' NOT NULL,
@@ -155,6 +363,34 @@ const DB_SETUP_STATEMENTS = [
   "CREATE INDEX `feedback_entries_form_outcome_idx` ON `feedback_entries` (`form_id`, `outcome`)",
   "CREATE INDEX `feedback_entries_task_id_idx` ON `feedback_entries` (`task_id`)",
   "CREATE INDEX `feedback_entries_duplicate_idx` ON `feedback_entries` (`form_id`, `ip_hash`, `body_hash`, `created_at`)",
+  `CREATE TABLE \`work_queues\` (
+    \`id\` text PRIMARY KEY NOT NULL,
+    \`org_id\` text DEFAULT '01a10000-0000-7000-8000-000000000001' NOT NULL,
+    \`created_by\` text NOT NULL,
+    \`prompt\` text NOT NULL,
+    \`state\` text DEFAULT 'planning' NOT NULL,
+    \`created_at\` integer NOT NULL,
+    \`updated_at\` integer NOT NULL
+  )`,
+  "CREATE INDEX `work_queues_org_state_idx` ON `work_queues` (`org_id`, `state`)",
+  `CREATE TABLE \`work_queue_items\` (
+    \`id\` text PRIMARY KEY NOT NULL,
+    \`queue_id\` text NOT NULL,
+    \`task_id\` text NOT NULL,
+    \`position\` integer NOT NULL,
+    \`lane\` text NOT NULL,
+    \`state\` text DEFAULT 'waiting' NOT NULL,
+    \`waiting_reason\` text,
+    \`resolved_selection\` text,
+    \`umbrella_task_id\` text,
+    \`created_at\` integer NOT NULL,
+    \`updated_at\` integer NOT NULL,
+    FOREIGN KEY (\`queue_id\`) REFERENCES \`work_queues\`(\`id\`) ON UPDATE no action ON DELETE cascade,
+    FOREIGN KEY (\`task_id\`) REFERENCES \`tasks\`(\`id\`) ON UPDATE no action ON DELETE cascade
+  )`,
+  "CREATE UNIQUE INDEX `work_queue_items_queue_position_idx` ON `work_queue_items` (`queue_id`, `position`)",
+  "CREATE INDEX `work_queue_items_task_id_idx` ON `work_queue_items` (`task_id`)",
+  "CREATE UNIQUE INDEX `work_queue_items_one_active_per_task_idx` ON `work_queue_items` (`task_id`) WHERE `state` IN ('waiting', 'ready', 'running', 'merged')",
 ];
 
 class WebStreamableTransport implements Transport {
@@ -338,7 +574,10 @@ describe("Remote MCP Protocol & Tool Execution", () => {
       "list_run_levels",
       "list_tasks",
       "list_webhooks",
+      "list_work_queues",
       "next_task",
+      "plan_work_queue",
+      "queue_tasks",
       "report_child_merge",
       "report_t3_git_metadata",
       "resume_from_checkpoint",
@@ -643,5 +882,196 @@ describe("Remote MCP Protocol & Tool Execution", () => {
     expect(listRes.isError).toBeFalsy();
     const list = JSON.parse((listRes.content as { text: string }[])[0]?.text ?? "[]") as { id: string }[];
     expect(list.some((p) => p.id === proj.id)).toBe(true);
+  });
+
+  it("plans a work queue with no writes, queues approved tasks while leaving pending tasks out, and lists open and closed queues (#BIT-204)", async () => {
+    const { client, transport } = createMcpClient();
+    activeClient = client;
+    await client.connect(transport);
+
+    const store = new T3D1Store(env.DB, DEFAULT_ORGANISATION_ID);
+    const queueStore = new D1WorkQueueStore(env.DB, DEFAULT_ORGANISATION_ID);
+
+    // Enable AI router settings to verify plan_work_queue does not route or write profiles
+    const encrypted = await encryptT3Token("router-secret", TEST_T3_ENCRYPTION_KEY);
+    await store.saveAiRouterSettings({
+      baseUrl: "https://router.invalid.test/ai/run",
+      model: "@cf/test/router",
+      apiStyle: "cloudflare-run",
+      encryptedApiToken: encrypted.ciphertext,
+      tokenIv: encrypted.iv,
+      tokenLast4: "cret",
+      enabled: true,
+    });
+
+    // Create project BIT over REST and bind it to a T3 project mapping
+    const projRes = await exports.default.fetch(
+      new Request(`${BASE_URL}/api/projects`, {
+        method: "POST",
+        headers: { Authorization: TEST_AUTH_HEADER, "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Bitig Queue Project", key: "BIT" }),
+      }),
+    );
+    expect(projRes.status).toBe(201);
+    const proj = await projRes.json<{ id: string }>();
+    await store.upsertProjectMapping({
+      projectId: proj.id,
+      hostId: null,
+      t3ProjectId: "t3-bit",
+      t3ProjectTitle: "Bitig",
+    });
+
+    // BIT-1 and BIT-2 created over REST (approved), BIT-3 created over MCP (pendingApproval: true)
+    const t1Res = await exports.default.fetch(
+      new Request(`${BASE_URL}/api/tasks`, {
+        method: "POST",
+        headers: { Authorization: TEST_AUTH_HEADER, "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: proj.id, title: "Approved Task 1" }),
+      }),
+    );
+    expect(t1Res.status).toBe(201);
+    const t1 = await t1Res.json<{ id: string }>();
+
+    const t2Res = await exports.default.fetch(
+      new Request(`${BASE_URL}/api/tasks`, {
+        method: "POST",
+        headers: { Authorization: TEST_AUTH_HEADER, "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: proj.id, title: "Approved Task 2", dependsOn: [t1.id] }),
+      }),
+    );
+    expect(t2Res.status).toBe(201);
+
+    const addPendingRes = await client.callTool({
+      name: "add_task",
+      arguments: { projectId: proj.id, title: "Pending Agent Task 3" },
+    });
+    expect(addPendingRes.isError).toBeFalsy();
+    const t3 = JSON.parse((addPendingRes.content as { text: string }[])[0]?.text ?? "{}") as {
+      id: string;
+      code: string;
+      pendingApproval?: boolean;
+    };
+    expect(t3.code).toBe("BIT-3");
+    expect(t3.pendingApproval).toBe(true);
+
+    // 1. plan_work_queue returns the plan with no writes (no router profiles saved, no queues created)
+    const planRes = await client.callTool({
+      name: "plan_work_queue",
+      arguments: { prompt: "Start BIT-1 to BIT-3" },
+    });
+    expect(planRes.isError).toBeFalsy();
+    const plan = JSON.parse((planRes.content as { text: string }[])[0]?.text ?? "{}") as {
+      rows: { code: string; classification: string; queueable: boolean }[];
+      routing: { enabled: boolean; attempted: number; failed: number };
+    };
+    expect(plan.routing).toEqual({ enabled: false, attempted: 0, failed: 0 });
+    expect(plan.rows).toEqual([
+      expect.objectContaining({ code: "BIT-1", classification: "ready", queueable: true }),
+      expect.objectContaining({ code: "BIT-2", classification: "after_queued_task", queueable: true }),
+      expect.objectContaining({ code: "BIT-3", classification: "needs_approval", queueable: false }),
+    ]);
+    expect(await store.listTaskRunProfiles()).toEqual([]);
+    expect(await queueStore.listQueues({ openOnly: false })).toEqual([]);
+
+    // 2. Calling queue_tasks with ONLY a pending-approval task returns nothing_to_queue and does not approve it
+    const nothingRes = await client.callTool({
+      name: "queue_tasks",
+      arguments: {
+        prompt: "Try queueing BIT-3 only",
+        items: ["BIT-3"],
+        approvals: ["BIT-3"],
+      },
+    });
+    expect(nothingRes.isError).toBeFalsy();
+    const nothingBody = JSON.parse((nothingRes.content as { text: string }[])[0]?.text ?? "{}") as {
+      queued: boolean;
+      reason: string;
+      plan: { rows: { code: string; classification: string; queueable: boolean }[] };
+    };
+    expect(nothingBody.queued).toBe(false);
+    expect(nothingBody.reason).toBe("nothing_to_queue");
+    expect(nothingBody.plan.rows).toEqual([
+      expect.objectContaining({ code: "BIT-3", classification: "needs_approval", queueable: false }),
+    ]);
+
+    // Verify BIT-3 is still pendingApproval in storage
+    const checkT3Res = await client.callTool({ name: "get_task", arguments: { id: "BIT-3" } });
+    expect(JSON.parse((checkT3Res.content as { text: string }[])[0]?.text ?? "{}")).toMatchObject({
+      id: t3.id,
+      pendingApproval: true,
+    });
+
+    // 3. queue_tasks with BIT-1, BIT-2, BIT-3 queues BIT-1 and BIT-2 under a lane umbrella, leaving BIT-3 out
+    const queueRes = await client.callTool({
+      name: "queue_tasks",
+      arguments: {
+        prompt: "Start BIT-1 to BIT-3",
+        items: ["BIT-1", "BIT-2", "BIT-3"],
+        approvals: ["BIT-3"],
+      },
+    });
+    expect(queueRes.isError).toBeFalsy();
+    const queued = JSON.parse((queueRes.content as { text: string }[])[0]?.text ?? "{}") as {
+      queued: boolean;
+      approved: string[];
+      queue: { id: string; state: string; entries: { taskCode: string; state: string }[] };
+      umbrellas: { title: string; children: string[] }[];
+    };
+    expect(queued.queued).toBe(true);
+    expect(queued.approved).toEqual([]);
+    expect(queued.queue.state).toBe("active");
+    expect(queued.queue.entries.map((e) => e.taskCode)).toEqual(["BIT-1", "BIT-2"]);
+    expect(queued.umbrellas).toEqual([
+      expect.objectContaining({ title: "Queue: BIT-1..BIT-2", children: ["BIT-1", "BIT-2"] }),
+    ]);
+
+    // BIT-3 still has pendingApproval: true and no parentId
+    const checkT3AfterQueue = await client.callTool({ name: "get_task", arguments: { id: "BIT-3" } });
+    const t3After = JSON.parse((checkT3AfterQueue.content as { text: string }[])[0]?.text ?? "{}") as {
+      pendingApproval?: boolean;
+      parentId?: string;
+    };
+    expect(t3After.pendingApproval).toBe(true);
+    expect(t3After.parentId).toBeUndefined();
+
+    // 4. list_work_queues returns active queue; after cancelling, open-only omits it and includeClosed includes it
+    const listOpenRes = await client.callTool({
+      name: "list_work_queues",
+      arguments: {},
+    });
+    expect(listOpenRes.isError).toBeFalsy();
+    const openQueues = JSON.parse((listOpenRes.content as { text: string }[])[0]?.text ?? "[]") as {
+      id: string;
+      state: string;
+      entries: { taskCode: string }[];
+    }[];
+    expect(openQueues).toHaveLength(1);
+    expect(openQueues[0]?.id).toBe(queued.queue.id);
+    expect(openQueues[0]?.entries.map((e) => e.taskCode)).toEqual(["BIT-1", "BIT-2"]);
+
+    // Cancel the queue over REST
+    const cancelRes = await exports.default.fetch(
+      new Request(`${BASE_URL}/api/work-queues/${queued.queue.id}/cancel`, {
+        method: "POST",
+        headers: { Authorization: TEST_AUTH_HEADER },
+      }),
+    );
+    expect(cancelRes.status).toBe(200);
+
+    const listOpenAfterCancel = await client.callTool({
+      name: "list_work_queues",
+      arguments: {},
+    });
+    expect(JSON.parse((listOpenAfterCancel.content as { text: string }[])[0]?.text ?? "[]")).toEqual([]);
+
+    const listClosedRes = await client.callTool({
+      name: "list_work_queues",
+      arguments: { includeClosed: true },
+    });
+    const allQueues = JSON.parse((listClosedRes.content as { text: string }[])[0]?.text ?? "[]") as {
+      id: string;
+      state: string;
+    }[];
+    expect(allQueues).toEqual([expect.objectContaining({ id: queued.queue.id, state: "cancelled" })]);
   });
 });

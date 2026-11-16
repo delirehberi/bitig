@@ -69,6 +69,9 @@ describe("MCP Tools integration", () => {
       "list_legacy_hierarchy_inventory",
       "list_run_levels",
       "suggest_run_profile",
+      "plan_work_queue",
+      "queue_tasks",
+      "list_work_queues",
     ]);
 
     // Create project
@@ -1825,3 +1828,180 @@ describe("explicit task hierarchy MCP tools (#BIT-195)", () => {
 });
 
 
+
+describe("work queue MCP tools (#BIT-204)", () => {
+  const QUEUE_ITEMS = ["BIT-1", "BIT-2"];
+  const QUEUE_PROMPT = "do BIT-1 and BIT-2";
+
+  function textOf(result: Record<string, unknown>): string {
+    return (result.content as { text: string }[] | undefined)?.[0]?.text ?? "";
+  }
+
+  async function connect(options?: Parameters<typeof registerBitigTools>[2]) {
+    const storage = new InMemoryStorage();
+    const server = new McpServer({ name: "bitig-queue-test", version: "1.0.0" });
+    registerBitigTools(server, storage, options);
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    const client = new Client({ name: "client-queue-test", version: "1.0.0" }, { capabilities: {} });
+    await client.connect(clientTransport);
+    return {
+      client,
+      close: async () => {
+        await client.close();
+        await server.close();
+      },
+    };
+  }
+
+  it("plans a work queue from a prompt (with optional items) and returns the callback's plan", async () => {
+    const planWorkQueue = vi.fn(() =>
+      Promise.resolve({
+        parse: { items: [{ code: "BIT-1", raw: "BIT-1" }], unknownKeys: [], unparsed: [], warnings: [], fallback: "not_needed" },
+        rows: [{ code: "BIT-1", raw: "BIT-1", classification: "ready", queueable: true }],
+        lanes: [],
+        routing: { enabled: false, attempted: 0, failed: 0 },
+      }),
+    );
+    const { client, close } = await connect({ planWorkQueue });
+    try {
+      const promptOnly = await client.callTool({
+        name: "plan_work_queue",
+        arguments: { prompt: QUEUE_PROMPT },
+      });
+      expect(promptOnly.isError).toBeFalsy();
+      expect(planWorkQueue).toHaveBeenCalledWith({ prompt: QUEUE_PROMPT });
+      expect(JSON.parse(textOf(promptOnly))).toMatchObject({
+        rows: [{ code: "BIT-1", classification: "ready", queueable: true }],
+      });
+
+      const withItems = await client.callTool({
+        name: "plan_work_queue",
+        arguments: { prompt: QUEUE_PROMPT, items: QUEUE_ITEMS },
+      });
+      expect(withItems.isError).toBeFalsy();
+      expect(planWorkQueue).toHaveBeenLastCalledWith({ prompt: QUEUE_PROMPT, items: QUEUE_ITEMS });
+    } finally {
+      await close();
+    }
+  });
+
+  it("rejects blank prompt or invalid items on plan_work_queue before calling the service", async () => {
+    const planWorkQueue = vi.fn(() => Promise.resolve({ rows: [] }));
+    const { client, close } = await connect({ planWorkQueue });
+    try {
+      const blankPrompt = await client.callTool({ name: "plan_work_queue", arguments: { prompt: "   " } });
+      expect(blankPrompt.isError).toBeTruthy();
+      const emptyItems = await client.callTool({ name: "plan_work_queue", arguments: { prompt: QUEUE_PROMPT, items: [] } });
+      expect(emptyItems.isError).toBeTruthy();
+      const tooMany = Array.from({ length: 51 }, (_, index) => `BIT-${String(index + 1)}`);
+      const overflow = await client.callTool({ name: "plan_work_queue", arguments: { prompt: QUEUE_PROMPT, items: tooMany } });
+      expect(overflow.isError).toBeTruthy();
+      expect(planWorkQueue).not.toHaveBeenCalled();
+    } finally {
+      await close();
+    }
+  });
+
+  it("queues the listed codes with the prompt and returns the callback's result", async () => {
+    const queueWorkTasks = vi.fn(() => Promise.resolve({ queued: true, queue: { id: "q1", entries: [] }, approved: [] }));
+    const { client, close } = await connect({ queueWorkTasks });
+    try {
+      const result = await client.callTool({
+        name: "queue_tasks",
+        arguments: { prompt: QUEUE_PROMPT, items: QUEUE_ITEMS },
+      });
+      expect(result.isError).toBeFalsy();
+      expect(queueWorkTasks).toHaveBeenCalledWith({ prompt: QUEUE_PROMPT, items: QUEUE_ITEMS });
+      expect(JSON.parse(textOf(result))).toEqual({ queued: true, queue: { id: "q1", entries: [] }, approved: [] });
+    } finally {
+      await close();
+    }
+  });
+
+  it("passes only prompt and items to the callback, never an approval or override", async () => {
+    const queueWorkTasks = vi.fn((input: { prompt: string; items: readonly string[] }) =>
+      Promise.resolve({ queued: false, input }),
+    );
+    const { client, close } = await connect({ queueWorkTasks });
+    try {
+      await client.callTool({
+        name: "queue_tasks",
+        arguments: { prompt: QUEUE_PROMPT, items: QUEUE_ITEMS, approvals: ["BIT-1"], overrides: [{ code: "BIT-1", level: "strong" }] },
+      });
+      const received = queueWorkTasks.mock.calls[0]?.[0] as unknown as Record<string, unknown>;
+      expect(Object.keys(received).sort()).toEqual(["items", "prompt"]);
+    } finally {
+      await close();
+    }
+  });
+
+  it("rejects an empty item list, too many items and an empty prompt before calling the service", async () => {
+    const queueWorkTasks = vi.fn(() => Promise.resolve({ queued: true }));
+    const { client, close } = await connect({ queueWorkTasks });
+    try {
+      const empty = await client.callTool({ name: "queue_tasks", arguments: { prompt: QUEUE_PROMPT, items: [] } });
+      expect(empty.isError).toBeTruthy();
+      const blankPrompt = await client.callTool({ name: "queue_tasks", arguments: { prompt: "   ", items: QUEUE_ITEMS } });
+      expect(blankPrompt.isError).toBeTruthy();
+      const tooMany = Array.from({ length: 51 }, (_, index) => `BIT-${String(index + 1)}`);
+      const overflow = await client.callTool({ name: "queue_tasks", arguments: { prompt: QUEUE_PROMPT, items: tooMany } });
+      expect(overflow.isError).toBeTruthy();
+      expect(queueWorkTasks).not.toHaveBeenCalled();
+    } finally {
+      await close();
+    }
+  });
+
+  it("reports a clear error when work queues are not configured on the server", async () => {
+    const { client, close } = await connect();
+    try {
+      const planned = await client.callTool({ name: "plan_work_queue", arguments: { prompt: QUEUE_PROMPT } });
+      expect(planned.isError).toBeTruthy();
+      expect(textOf(planned)).toContain("Work queues are not configured on this server");
+      const queued = await client.callTool({ name: "queue_tasks", arguments: { prompt: QUEUE_PROMPT, items: QUEUE_ITEMS } });
+      expect(queued.isError).toBeTruthy();
+      expect(textOf(queued)).toContain("Work queues are not configured on this server");
+      const listed = await client.callTool({ name: "list_work_queues", arguments: {} });
+      expect(listed.isError).toBeTruthy();
+      expect(textOf(listed)).toContain("Work queues are not configured on this server");
+    } finally {
+      await close();
+    }
+  });
+
+  it("lists work queues, open only unless includeClosed is set", async () => {
+    const listWorkQueues = vi.fn(() => Promise.resolve([{ id: "q1", state: "active", entries: [] }]));
+    const { client, close } = await connect({ listWorkQueues });
+    try {
+      const open = await client.callTool({ name: "list_work_queues", arguments: {} });
+      expect(open.isError).toBeFalsy();
+      expect(listWorkQueues).toHaveBeenLastCalledWith({ includeClosed: false });
+      expect(JSON.parse(textOf(open))).toEqual([{ id: "q1", state: "active", entries: [] }]);
+      await client.callTool({ name: "list_work_queues", arguments: { includeClosed: true } });
+      expect(listWorkQueues).toHaveBeenLastCalledWith({ includeClosed: true });
+    } finally {
+      await close();
+    }
+  });
+
+  it("surfaces service errors as MCP tool errors", async () => {
+    const queueWorkTasks = vi.fn(() => Promise.reject(new Error("worker unavailable")));
+    const { client, close } = await connect({ queueWorkTasks });
+    try {
+      const result = await client.callTool({ name: "queue_tasks", arguments: { prompt: QUEUE_PROMPT, items: QUEUE_ITEMS } });
+      expect(result.isError).toBeTruthy();
+      expect(textOf(result)).toContain("worker unavailable");
+    } finally {
+      await close();
+    }
+  });
+
+  it("tells agents they cannot approve tasks and how planning/queueing treats pending ones", () => {
+    expect(BITIG_SERVER_INSTRUCTIONS).toContain("plan_work_queue");
+    expect(BITIG_SERVER_INSTRUCTIONS).toContain("queue_tasks");
+    expect(BITIG_SERVER_INSTRUCTIONS).toContain("list_work_queues");
+    expect(BITIG_SERVER_INSTRUCTIONS).toContain("needs_approval");
+    expect(BITIG_SERVER_INSTRUCTIONS).toContain("nothing_to_queue");
+  });
+});

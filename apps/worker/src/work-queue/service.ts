@@ -206,6 +206,8 @@ export interface PlanWorkQueueInput {
   readonly prompt: string;
   /** Explicit ticket codes; when given the prompt is not parsed and no parse model is called. */
   readonly items?: readonly string[] | undefined;
+  /** Whether to route unprofiled tasks through the AI router and save `router` profiles (default true). */
+  readonly route?: boolean | undefined;
   readonly actor: WorkQueueActor;
   readonly cache?: Cache | undefined;
   readonly signal?: AbortSignal | undefined;
@@ -626,7 +628,7 @@ async function assemblePlan(
 
 /**
  * Builds the plan preview for a prompt. The only writes are AI router profiles
- * for tasks that had no profile.
+ * for tasks that had no profile (skipped when `input.route === false`).
  */
 export async function planWorkQueuePrompt(
   deps: WorkQueueServiceDeps,
@@ -637,7 +639,9 @@ export async function planWorkQueuePrompt(
     ? parseExplicitCodes(input.items, context.projectRefs)
     : await parsePrompt(deps, context, input.prompt, input.signal);
   return await assemblePlan(deps, context, parse, {
-    route: { actor: input.actor, cache: input.cache, signal: input.signal },
+    ...(input.route !== false
+      ? { route: { actor: input.actor, cache: input.cache, signal: input.signal } }
+      : {}),
   });
 }
 

@@ -87,6 +87,8 @@ import {
   type Task,
   type TaskRunProfile,
   type TaskWithCode,
+  MAX_WORK_QUEUE_ITEMS,
+  WORK_QUEUE_PROMPT_MAX,
 } from "@bitig/core";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
@@ -252,6 +254,23 @@ export interface SuggestMcpTaskRunProfileResult {
   readonly nextLevelUp?: RunLevel | undefined;
 }
 
+/** Input for `plan_work_queue`. Returns the plan preview with no writes (#BIT-204). */
+export interface PlanWorkQueueToolInput {
+  readonly prompt: string;
+  readonly items?: readonly string[] | undefined;
+}
+
+/** Input for `queue_tasks`. The worker attributes the queue to the caller and never approves tasks (#BIT-204). */
+export interface QueueWorkTasksToolInput {
+  readonly prompt: string;
+  readonly items: readonly string[];
+}
+
+/** Input for `list_work_queues` (#BIT-204). */
+export interface ListWorkQueuesToolInput {
+  readonly includeClosed: boolean;
+}
+
 export interface RegisterBitigToolsOptions {
   readonly reportT3GitMetadata?: ((input: ReportT3GitMetadataInput, signal: AbortSignal) => Promise<AgentRun>) | undefined;
   /**
@@ -358,6 +377,20 @@ export interface RegisterBitigToolsOptions {
         readonly signal?: AbortSignal | undefined;
       }) => Promise<SuggestMcpTaskRunProfileResult>)
     | undefined;
+  /**
+   * Optional callback returning the read-only work queue plan for a prompt (#BIT-204).
+   * Makes no writes (does not route or save task profiles).
+   */
+  readonly planWorkQueue?: ((input: PlanWorkQueueToolInput) => Promise<unknown>) | undefined;
+  /**
+   * Optional callback queueing the listed tasks (#BIT-204). Returns the worker's queue result as JSON.
+   * Approvals are never passed, so tasks pending approval stay out of the queue.
+   */
+  readonly queueWorkTasks?: ((input: QueueWorkTasksToolInput) => Promise<unknown>) | undefined;
+  /**
+   * Optional callback listing work queues and their entries (#BIT-204).
+   */
+  readonly listWorkQueues?: ((input: ListWorkQueuesToolInput) => Promise<unknown>) | undefined;
 }
 
 const fallbackRunProfilesByStorage = new WeakMap<StorageProvider, Map<string, TaskRunProfile>>();
@@ -1849,6 +1882,124 @@ export function registerBitigTools(
           signal: extra.signal,
         });
         return formatSuccessResult(result);
+      } catch (err) {
+        return formatErrorResult(err);
+      }
+    },
+  );
+
+  // 22. plan_work_queue (#BIT-204)
+  server.registerTool(
+    "plan_work_queue",
+    {
+      description:
+        "Preview how a free-text prompt (or explicit ticket code list) would be parsed and planned into a work queue across projects, lanes, waves and run selections. Makes no writes (does not route or save task profiles, and does not approve or queue tasks). Tasks still pending approval show with classification 'needs_approval' and queueable: false.",
+      annotations: { readOnlyHint: true },
+      inputSchema: {
+        prompt: z
+          .string()
+          .trim()
+          .min(1)
+          .max(WORK_QUEUE_PROMPT_MAX)
+          .describe("Free-text prompt to parse and plan, e.g. 'Start BIT-92 to BIT-102, WOR-1 and KMZ-3'"),
+        items: z
+          .array(TASK_REF)
+          .min(1)
+          .max(MAX_WORK_QUEUE_ITEMS)
+          .optional()
+          .describe("Optional explicit ticket codes; when given the prompt is not parsed again"),
+      },
+    },
+    async (args) => {
+      try {
+        if (!options?.planWorkQueue) {
+          throw new ValidationError("plan_work_queue", [
+            {
+              code: "custom",
+              path: ["workQueue"],
+              message: "Work queues are not configured on this server",
+              input: args.prompt,
+            },
+          ]);
+        }
+        return formatSuccessResult(
+          await options.planWorkQueue({
+            prompt: args.prompt,
+            ...(args.items !== undefined ? { items: args.items } : {}),
+          }),
+        );
+      } catch (err) {
+        return formatErrorResult(err);
+      }
+    },
+  );
+
+  // 23. queue_tasks (#BIT-204)
+  server.registerTool(
+    "queue_tasks",
+    {
+      description:
+        "Queue the listed tasks as a work queue, from ticket codes (e.g. BIT-92) you plan or choose. The worker rebuilds the plan from these codes. Agents cannot approve tasks: tasks still pending approval are left out of the queue and show as 'needs_approval' in the returned plan, and a person must approve them in Bitig. Returns { queued: false, reason: 'nothing_to_queue', plan } when no listed task can be queued.",
+      inputSchema: {
+        prompt: z
+          .string()
+          .trim()
+          .min(1)
+          .max(WORK_QUEUE_PROMPT_MAX)
+          .describe("The text the queue was planned from; stored on the queue"),
+        items: z
+          .array(TASK_REF)
+          .min(1)
+          .max(MAX_WORK_QUEUE_ITEMS)
+          .describe("Ticket codes to queue in order, e.g. ['BIT-92', 'BIT-93']"),
+      },
+    },
+    async (args) => {
+      try {
+        if (!options?.queueWorkTasks) {
+          throw new ValidationError("queue_tasks", [
+            {
+              code: "custom",
+              path: ["workQueue"],
+              message: "Work queues are not configured on this server",
+              input: args.items,
+            },
+          ]);
+        }
+        return formatSuccessResult(await options.queueWorkTasks({ prompt: args.prompt, items: args.items }));
+      } catch (err) {
+        return formatErrorResult(err);
+      }
+    },
+  );
+
+  // 24. list_work_queues (#BIT-204)
+  server.registerTool(
+    "list_work_queues",
+    {
+      description:
+        "List work queues with their entries (position, lane, status, task code and title). Returns open queues only unless includeClosed is true.",
+      annotations: { readOnlyHint: true },
+      inputSchema: {
+        includeClosed: z
+          .boolean()
+          .optional()
+          .describe("Also list finished and cancelled queues"),
+      },
+    },
+    async (args) => {
+      try {
+        if (!options?.listWorkQueues) {
+          throw new ValidationError("list_work_queues", [
+            {
+              code: "custom",
+              path: ["workQueue"],
+              message: "Work queues are not configured on this server",
+              input: args.includeClosed ?? false,
+            },
+          ]);
+        }
+        return formatSuccessResult(await options.listWorkQueues({ includeClosed: args.includeClosed ?? false }));
       } catch (err) {
         return formatErrorResult(err);
       }

@@ -3,9 +3,16 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { BITIG_SERVER_INSTRUCTIONS, registerBitigTools } from "@bitig/mcp-tools";
 import { DEFAULT_RUN_LEVELS, ValidationError, hasMinimumOrgRole } from "@bitig/core";
+import { D1WorkQueueStore } from "@bitig/storage-d1";
 import { ForbiddenRoleError } from "../auth";
 import type { AppEnv } from "../index";
 import { registerHostFolder, unregisterHostFolder } from "../t3/host-folders";
+import {
+  WorkQueueNothingToQueueError,
+  confirmWorkQueue,
+  listWorkQueues,
+  planWorkQueuePrompt,
+} from "../work-queue/service";
 import {
   assertHierarchyMutationAllowed,
   getLegacyHierarchyInventory,
@@ -22,6 +29,8 @@ import { handBackFinishedTaskInBackground, handBackNeedsHumanTaskInBackground } 
 
 const MCP_SERVER_NAME = "bitig";
 const MCP_SERVER_VERSION = "1.0.0";
+/** `queue_tasks` result reason when no listed task can be queued (#BIT-204). */
+const NOTHING_TO_QUEUE_REASON = "nothing_to_queue";
 
 let lastInitializedClientName: string | undefined;
 
@@ -81,6 +90,80 @@ export const mcpRouter = new Hono<AppEnv>().all("*", async (c) => {
         max: input.max,
         actor: input.actor ?? "mcp",
       });
+    },
+    planWorkQueue: async (input) => {
+      const role = c.get("orgRole");
+      if (!role || !hasMinimumOrgRole(role, "viewer")) {
+        throw new ForbiddenRoleError("Forbidden: viewer role required to plan a work queue");
+      }
+      const user = c.get("user");
+      const orgId = c.get("orgId");
+      if (!user || !orgId) {
+        throw new ForbiddenRoleError("Forbidden: a signed-in person is required to plan a work queue");
+      }
+      // `route: false` guarantees `plan_work_queue` makes no writes (#BIT-204).
+      return await planWorkQueuePrompt(
+        { t3: t3Deps, queueStore: new D1WorkQueueStore(c.env.DB, orgId) },
+        {
+          prompt: input.prompt,
+          ...(input.items !== undefined ? { items: input.items } : {}),
+          route: false,
+          actor: {
+            id: user.id,
+            name: user.displayName,
+            ...(user.avatarUrl !== undefined ? { avatarUrl: user.avatarUrl } : {}),
+          },
+          signal: c.req.raw.signal,
+        },
+      );
+    },
+    queueWorkTasks: async (input) => {
+      const role = c.get("orgRole");
+      if (!role || !hasMinimumOrgRole(role, "editor")) {
+        throw new ForbiddenRoleError("Forbidden: editor role required to queue tasks");
+      }
+      const user = c.get("user");
+      const orgId = c.get("orgId");
+      if (!user || !orgId) {
+        throw new ForbiddenRoleError("Forbidden: a signed-in person is required to queue tasks");
+      }
+      // Approvals are never passed: over MCP, tasks pending approval stay out of the queue (#BIT-204).
+      try {
+        const result = await confirmWorkQueue(
+          { t3: t3Deps, queueStore: new D1WorkQueueStore(c.env.DB, orgId) },
+          {
+            prompt: input.prompt,
+            items: input.items,
+            approvals: [],
+            overrides: [],
+            actor: {
+              id: user.id,
+              name: user.displayName,
+              ...(user.avatarUrl !== undefined ? { avatarUrl: user.avatarUrl } : {}),
+            },
+          },
+        );
+        return { queued: true, ...result };
+      } catch (error: unknown) {
+        if (error instanceof WorkQueueNothingToQueueError) {
+          return { queued: false, reason: NOTHING_TO_QUEUE_REASON, message: error.message, plan: error.plan };
+        }
+        throw error;
+      }
+    },
+    listWorkQueues: async (input) => {
+      const role = c.get("orgRole");
+      if (!role || !hasMinimumOrgRole(role, "viewer")) {
+        throw new ForbiddenRoleError("Forbidden: viewer role required to list work queues");
+      }
+      const orgId = c.get("orgId");
+      if (!orgId) {
+        throw new ForbiddenRoleError("Forbidden: an organisation is required to list work queues");
+      }
+      return await listWorkQueues(
+        { t3: t3Deps, queueStore: new D1WorkQueueStore(c.env.DB, orgId) },
+        { includeClosed: input.includeClosed },
+      );
     },
     registerProjectHostFolder: (input) => {
       requireOrgOwner(c);
