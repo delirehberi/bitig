@@ -212,6 +212,17 @@ describe("Overview", () => {
     expect(within(stalled).queryByRole("alert")).not.toBeInTheDocument();
   });
 
+  it("puts the work queue prompt at the top when T3 is connected, and hides it in local mode", () => {
+    const { unmount } = renderOverview({ t3Connected: true });
+    const prompt = screen.getByRole("region", { name: "Start work" });
+    expect(within(prompt).getByPlaceholderText("Start BIT-92 to BIT-102, WOR-1 and KMZ-3")).toBeInTheDocument();
+    expect(within(prompt).getByRole("button", { name: "Plan" })).toBeDisabled();
+    unmount();
+
+    renderOverview({ mode: "local" });
+    expect(screen.queryByRole("region", { name: "Start work" })).not.toBeInTheDocument();
+  });
+
   it("invites creating a project when there are none", () => {
     renderOverview({ projects: [], tasks: [] });
     expect(screen.getByRole("heading", { name: "No projects yet" })).toBeInTheDocument();
