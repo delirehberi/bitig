@@ -11,11 +11,17 @@ import {
   type WorkQueueEntryState,
 } from "@bitig/core";
 import { D1WorkQueueStore } from "@bitig/storage-d1";
-import { launchTaskInT3, stopTaskT3Run, type T3ServiceDeps } from "../t3/service";
+import { launchTaskInT3, startReadyChildrenInT3, stopTaskT3Run, type T3ServiceDeps } from "../t3/service";
 
 const RESERVED_PREFIX = "wq-reserved:";
 const USAGE_PREFIX = "Host usage limit: ";
 const ACTIVE_STATES_SQL = "('queued','working','waiting_for_approval','waiting_subagent','offline')";
+/**
+ * Run states that hold a host slot. An umbrella session in `waiting_subagent` is idle on T3 while
+ * its children work, so it does not hold one: otherwise every queue umbrella would cost a slot on
+ * top of its children, and a few umbrellas could fill the cap with nobody left to run.
+ */
+const CAP_STATES_SQL = "('queued','working','waiting_for_approval','offline')";
 const TERMINAL_ENTRIES = new Set<WorkQueueEntryState>(["done", "failed", "skipped", "cancelled"]);
 const FINISHED_TASKS = new Set(["done", "archived"]);
 const USAGE_LIMIT_PATTERN = /usage limit|rate limit|credit[s]? (?:exhaust|limit)|quota|\blimited\b|hit your .*limit/i;
@@ -134,7 +140,8 @@ async function holdReason(deps: WorkQueueDispatchDeps, launch: QueueLaunch, task
   for (const dependencyId of task.dependsOn ?? []) {
     const dependency = await deps.t3.storage.getTask(dependencyId);
     if (!dependency || !FINISHED_TASKS.has(dependency.status)) return `Waiting on dependency ${dependencyId}`;
-    const queuedDependency = entries.find((item) => item.taskId === dependencyId);
+    // A retry adds a newer entry for the same task, so the latest one decides.
+    const queuedDependency = entries.findLast((item) => item.taskId === dependencyId);
     if (queuedDependency?.state === "failed") return `Dependency ${dependencyId} failed`;
     if (entry.umbrellaTaskId && queuedDependency?.umbrellaTaskId === entry.umbrellaTaskId) {
       const child = await deps.t3.store.getAgentRunChild(entry.umbrellaTaskId, dependencyId);
@@ -194,6 +201,8 @@ export async function reserveWorkQueueLaunch(deps: T3ServiceDeps, taskId: string
   }
   const at = deps.now?.() ?? Date.now();
   const runId = defaultIdGenerator();
+  // A child's own umbrella is about to wait on it, so the umbrella's slot passes to the child.
+  const launchingUmbrellaId = !umbrella && entry.umbrellaTaskId ? entry.umbrellaTaskId : "";
   const cap = await new D1WorkQueueStore(context.db, context.orgId).getHostMaxParallelRuns(connection.id);
   // A single SQL statement arbitrates the last slot. Include non-queue task runs and project threads.
   const result = await context.db.prepare(`INSERT INTO agent_runs
@@ -201,15 +210,16 @@ export async function reserveWorkQueueLaunch(deps: T3ServiceDeps, taskId: string
     SELECT ?, ?, ?, ?, ?, 'queued', 'worktree', ?, ?
     WHERE (SELECT state FROM work_queues WHERE id = ? AND org_id = ?) = 'active'
       AND (SELECT COUNT(*) FROM agent_runs r JOIN tasks t ON t.id = r.task_id JOIN projects p ON p.id = t.project_id
-        WHERE p.org_id = ? AND COALESCE(r.host_id, ?) = ? AND r.state IN ${ACTIVE_STATES_SQL})
+        WHERE p.org_id = ? AND COALESCE(r.host_id, ?) = ? AND r.state IN ${CAP_STATES_SQL} AND r.task_id <> ?)
       + (SELECT COUNT(*) FROM project_t3_threads r JOIN projects p ON p.id = r.project_id
-        WHERE p.org_id = ? AND COALESCE(r.host_id, ?) = ? AND r.state IN ${ACTIVE_STATES_SQL}) < ?
+        WHERE p.org_id = ? AND COALESCE(r.host_id, ?) = ? AND r.state IN ${CAP_STATES_SQL}) < ?
     ON CONFLICT(task_id) DO UPDATE SET id = excluded.id, host_id = excluded.host_id,
       t3_project_id = excluded.t3_project_id, thread_id = excluded.thread_id, state = 'queued',
       started_at = excluded.started_at, updated_at = excluded.updated_at
     WHERE agent_runs.state NOT IN ${ACTIVE_STATES_SQL} AND agent_runs.started_at < ?`)
     .bind(runId, taskId, connection.id, mapping.t3ProjectId, marker, at, at, launch.queue.id, context.orgId,
-      context.orgId, connection.id, connection.id, context.orgId, connection.id, connection.id, cap, Date.parse(entry.createdAt)).run();
+      context.orgId, connection.id, connection.id, launchingUmbrellaId, context.orgId, connection.id, connection.id, cap,
+      Date.parse(entry.createdAt)).run();
   if (!result.meta.changes) {
     const concurrent = await deps.store.getAgentRunByTaskId(taskId);
     if (concurrent?.threadId === marker) return { runId: concurrent.id, clientRequestId, existing: undefined };
@@ -322,7 +332,15 @@ async function dispatchQueue(deps: WorkQueueDispatchDeps, queue: WorkQueue): Pro
     const targetId = entry.umbrellaTaskId ?? entry.taskId;
     if (entry.umbrellaTaskId && startedUmbrellas.has(targetId)) continue;
     const run = await deps.t3.store.getAgentRunByTaskId(targetId);
-    if (ownsRun(entry, run) && !run.threadId.startsWith(RESERVED_PREFIX)) continue;
+    if (ownsRun(entry, run) && !run.threadId.startsWith(RESERVED_PREFIX)) {
+      // The umbrella session starts its own children, but when its start was held (host cap) its
+      // turn ended with nothing running, so nothing would ever wake it. Start the batch for it.
+      if (entry.umbrellaTaskId && entry.state !== "running" && run.state === "finished") {
+        startedUmbrellas.add(targetId);
+        await startIdleUmbrellaChildren(deps, queue, entry.umbrellaTaskId);
+      }
+      continue;
+    }
     if (entry.state === "running") continue;
     try {
       if (entry.state === "waiting") entry = await updateEntry(deps, entry, "ready");
@@ -355,6 +373,34 @@ async function dispatchQueue(deps: WorkQueueDispatchDeps, queue: WorkQueue): Pro
   if (current.length && current.every((entry) => ["done", "skipped", "cancelled"].includes(entry.state))) {
     const done = await queueStore(deps).transitionQueue(queue.id, "done", now(deps));
     await deps.t3.publishRealtime?.({ type: "work_queue.updated", queue: done });
+  }
+}
+
+/**
+ * Starts the next ready batch under a queue umbrella whose session is idle (`finished`) with queue
+ * children still waiting. The started children resume the umbrella once they end, as if it had
+ * called `start_ready_children` itself; children still held keep their reason on the queue entry.
+ */
+async function startIdleUmbrellaChildren(deps: WorkQueueDispatchDeps, queue: WorkQueue, umbrellaTaskId: string): Promise<void> {
+  const lane = async (): Promise<WorkQueueEntry[]> => (await queueStore(deps).listEntries(queue.id))
+    .filter((item) => item.umbrellaTaskId === umbrellaTaskId && !TERMINAL_ENTRIES.has(item.state) && item.state !== "merged");
+  let result: Awaited<ReturnType<typeof startReadyChildrenInT3>>;
+  try {
+    result = await startReadyChildrenInT3(deps.t3, { parentTaskRef: umbrellaTaskId, actor: queue.createdBy });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    for (const item of await lane()) {
+      if (item.state !== "running") await updateEntry(deps, item, item.state === "ready" ? "waiting" : item.state, message);
+    }
+    return;
+  }
+  const started = new Set(result.started.filter((child) => !child.queued).map((child) => child.taskId));
+  const held = new Map(result.skipped.map((child) => [child.taskId, child.detail]));
+  for (const item of await lane()) {
+    if (started.has(item.taskId)) await runningEntry(deps, item);
+    else if (item.state !== "running" && held.has(item.taskId)) {
+      await updateEntry(deps, item, item.state === "ready" ? "waiting" : item.state, held.get(item.taskId) ?? null);
+    }
   }
 }
 

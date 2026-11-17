@@ -557,6 +557,59 @@ describe("Work queue dispatcher (BIT-203)", () => {
     expect((await queues.listEntries(queued.id))[1]?.state).toBe("waiting");
   });
 
+  it("starts the next batch for an idle queue umbrella whose own child start hit the host cap", async () => {
+    await queues.setHostMaxParallelRuns(HOST_ID, 2);
+    const parent = await task("UMB");
+    const first = await storage.saveTask({ projectId: parent.projectId, title: "first", parentId: parent.id });
+    const second = await storage.saveTask({ projectId: parent.projectId, title: "second", parentId: parent.id, dependsOn: [first.id] });
+    const queued = await queue([first, second], parent.id);
+    await dispatch();
+    const umbrellaRun = await store.getAgentRunByTaskId(parent.id);
+    if (!umbrellaRun) throw new Error("Expected umbrella run");
+    await store.updateAgentRunGitMetadata(parent.id, umbrellaRun.id, umbrellaRun.threadId,
+      { branch: "bitig/UMB-1", headSha: "a".repeat(40), worktreePath: "/tmp/umb", dirty: false }, ++tick);
+    await storage.completeTask(first.id);
+    await store.addAgentRunChild({ parentTaskId: parent.id, childTaskId: first.id, state: "done", startedAt: tick });
+    await reportChildMerge(deps, { parentTaskId: parent.id, childTaskId: first.id, mergedSha: "a".repeat(40) });
+    // Two unrelated sessions fill the host while the umbrella merges, so its own start is held.
+    const outsiders: Task[] = [];
+    for (const key of ["EXA", "EXB"]) {
+      const outside = await task(key);
+      outsiders.push(outside);
+      await store.saveAgentRun({ id: defaultIdGenerator(), taskId: outside.id, hostId: HOST_ID, t3ProjectId: key,
+        threadId: key, state: "working", startedAt: tick, updatedAt: tick });
+    }
+    await dispatch();
+    expect(launches()).toHaveLength(1);
+    // The umbrella ends its turn; one outside session finishes. Nothing but the dispatcher is left to start the child.
+    await store.updateAgentRunState(parent.id, { state: "finished", now: ++tick });
+    await store.updateAgentRunState(outsiders[0]?.id ?? "", { state: "finished", now: ++tick });
+    await dispatch();
+    expect(launches()).toHaveLength(2);
+    expect(launches()[1]?.args.workspaceStrategy).toMatchObject({ branch: expect.stringContaining("bitig/") as unknown });
+    expect((await store.getAgentRunChild(parent.id, second.id))?.state).toBe("running");
+    expect((await store.getAgentRunByTaskId(parent.id))?.state).toBe("waiting_subagent");
+    expect((await queues.listEntries(queued.id))[1]?.state).toBe("running");
+    await dispatch();
+    expect(launches()).toHaveLength(2);
+  });
+
+  it("does not count a waiting umbrella or a child's own umbrella against the host cap", async () => {
+    await queues.setHostMaxParallelRuns(HOST_ID, 1);
+    const parent = await task("UMB");
+    const child = await storage.saveTask({ projectId: parent.projectId, title: "child", parentId: parent.id });
+    await queue([child], parent.id);
+    await dispatch();
+    const umbrellaRun = await store.getAgentRunByTaskId(parent.id);
+    if (!umbrellaRun) throw new Error("Expected umbrella run");
+    await store.updateAgentRunGitMetadata(parent.id, umbrellaRun.id, umbrellaRun.threadId,
+      { branch: "bitig/UMB-1", headSha: "a".repeat(40), worktreePath: "/tmp/umb", dirty: false }, ++tick);
+    // The working umbrella fills the only slot, yet its own child may take it.
+    const started = await launchTaskInT3(deps, { taskRef: child.id, parentTaskRef: parent.id, workspaceStrategy: "worktree" });
+    expect(started.run.state).toBe("working");
+    expect((await store.getAgentRunByTaskId(parent.id))?.state).toBe("waiting_subagent");
+  });
+
   it("persists offline launches as ready and drains exactly once after reconnection", async () => {
     const candidate = await task("OFF");
     const queued = await queue([candidate]);
