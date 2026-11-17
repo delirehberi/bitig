@@ -732,6 +732,57 @@ describe("Dashboard Phase 4 Integration", () => {
       expect(screen.queryByText("Jira Cloud Issues")).not.toBeInTheDocument();
     });
   });
+
+  it("collapses and expands the left sidebar to give more space to the task chat screen", async () => {
+    const existingProject = {
+      id: "01940000-0000-7000-8000-000000000001",
+      name: "Bitig App",
+      key: "BIT",
+      description: "App description",
+      kind: "hobby",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    const existingTask = {
+      id: "01940000-0000-7000-8000-000000000002",
+      projectId: existingProject.id,
+      number: 1,
+      title: "Chat screen task",
+      description: "Full-page task thread",
+      status: "in_progress",
+      isPublic: false,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    window.history.replaceState(null, "", "/tasks/BIT-1");
+    stubApi({ projects: [existingProject], tasks: [existingTask] });
+    const user = userEvent.setup();
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Chat screen task" })).toBeInTheDocument();
+    expect(screen.getByTestId("task-detail-page")).toBeInTheDocument();
+
+    const shell = screen.getByTestId("workspace-shell");
+    expect(shell).toHaveAttribute("data-rail-collapsed", "false");
+    expect(screen.getByRole("navigation", { name: "Primary" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Expand sidebar" })).not.toBeInTheDocument();
+
+    // Collapse the left sidebar
+    await user.click(screen.getByRole("button", { name: "Collapse sidebar" }));
+    expect(shell).toHaveAttribute("data-rail-collapsed", "true");
+    expect(screen.queryByRole("navigation", { name: "Primary" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Collapse sidebar" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Expand sidebar" })).toBeInTheDocument();
+    expect(screen.getByTestId("task-detail-page")).toBeInTheDocument();
+
+    // Expand the left sidebar again
+    await user.click(screen.getByRole("button", { name: "Expand sidebar" }));
+    expect(shell).toHaveAttribute("data-rail-collapsed", "false");
+    expect(screen.getByRole("navigation", { name: "Primary" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Collapse sidebar" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Expand sidebar" })).not.toBeInTheDocument();
+  });
 });
 
 describe("Dashboard routing", () => {

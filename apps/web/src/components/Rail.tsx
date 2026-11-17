@@ -3,6 +3,7 @@ import {
   ChartNoAxesColumn,
   FolderKanban,
   ListTodo,
+  PanelLeftClose,
   Settings,
   Shield,
   Sprout,
@@ -52,16 +53,29 @@ interface RailProps {
   readonly health: HealthState;
   /** The section the current page belongs to; none on pages outside the nav, such as sign-in. */
   readonly activeTab?: NavigationTab | undefined;
+  /** Collapses the left navigation rail so the main view gets the full width. */
+  readonly onCollapse?: (() => void) | undefined;
 }
 
-export function Rail({ health, activeTab }: RailProps) {
+export function Rail({ health, activeTab, onCollapse }: RailProps) {
   const { currentOrg, isAdmin, profile } = useAuth();
   const primaryActiveTab = activeTab === "task" ? "tasks" : activeTab;
 
   return (
     <aside className="flex flex-col gap-6 border-rule bg-paper-2 px-4 py-5 md:sticky md:top-0 md:h-dvh md:border-r md:py-6">
-      <div className="flex items-center gap-3 px-2">
+      <div className="flex items-center justify-between gap-3 px-2">
         <img src="/logo.svg" alt="bitig" width={81} height={32} />
+        {onCollapse && (
+          <button
+            type="button"
+            onClick={onCollapse}
+            aria-label="Collapse sidebar"
+            title="Collapse sidebar"
+            className="inline-flex items-center justify-center rounded-md p-1.5 text-ink-3 transition-colors hover:bg-paper-3 hover:text-ink focus-visible:outline-focus"
+          >
+            <PanelLeftClose size={ICON_SIZE} aria-hidden="true" />
+          </button>
+        )}
       </div>
 
       <nav aria-label="Primary">

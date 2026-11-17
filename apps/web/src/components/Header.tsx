@@ -6,6 +6,7 @@ import {
   CircleUserRound,
   KeyRound,
   LogOut,
+  PanelLeftOpen,
   Plus,
   Search,
   Settings,
@@ -25,6 +26,8 @@ interface HeaderProps {
   readonly health: HealthState;
   readonly searchQuery: string;
   readonly onSearchChange: (query: string) => void;
+  /** Shown when the left navigation rail is collapsed so the user can reopen it. */
+  readonly onExpandRail?: (() => void) | undefined;
 }
 
 const ICON_SIZE = 16;
@@ -52,7 +55,7 @@ function WorkerHealthDot({ mode, health }: { readonly mode: StorageMode; readonl
   );
 }
 
-export function Header({ mode, health, searchQuery, onSearchChange }: HeaderProps) {
+export function Header({ mode, health, searchQuery, onSearchChange, onExpandRail }: HeaderProps) {
   const {
     status,
     user,
@@ -101,6 +104,17 @@ export function Header({ mode, health, searchQuery, onSearchChange }: HeaderProp
 
   return (
     <header className="flex items-center gap-3 border-b border-rule px-5 py-3 md:px-10">
+      {onExpandRail && (
+        <button
+          type="button"
+          onClick={onExpandRail}
+          aria-label="Expand sidebar"
+          title="Expand sidebar"
+          className="inline-flex shrink-0 items-center justify-center rounded-md border border-rule bg-paper-2 p-2 text-ink-2 transition-colors hover:bg-paper-3 hover:text-ink focus-visible:outline-focus"
+        >
+          <PanelLeftOpen size={ICON_SIZE} aria-hidden="true" />
+        </button>
+      )}
       <label className="relative flex min-w-0 flex-1 items-center md:max-w-md">
         <span className="sr-only">Search</span>
         <Search

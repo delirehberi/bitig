@@ -78,6 +78,28 @@ function tasksHref({ projectId, needsHuman, awaitingApproval, blocked, taskRef }
   });
 }
 
+const RAIL_COLLAPSED_STORAGE_KEY = "bitig:rail-collapsed";
+
+function readStoredRailCollapsed(): boolean {
+  try {
+    return window.localStorage.getItem(RAIL_COLLAPSED_STORAGE_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function writeStoredRailCollapsed(collapsed: boolean): void {
+  try {
+    if (collapsed) {
+      window.localStorage.setItem(RAIL_COLLAPSED_STORAGE_KEY, "true");
+    } else {
+      window.localStorage.removeItem(RAIL_COLLAPSED_STORAGE_KEY);
+    }
+  } catch {
+    // ignore storage errors
+  }
+}
+
 interface WorkspaceProps {
   readonly mode: StorageMode;
   readonly health: HealthState;
@@ -86,7 +108,13 @@ interface WorkspaceProps {
 
 function Workspace({ mode, health, route }: WorkspaceProps) {
   const [searchQuery, setSearchQuery] = useState("");
+  const [railCollapsed, setRailCollapsedState] = useState<boolean>(() => readStoredRailCollapsed());
   const locationHref = useLocationHref();
+
+  function setRailCollapsed(collapsed: boolean) {
+    setRailCollapsedState(collapsed);
+    writeStoredRailCollapsed(collapsed);
+  }
   const { profile, user, currentRole, currentOrg } = useAuth();
   const actorName = profile?.displayName ?? user ?? "you";
   const activeTab = route.name;
@@ -296,8 +324,24 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
   }
 
   return (
-    <div className="min-h-dvh md:grid md:grid-cols-[var(--rail-width)_minmax(0,1fr)]">
-      <Rail health={health} activeTab={activeTab} />
+    <div
+      data-testid="workspace-shell"
+      data-rail-collapsed={railCollapsed ? "true" : "false"}
+      className={`min-h-dvh md:grid ${
+        railCollapsed
+          ? "md:grid-cols-[minmax(0,1fr)]"
+          : "md:grid-cols-[var(--rail-width)_minmax(0,1fr)]"
+      }`}
+    >
+      {!railCollapsed && (
+        <Rail
+          health={health}
+          activeTab={activeTab}
+          onCollapse={() => {
+            setRailCollapsed(true);
+          }}
+        />
+      )}
 
       <div
         className={`flex min-w-0 flex-col ${
@@ -309,6 +353,13 @@ function Workspace({ mode, health, route }: WorkspaceProps) {
           health={health}
           searchQuery={searchQuery}
           onSearchChange={setSearchQuery}
+          onExpandRail={
+            railCollapsed
+              ? () => {
+                  setRailCollapsed(false);
+                }
+              : undefined
+          }
         />
 
         <TaskMentionsProvider projects={projects} tasks={tasks}>
