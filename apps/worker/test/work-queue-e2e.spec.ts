@@ -1231,7 +1231,9 @@ describe("Work queue end-to-end: prompt to lane pull requests (#BIT-207)", () =>
       },
     });
 
-    // Starting children while WOR-1 + BIT-3 already occupy all 2 host slots hits `cap_reached`.
+    // A child's own umbrella hands it its slot, so lower the cap to 1: WOR-1 alone fills the host
+    // and starting children hits `cap_reached`.
+    await queueStore.setHostMaxParallelRuns(HOST_ID, 1);
     const cappedBatchRes = await callMcp("start_ready_children", { parentTaskId: "BIT-3" });
     expect(cappedBatchRes.isError).toBeUndefined();
     const cappedBatch = JSON.parse(cappedBatchRes.text) as StartReadyChildrenResult;
