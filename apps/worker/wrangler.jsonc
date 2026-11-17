@@ -51,7 +51,7 @@
     { "tag": "v3", "new_sqlite_classes": ["LoginChallenge"] }
   ],
   "triggers": {
-    "crons": ["0 3 * * *"]
+    "crons": ["0 3 * * *", "*/5 * * * *"]
   },
   "assets": {
     "directory": "../web/dist",
