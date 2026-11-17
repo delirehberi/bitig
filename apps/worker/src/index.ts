@@ -292,13 +292,18 @@ const app = createApp();
 
 export { runScheduledFeedbackCleanup } from "./routes/feedback";
 
+/** Frequent cron: only reconciles work queues, so a stale run state cannot strand a queue for long. */
+export const WORK_QUEUE_CRON = "*/5 * * * *";
+
 export async function scheduled(
   controller: ScheduledController,
   env: Env,
   ctx: ExecutionContext,
 ): Promise<void> {
   const now = controller.scheduledTime ? new Date(controller.scheduledTime) : undefined;
-  const cleanupPromise = Promise.all([runScheduledFeedbackCleanup(env, { now }), runScheduledWorkQueues(env)]);
+  const cleanupPromise = controller.cron === WORK_QUEUE_CRON
+    ? runScheduledWorkQueues(env)
+    : Promise.all([runScheduledFeedbackCleanup(env, { now }), runScheduledWorkQueues(env)]);
   ctx.waitUntil(cleanupPromise);
   await cleanupPromise;
 }
