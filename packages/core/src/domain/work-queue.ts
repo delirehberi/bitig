@@ -127,6 +127,27 @@ export const WorkQueueEntrySchema = z.strictObject({
 });
 export type WorkQueueEntry = z.output<typeof WorkQueueEntrySchema>;
 
+/**
+ * The entry that stands for its task when a queue holds several attempts for it (a retry adds a
+ * new entry): the latest attempt that was not skipped or cancelled, else the latest attempt.
+ * Earlier attempts are history; they neither count in progress nor keep a queue open.
+ */
+export function isRepresentativeWorkQueueEntry<T extends Pick<WorkQueueEntry, "id" | "taskId" | "state">>(
+  entry: T,
+  entries: readonly T[],
+): boolean {
+  const attempts = entries.filter((item) => item.taskId === entry.taskId);
+  const ran = attempts.findLast((item) => item.state !== "skipped" && item.state !== "cancelled");
+  return (ran ?? attempts.at(-1))?.id === entry.id;
+}
+
+/** One entry per task, in queue order: see {@link isRepresentativeWorkQueueEntry}. */
+export function representativeWorkQueueEntries<T extends Pick<WorkQueueEntry, "id" | "taskId" | "state">>(
+  entries: readonly T[],
+): T[] {
+  return entries.filter((entry) => isRepresentativeWorkQueueEntry(entry, entries));
+}
+
 export const HostMaxParallelRunsSchema = z
   .number()
   .int()

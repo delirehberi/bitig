@@ -1149,10 +1149,11 @@ describe("Work queue end-to-end: prompt to lane pull requests (#BIT-207)", () =>
     expect((await request("/api/t3/runs")).status).toBe(200);
 
     // Retry history is preserved (`WOR-1: failed` + `WOR-1: done`) and WOR-1 holds its single-task PR.
-    // Because the historical `failed` row stays in `work_queue_items`, the queue remains `active` until closed.
-    const [queueAfterRetryDone] = await getQueues(false);
+    // The failed row is an earlier attempt, so it no longer keeps the queue open.
+    expect(await getQueues(false)).toEqual([]);
+    const [queueAfterRetryDone] = await getQueues(true);
     if (!queueAfterRetryDone) throw new Error("Expected queue with preserved failed attempt row");
-    expect(queueAfterRetryDone.state).toBe("active");
+    expect(queueAfterRetryDone.state).toBe("done");
     expect(queueAfterRetryDone.entries.map((entry) => ({ code: entry.taskCode, state: entry.state }))).toEqual([
       { code: "BIT-1", state: "done" },
       { code: "BIT-2", state: "done" },
@@ -1161,12 +1162,6 @@ describe("Work queue end-to-end: prompt to lane pull requests (#BIT-207)", () =>
       { code: "WOR-1", state: "done" },
     ]);
     expect((await store.getAgentRunByTaskId(wor1.id))?.pullRequestUrls).toEqual([worLanePrUrl]);
-
-    const cancelRes = await postJson(`/api/work-queues/${queueAfterRetryDone.id}/cancel`);
-    expect(cancelRes.status).toBe(200);
-    expect(await getQueues(false)).toEqual([]);
-    const [closedQueue] = await getQueues(true);
-    expect(closedQueue?.state).toBe("cancelled");
   }, 60_000);
 
   it("enforces maxParallelRuns across lanes and lets a single-task lane ship its PR even when the multi-task umbrella lane hits a failure", async () => {
