@@ -84,7 +84,9 @@ const WORK_QUEUE_ENTRY_TRANSITIONS: Readonly<Record<WorkQueueEntryState, readonl
   running: ["merged", "failed", "cancelled"],
   merged: ["done"],
   done: [],
-  failed: [],
+  // A failed attempt that is still the latest for its task recovers when the task is finished
+  // after all, or when its paused session is working again.
+  failed: ["running", "merged"],
   skipped: [],
   cancelled: [],
 };

@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { DEFAULT_ORGANISATION_ID, RealtimeEventSchema, defaultIdGenerator, type RealtimeEvent, type Task, type WorkQueueEntry } from "@bitig/core";
 import { D1Storage, D1WorkQueueStore, T3D1Store } from "@bitig/storage-d1";
 import { encryptT3Token } from "../src/t3/crypto";
-import { dispatchQueuedTaskT3Run, launchTaskInT3, reportChildMerge, type T3ServiceDeps } from "../src/t3/service";
+import { dispatchQueuedTaskT3Run, launchTaskInT3, reportChildMerge, startReadyChildrenInT3, type T3ServiceDeps } from "../src/t3/service";
 import { shouldDispatchWorkQueuesAfter } from "../src/background";
 import {
   checkWorkQueueLaunch,
@@ -651,6 +651,74 @@ describe("Work queue dispatcher (BIT-203)", () => {
     const retry = await queues.addEntry({ id: defaultIdGenerator(), queueId: queued.id, taskId: failed.id, lane: failed.projectId, position: 3, now: ++tick });
     await dispatch();
     expect(launches().at(-1)?.args.clientRequestId).toBe(`wq:${retry.id}`);
+  });
+
+  it("keeps a session that paused mid-task running, not failed, and clears the pause when it resumes", async () => {
+    const paused = await task("ASK");
+    const queued = await queue([paused]);
+    await dispatch();
+    await store.updateAgentRunState(paused.id, { state: "finished", now: ++tick });
+    await dispatch();
+    let [entry] = await queues.listEntries(queued.id);
+    expect(entry?.state).toBe("running");
+    expect(entry?.waitingReason).toContain("Waiting on you");
+    await store.updateAgentRunState(paused.id, { state: "working", now: ++tick });
+    await dispatch();
+    [entry] = await queues.listEntries(queued.id);
+    expect(entry?.state).toBe("running");
+    expect(entry?.waitingReason ?? null).toBeNull();
+  });
+
+  it("recovers a failed latest entry whose task was finished or whose session is working again", async () => {
+    const done = await task("DONE");
+    const revived = await task("BACK");
+    const queued = await queue([done, revived]);
+    await dispatch();
+    for (const candidate of [done, revived]) await store.updateAgentRunState(candidate.id, { state: "failed", now: ++tick });
+    await dispatch();
+    expect((await queues.listEntries(queued.id)).map((entry) => entry.state)).toEqual(["failed", "failed"]);
+    await storage.completeTask(done.id);
+    await store.updateAgentRunState(revived.id, { state: "working", now: ++tick });
+    await dispatch();
+    const states = (await queues.listEntries(queued.id)).map((entry) => entry.state);
+    expect(states[0]).toMatch(/merged|done/);
+    expect(states[1]).toBe("running");
+  });
+
+  it("lets an umbrella stop waiting on a child session that paused mid-task", async () => {
+    const parent = await task("UMB");
+    const first = await storage.saveTask({ projectId: parent.projectId, title: "first", parentId: parent.id });
+    const queued = await queue([first], parent.id);
+    await dispatch();
+    const umbrellaRun = await store.getAgentRunByTaskId(parent.id);
+    if (!umbrellaRun) throw new Error("Expected umbrella run");
+    await store.updateAgentRunGitMetadata(parent.id, umbrellaRun.id, umbrellaRun.threadId,
+      { branch: "bitig/UMB-1", headSha: "a".repeat(40), worktreePath: "/tmp/umb", dirty: false }, ++tick);
+    await store.updateAgentRunState(parent.id, { state: "finished", now: ++tick });
+    await dispatch();
+    expect((await store.getAgentRunChild(parent.id, first.id))?.state).toBe("running");
+    // The child asks a question in a comment and ends its turn before its task is done.
+    await storage.updateTask(first.id, { status: "in_progress" });
+    await store.updateAgentRunState(first.id, { state: "finished", now: ++tick });
+    await startReadyChildrenInT3(deps, { parentTaskRef: parent.id, actor: "test" });
+    expect((await store.getAgentRunChild(parent.id, first.id))?.state).toBe("needs_human");
+    await dispatch();
+    const [entry] = await queues.listEntries(queued.id);
+    expect(entry?.state).toBe("running");
+    expect(entry?.waitingReason).toContain("Waiting on you");
+  });
+
+  it("delivers a person's comment to a session whose queue entry failed", async () => {
+    const candidate = await task("MSG");
+    const queued = await queue([candidate]);
+    await dispatch();
+    await store.updateAgentRunState(candidate.id, { state: "failed", now: ++tick });
+    await dispatch();
+    expect((await queues.listEntries(queued.id))[0]?.state).toBe("failed");
+    await store.requests.enqueue({ id: defaultIdGenerator(), hostId: HOST_ID, taskId: candidate.id, kind: "message",
+      payload: JSON.stringify({ hostId: HOST_ID, prompt: "approved, go ahead", clientRequestId: "c1:r1", taskLabel: "MSG-1" }), now: ++tick });
+    await dispatchQueuedTaskT3Run(deps, candidate.id);
+    expect(calls.some((call) => call.name === "t3_thread_send")).toBe(true);
   });
 
   it.each(["archived", "approval", "parent", "dependency"])("rechecks %s edits immediately before offline delivery", async (edit) => {

@@ -32,6 +32,11 @@ const SIGN_IN_PATTERN = /sign.in expired|token.*expired|unauthori[sz]ed|\b401\b/
  * is released so it stops holding a host slot.
  */
 const STALE_RESERVATION_MS = 10 * 60 * 1000;
+/**
+ * A session that ended its turn (`finished`) before its task is done has usually stopped to ask a
+ * person something in a comment. That is a pause, not a failure: a reply resumes the same session.
+ */
+const PAUSED_REASON = "Waiting on you: the session ended its turn before the task was done";
 const ACTIVE_ENTRY_STATES_SQL = "('waiting','ready','running','merged')";
 
 export interface WorkQueueContext {
@@ -243,7 +248,32 @@ export async function recordWorkQueueFailure(deps: T3ServiceDeps, run: AgentRun,
   }
 }
 
-async function reconcileEntry(deps: WorkQueueDispatchDeps, entry: WorkQueueEntry): Promise<WorkQueueEntry> {
+/**
+ * Recovers a `failed` entry that is still the latest attempt for its task when the task was
+ * finished after all, or when its session is working again (a paused session that older code
+ * marked failed). A retried task keeps its failed attempt as history.
+ */
+async function recoverFailedEntry(
+  deps: WorkQueueDispatchDeps, entry: WorkQueueEntry, entries: readonly WorkQueueEntry[],
+): Promise<WorkQueueEntry> {
+  if (entries.findLast((item) => item.taskId === entry.taskId)?.id !== entry.id) return entry;
+  if (await queueStore(deps).findActiveEntryForTask(entry.taskId)) return entry;
+  const task = await deps.t3.storage.getTask(entry.taskId);
+  if (!task) return entry;
+  if (FINISHED_TASKS.has(task.status)) {
+    const child = entry.umbrellaTaskId ? await deps.t3.store.getAgentRunChild(entry.umbrellaTaskId, entry.taskId) : undefined;
+    if (entry.umbrellaTaskId && !child?.mergedAt) return updateEntry(deps, entry, "running", "Waiting for umbrella merge");
+    return updateEntry(deps, entry, "merged");
+  }
+  const run = await deps.t3.store.getAgentRunByTaskId(entry.taskId);
+  if (ownsRun(entry, run) && isActiveAgentRunState(run.state) && run.state !== "queued") return updateEntry(deps, entry, "running");
+  return entry;
+}
+
+async function reconcileEntry(
+  deps: WorkQueueDispatchDeps, entry: WorkQueueEntry, entries: readonly WorkQueueEntry[],
+): Promise<WorkQueueEntry> {
+  if (entry.state === "failed") entry = await recoverFailedEntry(deps, entry, entries);
   if (TERMINAL_ENTRIES.has(entry.state)) return entry;
   const task = await deps.t3.storage.getTask(entry.taskId);
   const run = await deps.t3.store.getAgentRunByTaskId(entry.taskId);
@@ -261,8 +291,12 @@ async function reconcileEntry(deps: WorkQueueDispatchDeps, entry: WorkQueueEntry
     const child = entry.umbrellaTaskId ? await deps.t3.store.getAgentRunChild(entry.umbrellaTaskId, entry.taskId) : undefined;
     if (entry.umbrellaTaskId && !child?.mergedAt) return updateEntry(deps, entry, "running", "Waiting for umbrella merge");
     entry = await updateEntry(deps, entry, "merged");
-  } else if (["failed", "stopped", "finished"].includes(run.state)) {
+  } else if (run.state === "finished") {
+    return updateEntry(deps, entry, "running", PAUSED_REASON);
+  } else if (["failed", "stopped"].includes(run.state)) {
     return updateEntry(deps, entry, "failed", entry.waitingReason?.startsWith(USAGE_PREFIX) ? entry.waitingReason : "Run ended before the task was completed");
+  } else if (entry.waitingReason === PAUSED_REASON) {
+    return updateEntry(deps, entry, "running", null);
   }
   if (entry.state === "merged") {
     const umbrella = entry.umbrellaTaskId ? await deps.t3.storage.getTask(entry.umbrellaTaskId) : undefined;
@@ -300,7 +334,8 @@ async function cancelQueue(deps: WorkQueueDispatchDeps, queue: WorkQueue, entrie
 async function dispatchQueue(deps: WorkQueueDispatchDeps, queue: WorkQueue): Promise<void> {
   let entries = await queueStore(deps).listEntries(queue.id);
   if (queue.state === "cancelled") return cancelQueue(deps, queue, entries);
-  entries = await Promise.all(entries.map((entry) => reconcileEntry(deps, entry)));
+  const snapshot = entries;
+  entries = await Promise.all(snapshot.map((entry) => reconcileEntry(deps, entry, snapshot)));
   if (queue.state !== "active") return;
   const startedUmbrellas = new Set<string>();
   for (let entry of entries) {
