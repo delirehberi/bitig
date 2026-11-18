@@ -805,21 +805,47 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
       expect(response.status).toBe(200);
       const raw = await response.text();
       const line = raw.split("\n").find((item) => item.startsWith("data: "));
-      return JSON.parse(line ? line.slice(6) : raw) as { result?: { isError?: boolean }; error?: unknown };
+      return JSON.parse(line ? line.slice(6) : raw) as {
+        result?: { isError?: boolean; content?: { type: string; text: string }[] };
+        error?: unknown;
+      };
     }
     expect((await report()).result?.isError).not.toBe(true);
     expect(await store.getAgentRunByTaskId(task.id)).toMatchObject(metadata);
+    // Reporting with runId alone (omitting threadId, as instructed in buildT3LaunchPrompt) succeeds across initial, follow-up, and completed turns (#BIT-194)
+    expect((await report({ threadId: undefined, metadata: { branch: "feature/run-id-only" } })).result?.isError).not.toBe(true);
+    expect((await store.getAgentRunByTaskId(task.id))?.branch).toBe("feature/run-id-only");
     // A follow-up 0/0/0 diffStat report on a later turn preserves the non-zero diffStat from earlier in the run
-    expect((await report({ metadata: { diffStat: { filesChanged: 0, insertions: 0, deletions: 0 } } })).result?.isError).not.toBe(true);
-    expect(await store.getAgentRunByTaskId(task.id)).toMatchObject(metadata);
+    expect((await report({ threadId: undefined, metadata: { diffStat: { filesChanged: 0, insertions: 0, deletions: 0 } } })).result?.isError).not.toBe(true);
+    expect(await store.getAgentRunByTaskId(task.id)).toMatchObject({ ...metadata, branch: "feature/run-id-only" });
     // Reporting without runId still matches taskId + threadId (supports pre-existing threads)
     expect((await report({ runId: undefined, metadata: { branch: "feature/no-run-id" } })).result?.isError).not.toBe(true);
     expect((await store.getAgentRunByTaskId(task.id))?.branch).toBe("feature/no-run-id");
     await expect(reportTaskT3GitMetadata({ store, storage: new D1Storage({ db: env.DB, orgId: defaultIdGenerator() }), encryptionKey: TEST_T3_ENCRYPTION_KEY }, { taskId: task.id, runId: run.id, threadId: run.threadId, metadata: { branch: "foreign" } })).rejects.toThrow();
     expect((await store.getAgentRunByTaskId(task.id))?.branch).toBe("feature/no-run-id");
-    expect((await report({ threadId: "stale" })).result?.isError).toBe(true);
-    expect((await report({ runId: defaultIdGenerator() })).result?.isError).toBe(true);
+    // Actionable diagnostics when neither runId nor threadId is passed, or when threadId/runId mismatches (#BIT-194)
+    const missingBoth = await report({ runId: undefined, threadId: undefined });
+    expect(missingBoth.result?.isError).toBe(true);
+    expect(missingBoth.result?.content?.[0]?.text).toContain("Pass at least one of runId");
+    const staleThreadWithMatchingRun = await report({ threadId: "stale" });
+    expect(staleThreadWithMatchingRun.result?.isError).toBe(true);
+    expect(staleThreadWithMatchingRun.result?.content?.[0]?.text).toContain('threadId: threadId "stale" does not match this task\'s T3 thread');
+    expect(staleThreadWithMatchingRun.result?.content?.[0]?.text).toContain("Omit threadId when passing runId");
+    const staleRun = await report({ runId: defaultIdGenerator(), threadId: undefined });
+    expect(staleRun.result?.isError).toBe(true);
+    expect(staleRun.result?.content?.[0]?.text).toContain("does not match the current run for this task");
+    const staleThreadOnly = await report({ runId: undefined, threadId: "stale" });
+    expect(staleThreadOnly.result?.isError).toBe(true);
+    expect(staleThreadOnly.result?.content?.[0]?.text).toContain('threadId: threadId "stale" does not match the current T3 thread');
     expect((await report({ taskId: defaultIdGenerator() })).result?.isError).toBe(true);
+    const noRunTask = await (await request("/api/tasks", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ projectId: project.id, title: "Task without run" }) })).json<Task>();
+    const noRunReport = await report({ taskId: noRunTask.id, threadId: undefined });
+    expect(noRunReport.result?.isError).toBe(true);
+    expect(noRunReport.result?.content?.[0]?.text).toContain("taskId: This task has no recorded T3 run");
+    // Reporting git metadata still succeeds after the task is moved to done (e.g. follow-up turn or post-complete report, #BIT-194)
+    expect((await request(`/api/tasks/${task.id}/complete`, { method: "POST" })).status).toBe(200);
+    expect((await report({ threadId: undefined, metadata: { branch: "feature/after-complete" } })).result?.isError).not.toBe(true);
+    expect((await store.getAgentRunByTaskId(task.id))?.branch).toBe("feature/after-complete");
     const invalid = await report({ metadata: { pullRequestUrls: ["javascript:alert(1)"] } });
     expect(Boolean(invalid.error) || invalid.result?.isError).toBe(true);
     mockState.gitMetadata = { branch: "renamed", pullRequests: [{ url: "https://github.com/example/repo/pull/2" }] };

@@ -24,6 +24,7 @@ import {
   parseT3RunCommentCommand,
   T3WorkspaceBusyError,
   AgentRunSchema,
+  ReportT3GitMetadataInputSchema,
   T3GitMetadataSchema,
   T3_HANDBACK_CHECKLIST_MAX,
   buildT3SubagentBatchHandbackComment,
@@ -37,12 +38,23 @@ import {
 import { BitigError, isBitigError } from "./errors";
 import type { Checkpoint, Comment, Task } from "./types";
 
-describe("Git metadata validation (BIT-162)", () => {
-  it("accepts absent and cleared metadata, full hashes, and zero diff counts", () => {
+describe("Git metadata validation (BIT-162, BIT-194)", () => {
+  it("accepts absent and cleared metadata, full hashes,zero diff counts, and optional threadId when runId is provided", () => {
     expect(T3GitMetadataSchema.parse({})).toEqual({});
     expect(T3GitMetadataSchema.parse({ branch: null, headSha: null, diffStat: null, pullRequestUrls: [] })).toEqual({ branch: null, headSha: null, diffStat: null, pullRequestUrls: [] });
     expect(T3GitMetadataSchema.safeParse({ headSha: "a".repeat(40), diffStat: { filesChanged: 0, insertions: 0, deletions: 0 } }).success).toBe(true);
     expect(T3GitMetadataSchema.safeParse({ headSha: "a".repeat(64) }).success).toBe(true);
+    expect(
+      ReportT3GitMetadataInputSchema.parse({
+        taskId: "BIT-194",
+        runId: "0196ed60-0000-7000-8000-000000000099",
+        metadata: { branch: "bitig/BIT-194" },
+      }),
+    ).toEqual({
+      taskId: "BIT-194",
+      runId: "0196ed60-0000-7000-8000-000000000099",
+      metadata: { branch: "bitig/BIT-194" },
+    });
   });
   it.each([
     { headSha: "not-a-commit" },
@@ -165,6 +177,9 @@ describe("buildT3LaunchPrompt", () => {
     expect(built.title).toBe("BIT-107 Add OAuth client");
     expect(built.prompt).toContain("report_t3_git_metadata");
     expect(built.prompt).toContain('runId "0196ed60-0000-7000-8000-000000000099"');
+    expect(built.prompt).toContain("omit threadId unless you know the exact T3 thread ID");
+    expect(built.prompt).toContain("CODEX_THREAD_ID");
+    expect(built.prompt).not.toContain("your current T3 threadId");
     expect(built.prompt).toContain("git diff HEAD --numstat");
     expect(built.prompt).toContain('git show --numstat --format="" HEAD');
     expect(built.clientRequestId).toBe("BIT-107");
@@ -181,10 +196,14 @@ describe("buildT3LaunchPrompt", () => {
     expect(built.prompt).toContain("post a comment on BIT-107 that states the exact question and current progress");
     expect(built.prompt).toContain('update_task({ id: "BIT-107", needsHuman: "<what you need>" })');
     expect(built.prompt).toContain("Stop the run without polling or waiting for a reply");
-    expect(built.prompt).toContain("Before every final response in T3, post that same substantive response as a comment on BIT-107");
+    expect(built.prompt).toContain(
+      "Before every final response in T3, report git metadata via `report_t3_git_metadata` and post that same substantive response as a comment on BIT-107",
+    );
     expect(built.prompt).toContain("completion, partial progress, failure, and blocked work");
     expect(built.prompt).toContain("If Bitig MCP cannot post the comment, say so explicitly in the T3 response");
-    expect(built.prompt).toContain("post the final comment first, then move the task to `done`");
+    expect(built.prompt).toContain(
+      "report git metadata via `report_t3_git_metadata` and post the final comment first, then move the task to `done`",
+    );
     expect(built.prompt).toContain("complete_task");
     expect(built.prompt).toContain("Never move the task to `archived`");
     expect(built.prompt).toContain("Checklist items are steps of BIT-107, not separate tasks");

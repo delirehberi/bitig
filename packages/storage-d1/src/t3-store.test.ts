@@ -355,9 +355,13 @@ describe("T3D1Store umbrella and child runs (BIT-141)", () => {
     };
     await store.updateAgentRunGitMetadata(run.taskId, run.id, run.threadId, metadata, LATER);
     expect(await store.getAgentRunByTaskId(run.taskId)).toMatchObject(metadata);
+    await store.updateAgentRunGitMetadata(run.taskId, run.id, undefined, { branch: "run-id-only" }, LATER);
+    expect(await store.getAgentRunByTaskId(run.taskId)).toMatchObject({ ...metadata, branch: "run-id-only" });
     await store.updateAgentRunGitMetadata(run.taskId, run.id, run.threadId, { branch: "renamed" });
     expect(await store.getAgentRunByTaskId(run.taskId)).toMatchObject({ ...metadata, branch: "renamed" });
+    expect(await store.updateAgentRunGitMetadata(run.taskId, undefined, undefined, { branch: "wrong" })).toBeUndefined();
     expect(await store.updateAgentRunGitMetadata(run.taskId, run.id, "stale-thread", { branch: "wrong" })).toBeUndefined();
+    expect(await store.updateAgentRunGitMetadata(run.taskId, defaultIdGenerator(), undefined, { branch: "wrong" })).toBeUndefined();
     expect(await store.updateAgentRunGitMetadata(run.taskId, defaultIdGenerator(), run.threadId, { branch: "wrong" })).toBeUndefined();
     await store.updateAgentRunGitMetadata(run.taskId, run.id, run.threadId, {
       branch: null,

@@ -1578,6 +1578,12 @@ export async function reportTaskT3GitMetadata(
   signal?: AbortSignal,
 ): Promise<AgentRun> {
   const parsed = ReportT3GitMetadataInputSchema.parse(input);
+  if (!parsed.runId && !parsed.threadId) {
+    makeValidationIssue(
+      "runId",
+      "Pass at least one of runId (from your launch instructions) or threadId to identify the task run; metadata was not recorded.",
+    );
+  }
   signal?.throwIfAborted();
   // The scoped storage enforces organisation ownership before the unscoped run-table update.
   const operationOptions = signal ? { signal } : {};
@@ -1586,7 +1592,31 @@ export async function reportTaskT3GitMetadata(
   signal?.throwIfAborted();
   const now = deps.now?.() ?? Date.now();
   const run = await deps.store.updateAgentRunGitMetadata(taskId, parsed.runId, parsed.threadId, parsed.metadata, now);
-  if (!run) makeValidationIssue("runId", "The run or thread no longer matches this task; metadata was not recorded.");
+  if (!run) {
+    const existingRun = await deps.store.getAgentRunByTaskId(taskId);
+    if (!existingRun) {
+      makeValidationIssue(
+        "taskId",
+        "This task has no recorded T3 run; metadata was not recorded.",
+      );
+    }
+    if (parsed.runId && parsed.runId === existingRun.id && parsed.threadId && parsed.threadId !== existingRun.threadId) {
+      makeValidationIssue(
+        "threadId",
+        `threadId "${parsed.threadId}" does not match this task's T3 thread (runId "${parsed.runId}" matched). Omit threadId when passing runId, or pass the T3 threadId instead of a provider-local thread/session ID; metadata was not recorded.`,
+      );
+    }
+    if (parsed.runId && parsed.runId !== existingRun.id) {
+      makeValidationIssue(
+        "runId",
+        `runId "${parsed.runId}" does not match the current run for this task (the run may have been replaced by a newer session); metadata was not recorded.`,
+      );
+    }
+    makeValidationIssue(
+      "threadId",
+      `threadId "${parsed.threadId ?? ""}" does not match the current T3 thread for this task; metadata was not recorded.`,
+    );
+  }
   await syncAgentRunChildGitMetadata(deps, run, now);
   if (deps.publishRealtime) {
     await deps.publishRealtime({ type: "agent_run.updated", run }).catch((err: unknown) => {

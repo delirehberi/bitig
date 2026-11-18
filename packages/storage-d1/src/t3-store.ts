@@ -771,14 +771,21 @@ export class T3D1Store {
   async updateAgentRunGitMetadata(
     taskId: string,
     runId: string | undefined,
-    threadId: string,
+    threadId: string | undefined,
     metadata: T3GitMetadata,
     now = Date.now(),
   ): Promise<AgentRun | undefined> {
+    let whereClause;
+    if (runId && threadId) {
+      whereClause = and(eq(agentRuns.taskId, taskId), eq(agentRuns.id, runId), eq(agentRuns.threadId, threadId));
+    } else if (runId) {
+      whereClause = and(eq(agentRuns.taskId, taskId), eq(agentRuns.id, runId));
+    } else if (threadId) {
+      whereClause = and(eq(agentRuns.taskId, taskId), eq(agentRuns.threadId, threadId));
+    } else {
+      return undefined;
+    }
     const parsed = T3GitMetadataSchema.parse(metadata);
-    const whereClause = runId
-      ? and(eq(agentRuns.taskId, taskId), eq(agentRuns.id, runId), eq(agentRuns.threadId, threadId))
-      : and(eq(agentRuns.taskId, taskId), eq(agentRuns.threadId, threadId));
     const hasEnvelopeUpdate =
       parsed.diffStat !== undefined ||
       parsed.worktreePath !== undefined ||

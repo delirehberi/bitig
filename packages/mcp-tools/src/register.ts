@@ -1574,7 +1574,7 @@ export function registerBitigTools(
     "report_t3_git_metadata",
     {
       description:
-        "Record Git metadata for the current task run (branch, headSha, worktreePath, dirty / uncommittedChanges, changedPaths, diffStat, pullRequestUrls). Pass your T3 thread ID (and the run ID from the launch instructions when known). Umbrella sessions must report clean git metadata (branch, headSha, worktreePath, dirty: false) before starting child tasks. Omitted fields preserve saved values; null clears a field and [] clears PR links or changedPaths. Never guess metadata.",
+        "Record Git metadata for the current task run (branch, headSha, worktreePath, dirty / uncommittedChanges, changedPaths, diffStat, pullRequestUrls). Pass the runId from your launch instructions (or your T3 threadId; omit threadId when you only have runId — never substitute a provider-local thread or conversation ID such as CODEX_THREAD_ID). Umbrella sessions must report clean git metadata (branch, headSha, worktreePath, dirty: false) before starting child tasks. Omitted fields preserve saved values; null clears a field and [] clears PR links or changedPaths. Never guess metadata.",
       inputSchema: ReportT3GitMetadataInputSchema.shape,
     },
     async (args, extra) => {
