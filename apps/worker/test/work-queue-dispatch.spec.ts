@@ -708,6 +708,26 @@ describe("Work queue dispatcher (BIT-203)", () => {
     expect(entry?.waitingReason).toContain("Waiting on you");
   });
 
+  it("finishes a queue whose failed attempt was retried after the task got done outside the queue", async () => {
+    const parent = await task("UMB");
+    const first = await storage.saveTask({ projectId: parent.projectId, title: "first", parentId: parent.id });
+    const queued = await queue([first], parent.id);
+    await dispatch();
+    const [original] = await queues.listEntries(queued.id);
+    if (!original) throw new Error("Expected an entry");
+    await queues.transitionEntry(original.id, { to: "running", now: ++tick });
+    await queues.transitionEntry(original.id, { to: "failed", waitingReason: "Run ended before the task was completed", now: ++tick });
+    const retry = await queues.addEntry({ id: defaultIdGenerator(), queueId: queued.id, taskId: first.id, lane: first.projectId,
+      position: 1, umbrellaTaskId: parent.id, now: ++tick });
+    await queues.transitionEntry(retry.id, { to: "skipped", waitingReason: "Task is done", now: ++tick });
+    // The child finished without a reported merge, and the umbrella task is done.
+    await storage.completeTask(first.id);
+    await storage.completeTask(parent.id);
+    await dispatch();
+    expect((await queues.listEntries(queued.id)).map((entry) => entry.state)).toEqual(["done", "skipped"]);
+    expect((await queues.getQueue(queued.id))?.state).toBe("done");
+  });
+
   it("delivers a person's comment to a session whose queue entry failed", async () => {
     const candidate = await task("MSG");
     const queued = await queue([candidate]);

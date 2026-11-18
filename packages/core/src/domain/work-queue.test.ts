@@ -10,6 +10,7 @@ import {
   WorkQueueSchema,
   canTransitionWorkQueue,
   canTransitionWorkQueueEntry,
+  representativeWorkQueueEntries,
   isActiveWorkQueueEntryState,
   isOpenWorkQueueState,
   resolveHostMaxParallelRuns,
@@ -138,5 +139,17 @@ describe("host parallel run cap", () => {
     expect(() => resolveHostMaxParallelRuns(0)).toThrow(ValidationError);
     expect(() => resolveHostMaxParallelRuns(HOST_MAX_PARALLEL_RUNS_MAX + 1)).toThrow(ValidationError);
     expect(() => resolveHostMaxParallelRuns(2.5)).toThrow(ValidationError);
+  });
+
+  it("keeps one entry per task: the latest attempt that ran, else the latest", () => {
+    const entries = [
+      { id: "a1", taskId: "A", state: "failed" as const },
+      { id: "b1", taskId: "B", state: "failed" as const },
+      { id: "c1", taskId: "C", state: "skipped" as const },
+      { id: "a2", taskId: "A", state: "skipped" as const },
+      { id: "b2", taskId: "B", state: "running" as const },
+      { id: "c2", taskId: "C", state: "cancelled" as const },
+    ];
+    expect(representativeWorkQueueEntries(entries).map((entry) => entry.id)).toEqual(["a1", "b2", "c2"]);
   });
 });

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { RunLevel } from "@bitig/core";
+import { representativeWorkQueueEntries, type RunLevel } from "@bitig/core";
 import { useRealtimeEvent } from "../../hooks/useRealtime";
 import { useRunProfiles } from "../../domain/run-profiles";
 import { Link } from "../../routing/Link";
@@ -143,7 +143,9 @@ function WorkQueueCard({ queue, levels, pending, onQueueAction, onSkip, onRetry 
   const [confirmingCancel, setConfirmingCancel] = useState(false);
   const controls = queueControls(queue.state);
   const busy = (action: string) => pending.has(actionKey("queue", queue.id, action));
-  const lanes = laneProgress(queue.entries);
+  // A retry adds an entry for the same task; show one row per task so retries are not duplicates.
+  const entries = representativeWorkQueueEntries(queue.entries);
+  const lanes = laneProgress(entries);
   const headingId = `work-queue-${queue.id}`;
 
   return (
@@ -228,9 +230,9 @@ function WorkQueueCard({ queue, levels, pending, onQueueAction, onSkip, onRetry 
         </ul>
       )}
 
-      {queue.entries.length > 0 ? (
+      {entries.length > 0 ? (
         <ol aria-label="Queue items" className="m-0 flex list-none flex-col gap-0 p-0">
-          {queue.entries.map((entry) => (
+          {entries.map((entry) => (
             <WorkQueueItemRow
               key={entry.id}
               entry={entry}

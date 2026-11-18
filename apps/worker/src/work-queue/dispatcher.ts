@@ -3,6 +3,8 @@ import {
   canTransitionWorkQueueEntry,
   defaultIdGenerator,
   isActiveAgentRunState,
+  isRepresentativeWorkQueueEntry,
+  representativeWorkQueueEntries,
   WORK_QUEUE_WAITING_REASON_MAX,
   type AgentRun,
   type Task,
@@ -253,18 +255,30 @@ export async function recordWorkQueueFailure(deps: T3ServiceDeps, run: AgentRun,
  * finished after all, or when its session is working again (a paused session that older code
  * marked failed). A retried task keeps its failed attempt as history.
  */
+/**
+ * Moves the entry of a finished task on: `merged` once the umbrella merged it (or right away
+ * without an umbrella), then `done` once the umbrella task is done too. A finished umbrella counts
+ * as having merged its children, so an entry whose merge was never reported cannot wait forever.
+ */
+async function finishedTaskEntry(deps: WorkQueueDispatchDeps, entry: WorkQueueEntry): Promise<WorkQueueEntry> {
+  const umbrella = entry.umbrellaTaskId ? await deps.t3.storage.getTask(entry.umbrellaTaskId) : undefined;
+  const umbrellaFinished = Boolean(umbrella && FINISHED_TASKS.has(umbrella.status));
+  if (entry.umbrellaTaskId && !umbrellaFinished) {
+    const child = await deps.t3.store.getAgentRunChild(entry.umbrellaTaskId, entry.taskId);
+    if (!child?.mergedAt) return updateEntry(deps, entry, "running", "Waiting for umbrella merge");
+  }
+  const merged = await updateEntry(deps, entry, "merged");
+  return !entry.umbrellaTaskId || umbrellaFinished ? updateEntry(deps, merged, "done") : merged;
+}
+
 async function recoverFailedEntry(
   deps: WorkQueueDispatchDeps, entry: WorkQueueEntry, entries: readonly WorkQueueEntry[],
 ): Promise<WorkQueueEntry> {
-  if (entries.findLast((item) => item.taskId === entry.taskId)?.id !== entry.id) return entry;
+  if (!isRepresentativeWorkQueueEntry(entry, entries)) return entry;
   if (await queueStore(deps).findActiveEntryForTask(entry.taskId)) return entry;
   const task = await deps.t3.storage.getTask(entry.taskId);
   if (!task) return entry;
-  if (FINISHED_TASKS.has(task.status)) {
-    const child = entry.umbrellaTaskId ? await deps.t3.store.getAgentRunChild(entry.umbrellaTaskId, entry.taskId) : undefined;
-    if (entry.umbrellaTaskId && !child?.mergedAt) return updateEntry(deps, entry, "running", "Waiting for umbrella merge");
-    return updateEntry(deps, entry, "merged");
-  }
+  if (FINISHED_TASKS.has(task.status)) return finishedTaskEntry(deps, entry);
   const run = await deps.t3.store.getAgentRunByTaskId(entry.taskId);
   if (ownsRun(entry, run) && isActiveAgentRunState(run.state) && run.state !== "queued") return updateEntry(deps, entry, "running");
   return entry;
@@ -287,21 +301,12 @@ async function reconcileEntry(
     return !entry.umbrellaTaskId || umbrella?.status === "done" ? updateEntry(deps, entry, "done") : entry;
   }
   if (entry.state !== "running") return entry;
-  if (task && FINISHED_TASKS.has(task.status)) {
-    const child = entry.umbrellaTaskId ? await deps.t3.store.getAgentRunChild(entry.umbrellaTaskId, entry.taskId) : undefined;
-    if (entry.umbrellaTaskId && !child?.mergedAt) return updateEntry(deps, entry, "running", "Waiting for umbrella merge");
-    entry = await updateEntry(deps, entry, "merged");
-  } else if (run.state === "finished") {
-    return updateEntry(deps, entry, "running", PAUSED_REASON);
-  } else if (["failed", "stopped"].includes(run.state)) {
+  if (task && FINISHED_TASKS.has(task.status)) return finishedTaskEntry(deps, entry);
+  if (run.state === "finished") return updateEntry(deps, entry, "running", PAUSED_REASON);
+  if (["failed", "stopped"].includes(run.state)) {
     return updateEntry(deps, entry, "failed", entry.waitingReason?.startsWith(USAGE_PREFIX) ? entry.waitingReason : "Run ended before the task was completed");
-  } else if (entry.waitingReason === PAUSED_REASON) {
-    return updateEntry(deps, entry, "running", null);
   }
-  if (entry.state === "merged") {
-    const umbrella = entry.umbrellaTaskId ? await deps.t3.storage.getTask(entry.umbrellaTaskId) : undefined;
-    if (!entry.umbrellaTaskId || umbrella?.status === "done") entry = await updateEntry(deps, entry, "done");
-  }
+  if (entry.waitingReason === PAUSED_REASON) return updateEntry(deps, entry, "running", null);
   return entry;
 }
 
@@ -405,7 +410,8 @@ async function dispatchQueue(deps: WorkQueueDispatchDeps, queue: WorkQueue): Pro
     }
   }
   const current = await queueStore(deps).listEntries(queue.id);
-  if (current.length && current.every((entry) => ["done", "skipped", "cancelled"].includes(entry.state))) {
+  const standing = representativeWorkQueueEntries(current);
+  if (standing.length && standing.every((entry) => ["done", "skipped", "cancelled"].includes(entry.state))) {
     const done = await queueStore(deps).transitionQueue(queue.id, "done", now(deps));
     await deps.t3.publishRealtime?.({ type: "work_queue.updated", queue: done });
   }
