@@ -400,7 +400,7 @@ export function TaskDetailPage({
       </header>
 
       {/* Shell: Main column (scrolling thread + pinned dock) and Side rail (collapsible on narrow screens) */}
-      <div className="flex min-h-0 flex-1 flex-col md:grid md:grid-cols-[minmax(0,1fr)_220px] md:grid-rows-[minmax(0,1fr)]">
+      <div className="flex min-h-0 flex-1 flex-col md:grid md:grid-cols-[minmax(0,1fr)_280px] md:grid-rows-[minmax(0,1fr)]">
         {/* Main column */}
         <div className="flex min-h-0 min-w-0 flex-1 flex-col md:border-r md:border-rule">
           {storage ? (
@@ -511,7 +511,7 @@ export function TaskDetailPage({
         {/* Side rail (collapses into a details strip above the thread on narrow screens) */}
         <aside
           aria-label="Task details"
-          className="order-first border-b border-rule md:order-none md:overflow-y-auto md:border-b-0 md:py-4 md:pl-4"
+          className="order-first min-w-0 border-b border-rule md:order-none md:overflow-y-auto md:border-b-0 md:py-4 md:pl-4"
         >
           <button
             type="button"
@@ -709,7 +709,7 @@ export function TaskDetailPage({
                           }`}
                         >
                           <span className="font-mono font-semibold">{parent.code ?? parent.id}</span>
-                          <span className="truncate">{parent.title}</span>
+                          <span className="min-w-0 truncate">{parent.title}</span>
                         </Link>
                       );
                     })()}
@@ -739,7 +739,7 @@ export function TaskDetailPage({
                             <Clock size={12} aria-hidden="true" className="shrink-0 text-ink-3" />
                           )}
                           <span className="font-mono font-semibold">{child.code ?? child.id}</span>
-                          <span className="truncate">{child.title}</span>
+                          <span className="min-w-0 truncate">{child.title}</span>
                         </Link>
                       );
                     })}
@@ -769,7 +769,7 @@ export function TaskDetailPage({
                             <Clock size={12} aria-hidden="true" className="shrink-0 text-ink-3" />
                           )}
                           <span className="font-mono font-semibold">{dep.code ?? dep.id}</span>
-                          <span className="truncate">{dep.title}</span>
+                          <span className="min-w-0 truncate">{dep.title}</span>
                         </Link>
                       );
                     })
@@ -792,7 +792,7 @@ export function TaskDetailPage({
                         className="inline-flex items-center gap-1.5 text-ink hover:text-accent-ink focus-visible:outline-focus"
                       >
                         <span className="font-mono font-semibold">{dep.code ?? dep.id}</span>
-                        <span className="truncate">{dep.title}</span>
+                        <span className="min-w-0 truncate">{dep.title}</span>
                       </Link>
                     ))}
                   </dd>
@@ -812,7 +812,7 @@ export function TaskDetailPage({
                         className="inline-flex items-center gap-1.5 text-ink hover:text-accent-ink focus-visible:outline-focus"
                       >
                         <span className="font-mono font-semibold">{linked.code ?? linked.id}</span>
-                        <span className="truncate">{linked.title}</span>
+                        <span className="min-w-0 truncate">{linked.title}</span>
                       </Link>
                     ))}
                   </dd>
