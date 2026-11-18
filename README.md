@@ -329,6 +329,16 @@ make lint       # Runs oxlint / eslint
 make build      # Builds all packages and bundles apps/cli
 ```
 
+### Versioning
+
+Every worker build, dev start, test run and deploy runs `scripts/generate-build-info.mjs`, which writes the gitignored `apps/worker/src/build-info.generated.ts`. Each run records the Git commit (`HEAD`), whether tracked files are dirty, and a new random build ID, so the version changes with every commit and every deployment:
+
+```
+<package version>+<short commit>[.dirty].<build id>   e.g. 0.0.0+820a45791be9.3f2c9e1a-...
+```
+
+The worker serves this identity without authentication at `GET /api/version` (`version`, `commit`, `dirty`, `buildId`, `builtAt`). Outside a Git checkout the commit is reported as `unknown`. `pnpm install` also generates the file, so typechecking works on a fresh clone.
+
 ---
 
 ## Multi-User & Authentication (Cloudflare Mode)
