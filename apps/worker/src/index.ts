@@ -50,6 +50,7 @@ import { publishRealtimeEvent, realtimeRouter, withRealtimeBroadcast } from "./r
 import { createT3Fetch } from "./t3/client";
 import { dispatchRequestWorkQueues, runInBackground, runScheduledWorkQueues, shouldDispatchWorkQueuesAfter } from "./background";
 import pkg from "../package.json" with { type: "json" };
+import { BUILD_INFO } from "./build-info.generated";
 
 export interface AppEnv {
   Bindings: Env;
@@ -80,6 +81,14 @@ export interface HealthResponse {
   version: string;
   storageMode: StorageMode;
   hierarchyMode: HierarchyMode;
+}
+
+export interface VersionResponse {
+  version: string;
+  commit: string;
+  dirty: boolean;
+  buildId: string;
+  builtAt: string;
 }
 
 export interface CreateAppOptions {
@@ -186,6 +195,17 @@ export function createApp(options?: CreateAppOptions): Hono<AppEnv> {
       version: pkg.version,
       storageMode: c.get("config").STORAGE_MODE,
       hierarchyMode: c.get("config").HIERARCHY_MODE,
+    }),
+  );
+
+  // Public build identity (commit and per-deployment ID); no authentication, no secrets.
+  app.get("/api/version", (c) =>
+    c.json<VersionResponse>({
+      version: BUILD_INFO.version,
+      commit: BUILD_INFO.commit,
+      dirty: BUILD_INFO.dirty,
+      buildId: BUILD_INFO.buildId,
+      builtAt: BUILD_INFO.builtAt,
     }),
   );
 

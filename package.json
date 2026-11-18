@@ -17,7 +17,8 @@
     "build": "pnpm -r --filter=!@bitig/worker run build && pnpm --filter @bitig/worker run build",
     "test": "pnpm -r run test",
     "lint": "eslint . --max-warnings=0",
-    "typecheck": "tsc -b"
+    "typecheck": "tsc -b",
+    "prepare": "node scripts/generate-build-info.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
