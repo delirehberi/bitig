@@ -501,12 +501,8 @@ export async function dispatchQueuedTaskT3Run(
   switchComment?: Comment | undefined;
 }> {
   const now = deps.now ? deps.now() : Date.now();
-  try {
-    await checkWorkQueueLaunch(deps, taskId);
-  } catch (error) {
-    if (!(error instanceof WorkQueueHeldError)) throw error;
-    return { run: (await deps.store.getAgentRunByTaskId(taskId)) ?? null, dispatched: false };
-  }
+  // Only launches wait on the work queue (checked per request below). Messages such as a person's
+  // comment are always delivered, so a held or failed queue entry cannot swallow them.
   const initialHostId = await resolveOriginatingTaskHostId(deps, taskId);
   const clientByHostKey = new Map<string, T3McpClient>();
   if (existingMcpClient) {
@@ -1196,6 +1192,15 @@ const FINISHED_TASK_STATUSES: ReadonlySet<Task["status"]> = new Set<Task["status
 /** Child run states that end the umbrella session's wait without the child task being done (#BIT-141). */
 const ENDED_CHILD_RUN_STATES: ReadonlySet<AgentRunState> = new Set<AgentRunState>(["failed", "stopped"]);
 
+/**
+ * Whether a child's session ended its turn (`finished`) while the task is still open. The agent
+ * is usually waiting on a person (a question in a comment), so the batch treats it like
+ * `needsHuman` instead of waiting on it forever.
+ */
+function childPausedMidTask(task: Task, run: AgentRun | null | undefined): boolean {
+  return run?.state === "finished" && !FINISHED_TASK_STATUSES.has(task.status);
+}
+
 interface UmbrellaParent {
   readonly task: Task;
   readonly run: AgentRun;
@@ -1281,7 +1286,7 @@ async function listActiveRunningChildren(
       await publishRunChild(deps, claimed);
       continue;
     }
-    if (childTask.needsHuman) {
+    if (childTask.needsHuman || childPausedMidTask(childTask, childRun)) {
       const claimed = await deps.store.claimAgentRunChild(parentTaskId, row.childTaskId, {
         state: "needs_human",
         branch: childRun?.branch ?? row.branch ?? null,
@@ -2307,7 +2312,7 @@ async function transitionChildAndMaybeResumeUmbrella(
     let sibEndState: AgentRunChildEndState | undefined;
     if (!sibTask || FINISHED_TASK_STATUSES.has(sibTask.status)) {
       sibEndState = "done";
-    } else if (sibTask.needsHuman) {
+    } else if (sibTask.needsHuman || childPausedMidTask(sibTask, sibRun)) {
       sibEndState = "needs_human";
     } else if (sibRun && ENDED_CHILD_RUN_STATES.has(sibRun.state)) {
       sibEndState = sibRun.state === "failed" ? "failed" : "stopped";
@@ -2591,7 +2596,7 @@ async function resolveUmbrellaRunState(
     }
     const childRun = await deps.store.getAgentRunByTaskId(child.id);
     const childFinished = FINISHED_TASK_STATUSES.has(child.status);
-    const childNeedsHuman = Boolean(child.needsHuman);
+    const childNeedsHuman = Boolean(child.needsHuman) || childPausedMidTask(child, childRun);
     const childRunEnded = Boolean(childRun && ENDED_CHILD_RUN_STATES.has(childRun.state));
 
     if (!childFinished && !childNeedsHuman && !childRunEnded) {

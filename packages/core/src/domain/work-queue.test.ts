@@ -76,7 +76,7 @@ describe("work queue entry state", () => {
     expect(inactive).toEqual(["done", "failed", "skipped", "cancelled"]);
   });
 
-  it("follows the item state machine and keeps terminal states final", () => {
+  it("follows the item state machine and keeps terminal states final and lets a failed entry recover", () => {
     expect(canTransitionWorkQueueEntry("waiting", "ready")).toBe(true);
     expect(canTransitionWorkQueueEntry("ready", "running")).toBe(true);
     expect(canTransitionWorkQueueEntry("running", "merged")).toBe(true);
@@ -84,7 +84,10 @@ describe("work queue entry state", () => {
     expect(canTransitionWorkQueueEntry("merged", "done")).toBe(true);
     expect(canTransitionWorkQueueEntry("waiting", "running")).toBe(false);
     expect(canTransitionWorkQueueEntry("merged", "failed")).toBe(false);
-    for (const terminal of ["done", "failed", "skipped", "cancelled"] as const) {
+    expect(canTransitionWorkQueueEntry("failed", "running")).toBe(true);
+    expect(canTransitionWorkQueueEntry("failed", "merged")).toBe(true);
+    expect(canTransitionWorkQueueEntry("failed", "waiting")).toBe(false);
+    for (const terminal of ["done", "skipped", "cancelled"] as const) {
       for (const target of WORK_QUEUE_ENTRY_STATES) {
         expect(canTransitionWorkQueueEntry(terminal, target)).toBe(false);
       }
