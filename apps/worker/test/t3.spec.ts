@@ -1520,7 +1520,8 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
     const sentMessage = String(mockState.toolCalls[sendIndex]?.arguments.message);
     expect(mockState.toolCalls[sendIndex]?.arguments.mode).toBe("auto");
     expect(sentMessage).toMatch(/^The thread switched to gpt-6-sol \(prov-codex, reasoningEffort: high\)\./);
-    expect(sentMessage).toContain(`resume_from_checkpoint for BIT-${String(task.number)}`);
+    expect(sentMessage).toContain(`resume_from_checkpoint({ taskId: "BIT-${String(task.number)}" }) if that tool is available`);
+    expect(sentMessage).toContain(`otherwise call get_task({ id: "BIT-${String(task.number)}" })`);
     expect(sentMessage).toContain(`New comment on BIT-${String(task.number)} from emre:\n\nOut of budget, continue on Codex.`);
 
     expect(switched.switchComment?.body).toBe(

@@ -407,6 +407,16 @@ describe("TaskDetailPage", () => {
   });
 
   describe("Side rail and mobile details strip", () => {
+    it("gives the side rail a wide grid track and lets its content shrink instead of overflowing", () => {
+      renderPage();
+
+      const rail = screen.getByRole("complementary", { name: "Task details" });
+      const shell = rail.parentElement;
+      expect(shell?.className).toContain("md:grid-cols-[minmax(0,1fr)_280px]");
+      expect(rail.className).toContain("min-w-0");
+      expect(rail.className).toContain("md:overflow-y-auto");
+    });
+
     it("displays agent run card, project, priority, subtasks progress, and toggles mobile details strip", async () => {
       const user = userEvent.setup();
       const run = makeRun(task.id, "waiting_for_approval");
