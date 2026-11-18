@@ -824,8 +824,9 @@ export function buildT3ModelSwitchComment(from: string, to: string): string {
  */
 export function buildT3ModelSwitchNotice(taskLabel: string, to: string): string {
   return (
-    `The thread switched to ${to}. Before continuing, call resume_from_checkpoint for ${taskLabel} ` +
-    "and read the task's comments to restore context."
+    `The thread switched to ${to}. Before continuing, restore context for ${taskLabel}: call ` +
+    `resume_from_checkpoint({ taskId: "${taskLabel}" }) if that tool is available, otherwise call ` +
+    `get_task({ id: "${taskLabel}" }); then read the task's comments. A missing checkpoint tool is not a blocker.`
   );
 }
 
@@ -1163,8 +1164,8 @@ export function buildT3LaunchPrompt({
   sections.push(
     [
       "## Standing Instructions (Bitig MCP)",
-      `1. Call \`get_task({ id: "${code}" })\` and \`resume_from_checkpoint({ taskId: "${code}" })\` first to inspect current state and any prior checkpoint.`,
-      `2. Call \`save_checkpoint\` after each completed step and keep \`checklist\` items updated via \`update_task({ id: "${code}", checklist: ... })\`.`,
+      `1. Call \`get_task({ id: "${code}" })\` first to inspect current state. If \`resume_from_checkpoint\` is available in this session, also call \`resume_from_checkpoint({ taskId: "${code}" })\` to load any prior checkpoint; if it is not available, continue from \`get_task\` and the task's comments.`,
+      `2. If \`save_checkpoint\` is available, call it after each completed step. If it is not available, record progress in comments instead. Either way, keep \`checklist\` items updated via \`update_task({ id: "${code}", checklist: ... })\`. A missing checkpoint tool is never a reason to stop or to set \`needsHuman\`.`,
       `3. Call \`add_comment({ taskId: "${code}", body: ... })\` to record key findings, decisions, or verification output.`,
       "4. Use Bitig MCP commands for task state, comments, and checkpoints. Use project commands only when they are needed to implement or verify the task; report command failures and do not claim unverified work is complete.",
       `5. If you need a person's decision, approval, credentials, or clarification, post a comment on ${code} that states the exact question and current progress, then set \`needsHuman\` via \`update_task({ id: "${code}", needsHuman: "<what you need>" })\`. Stop the run without polling or waiting for a reply. On a later follow-up, read the person's comment and task state before continuing; clear \`needsHuman\` only after the request is resolved.`,

@@ -5,7 +5,7 @@ description: Record plans and findings as Bitig tasks through the bitig MCP serv
 
 # Bitig planning
 
-Bitig is the single source of truth for planned work. Roadmaps, task lists and review findings go into Bitig as tasks through the `bitig` MCP server (tools: `list_projects`, `create_project`, `update_project`, `delete_project`, `next_task`, `list_tasks`, `get_task`, `add_task`, `update_task`, `complete_task`, `delete_task`, `backfill_ticket_codes`, `list_comments`, `add_comment`, `delete_comment`, `list_run_levels`, `suggest_run_profile`).
+Bitig is the single source of truth for planned work. Roadmaps, task lists and review findings go into Bitig as tasks through the `bitig` MCP server (tools: `list_projects`, `create_project`, `update_project`, `delete_project`, `next_task`, `list_tasks`, `get_task`, `add_task`, `update_task`, `complete_task`, `delete_task`, `backfill_ticket_codes`, `list_comments`, `add_comment`, `delete_comment`, `list_run_levels`, `suggest_run_profile`, `save_checkpoint`, `resume_from_checkpoint`, `list_attachments`, `get_attachment`, `add_attachment`, `delete_attachment`, `start_t3_thread`).
 
 Do not create `ROADMAP.md`, `TASKS.md`, `TODO.md` or similar files for tracking. If the user explicitly asks for such a file, write it **in addition to** the Bitig tasks, never instead of them.
 

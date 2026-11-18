@@ -191,6 +191,11 @@ describe("buildT3LaunchPrompt", () => {
     expect(built.prompt).toContain("resume_from_checkpoint");
     expect(built.prompt).toContain("save_checkpoint");
     expect(built.prompt).toContain("needsHuman");
+    expect(built.prompt).toContain(
+      "If `save_checkpoint` is available, call it after each completed step. If it is not available, record progress in comments instead.",
+    );
+    expect(built.prompt).toContain("A missing checkpoint tool is never a reason to stop or to set `needsHuman`.");
+    expect(built.prompt).toContain("If `resume_from_checkpoint` is available in this session");
     expect(built.prompt).toContain("Use Bitig MCP commands for task state, comments, and checkpoints");
     expect(built.prompt).toContain("Use project commands only when they are needed to implement or verify");
     expect(built.prompt).toContain("post a comment on BIT-107 that states the exact question and current progress");
@@ -545,7 +550,11 @@ describe("T3 model switching (BIT-119)", () => {
     expect(formatT3ModelSelection({ model: "claude-opus-5-5" })).toBe("claude-opus-5-5");
     expect(formatT3ModelSelection({})).toBe("the default model");
     expect(buildT3ModelSwitchComment("a", "b")).toBe("Model switched from a to b.");
-    expect(buildT3ModelSwitchNotice("BIT-119", "gpt-6-sol")).toContain("resume_from_checkpoint for BIT-119");
+    const notice = buildT3ModelSwitchNotice("BIT-119", "gpt-6-sol");
+    expect(notice).toContain("The thread switched to gpt-6-sol.");
+    expect(notice).toContain('resume_from_checkpoint({ taskId: "BIT-119" }) if that tool is available');
+    expect(notice).toContain('otherwise call get_task({ id: "BIT-119" })');
+    expect(notice).toContain("A missing checkpoint tool is not a blocker.");
   });
 
   it("validates reply input and capability options", () => {
