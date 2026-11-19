@@ -225,6 +225,7 @@ const STATEMENTS = [
     \`parent_task_id\` text,
     \`waiting_for_task_id\` text,
     \`hierarchy_mode\` text,
+    \`elapsed_ms\` integer,
     \`started_by\` text,
     \`started_at\` integer NOT NULL,
     \`updated_at\` integer NOT NULL,
@@ -410,6 +411,8 @@ interface MockT3ServerState {
     options?: { label: string; description?: string }[];
   }[];
   recentRunStatus: string;
+  /** Start/completion timestamps on the latest run in `t3_thread_read` (#BIT-163). */
+  recentRunTiming?: { startedAt?: string; completedAt?: string };
   activeRunId: string | null;
   threadModelSelection: Record<string, unknown>;
   threadList: Record<string, unknown>[];
@@ -663,7 +666,7 @@ function createMockT3Fetch(state: MockT3ServerState): typeof fetch {
                   activeRunId: state.activeRunId,
                   itemCount: rawItems.length,
                 },
-                recentRuns: [{ status: state.recentRunStatus }],
+                recentRuns: [{ status: state.recentRunStatus, ...(state.recentRunTiming ?? {}) }],
                 items: filteredItems,
                 nextPosition: lastPos,
                 hasMore: state.threadHasMore ?? false,
@@ -1243,6 +1246,66 @@ describe("T3 Code integration (BIT-107, BIT-108, BIT-109)", () => {
     const offlineRes = await request(`/api/tasks/${task.id}/t3-run`);
     const offline = await offlineRes.json<T3TaskRunLiveResponse>();
     expect(offline.run?.state).toBe("offline");
+  });
+
+  it("stores T3-reported elapsed time on finished runs and leaves it absent while the run is active (#BIT-163)", async () => {
+    await connectT3Host();
+
+    const projRes = await request("/api/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Bitig", key: "BIT" }),
+    });
+    const project = await projRes.json<Project>();
+    await request(`/api/t3/mappings/${project.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ t3ProjectId: "t3-proj-bitig", t3ProjectTitle: "Bitig Workspace" }),
+    });
+
+    const launchTask = async (title: string): Promise<Task> => {
+      const created = await (
+        await request("/api/tasks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ projectId: project.id, title }),
+        })
+      ).json<Task>();
+      await request(`/api/tasks/${created.id}/t3-run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      return created;
+    };
+    const readLive = async (taskId: string): Promise<T3TaskRunLiveResponse> =>
+      (await request(`/api/tasks/${taskId}/t3-run`)).json<T3TaskRunLiveResponse>();
+
+    // While the run is still going, T3 has no completion timestamp to report yet.
+    const timed = await launchTask("Task with reported timing");
+    mockState.recentRunStatus = "running";
+    const running = await readLive(timed.id);
+    expect(running.run?.elapsedMs).toBeUndefined();
+
+    // Once T3 completes the run, Bitig stores the elapsed time on agent_runs.
+    mockState.threadStatus = "idle";
+    mockState.pendingRequestCount = 0;
+    mockState.pendingRequestIds = [];
+    mockState.recentRunStatus = "completed";
+    mockState.recentRunTiming = {
+      startedAt: "2026-01-01T00:00:00.000Z",
+      completedAt: "2026-01-01T00:02:05.500Z",
+    };
+    const finished = await readLive(timed.id);
+    expect(finished.run?.state).toBe("finished");
+    expect(finished.run?.elapsedMs).toBe(125_500);
+
+    // The stored value survives a T3 outage: the offline response is read back from agent_runs.
+    mockState.failMcpConnection = true;
+    const offline = await readLive(timed.id);
+    expect(offline.run?.state).toBe("offline");
+    expect(offline.run?.elapsedMs).toBe(125_500);
+    mockState.failMcpConnection = false;
   });
 
   it("forwards only people's comments on reachable runs to T3, and keeps the comment when T3 fails", async () => {

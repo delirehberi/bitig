@@ -172,8 +172,17 @@ export const ReportChildMergeInputSchema = z.strictObject({
 });
 export type ReportChildMergeInput = z.output<typeof ReportChildMergeInputSchema>;
 
+const T3_ELAPSED_MS_MAX = Number.MAX_SAFE_INTEGER;
+
+export const AgentRunUsageSchema = z.strictObject({
+  /** Wall-clock milliseconds from the run's start to its completion, derived from T3 timestamps (#BIT-163). */
+  elapsedMs: z.number().int().nonnegative().max(T3_ELAPSED_MS_MAX).exactOptional(),
+});
+export type AgentRunUsage = z.output<typeof AgentRunUsageSchema>;
+
 export const AgentRunSchema = z.strictObject({
   ...T3GitMetadataSchema.shape,
+  ...AgentRunUsageSchema.shape,
   id: IdSchema,
   taskId: IdSchema,
   hostId: T3HostIdSchema.exactOptional(),
@@ -338,6 +347,15 @@ export interface T3ThreadSummary {
 export interface T3RunSummary {
   readonly status?: string | undefined;
   readonly state?: string | undefined;
+  /** ISO timestamp the run started, when T3 reports it (#BIT-163). */
+  readonly startedAt?: string | undefined;
+  /** ISO timestamp the run completed; absent while the run is still in progress (#BIT-163). */
+  readonly completedAt?: string | undefined;
+}
+
+/** Timing captured from a completed T3 run, persisted on `agent_runs` (#BIT-163). */
+export interface T3RunUsageReadout {
+  readonly elapsedMs?: number | undefined;
 }
 
 /** Max length of a thread stop/failure reason summary extracted from T3 (#BIT-132). */

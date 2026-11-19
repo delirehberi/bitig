@@ -48,6 +48,7 @@ import { useRunProfiles } from "../../domain/run-profiles";
 import { RunLevelChip } from "./RunLevelChip";
 import { TaskRunProfileControl } from "./TaskRunProfileControl";
 import { describeResolvedSelection } from "./run-profile-labels";
+import { formatRunElapsed } from "./t3-run-usage";
 
 interface TaskT3SectionProps {
   readonly task: Task;
@@ -74,6 +75,27 @@ interface WaitingChildDetails {
   readonly code?: string | undefined;
   readonly title?: string | undefined;
   readonly link?: string | undefined;
+}
+
+/**
+ * Elapsed time for a finished run (#BIT-163). Shows "not reported" when T3 gave no timing, and nothing
+ * while the run is still active.
+ */
+function RunUsageRow({ run }: { readonly run: AgentRun }) {
+  if (isActiveAgentRunState(run.state)) return null;
+  return (
+    <div
+      data-testid="t3-run-usage"
+      className="flex flex-wrap items-center gap-2 rounded-md border border-rule bg-paper px-2.5 py-1.5 text-2xs text-ink-2"
+    >
+      <span>
+        Elapsed{" "}
+        <span className="font-mono text-ink">
+          {run.elapsedMs !== undefined ? formatRunElapsed(run.elapsedMs) : "not reported"}
+        </span>
+      </span>
+    </div>
+  );
 }
 
 export function TaskT3Section({
@@ -610,6 +632,7 @@ export function TaskT3Section({
               ))}
             </div>
           ) : null}
+          <RunUsageRow run={run} />
 
           {run.state === "waiting_subagent" && run.waitingForTaskId && (
             <div

@@ -196,6 +196,7 @@ const STATEMENTS = [
     \`parent_task_id\` text,
     \`waiting_for_task_id\` text,
     \`hierarchy_mode\` text,
+    \`elapsed_ms\` integer,
     \`started_by\` text,
     \`started_at\` integer NOT NULL,
     \`updated_at\` integer NOT NULL,

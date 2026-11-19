@@ -8,6 +8,7 @@ import multiHostMigration from "../migrations/0025_multi_host_t3.sql?raw";
 import workspaceRootMigration from "../migrations/0026_project_mapping_workspace_root.sql?raw";
 import runOrchestrationMigration from "../migrations/0027_run_orchestration.sql?raw";
 import hierarchyMigration from "../migrations/0029_task_parent_id.sql?raw";
+import usageMigration from "../migrations/0031_agent_run_usage.sql?raw";
 import { DEFAULT_ORGANISATION_ID, defaultIdGenerator } from "@bitig/core";
 import { T3_REQUEST_LEASE_MS } from "./t3-request-store";
 import { T3D1Store, type SaveProjectT3ThreadInput } from "./t3-store";
@@ -297,6 +298,10 @@ describe("T3D1Store umbrella and child runs (BIT-141)", () => {
       if (trimmed) await env.DB.prepare(trimmed).run();
     }
     for (const statement of hierarchyMigration.split("--> statement-breakpoint")) {
+      const trimmed = statement.trim();
+      if (trimmed) await env.DB.prepare(trimmed).run();
+    }
+    for (const statement of usageMigration.split("--> statement-breakpoint")) {
       const trimmed = statement.trim();
       if (trimmed) await env.DB.prepare(trimmed).run();
     }
@@ -627,6 +632,10 @@ describe("T3D1Store multi-host persistence and migration (BIT-147)", () => {
       const trimmed = statement.trim();
       if (trimmed) await env.DB.prepare(trimmed).run();
     }
+    for (const statement of usageMigration.split("--> statement-breakpoint")) {
+      const trimmed = statement.trim();
+      if (trimmed) await env.DB.prepare(trimmed).run();
+    }
 
     const store = new T3D1Store(env.DB, DEFAULT_ORGANISATION_ID);
     const conn = await store.getConnection();
@@ -850,6 +859,10 @@ describe("T3D1Store run orchestration tables and stores (BIT-185)", () => {
       await env.DB.prepare(statement.trim()).run();
     }
     for (const statement of hierarchyMigration.split("--> statement-breakpoint")) {
+      const trimmed = statement.trim();
+      if (trimmed) await env.DB.prepare(trimmed).run();
+    }
+    for (const statement of usageMigration.split("--> statement-breakpoint")) {
       const trimmed = statement.trim();
       if (trimmed) await env.DB.prepare(trimmed).run();
     }

@@ -84,6 +84,7 @@ import {
   type T3RunsLiveResponse,
   type T3RuntimeMode,
   type T3SubagentBatchHandbackChildItem,
+  type T3RunUsageReadout,
   type T3TaskRunLiveResponse,
   type T3ThreadListItem,
   type T3WorkspaceBusySession,
@@ -1678,6 +1679,24 @@ async function persistLiveGitMetadata(deps: T3ServiceDeps, run: AgentRun, metada
   return updated;
 }
 
+/**
+ * Stores the timing and provider usage of a completed run (#BIT-163). Writes only when a value differs
+ * from the stored one, so the realtime and database churn stays bounded on repeated live reads.
+ */
+async function persistLiveRunUsage(
+  deps: T3ServiceDeps,
+  run: AgentRun,
+  readout: T3RunUsageReadout | undefined,
+  now: number,
+): Promise<AgentRun> {
+  if (!readout) return run;
+  const changed = (Object.keys(readout) as (keyof T3RunUsageReadout)[]).some(
+    (key) => readout[key] !== run[key],
+  );
+  if (!changed) return run;
+  return (await deps.store.updateAgentRunUsage(run.taskId, run.id, run.threadId, readout, now)) ?? run;
+}
+
 async function resolveNextLevelUpForTask(
   deps: Pick<T3ServiceDeps, "store" | "storage" | "now">,
   taskId: string,
@@ -1828,7 +1847,12 @@ export async function getTaskT3RunLiveStatus(
         ? existingRun
         : ((await deps.store.updateAgentRunState(taskId, { state: nextState, now })) ?? existingRun);
 
-    const updatedRun = await persistLiveGitMetadata(deps, stateUpdatedRun, live.gitMetadata, now);
+    const updatedRun = await persistLiveRunUsage(
+      deps,
+      await persistLiveGitMetadata(deps, stateUpdatedRun, live.gitMetadata, now),
+      live.runUsage,
+      now,
+    );
     if (updatedRun !== existingRun && deps.publishRealtime) {
       await deps.publishRealtime({ type: "agent_run.updated", run: updatedRun }).catch(() => undefined);
     }

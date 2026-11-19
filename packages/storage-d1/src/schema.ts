@@ -474,6 +474,8 @@ export const agentRuns = sqliteTable(
     waitingForTaskId: text("waiting_for_task_id").references(() => tasks.id, { onDelete: "set null" }),
     /** Hierarchy semantics active when this run was launched (`legacy` vs `explicit`, #BIT-195). */
     hierarchyMode: text("hierarchy_mode").$type<HierarchyMode>(),
+    /** Wall-clock run duration from T3's start and completion timestamps (#BIT-163); NULL until the run completes. */
+    elapsedMs: integer("elapsed_ms"),
     startedBy: text("started_by").$type<TaskActor>(),
     startedAt: integer("started_at").notNull(),
     updatedAt: integer("updated_at").notNull(),

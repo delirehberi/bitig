@@ -4,6 +4,7 @@ import {
   AgentRunChildSchema,
   AgentRunChildStateSchema,
   AgentRunSchema,
+  AgentRunUsageSchema,
   AiRouterApiStyleSchema,
   DEFAULT_MAX_PARALLEL_CHILDREN,
   DEFAULT_ORGANISATION_ID,
@@ -37,6 +38,7 @@ import {
   type AgentRun,
   type AgentRunChild,
   type AgentRunChildState,
+  type AgentRunUsage,
   type AgentRunState,
   type AiRouterApiStyle,
   type HierarchyMode,
@@ -48,6 +50,7 @@ import {
   type RunProfileSource,
   type RunSelectionSource,
   type T3GitMetadata,
+  type T3RunUsageReadout,
   type T3HostKind,
   type T3ModelSelection,
   type T3ModelSelectionOption,
@@ -170,6 +173,13 @@ function parseModelOptions(raw: string | null): T3ModelSelectionOption[] | undef
   return result.success && result.data.length > 0 ? result.data : undefined;
 }
 
+/** Maps the nullable elapsed-time column, omitting NULL so the domain stays optional (#BIT-163). */
+function usageFromRow(row: AgentRunRecord): AgentRunUsage {
+  return {
+    ...(row.elapsedMs != null ? { elapsedMs: row.elapsedMs } : {}),
+  };
+}
+
 function toAgentRun(row: AgentRunRecord): AgentRun {
   const modelOptions = parseModelOptions(row.modelOptions);
   const metadata: T3GitMetadata = {};
@@ -233,6 +243,7 @@ function toAgentRun(row: AgentRunRecord): AgentRun {
     ...(row.parentTaskId !== null ? { parentTaskId: row.parentTaskId } : {}),
     ...(row.waitingForTaskId !== null ? { waitingForTaskId: row.waitingForTaskId } : {}),
     ...(row.hierarchyMode != null ? { hierarchyMode: row.hierarchyMode } : {}),
+    ...usageFromRow(row),
     ...(row.startedBy !== null ? { startedBy: row.startedBy } : {}),
     startedAt: toTimestamp(new Date(row.startedAt)),
     updatedAt: toTimestamp(new Date(row.updatedAt)),
@@ -709,6 +720,7 @@ export class T3D1Store {
       headSha: null,
       diffStat: null,
       pullRequestUrls: null,
+      elapsedMs: null,
       id: input.id,
       taskId: input.taskId,
       hostId: hostId ?? null,
@@ -742,6 +754,7 @@ export class T3D1Store {
           headSha: null,
           diffStat: null,
           pullRequestUrls: null,
+          elapsedMs: null,
           id: record.id,
           hostId: record.hostId,
           t3ProjectId: record.t3ProjectId,
@@ -845,6 +858,30 @@ export class T3D1Store {
       ...(parsed.pullRequestUrls !== undefined ? { pullRequestUrls: JSON.stringify(parsed.pullRequestUrls) } : {}),
       updatedAt: now,
     }).where(whereClause).returning();
+    return rows[0] ? toAgentRun(rows[0]) : undefined;
+  }
+
+  /**
+   * Stores the elapsed time T3 reported for a completed run (#BIT-163). An absent value keeps the stored
+   * one, so a later read without timing never erases it. Returns undefined when the run does not match
+   * the task, run id, and thread id.
+   */
+  async updateAgentRunUsage(
+    taskId: string,
+    runId: string,
+    threadId: string,
+    usage: T3RunUsageReadout,
+    now = Date.now(),
+  ): Promise<AgentRun | undefined> {
+    const parsed = AgentRunUsageSchema.parse(usage);
+    const rows = await this.db
+      .update(agentRuns)
+      .set({
+        ...(parsed.elapsedMs !== undefined ? { elapsedMs: parsed.elapsedMs } : {}),
+        updatedAt: now,
+      })
+      .where(and(eq(agentRuns.taskId, taskId), eq(agentRuns.id, runId), eq(agentRuns.threadId, threadId)))
+      .returning();
     return rows[0] ? toAgentRun(rows[0]) : undefined;
   }
 

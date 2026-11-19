@@ -26,6 +26,7 @@ import {
   type T3PendingQuestion,
   type T3RemoteProject,
   type T3RunSummary,
+  type T3RunUsageReadout,
   type T3RuntimeMode,
   type T3ThreadListItem,
   type T3ThreadMessage,
@@ -448,6 +449,8 @@ export interface T3LiveThreadReadout {
   pendingRequestId?: string | undefined;
   /** Why the thread stopped or failed (e.g. usage limit, credit exhaustion, runtime error, #BIT-132). */
   stopReason?: string | undefined;
+  /** Timing and provider-reported usage of the latest run, only once that run has completed (#BIT-163). */
+  runUsage?: T3RunUsageReadout | undefined;
 }
 
 /** Only parse documented, thread-scoped fields; malformed optional data must not clear saved values. */
@@ -659,10 +662,26 @@ function parseRecentRuns(rawRuns: unknown): T3RunSummary[] {
       recentRuns.push({
         ...(typeof rec.status === "string" ? { status: rec.status } : {}),
         ...(typeof rec.state === "string" ? { state: rec.state } : {}),
+        ...(typeof rec.startedAt === "string" ? { startedAt: rec.startedAt } : {}),
+        ...(typeof rec.completedAt === "string" ? { completedAt: rec.completedAt } : {}),
       });
     }
   }
   return recentRuns;
+}
+
+/**
+ * Builds the timing readout for a run (#BIT-163). Elapsed time comes from T3's own start and completion
+ * timestamps and is only reported once the run has completed.
+ */
+export function readRunUsageReadout(run: T3RunSummary | undefined): T3RunUsageReadout | undefined {
+  if (!run?.completedAt) return undefined;
+  const startedMs = Date.parse(run.startedAt ?? "");
+  const completedMs = Date.parse(run.completedAt);
+  if (!Number.isFinite(startedMs) || !Number.isFinite(completedMs) || completedMs < startedMs) {
+    return undefined;
+  }
+  return { elapsedMs: Math.round(completedMs - startedMs) };
 }
 
 const STOP_REASON_TAIL_WINDOW = 30;
@@ -1318,6 +1337,7 @@ export class T3McpClient {
         liveState === "failed" || liveState === "stopped"
           ? await fetchStopReasonFromActivity(callTool, threadId, thread, threadPayload.items)
           : undefined;
+      const runUsage = readRunUsageReadout(recentRuns[0]);
 
       return {
         gitMetadata,
@@ -1327,6 +1347,7 @@ export class T3McpClient {
         pendingQuestions,
         ...(pendingRequestId ? { pendingRequestId } : {}),
         ...(stopReason ? { stopReason } : {}),
+        ...(runUsage ? { runUsage } : {}),
       };
     });
   }

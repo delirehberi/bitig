@@ -96,6 +96,33 @@ describe("TaskT3Section", () => {
     expect(screen.getByText("5 files changed · +80 / −12")).toBeInTheDocument();
   });
 
+  it("shows elapsed time for a finished run (#BIT-163)", () => {
+    vi.mocked(fetchTaskT3Run).mockReturnValue(new Promise(() => undefined));
+    const initialRun: AgentRun = { ...makeRun(task.id, "finished"), elapsedMs: 125_500 };
+    render(
+      <TaskT3Section task={task} project={project} initialRun={initialRun} hasUnfinishedDependencies={false} />,
+    );
+    expect(screen.getByTestId("t3-run-usage")).toHaveTextContent("Elapsed 2m 06s");
+  });
+
+  it("says when T3 gave no timing for a finished run instead of showing zero (#BIT-163)", () => {
+    vi.mocked(fetchTaskT3Run).mockReturnValue(new Promise(() => undefined));
+    const initialRun: AgentRun = makeRun(task.id, "finished");
+    render(
+      <TaskT3Section task={task} project={project} initialRun={initialRun} hasUnfinishedDependencies={false} />,
+    );
+    expect(screen.getByTestId("t3-run-usage")).toHaveTextContent("Elapsed not reported");
+  });
+
+  it("hides the usage row while the run is still active (#BIT-163)", () => {
+    vi.mocked(fetchTaskT3Run).mockReturnValue(new Promise(() => undefined));
+    const initialRun: AgentRun = { ...makeRun(task.id, "working"), elapsedMs: 30_000 };
+    render(
+      <TaskT3Section task={task} project={project} initialRun={initialRun} hasUnfinishedDependencies={false} />,
+    );
+    expect(screen.queryByTestId("t3-run-usage")).not.toBeInTheDocument();
+  });
+
   it("has no follow-up message input and points to comments while a run is reachable", async () => {
     vi.mocked(fetchTaskT3Run).mockResolvedValue({ run: makeRun(task.id, "finished"), pendingQuestions: [] });
     render(<TaskT3Section task={task} project={project} hasUnfinishedDependencies={false} />);
